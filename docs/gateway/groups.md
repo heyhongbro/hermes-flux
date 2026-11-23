@@ -5,13 +5,13 @@
 
 | 方法 | 入参（契约） | 出参（契约） | 调用点 | 真实探针 |
 | --- | --- | --- | --- | --- |
-| `groups.create` | `profile` `room_id` `name` `members` `authority_gateway_id` | `room` | `packages/core/src/group/groupService.ts:191` | ✅ 0.22.5 |
-| `groups.disband` | `profile` `room_id` `cancel_id` | `tombstone` | `packages/core/src/group/groupService.ts:388` | ✅ 0.22.5 |
-| `groups.list` | `profile` `include_disbanded` `limit` `offset` | `rooms` `next_offset` | `packages/core/src/group/groupService.ts:104` | ✅ 0.22.5 |
-| `groups.log` | `profile` `room_id` `since_seq` `limit` `include_disbanded` | `events` `cursor` `latest_seq` `has_more` `authority` | `packages/core/src/group/groupService.ts:323` | ✅ 0.22.5 |
-| `groups.rename` | `profile` `room_id` `event_id` `name` | `room` | `packages/core/src/group/groupService.ts:409` | ✅ 0.22.5 |
-| `groups.send` | `profile` `room_id` `event_id` `payload` | `event` `client_event_id` `accepted` `driver_started` | `packages/core/src/group/groupService.ts:250` | ✅ 0.22.5 |
-| `groups.state` | `profile` `room_id` `include_disbanded` | `room` `driver_status` `context` | `packages/core/src/group/groupService.ts:148`<br>`packages/desktop/src/renderer/services/sessionStatusService.ts:315` | ✅ 0.22.5 |
+| `groups.create` | `profile` `room_id` `name` `members` `authority_gateway_id` | `room` | `packages/core/src/group/groupService.ts:199` | ✅ 0.22.5 |
+| `groups.disband` | `profile` `room_id` `cancel_id` | `tombstone` | `packages/core/src/group/groupService.ts:396` | ✅ 0.22.5 |
+| `groups.list` | `profile` `include_disbanded` `limit` `offset` | `rooms` `next_offset` | `packages/core/src/group/groupService.ts:105` | ✅ 0.22.5 |
+| `groups.log` | `profile` `room_id` `since_seq` `limit` `include_disbanded` | `events` `cursor` `latest_seq` `has_more` `authority` | `packages/core/src/group/groupService.ts:331` | ✅ 0.22.5 |
+| `groups.rename` | `profile` `room_id` `event_id` `name` | `room` | `packages/core/src/group/groupService.ts:420` | ✅ 0.22.5 |
+| `groups.send` | `profile` `room_id` `event_id` `payload` | `event` `client_event_id` `accepted` `driver_started` | `packages/core/src/group/groupService.ts:258` | ✅ 0.22.5 |
+| `groups.state` | `profile` `room_id` `include_disbanded` | `room` `driver_status` `context` | `packages/core/src/group/groupService.ts:156`<br>`packages/desktop/src/renderer/services/sessionStatusService.ts:315` | ✅ 0.22.5 |
 
 ## 明细
 
@@ -21,7 +21,7 @@
 - 结果类型：`GroupsCreateResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/group/groupService.ts:191`
+  - `packages/core/src/group/groupService.ts:199`
 
 ### `groups.disband`
 
@@ -29,7 +29,7 @@
 - 结果类型：`GroupsDisbandResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/group/groupService.ts:388`
+  - `packages/core/src/group/groupService.ts:396`
 
 ### `groups.list`
 
@@ -37,7 +37,7 @@
 - 结果类型：`GroupsListResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/group/groupService.ts:104`
+  - `packages/core/src/group/groupService.ts:105`
 
 ### `groups.log`
 
@@ -45,7 +45,7 @@
 - 结果类型：`GroupsLogResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/group/groupService.ts:323`
+  - `packages/core/src/group/groupService.ts:331`
 
 ### `groups.rename`
 
@@ -53,7 +53,7 @@
 - 结果类型：`GroupsRenameResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/group/groupService.ts:409`
+  - `packages/core/src/group/groupService.ts:420`
 
 ### `groups.send`
 
@@ -61,7 +61,7 @@
 - 结果类型：`GroupsSendResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/group/groupService.ts:250`
+  - `packages/core/src/group/groupService.ts:258`
 
 ### `groups.state`
 
@@ -69,6 +69,6 @@
 - 结果类型：`GroupsStateResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/group/groupService.ts:148`
+  - `packages/core/src/group/groupService.ts:156`
   - `packages/desktop/src/renderer/services/sessionStatusService.ts:315`
 

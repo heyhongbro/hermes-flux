@@ -527,7 +527,20 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     onActionDisband: (sheet) => {
       if (sheet.isProtected) return;
       if (sheet.kind === 'group') {
-        void deps.disbandGroupRoom(sheet.id);
+        const currentFocus = deps.getState().activeFocus;
+        const shouldLeaveToHome = (activePane === 'stage' || activePane === 'inspector')
+          && currentFocus.type === 'group' && currentFocus.roomId === sheet.id;
+        const promise = deps.disbandGroupRoom(sheet.id);
+        void Promise.resolve(promise).then(() => {
+          if (shouldLeaveToHome) {
+            activePane = 'home';
+          }
+          deps.render();
+        }).catch((err: unknown) => {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          deps.getState().dockNotice = t('ctx.disbandGroupFailed', { error: errorMessage });
+          deps.render();
+        });
       }
     },
     onOpenNewChat: () => {

@@ -835,15 +835,18 @@ async function ensureLiveSessionId(): Promise<string> {
   if (state.activeFocus.type === 'group') return '';
   if (state.activeLiveSessionId) return state.activeLiveSessionId;
   if (!gatewayClient || !state.activeSessionId) return '';
+  const registered = defaultSessionHandleRegistry.getRegisteredLiveId(state.activeSessionId);
+  if (registered) { state.activeLiveSessionId = registered; return registered; }
   const guard = { sessionId: state.activeSessionId, generation: activeLoadMessagesGeneration };
   try {
     const sess = state.sessions.find((s) => s.id === state.activeSessionId);
-    const prof = sess?.botName || state.profileName || 'default';
+    const prof = (state.activeFocus.type === 'bot' ? state.activeFocus.botName : sess?.botName) || state.profileName || 'default';
     let res: Record<string, unknown> | null = null;
     try {
       res = await gatewayClient.call<Record<string, unknown>>('session.resume', { session_id: guard.sessionId, profile: prof });
-    } catch {
-      res = await gatewayClient.call<Record<string, unknown>>('session.resume', { session_id: guard.sessionId });
+    } catch (firstErr: unknown) {
+      if (describeRpcError(firstErr).includes('Extra inputs')) res = await gatewayClient.call<Record<string, unknown>>('session.resume', { session_id: guard.sessionId });
+      else throw firstErr;
     }
     const handles = readSessionHandles(res, guard.sessionId);
     if (handles) {
@@ -861,17 +864,12 @@ async function ensureLiveSessionId(): Promise<string> {
 const createNewSession = (o?: { profile?: string; projectId?: string; title?: string }) => sessionOperationService.createNewSession(o);
 const deleteSession = (id: string) => sessionOperationService.deleteSession(id);
 const renameSession = (id: string, title: string) => sessionOperationService.renameSession(id, title);
-const copySessionId = (id: string) => sessionOperationService.copySessionId(id);
-const pinSession = (id: string) => sessionOperationService.pinSession(id);
-const exportMarkdown = (id: string) => sessionOperationService.exportMarkdown(id);
-const archiveSession = (id: string) => sessionOperationService.archiveSession(id);
-const handleArmedOnDelete = (id: string) => sessionOperationService.handleArmedOnDelete(id);
-const disarmRollbackOnLeave = (outId?: string) => sessionOperationService.disarmRollbackOnLeave(outId);
+const copySessionId = (id: string) => sessionOperationService.copySessionId(id); const pinSession = (id: string) => sessionOperationService.pinSession(id);
+const exportMarkdown = (id: string) => sessionOperationService.exportMarkdown(id); const archiveSession = (id: string) => sessionOperationService.archiveSession(id);
+const handleArmedOnDelete = (id: string) => sessionOperationService.handleArmedOnDelete(id); const disarmRollbackOnLeave = (outId?: string) => sessionOperationService.disarmRollbackOnLeave(outId);
 const selectSession = (id: string, o?: { preserveFocus?: boolean; botName?: string }) => { cancelColdStartFocus(); return sessionOperationService.selectSession(id, o); };
-const applyModelToLiveSession = (m: string, p?: string) => sessionOperationService.applyModelToLiveSession(m, p);
-const switchModel = (m: string, p?: string) => sessionOperationService.switchModel(m, p);
-const switchReasoning = (e: AppState['reasoningLevel']) => sessionOperationService.switchReasoning(e);
-const switchApproval = (m: 'manual' | 'smart' | 'off') => sessionOperationService.switchApproval(m);
+const applyModelToLiveSession = (m: string, p?: string) => sessionOperationService.applyModelToLiveSession(m, p); const switchModel = (m: string, p?: string) => sessionOperationService.switchModel(m, p);
+const switchReasoning = (e: AppState['reasoningLevel']) => sessionOperationService.switchReasoning(e); const switchApproval = (m: 'manual' | 'smart' | 'off') => sessionOperationService.switchApproval(m);
 
 const turnExecutionService = createTurnExecutionService({
   getState: () => state, getGatewayClient: () => gatewayClient, getRpcCaller: () => rpcCaller,
@@ -1011,13 +1009,22 @@ function snapshotFingerprint(value: unknown): string {
 
 async function disbandGroupRoom(roomId: string): Promise<void> {
   if (!gatewayClient) return;
-  await groupRoomStore.disbandRoom(roomId, gatewayClient);
+  const ok = await groupRoomStore.disbandRoom(roomId, gatewayClient);
+  if (!ok) throw new Error('Room disband rejected by gateway');
+  state.groupRooms = state.groupRooms.filter((r) => r.roomId !== roomId);
+  persistGroupsToCache(state.groupRooms);
   groupPollerManager.stop(roomId);
   settleTurnTermination({ runningSessionIds: activeRunningSessionIds, runningBotNames: activeRunningBotNames, runningGroupRoomIds: activeRunningGroupRoomIds, groupRoomId: roomId });
   unreadGroupRoomIds.delete(roomId);
   activityTransitionTracker.clear('group', roomId);
   await fetchGroupRooms();
-  if (state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId && state.sessions.length > 0) void selectSession(state.sessions[0].id);
+  if (state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId) {
+    state.activeGroupSpeaker = null;
+    turnExecutionService.resetActiveGroupThread();
+    const candidate = state.sessions.find((s) => !s.isArchived && !s.isSubagent);
+    if (candidate) void selectSession(candidate.id);
+    else { state.activeFocus = { type: 'session', sessionId: '' }; state.activeSessionId = ''; state.activeLiveSessionId = ''; state.isStreaming = false; state.messagesPhase = 'ready'; state.messages = []; render(); }
+  }
 }
 
 const modalInteractionController = createModalInteractionController({

@@ -39,6 +39,7 @@ import type {
   SessionItemPayload,
   IRpcCaller,
 } from '../rpc/types.js';
+import { readSessionHandles, defaultSessionHandleRegistry } from '../session/sessionRegistry.js';
 import { normalizeAgentProfile } from '../rpc/profileNormalize.js';
 import { parseBotDetail, type BotDetailData, type BotIdentityHint } from './botManagement.js';
 
@@ -359,19 +360,26 @@ export class ProfileService {
     // 3. 不存在时自动为该 Bot 建立终身主工位
     // 契约依据：SessionCreateParams 不含 system_prompt（人格由 profile 的 SOUL 决定），
     // 但支持 hidden，可在创建时直接标记隐藏，避免污染普通会话列表。
-    const createRes = await bridge.request<{ session_id?: string; id?: string }>('session.create', {
+    // 【关键修复：双 ID 语义】：session.create 返回 session_id (实时短 ID) 与 stored_session_id (持久化长 ID)。
+    // 终身主工位必须以 storedId 作为永久会话 ID，同时将 (storedId, liveId) 登记至句柄表，
+    // 严禁误用实时短 ID 作为会话主键导致后续 session.resume 报 4001 session not found。
+    const createRes = await bridge.request<Record<string, unknown>>('session.create', {
       title: 'Bot Chat',
       profile: botProfile,
       hidden: true,
     });
-    const sessionId = createRes.session_id || createRes.id;
+    const handles = readSessionHandles(createRes);
+    const sessionId = handles?.storedId || (typeof createRes?.stored_session_id === 'string' ? createRes.stored_session_id : '') || (typeof createRes?.session_id === 'string' ? createRes.session_id : '');
     if (!sessionId) {
       throw new Error(`为 Bot [${botProfile}] 创建终生主工位失败: 缺少 session_id`);
+    }
+    if (handles) {
+      defaultSessionHandleRegistry.register(handles);
     }
 
     // 4. 将其标记为 hidden 避免在普通旁聊列表中混排
     try {
-      await bridge.request('session.set_hidden', { session_id: sessionId, hidden: true });
+      await bridge.request('session.set_hidden', { session_id: sessionId, hidden: true, profile: botProfile });
     } catch (err) {
       // gate-degrade: 主工位创建时已带 hidden=true，这里只是二次保险；失败不影响会话可用性
       // 但仍要留下证据，避免"以为隐藏了其实没隐藏"

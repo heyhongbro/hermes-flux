@@ -8,6 +8,7 @@ test('GroupRoomStore - 多 Agent 群聊房间与四阶拉群升级管线', async
     const mockBridge = {
       async request(method, params) {
         if (method === 'groups.list') {
+          assert.equal(params?.include_disbanded, false, 'listRooms 必须显式传递 include_disbanded: false');
           return {
             groups: [
               {
@@ -16,6 +17,13 @@ test('GroupRoomStore - 多 Agent 群聊房间与四阶拉群升级管线', async
                 members: ['arch-wang', 'fe-zhang'],
                 createdAt: 1000,
                 updatedAt: 1000,
+              },
+              {
+                roomId: 'grp-disbanded',
+                name: '已解散的群聊',
+                members: ['arch-wang'],
+                disbanded_at: 9999,
+                isDisbanded: true,
               },
             ],
           };
@@ -179,6 +187,7 @@ test('GroupRoomStore - 多 Agent 群聊房间与四阶拉群升级管线', async
 
     const disbanded = await store.disbandRoom('grp-state-1', mockBridge);
     assert.equal(disbanded, true, 'disband 必须依据 { tombstone } 判定成功');
+    assert.deepEqual(store.getLogs('grp-state-1'), [], '解散后本地事件日志必须同步清理');
   });
 
   await t.test('5. promoteSessionToGroup：单聊一键拉群四阶工程管道闭环与负向校验', async () => {

@@ -115,11 +115,12 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
       let groupsAuthoritative = false;
 
       // 1. 网关正统托管房间（支持 groups.send / groups.log / 真实多智能体协同调度）
-      hostedRoomIds.clear();
       try {
         const rpcRooms = await groupRoomStore.listRooms(client);
         groupsAuthoritative = true;
+        hostedRoomIds.clear();
         for (const r of rpcRooms) {
+          if (r.isDisbanded) continue;
           hostedRoomIds.add(r.roomId);
           const existing = state.groupRooms.find((old) => old.roomId === r.roomId);
           if (existing && r.updatedAt && existing.updatedAt && r.updatedAt > existing.updatedAt) {
