@@ -1,0 +1,217 @@
+{
+  "method": "learning.frames",
+  "recordedAt": "2026-11-22T11:00:40.045Z",
+  "gatewayVersion": "0.23.2",
+  "result": {
+    "frames": [
+      {
+        "reveal": 0,
+        "date": "19 Oct 2026",
+        "visible": 0,
+        "grid": [
+          [],
+          [],
+          [],
+          "<more:14>"
+        ],
+        "labels": []
+      },
+      {
+        "reveal": 1,
+        "date": "22 Nov 2026",
+        "visible": 58,
+        "grid": [
+          [
+            [
+              "19 Oct ",
+              "label",
+              0.431797906235776
+            ],
+            [
+              "│ ",
+              "dim",
+              0.55
+            ],
+            [
+              "1",
+              "label",
+              0.95
+            ],
+            "<more:4>"
+          ],
+          [
+            [
+              "20 Oct ",
+              "label",
+              0.4460990300066526
+            ],
+            [
+              "│ ",
+              "dim",
+              0.55
+            ],
+            [
+              "2",
+              "label",
+              0.95
+            ],
+            "<more:4>"
+          ],
+          [
+            [
+              "21 Oct ",
+              "label",
+              0.45163186092208757
+            ],
+            [
+              "│ ",
+              "dim",
+              0.55
+            ],
+            [
+              "3",
+              "label",
+              0.95
+            ],
+            "<more:4>"
+          ],
+          "<more:14>"
+        ],
+        "labels": [
+          {
+            "key": "1",
+            "glyph": "●",
+            "label": "blackboard-writing",
+            "meta": "writing · 19 Oct 2026 · x3",
+            "style": "skill",
+            "alpha": 0.432
+          },
+          {
+            "key": "2",
+            "glyph": "●",
+            "label": "wechat-miniprogram-cicd",
+            "meta": "wechat · 20 Oct 2026 · x29",
+            "style": "skill",
+            "alpha": 0.446
+          },
+          {
+            "key": "3",
+            "glyph": "●",
+            "label": "ai-variety-show-design",
+            "meta": "creative · 21 Oct 2026 · x2",
+            "style": "skill",
+            "alpha": 0.452
+          },
+          "<more:3>"
+        ]
+      }
+    ],
+    "legend": [
+      {
+        "glyph": "●",
+        "style": "skill",
+        "label": "skills (27)"
+      },
+      {
+        "glyph": "◆",
+        "style": "memory",
+        "label": "memories (31)"
+      }
+    ],
+    "categories": [
+      {
+        "glyph": "●",
+        "color": "#D36969",
+        "label": "software-development (9)"
+      },
+      {
+        "glyph": "●",
+        "color": "#69D388",
+        "label": "skills (5)"
+      },
+      {
+        "glyph": "●",
+        "color": "#A769D3",
+        "label": "autonomous-ai-agents (4)"
+      },
+      "<more:2>"
+    ],
+    "buckets": [
+      {
+        "index": 0,
+        "label": "19 Oct",
+        "date": "19 Oct 2026",
+        "skills": 1,
+        "memories": 0,
+        "total": 1,
+        "category": "writing",
+        "color": "#69C2D3",
+        "nodes": [
+          {
+            "id": "blackboard-writing",
+            "glyph": "●",
+            "label": "blackboard-writing",
+            "fullLabel": "blackboard-writing",
+            "meta": "writing · 19 Oct 2026 · x3",
+            "body": "",
+            "style": "skill"
+          }
+        ]
+      },
+      {
+        "index": 1,
+        "label": "20 Oct",
+        "date": "20 Oct 2026",
+        "skills": 1,
+        "memories": 0,
+        "total": 1,
+        "category": "wechat",
+        "color": "#D3C669",
+        "nodes": [
+          {
+            "id": "wechat-miniprogram-cicd",
+            "glyph": "●",
+            "label": "wechat-miniprogram-cicd",
+            "fullLabel": "wechat-miniprogram-cicd",
+            "meta": "wechat · 20 Oct 2026 · x29",
+            "body": "",
+            "style": "skill"
+          }
+        ]
+      },
+      {
+        "index": 2,
+        "label": "21 Oct",
+        "date": "21 Oct 2026",
+        "skills": 1,
+        "memories": 0,
+        "total": 1,
+        "category": "creative",
+        "color": "#83D369",
+        "nodes": [
+          {
+            "id": "ai-variety-show-design",
+            "glyph": "●",
+            "label": "ai-variety-show-design",
+            "fullLabel": "ai-variety-show-design",
+            "meta": "creative · 21 Oct 2026 · x2",
+            "body": "",
+            "style": "skill"
+          }
+        ]
+      },
+      "<more:13>"
+    ],
+    "summary": [
+      "27 learned skills · 31 memories · 18 skill links",
+      "48 memory↔skill links · busiest day 27 Oct · 18 learned"
+    ],
+    "axis": {
+      "start": "19 Oct 2026",
+      "end": "22 Nov 2026"
+    },
+    "count": 58,
+    "cols": 40,
+    "rows": 16
+  }
+}

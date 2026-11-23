@@ -1,0 +1,441 @@
+/**
+ * Hermes Flux 全局桌面渲染层状态模型（App State Domain）
+ *
+ * 【设计意图 (Why)】
+ *   将整座工作台 60+ 字段的宏观状态机契约、持久化恢复、冷启动推导
+ *   与初始状态工厂从 `index.ts` 中彻底剥离。
+ *   使状态契约作为底层单一真值源，被各 Service 切片安全导入，
+ *   避免在庞大的入口文件中堆叠数百行类型声明与配置。
+ *
+ * 【防范的历史坑 (Pitfall)】
+ *   1. `PRESENCE_LAYOUT_STORAGE_KEY` 必须先于状态读取声明，防止打包提升时产生 `undefined`；
+ *   2. 骨架屏相位必须按三域独立 (`profilesPhase`, `sessionsPhase`, `messagesPhase`)；
+ *   3. 敏感字段禁止明文逃逸，所有草稿与持久化需使用 safeParseJson 校验。
+ *
+ * 【约束与规则 (Rules)】
+ *   1. 纯数据模型与无副作用工厂，保持 100% 类型健全，严禁 `as any`；
+ *   2. 不依赖任何 DOM 节点渲染逻辑。
+ */
+
+import {
+  type SettingsSectionId,
+  type SettingsLoadable,
+  type McpServerRow as SettingsMcpRow,
+  type SkillRow as SettingsSkillRow,
+  type SettingsProfileRow,
+  type ProviderView as SettingsProviderView,
+  type CustomEndpointRow as SettingsCustomEndpointRow,
+  type OauthProviderRow as SettingsOauthProviderRow,
+  type InspectorTab,
+  type LeftRailGroupRoom,
+  type LeftRailActiveFocus,
+  type LeftRailProfile,
+  type LeftRailProject,
+  type ContextMenuProps,
+  type InputAttachmentItem,
+  type SlashCommandOption,
+  type MentionReferenceOption,
+  type ComposerBadgeItem,
+  type DataPhase,
+  MessageViewModel,
+  resolveSkinId,
+  loadConversationWidthMode,
+  loadLeftRailLayout,
+  loadGroupedRailSections,
+} from '@hermes-flux/ui';
+import type { ConversationWidthMode, LeftRailLayoutMode } from '@hermes-flux/ui';
+
+import {
+  normalizeWorkspacePath,
+  type FileTreeLoadState,
+  type LearningDetailState,
+  type LearningLoadState,
+  type NormalizedSession,
+  type ModelDetail,
+  type ModelCatalogEntry,
+  type AgentProfile,
+  type BotDetailData,
+  type BotDraftState,
+  type BotManagementStatus,
+  type RightPodMode,
+} from '@hermes-flux/core';
+
+import { isStringArray, safeParseJson } from '../persistence/persistedJson.js';
+
+export interface AppState {
+  platform: 'windows' | 'macos' | 'linux' | 'ios' | 'android' | 'web';
+  theme: 'obsidian-gold' | 'suet-jade' | 'jade-white' | 'warm-paper' | 'ayu-light' | 'ayu-dark';
+  lang: 'zh' | 'en';
+  isMaximized: boolean;
+  leftRailCollapsed: boolean;
+  inspectorCollapsed: boolean;
+  rightPodMode: RightPodMode;
+  activeInspectorTab: InspectorTab;
+  activeSessionId: string;
+  activeLiveSessionId: string;
+  selectedModel: string;
+  availableModels: string[];
+  modelDetails: ModelDetail[];
+  modelCatalog: ModelCatalogEntry[];
+  modelCatalogHash: string;
+  currentProvider: string;
+  profiles: AgentProfile[];
+  profileName: string;
+  projects: LeftRailProject[];
+  groupRooms: LeftRailGroupRoom[];
+  activeFocus: LeftRailActiveFocus;
+  sessionSearchQuery: string;
+  isBotsGroupExpanded: boolean;
+  isSessionsGroupExpanded: boolean;
+  isGroupsGroupExpanded: boolean;
+  isMoreSessionsExpanded: boolean;
+  isNewTaskModalOpen: boolean;
+  newTaskModalTab: 'solo' | 'group';
+  selectedNewTaskProjectId?: string;
+  editingGroupRoomId?: string;
+  modelMenuOpen: boolean;
+  modelCascadeModel?: string;
+  collapsedProviders: string[];
+  sessionContextMenu?: ContextMenuProps;
+  confirmModal?: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    isDanger?: boolean;
+    onConfirm: () => void | Promise<void>;
+    onCancel?: () => void;
+  };
+  dockNotice: string;
+  sessionListError: string;
+  profilesPhase: DataPhase;
+  sessionsPhase: DataPhase;
+  messagesPhase: DataPhase;
+  pendingSessionIds: string[];
+  reasoningLevel: 'default' | 'none' | 'low' | 'high' | 'max' | 'off' | 'medium';
+  approvalMode: 'manual' | 'smart' | 'off';
+  isStreaming: boolean;
+  gatewayConnected: boolean;
+  gatewayConnecting: boolean;
+  gatewayLatencyMs: number;
+  gatewayUrl: string;
+  username: string;
+  password: string;
+  isSettingsOpen: boolean;
+  settingsSection: SettingsSectionId;
+  presenceLayout: 'stage' | 'dock';
+  conversationWidth: ConversationWidthMode;
+  leftRailLayout: LeftRailLayoutMode;
+  settingsProfiles: SettingsLoadable<SettingsProfileRow[]>;
+  botManagementStatus: BotManagementStatus;
+  botManagementActiveBotId: string;
+  botManagementDetail?: BotDetailData;
+  botDrafts: Record<string, BotDraftState>;
+  botManagementError?: string;
+  botManagementConfirm?: { message: string };
+  botManagementBusy: boolean;
+  settingsScopedProfile: string;
+  settingsProviderViews: SettingsLoadable<SettingsProviderView[]>;
+  settingsProviderFailures: Array<{ profile: string; displayName: string; message: string }>;
+  settingsSubscriptionCatalog: SettingsLoadable<SettingsOauthProviderRow[]>;
+  settingsCustomEndpoints: SettingsLoadable<SettingsCustomEndpointRow[]>;
+  settingsEndpointProfiles: Record<string, string[]>;
+  settingsEndpointFailures: Array<{ profile: string; displayName: string; message: string }>;
+  settingsProviderAdminBusy: boolean;
+  settingsMcp: SettingsLoadable<SettingsMcpRow[]>;
+  settingsSkills: SettingsLoadable<SettingsSkillRow[]>;
+  settingsBusy: boolean;
+  appVersion?: string;
+  sessions: NormalizedSession[];
+  messages: MessageViewModel[];
+  hasOlderMessages: boolean;
+  isLoadingOlder: boolean;
+  favoriteModels: string[];
+  recentModels: string[];
+  modelSearchQuery: string;
+  testStatus?: { ok?: boolean; message?: string; latency?: number };
+  artifacts: Array<{ id: string; name: string; type: string; size: string; preview?: string }>;
+  browserFrame?: { url: string; title: string; screenshotUrl?: string };
+  gitDiffs: Array<{ file: string; additions: number; deletions: number; patch?: string }>;
+  memories: Array<{ category: string; content: string; updated?: string }>;
+  learningState: LearningLoadState;
+  learningDetail: LearningDetailState;
+  turnStartedAt?: number;
+  presenceTerminal?: { kind: 'failed'; message: string } | { kind: 'interrupted' };
+  activeGroupSpeaker?: string | null;
+  inspectorFullscreen?: boolean;
+  openFiles: Array<{
+    id?: string;
+    path: string;
+    content: string;
+    language?: string;
+    isDiff?: boolean;
+    isBinary?: boolean;
+    isTooLarge?: boolean;
+    byteSize?: number;
+    source?: 'session_tool' | 'local_fs' | 'remote_http' | 'gateway_api' | 'fallback';
+  }>;
+  activeFilePath: string;
+  fileViewMode: 'rendered' | 'raw';
+  fileShowLineNumbers: boolean;
+  fileWordWrap: boolean;
+  fileSearchOpen: boolean;
+  fileSearchQuery: string;
+  fileTreeState: FileTreeLoadState;
+  fileTreeExpandedPaths: string[];
+  fileTreeFilterQuery: string;
+  fileTreeCollapsed: boolean;
+  fileTreeLoadedCwd: string;
+  attachments: InputAttachmentItem[];
+  queuedMessages: Array<{ id: string; admissionId: string; text: string }>;
+  slashPopperOpen: boolean;
+  slashItems: SlashCommandOption[];
+  mentionPopperOpen: boolean;
+  mentionItems: MentionReferenceOption[];
+  composerBadges: ComposerBadgeItem[];
+  rollbackArmed: {
+    sessionId: string;
+    targetId: string;
+    anchor: { kind: 'row'; rowId: number };
+    snapshot: MessageViewModel[];
+    removedCount: number;
+    anchorLabel: string;
+  } | null;
+  sideAgentCapsules: Array<{
+    id: string;
+    kind: 'btw' | 'delegation';
+    profile: string;
+    question: string;
+    answer?: string;
+    status: 'pending' | 'done' | 'failed' | 'expired';
+    startedAt: number;
+    notice?: string;
+    hintTimer?: ReturnType<typeof setTimeout>;
+    expireTimer?: ReturnType<typeof setTimeout>;
+  }>;
+  pickedMention: { profile: string; token: string } | null;
+}
+
+export const PRESENCE_LAYOUT_STORAGE_KEY = 'hermes_flux_presence_layout';
+
+export function readPresenceLayout(): 'stage' | 'dock' {
+  if (typeof localStorage === 'undefined') return 'stage';
+  try {
+    const raw = localStorage.getItem(PRESENCE_LAYOUT_STORAGE_KEY);
+    return raw === 'dock' ? 'dock' : 'stage';
+  } catch (error) {
+    console.warn('[presence] failed to read layout preference; falling back to stage', error);
+    return 'stage';
+  }
+}
+
+export interface InitialStateParams {
+  platform: 'windows' | 'macos' | 'linux' | 'ios' | 'android' | 'web';
+  leftRailCollapsedDefault?: boolean;
+}
+
+export function createInitialState(params: InitialStateParams): AppState {
+  // 【设计意图】冷启动读取外观/网关偏好，任何单键失败都必须降级为默认值而非中断初始化。
+  // 【防范历史坑】Chromium/Electron 在站点数据被禁用或 opaque origin 下访问 localStorage 会抛
+  //   SecurityError；原实现把 typeof 判断也放在 try 之外，导致整个 App 白屏。
+  // 【约束】catch 必须记录日志（Failure Is Not Empty），不得静默吞成空值。
+  function getStorage(k: string): string | null {
+    try {
+      return typeof localStorage === 'undefined' ? null : localStorage.getItem(k);
+    // gate-degrade: 存储被策略禁用时读取抛错，偏好回落默认值属可选增强失败，不得阻塞启动
+    } catch (error) {
+      console.warn('[app-state] failed to read storage preference; falling back to default', k, error);
+      return null;
+    }
+  }
+
+  const savedTheme = getStorage('hermes_flux_theme') || getStorage('hermes_aura_theme');
+  const savedLang = getStorage('hermes_flux_lang') || getStorage('hermes_aura_lang');
+  const savedProfile = getStorage('hermes_flux_profile') || getStorage('hermes_aura_profile') || 'default';
+  const savedUrl = getStorage('hermes_flux_gateway_url') || getStorage('hermes_aura_gateway_url') || '';
+  const savedUser = getStorage('hermes_flux_username') || getStorage('hermes_aura_username') || '';
+  const savedPass = getStorage('hermes_flux_password') || getStorage('hermes_aura_password') || '';
+  const groupedSections = loadGroupedRailSections();
+
+  return {
+    platform: params.platform,
+    theme: resolveSkinId(savedTheme),
+    lang: savedLang === 'en' ? 'en' : 'zh',
+    isMaximized: false,
+    leftRailCollapsed: params.leftRailCollapsedDefault ?? false,
+    inspectorCollapsed: true,
+    rightPodMode: { kind: 'closed' },
+    activeInspectorTab: 'artifacts',
+    activeSessionId: '',
+    activeLiveSessionId: '',
+    selectedModel: '',
+    availableModels: [],
+    modelDetails: [],
+    modelCatalog: [],
+    modelCatalogHash: '',
+    currentProvider: '',
+    profiles: [],
+    projects: [],
+    groupRooms: [],
+    activeFocus: { type: 'bot', botName: savedProfile },
+    sessionSearchQuery: '',
+    isBotsGroupExpanded: groupedSections.bots,
+    isSessionsGroupExpanded: groupedSections.sessions,
+    isGroupsGroupExpanded: groupedSections.groups,
+    isMoreSessionsExpanded: false,
+    isNewTaskModalOpen: false,
+    newTaskModalTab: 'solo',
+    editingGroupRoomId: undefined,
+    profileName: savedProfile,
+    modelMenuOpen: false,
+    modelCascadeModel: undefined,
+    collapsedProviders: [],
+    dockNotice: '',
+    sessionListError: '',
+    profilesPhase: 'loading',
+    sessionsPhase: 'loading',
+    messagesPhase: 'loading',
+    pendingSessionIds: [],
+    favoriteModels: safeParseJson<string[]>(
+      getStorage('hermes_flux_fav_models') || getStorage('hermes_aura_fav_models'),
+      [],
+      isStringArray
+    ),
+    recentModels: safeParseJson<string[]>(
+      getStorage('hermes_flux_recent_models') || getStorage('hermes_aura_recent_models'),
+      [],
+      isStringArray
+    ),
+    modelSearchQuery: '',
+    reasoningLevel: 'high',
+    approvalMode: 'smart',
+    isStreaming: false,
+    gatewayConnected: false,
+    gatewayConnecting: Boolean(savedUrl),
+    gatewayLatencyMs: 0,
+    gatewayUrl: savedUrl,
+    username: savedUser,
+    password: savedPass,
+    isSettingsOpen: false,
+    settingsSection: 'appearance',
+    presenceLayout: readPresenceLayout(),
+    conversationWidth: loadConversationWidthMode(),
+    leftRailLayout: loadLeftRailLayout(),
+    settingsProfiles: { status: 'idle' },
+    botManagementStatus: { status: 'uninitialized' },
+    botManagementActiveBotId: '',
+    botManagementDetail: undefined,
+    botDrafts: {},
+    botManagementError: undefined,
+    botManagementConfirm: undefined,
+    botManagementBusy: false,
+    settingsScopedProfile: '',
+    settingsProviderViews: { status: 'idle' },
+    settingsProviderFailures: [],
+    settingsSubscriptionCatalog: { status: 'idle' },
+    settingsCustomEndpoints: { status: 'idle' },
+    settingsEndpointProfiles: {},
+    settingsEndpointFailures: [],
+    settingsProviderAdminBusy: false,
+    settingsMcp: { status: 'idle' },
+    settingsSkills: { status: 'idle' },
+    settingsBusy: false,
+    appVersion: undefined,
+    sessions: [],
+    messages: [],
+    hasOlderMessages: false,
+    isLoadingOlder: false,
+    inspectorFullscreen: false,
+    openFiles: [],
+    activeFilePath: '',
+    fileViewMode: 'rendered',
+    fileShowLineNumbers: true,
+    fileWordWrap: false,
+    fileSearchOpen: false,
+    fileSearchQuery: '',
+    fileTreeState: { status: 'idle' },
+    fileTreeExpandedPaths: [],
+    fileTreeFilterQuery: '',
+    fileTreeCollapsed: false,
+    fileTreeLoadedCwd: '',
+    testStatus: undefined,
+    artifacts: [],
+    browserFrame: undefined,
+    gitDiffs: [],
+    memories: [],
+    learningState: { status: 'idle' },
+    learningDetail: { status: 'idle' },
+    attachments: [],
+    queuedMessages: [],
+    slashPopperOpen: false,
+    slashItems: [],
+    mentionPopperOpen: false,
+    mentionItems: [],
+    composerBadges: [],
+    rollbackArmed: null,
+    sideAgentCapsules: [],
+    pickedMention: null,
+  };
+}
+
+/**
+ * 解析当前视口承载实体的唯一作用域键（Viewport Scope Key）。
+ *
+ * 【设计意图 (Why)】
+ *   网关会话主键 (`state.activeSessionId`) 仅属于 `state.db` 中的普通会话与 Bot 主工位；
+ *   群聊房间物理存储于 `hosted_rooms`，此时 `activeSessionId` 必须为空串 `''` 以阻断任何 `session.*` RPC。
+ *   但视口滚动记忆、消息窗口管理器、渲染快照比对与提示词导航轨需要区分「群 A ➔ 群 B」的视口切换，
+ *   因此通过本函数提供正交的视口作用域键。
+ *
+ * 【约束与规则 (Rules)】
+ *   1. 群聊视口统一返回 `group:${roomId}`（若尚未选定 roomId 则为空串）；
+ *   2. 非群聊视口统一返回 `state.activeSessionId`。
+ */
+export function resolveActiveViewportKey(
+  state: Pick<AppState, 'activeFocus' | 'activeSessionId'> | { activeSessionId?: string; activeFocus?: LeftRailActiveFocus } | undefined | null
+): string {
+  if (state?.activeFocus?.type === 'group') {
+    return state.activeFocus.roomId ? `group:${state.activeFocus.roomId}` : '';
+  }
+  return state?.activeSessionId ?? '';
+}
+
+/**
+ * 推导当前激活会话或工程所属的工作区根目录路径（作为文件树加载的单一真值口径）。
+ */
+export function resolveActiveWorkspaceCwd(
+  state:
+    | Pick<AppState, 'activeSessionId' | 'sessions' | 'projects' | 'selectedNewTaskProjectId'>
+    | { activeSessionId?: string; sessions?: AppState['sessions']; projects?: AppState['projects']; selectedNewTaskProjectId?: string }
+    | undefined
+    | null,
+): string {
+  const sessions = state?.sessions ?? [];
+  const projects = state?.projects ?? [];
+  const activeSession = sessions.find((s) => s.id === state?.activeSessionId);
+  if (activeSession?.cwd) {
+    return normalizeWorkspacePath(activeSession.cwd);
+  }
+  const matchedProject = activeSession
+    ? projects.find(
+        (p) =>
+          p.id === activeSession.projectId ||
+          (Boolean(activeSession.projectName) && p.name === activeSession.projectName),
+      )
+    : undefined;
+  if (matchedProject?.path) {
+    return normalizeWorkspacePath(matchedProject.path);
+  }
+  if (state?.selectedNewTaskProjectId) {
+    const selectedProj = projects.find((p) => p.id === state.selectedNewTaskProjectId);
+    if (selectedProj?.path) {
+      return normalizeWorkspacePath(selectedProj.path);
+    }
+  }
+  const firstProjWithPath = projects.find((p) => Boolean(p.path));
+  if (firstProjWithPath?.path) {
+    return normalizeWorkspacePath(firstProjWithPath.path);
+  }
+  return '';
+}
+

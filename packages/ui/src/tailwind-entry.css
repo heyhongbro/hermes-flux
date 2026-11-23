@@ -1,0 +1,560 @@
+/*
+ * Tailwind v4 基座入口（PR-3a）。
+ * 设计意图(Why)：43 槽皮肤变量经 @theme inline 映射为 Tailwind 工具色板，React 组件自动换肤。
+ * 防范的历史坑(Pitfall)：完整 preflight 会把未迁移的存量模板（占全 UI 99%）的 h1 字号/margin/border 等
+ *   基础样式整体重置，违反"新基座不得触碰遗留视觉"的共存不变量，故只 import theme 与 utilities，不 import preflight；
+ *   --duration-* 与 :root 节奏层同名会造成隐式覆盖，移出 @theme。
+ * 约束与规则(Rules)：皮肤变量名必须与 skins.ts SLOT_IDS 同源，此文件禁止出现任何色值字面量；
+ *   已知取舍：无 preflight 则无全局 border-box，React 岛屿内如需 border-box 由组件自带工具类逐元素声明，禁止全局补。
+ *   扫描域只包含 React 组件目录与入口样式，禁止宽 glob 扫全仓（会让存量模板的任意值 class 混进产物）。
+ */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities" source(none);
+
+/* 只扫 React 组件目录。
+   设计意图(Why)：Tailwind v4 默认自动检测会扫全仓，把 docs/prototypes 里的任意值 class
+      （w-[220px]、text-[22px] 等）一并编进生产产物，违反"基座只服务 React 岛"的边界。
+   约束与规则(Rules)：路径相对本文件；新增扫描面必须显式列出具体目录，禁止用 `**` 宽 glob 扫全仓。 */
+@source "./components-react/**/*.tsx";
+
+@theme inline {
+  --leading-tight: 1.25;
+  --leading-normal: 1.6;
+  --tracking-tight: -0.015em;
+  --tracking-tighter: -0.02em;
+  --tracking-wide: 0.025em;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-hover: var(--card-hover);
+  --color-popover: var(--popover);
+  --color-sidebar: var(--sidebar);
+  --color-panel: var(--panel);
+  --color-input: var(--input);
+  --color-backdrop: var(--backdrop);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-accent: var(--primary-subtle);
+  --color-accent-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-subtle: var(--primary-subtle);
+  --color-primary-border: var(--primary-border);
+  --color-card-active: var(--card-active);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-code: var(--code);
+  --color-interactive-hover: var(--interactive-hover);
+  --color-interactive-active: var(--interactive-active);
+  --color-interactive-selection: var(--interactive-selection);
+  /* 字体族映射不在这里：--font-* 需要先清空默认命名空间再重建，
+     若在清空之前定义，会被随后的 `--font-*: initial` 一并抹掉（已实测）。见下方独立块。 */
+  /* 时长与缓动不在此定义：--duration-fast/--duration-normal 由 :root 节奏层（styles.css）单一来源持有，同名定义会造成隐式覆盖 */
+}
+
+/*
+ * 默认命名空间清场：物理封死非法语素。
+ *
+ * 设计意图(Why)：Tailwind 自带 shadow-sm/md/lg/xl、rounded-sm/md/lg/xl、text-sm/base/lg…
+ *   这些刻度与设计系统没有任何对应关系。只要有这套刻度在手，写组件的人就会本能地
+ *   按"我要大一点"去挑 lg，而不是按"这是卡片还是浮层"去挑语义档位——规范靠人自觉守不住，
+ *   必须让非法写法在编译期就产不出任何 CSS（写错了 = 没有样式 = 立刻被发现）。
+ * 防范的历史坑(Pitfall)：
+ *   1. 只写文档、只做 code review 是无效的，历史上有大量 rounded-md 就是这么进来的；
+ *   2. 清空 --radius-* 后 rounded-full 依然可用（Tailwind 生成 calc(infinity * 1px)），无需特殊处理；
+ *   3. 清空 --text-* 后必须把 7 档语义字号重新映射，否则所有 text-* 一起消失，排版整体塌陷。
+ * 约束与规则(Rules)：本块只能出现 `initial`，禁止在这里重新定义任何刻度值；
+ *   语义档位一律写在后面的 @theme inline 或 @utility 里，且禁止自引用（见下方圆角段注释）。
+ */
+@theme {
+  --radius-*: initial;
+  --shadow-*: initial;
+  --text-*: initial;
+  /* 字体族同样清场。设计意图：全系统只承认两种字体角色——界面字体与代码字体，
+     二者都是皮肤槽位（--font-sans / --font-mono），由设置页在运行时写进 :root。
+     Tailwind 默认的 font-sans / font-serif / font-mono 各自携带一套写死的字体栈，
+     一旦可用，组件就会绕开用户偏好；清空后这三类不再生成任何 CSS。
+     防范的历史坑：font-sans 与皮肤变量同名，若写成 `@theme { --font-sans: var(--font-sans) }`
+     会自引用失效（同圆角段），因此只允许用 font-ui / font-code 两个新名字去引用槽位。 */
+  --font-*: initial;
+}
+
+/*
+ * 间距尺度单一真值（必须位于默认主题导入与清场块之后，才能覆盖 `tailwindcss/theme.css` 默认 `--spacing: 0.25rem`）。
+ * 设计意图(Why)：Desktop 在 `styles.css` 中将根字号设为 `var(--fs-body)`（13px），
+ *   Tailwind v4 默认 `--spacing: 0.25rem` 会在 1rem=13px 下缩水 18.75% 为 `3.25px`
+ *   （导致 `w-56`=182px、`min-h-7`=23px、`h-8`=26px 跌破 28px 触控下限）。
+ * 防范的历史坑(Pitfall)：把 `@theme { --spacing: 4px; }` 写在清场 `@theme` 之前时，
+ *   Tailwind v4 编译产物仍输出 `.25rem`（已实测）；必须置于清场 `@theme` 之后方可在 `:root, :host` 生效。
+ * 约束与规则(Rules)：全局单一真值锁定 `--spacing: 4px`；Mobile 1rem=16px 同为 4px，无副作用。
+ */
+@theme {
+  --spacing: 4px;
+}
+
+/*
+ * 字体族只保留两个角色（必须写在清空块之后，否则会被 initial 抹掉）。
+ *
+ * 设计意图(Why)：界面字体与代码字体是仅有的两类字体语义，且都必须支持用户在设置里动态更换。
+ *   二者分别引用皮肤槽位 --font-sans / --font-mono（运行时由 applyFontPreferences 写到 :root），
+ *   组件只要写 font-ui / font-code 就自动跟随用户偏好，无法把字体写死。
+ * 防范的历史坑(Pitfall)：曾把这两条写在清空块之前，产物里 font-ui / font-code 根本不生成，
+ *   元素回落到 UA 的 monospace（已实测：<code> 计算字体为 monospace，与槽位无关）。
+ * 约束与规则(Rules)：槽位缺失时回落到系统栈，保证字体文件未加载也能正常阅读；
+ *   禁止在这里写死具体字体名以外的第二套真值，字体真值唯一面是 tokens/fonts.ts 的注册表。
+ */
+@theme inline {
+  --font-ui: var(--font-sans, system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif);
+  --font-code: var(--font-mono, "JetBrains Mono", Consolas, monospace);
+}
+
+/*
+ * 语义字号 7 档（清空默认 --text-* 后重建）。
+ *
+ * 设计意图(Why)：字号档位引用节奏层 --fs-*，使 Tailwind 的 text-* 与 styles.css 同源。
+ *   若在这里再写一遍 20/16/14/13/12/11/10px，就等于第二套字号真值；
+ *   引用变量后改 --fs-* 一处，组件 utility 与状态栏等直接消费者同时生效。
+ * 防范的历史坑(Pitfall)：行高必须与字号成对给。只给 font-size 不给 line-height 时，
+ *   浏览器回退到 normal（≈1.2 倍），13px 正文行高只有 15.6px，中文密排会挤成一坨。
+ * 约束与规则(Rules)：7 档固定为 hero/title/section/body/aux/caption/micro，各档行高
+ *   28/22/20/19/16/14/12px；--text-overline 是 caption 的语义别名（同一字号，收敛为大写小标题用法），
+ *   不构成第 8 档；禁止在此写死新的字号。回退值只在皮肤未注入时兜底，真值唯一面在 styles.css :root。
+ */
+@theme inline {
+  --text-hero: var(--fs-hero, 20px);
+  --text-hero--line-height: 28px;
+  --text-title: var(--fs-title, 16px);
+  --text-title--line-height: 22px;
+  --text-section: var(--fs-section, 14px);
+  --text-section--line-height: 20px;
+  --text-body: var(--fs-body, 13px);
+  --text-body--line-height: 20px;
+  --text-aux: var(--fs-aux, 12px);
+  --text-aux--line-height: 18px;
+  --text-caption: var(--fs-caption, 11px);
+  --text-caption--line-height: 14px;
+  --text-overline: var(--fs-caption, 11px);
+  --text-overline--line-height: 14px;
+  --text-micro: var(--fs-micro, 10px);
+  --text-micro--line-height: 12px;
+}
+
+/*
+ * 语义圆角四档（@utility）。
+ *
+ * 设计意图(Why)：设计系统的圆角只有"这是什么表面"的语义划分——
+ *   inner（行内元素/控件内角 4px）、card（卡片 6px）、panel（面板 8px）、window（浮层/窗口 12px）。
+ *   直接写成 rounded-card，写的人无法再问"这里要不要更圆一点"，只能问"这是卡片还是浮层"。
+ * 防范的历史坑(Pitfall)：绝不能写成 `@theme { --radius-card: var(--radius-card) }`。
+ *   皮肤槽位名与 theme 命名空间同名时，Tailwind 会把原文照抄成
+ *   `:root { --radius-card: var(--radius-card) }`；自引用在计算值阶段直接失效，
+ *   border-radius 静默塌成 0，而且产物里看着"有这个类"，排查极难（已实测）。
+ *   因此这里一律用 @utility 让 CSS 属性去引用皮肤槽位，禁止让 theme 变量引用自己。
+ * 约束与规则(Rules)：槽位名必须与 skins.ts SLOT_IDS 同源；回退值仅供皮肤未注入时兜底，
+ *   真值唯一面在 packages/desktop/src/renderer/styles.css :root 节奏层；禁止新增 sm/md/lg/xl 式刻度。
+ */
+@utility rounded-inner {
+  border-radius: var(--radius-inner, 4px);
+}
+
+@utility rounded-card {
+  border-radius: var(--radius-card, 6px);
+}
+
+@utility rounded-panel {
+  border-radius: var(--radius-panel, 8px);
+}
+
+@utility rounded-window {
+  border-radius: var(--radius-window, 12px);
+}
+
+/*
+ * OpenChamber 风格扁平微透着色按钮（Flat Tinted Buttons）。
+ * 设计意图(Why)：替代刺眼的高对比纯色实心块，用 12%~16% 主题微透底 + 22% 微距描边 +
+ *   可读主题色文字呈现轻盈极客质感；文字通过 color-mix 向 --foreground 收敛，确保深浅主题皆可读。
+ */
+@utility btn-tint-primary {
+  background-color: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: color-mix(in srgb, var(--primary) 50%, var(--foreground));
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
+  &:hover {
+    background-color: color-mix(in srgb, var(--primary) 22%, transparent);
+  }
+  &:active {
+    background-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  }
+}
+
+@utility btn-tint-destructive {
+  background-color: color-mix(in srgb, var(--destructive) 12%, transparent);
+  color: color-mix(in srgb, var(--destructive) 62%, var(--foreground));
+  border: 1px solid color-mix(in srgb, var(--destructive) 22%, transparent);
+  &:hover {
+    background-color: color-mix(in srgb, var(--destructive) 18%, transparent);
+  }
+  &:active {
+    background-color: color-mix(in srgb, var(--destructive) 26%, transparent);
+  }
+}
+
+/**
+ * Agent 成员网格（方案 2 · 56px 放大竖排宽格）。
+ *
+ * 设计意图(Why)：设置页各提供商下的成员名单需完整呈现头像与 BOT 名称，轨道宽度必须固定，
+ *   Agent 增多时只增加行数，不能把名字压成两行、腰斩英文全名或让成员忽宽忽窄。
+ *   网格本身横跨卡片整行，与顶栏操作区通过发丝线上下分离。
+ * 防范的历史坑(Pitfall)：Desktop 渲染进程在 `styles.css` 把根字号设为 `13px`（1rem=13px），
+ *   使 Tailwind 默认 `--spacing: 0.25rem` 实际缩水为 `3.25px`，导致 `w-28` 变成 `91px`、
+ *   `size-14` 缩成 `45.5px`，与 `112px` 轨道产生 21px 错位缝且补密钥聚焦环偏右。
+ *   在 `@utility agent-grid` 局部锁定 `--spacing: 4px;` 后，内部所有 `w-28`/`size-14`/`px-1`/`py-2`
+ *   均严格对齐真实 4px 物理像素网格（`w-28 === 112px`、`size-14 === 56px`、`size-7 === 28px`）。
+ * 几何依据：轨道 112px（`w-28`）、头像 56px（`size-14`）、列间距 8px、行间距 12px；
+ *   窄屏自动降列换行，不承诺固定列数。
+ * 约束与规则(Rules)：112px 与成员自身的 `w-28` 同值（配合 `--spacing: 4px` 恒等）；
+ *   禁止改成 auto-fit 或 1fr，否则头像间距会被拉伸得不均匀；
+ *   禁止横向滚动：成员多时必须换行，让所有成员始终可见。
+ */
+@utility agent-grid {
+  --spacing: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 112px);
+  justify-content: start;
+  gap: 12px 8px;
+}
+
+/**
+ * 活动指示器变体预览（设置 - 外观）。
+ *
+ * 设计意图(Why)：十八套动效要在设置页并排比较，而左轨原尺寸只有 16×16~30×16px，
+ *   直接放进去看不出粒子与环的差别。这里只放大、不改结构，卡片里跑的就是真实组件，
+ *   用户看到的效果与选中后左轨里的完全一致。
+ *
+ * 防范的历史坑(Pitfall)：不能用 `transform: scale` 放大 canvas——transform 不参与 flex 布局，
+ *   视觉宽度溢出后会和右侧状态词重叠；`zoom` 参与布局，间距才是真实的。
+ *
+ * 约束与规则(Rules)：固定宽高（64×36px，4px 网格）给十八张卡一个共同起点，禁止改 auto
+ *   （不同变体宽高各异，文字起点与行高会一行一个样）；只调尺寸，不覆盖任何动画或颜色。
+ */
+@utility activity-variant-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 36px;
+
+  /*
+   * 全部十八套动效的承载容器尺寸不同（30×16 宽幅点云、18×18 紧凑点云、18×14 流云、16×16 几何雕塑），
+   * 必须通过具体画布类统一放大：2× 宽幅达 60px，预览框锁 64px（4px 网格）以保证文案起点齐平且永不挤压文字。
+   */
+  & .flux-cloud-canvas,
+  & .flux-pc-canvas,
+  & .flux-motif-gyro,
+  & .flux-motif-orbit,
+  & .flux-motif-synapse,
+  & .flux-motif-spring,
+  & .flux-motif-matrix {
+    zoom: 2;
+  }
+
+  /*
+   * 运行态状态词在预览里必须隐藏：它与右侧的变体名并排时会被读成「执行中 流云」，
+   * 而这里要比较的只有动效本体；真实状态词在左轨里原样保留。
+   */
+  & .flux-cloud-label {
+    display: none;
+  }
+}
+
+/*
+ * 语义阴影三档（@utility）。
+ *
+ * 设计意图(Why)：阴影表达的是"这个表面离底图有多远"，因此只有 card（贴地卡片）、
+ *   panel 之上的浮层 window、以及贴边悬挂的 dock 三种物理位置，没有"第 5 档阴影"这种东西。
+ * 防范的历史坑(Pitfall)：同圆角段——禁止 `@theme { --shadow-card: var(--shadow-card) }` 自引用；
+ *   另外 --shadow-* 的真值是完整 box-shadow 列表（可能含多个逗号分隔的分量），
+ *   只能整体赋给 box-shadow 属性，不能拆开当颜色/半径使用。
+ * 约束与规则(Rules)：三个类名与皮肤槽位同名，但引用方向是 CSS 属性 → 槽位变量，单向，安全。
+ */
+@utility shadow-card {
+  box-shadow: var(--shadow-card);
+}
+
+@utility shadow-window {
+  box-shadow: var(--shadow-window);
+}
+
+@utility shadow-dock {
+  box-shadow: var(--shadow-dock);
+}
+
+/*
+ * 模态层高度上限（语义档位）。
+ *
+ * 设计意图(Why)：二级弹窗必须相对视口有界并内部滚动，但 `max-h-[min(560px,calc(100vh-96px))]`
+ *   属于任意值类，会绕过 Token 审计；写成内联 style 更是直接落进审计盲区。
+ *   把两档高度收敛成具名 utility 后，业务只声明「这是哪一档」，尺寸真值只在这里维护。
+ * 约束与规则(Rules)：新增档位必须先在本文件登记，禁止在业务里回到 `max-h-[...]` 或内联 maxHeight。
+ */
+@utility max-h-modal-sm {
+  max-height: min(560px, calc(100vh - 96px));
+}
+
+@utility max-h-modal-md {
+  max-height: min(680px, calc(100vh - 96px));
+}
+
+@utility max-h-modal-lg {
+  max-height: min(760px, calc(100vh - 64px));
+}
+
+/*
+ * 模型下拉与弹窗列表高度、宽度语义档位。
+ *
+ * 设计意图(Why)：查看模型弹窗与模型选择下拉需要同屏展示约 9~10 行模型以减少频繁滚动，
+ *   且下拉面板必须严格与触发框等宽，禁止在组件里写死 w-80 或 arbitrary `[...]` 类。
+ * 约束与规则(Rules)：与 `tw-merge.ts` 的 MODAL_HEIGHT_TOKENS / MENU_WIDTH_TOKENS 同源登记。
+ */
+@utility w-menu-trigger {
+  width: var(--radix-dropdown-menu-trigger-width, 100%);
+}
+
+@utility max-h-picker-menu {
+  max-height: min(360px, calc(100vh - 200px));
+}
+
+@utility max-h-picker-list {
+  max-height: min(440px, calc(100vh - 240px));
+}
+
+/*
+ * 微轨 Agent 站点卡（42px 时代 → 动态量）。
+ *
+ * 设计意图(Why)：微轨宽度本身是 clamp(58px, 4.2vw, 72px) 的动态量，站点卡与头像却曾被
+ *   写死成 size-[42px] / 36px，结果是宽视口下头像显得越来越小、窄视口下又贴死轨道边界。
+ *   尺寸真值收敛到 styles.css 的 --geo-station-card / --geo-station-avatar 后，卡与头像
+ *   随轨道等比呼吸，业务侧只声明"这是微轨站点卡"，不再出现 42/36 之类散落字面量。
+ * 约束与规则(Rules)：骨架占位与真实卡必须共用本 utility，禁止任何一侧写回任意值类或内联尺寸。
+ */
+@utility size-station-card {
+  width: var(--geo-station-card, 42px);
+  height: var(--geo-station-card, 42px);
+}
+
+/*
+ * 浮层菜单层级（z-index 语义档位）。
+ *
+ * 设计意图(Why)：设置弹窗宿主是 z-50；下拉菜单经 Radix Portal 挂到 body，
+ *   必须高于宿主才能不被遮挡。把 1200 收敛成语义类后，业务只声明"这是浮层菜单"，
+ *   不再各自写 `z-[1200]` 这类任意值（那会持续抬高门禁豁免敞口）。
+ * 约束与规则(Rules)：新增层级必须先在此登记；禁止在业务里回到任意值 z-index。
+ */
+@utility z-menu {
+  z-index: 1200;
+}
+
+/*
+ * 浮起表面（surface-raised）。
+ *
+ * 设计意图(Why)：全部 5 个皮肤里 `--card` 与 `--popover` 完全同值，任何"换一个现有底色档"
+ *   的卡片化方案（bg-panel / bg-card-hover / bg-background）对比度都只有 1.03~1.11:1，
+ *   在浅色皮肤下更是白卡压白底。这里从既有 token 派生一个新色调：
+ *   深色皮肤提亮 = 浮起，浅色皮肤压暗 = 内凹，两种都是标准卡片语言。
+ * 防范的历史坑(Pitfall)：直接改 skins.ts 的 --card/--popover 会同时影响全站卡片与浮层，
+ *   且浅色皮肤白色无法再提亮，属不可逆的全局视觉变更。
+ * 约束与规则(Rules)：
+ *   1. 只允许通过本 utility 使用派生色，业务禁止自行写 color-mix；
+ *   2. 必须保留第一条 `var(--card)` 兜底：不支持 color-mix 的环境退化为原卡片色，
+ *      而不是透明（透明会让卡片在浮层里彻底消失）。
+ */
+@utility surface-raised {
+  background-color: var(--card);
+  background-color: color-mix(in oklab, var(--card) 92%, var(--foreground) 8%);
+}
+
+/*
+ * 顶部 1px 受光线（specular-top）。
+ *
+ * 设计意图(Why)：深色皮肤下卡片与面板的边界几乎不可见，顶部一条 1px 受光线是区分层级的关键
+ *   （设计系统 README 的「受光高光线」）。做成独立工具类后，任何容器加一个类就有受光线，
+ *   不必每次手抄 ::before。
+ * 防范的历史坑(Pitfall)：--specular-line 在 skins.ts 里的真值是 **box-shadow 片段**
+ *   （`inset 0 1px 0 0 rgba(...)`），不是颜色。把它写进 `background:` 会被 CSS 解析器
+ *   整条丢弃（background 语法里没有 inset 关键字），结果是"类存在、产物存在、屏幕上什么都没有"，
+ *   属于最难发现的假交付。这里改由 1px 高的 ::before 自身承载该 box-shadow：
+ *   元素高 1px + inset 上偏移 1px ⇒ 未被偏移框覆盖的整条 1px 带被着色，视觉等价于顶部受光线。
+ *   必须用 ::before 独立承载：若直接写在本体上，会与 shadow-card/shadow-window 抢同一个
+ *   box-shadow 属性，谁后生效取决于样式表顺序，出现"加了受光线就没阴影"的随机缺陷。
+ * 约束与规则(Rules)：不改变宿主布局（position: relative + 绝对定位伪元素 + pointer-events: none）；
+ *   禁止改成本体的 border-top（会撑高盒子 1px，破坏 42px/48px 整数几何）。
+ */
+@utility specular-top {
+  position: relative;
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    box-shadow: var(--specular-line);
+    pointer-events: none;
+  }
+}
+
+/*
+ * 隐藏原生滚动条但保留横向/纵向滚轮与触控滚动（scrollbar-none）。
+ *
+ * 设计意图(Why)：设置中心 BOT 成员栏等横向轻轨道在溢出时通过左右箭头与滚轮操作，
+ *   保留浏览器原生滚动条会把一条 3~6px 的亮/暗滚动条压在卡片下缘，破坏微距发丝边界；
+ *   统一收进语义 utility，避免业务组件写 `[scrollbar-width:none]` 任意值类触发视觉警告。
+ * 防范的历史坑(Pitfall)：只在 CSS 写 `::-webkit-scrollbar { display: none }` 会漏掉
+ *   Firefox/标准引擎的 `scrollbar-width: none`，导致跨端不一致。
+ * 约束与规则(Rules)：严禁在此叠加 `scroll-behavior: smooth`（违反 Gate 4c 性能红线）。
+ */
+@utility scrollbar-none {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*
+ * 悬停才轻现的 5px 透明微滚动条（scrollbar-thin）。
+ *
+ * 设计意图(Why)：数百个技能、长篇 SOUL.md 或展开态微轨必须支持独立滚动，但 Chromium 原生
+ *   灰白滚动条极丑且破坏极客精密美学。改用透明轨道 + 悬停才显影的 5px 圆角微滑块，全皮肤自适应。
+ * 约束与规则(Rules)：色值必须走 `color-mix(in srgb, var(--foreground) ...)`，禁止裸色字面量；
+ *   严禁叠加 `scroll-behavior: smooth`。
+ */
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+
+  &:hover {
+    scrollbar-color: color-mix(in srgb, var(--foreground) 18%, transparent) transparent;
+  }
+
+  &::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 9999px;
+  }
+
+  &:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--foreground) 18%, transparent);
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--foreground) 32%, transparent);
+  }
+}
+
+/*
+ * 一次性入场微位移淡入（animate-panel-enter）。
+ *
+ * 设计意图(Why)：切换 BOT 或分段 Tab 时提供 160ms 无过冲轻量过渡（仅单次播放，遵守 I6）。
+ */
+@keyframes fluxPanelEnter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@utility animate-panel-enter {
+  animation: fluxPanelEnter 160ms ease-out;
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+/*
+ * React 岛控件基线（preflight 的最小替代）。
+ *
+ * 设计意图(Why)：本入口刻意不引入 preflight（它会重置未迁移模板的 h1/margin/border），
+ *   但原生 <button>/<input> 因此保留 UA 默认的白色背景与边框，React 岛内的会话行、
+ *   群聊行、手风琴按钮全部渲染成白方块（本次真实截图取证确认）。
+ * 防范的历史坑(Pitfall)：只在个别组件上覆盖背景，会让"新写一个按钮又变白"反复发生；
+ *   把基线写在 layer 之外又会压过 utilities（实测搜索框丢失面板底色与边框）。
+ * 约束与规则(Rules)：必须落在 base 层，让组件自身的 utility 永远赢；
+ *   作用域必须由"岛宿主"显式声明，绝不声明到全局元素选择器。
+ *   岛宿主有两种识别方式：既有的具体类（.flux-left-rail / .flux-settings），
+ *   以及新增的 `[data-flux-island]` 属性——后者是给新岛用的唯一入口，
+ *   避免"又写了一个新岛、忘了把自己加进这份选择器名单"导致控件变回白方块（Gallery 曾实测复现）。
+ */
+@layer base {
+  [data-flux-island] button,
+  [data-flux-island] input,
+  [data-flux-island] textarea,
+  [data-flux-island] select,
+  .flux-left-rail button,
+  .flux-left-rail input,
+  .flux-left-rail textarea,
+  .flux-left-rail select,
+  .flux-settings button,
+  .flux-settings input,
+  .flux-settings textarea,
+  .flux-settings select {
+    font: inherit;
+    color: inherit;
+    letter-spacing: inherit;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+  }
+
+  [data-flux-island] button,
+  .flux-left-rail button,
+  .flux-settings button {
+    cursor: pointer;
+    text-align: inherit;
+    appearance: none;
+  }
+
+  [data-flux-island] :focus-visible,
+  .flux-left-rail :focus-visible,
+  .flux-settings :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  [data-flux-island] *,
+  [data-flux-island] *::before,
+  [data-flux-island] *::after,
+  .flux-left-rail *,
+  .flux-left-rail *::before,
+  .flux-left-rail *::after,
+  .flux-settings *,
+  .flux-settings *::before,
+  .flux-settings *::after {
+    box-sizing: border-box;
+  }
+}

@@ -1,0 +1,709 @@
+/**
+ * 提示词导航轨（Prompt Navigator Rail）
+ *
+ * 【设计意图 (Why)】
+ *   长会话（实测 7745 条消息 / 约 3870 次提问）里，滚动条无法表达"回到第 2000 次提问"。
+ *   轨道把每一次用户输入折叠成一根横杠：悬停出预览、点击直达该轮对话。
+ *   本组件只消费宿主推来的快照，不读滚动容器、不算行高、不碰消息表。
+ *
+ * 【防范的历史坑 (Pitfall)】
+ *   1. 轨道若挂进 `#conversation-stream`，宿主整块替换画布时会把它一起销毁；
+ *   2. 面板用 React `onWheel` 时 React 17+ 在根容器上以 passive 注册，`preventDefault` 无效，
+ *      滚面板会同时把正文滚走；
+ *   3. 只渲染 30 根 tick 而不提供窗口外通路时，3870 次提问只能点到当前项周围 15 条；
+ *   4. 键盘移动高亮前不先 `ensureWindowContains`，高亮会落到未渲染的 tick 上，
+ *      `aria-activedescendant` 指向不存在节点，按键表现为"没反应"。
+ *
+ * 【约束与规则 (Rules)】
+ *   1. 文案 100% 走 `t()`，本文件禁止中文字面量；
+ *   2. 颜色、字号、圆角全部走语义 Token，禁止裸色值与内联字号；
+ *   3. tick DOM 上限为 `capacity`（默认 30），面板也只挂可见行附近；
+ *   4. 面板是 gutter 的子节点：`mousemove` / `click` 必须 `stopPropagation`，
+ *      `wheel` 必须走原生非被动监听；
+ *   5. 只观察稳定祖先 `.flux-middle-pod`，画布 `.conv-canvas` 每次回调内重查。
+ */
+
+import * as React from 'react';
+import { t } from '../../i18n/index.js';
+import {
+  PANEL_ROW_PX,
+  PANEL_VISIBLE_ROWS,
+  RAIL_TICK_PITCH_PX,
+  RAIL_VISIBLE_TICKS,
+  buildPanelRowProps,
+  decideGutterKeyAction,
+  decideHotzonePointerAction,
+  decidePanelWheelAction,
+  ensurePanelOffset,
+  planPanelRows,
+  planPromptPrependView,
+  planTickWindow,
+  shouldTriggerLoadOlderAtTop,
+  tickWidth,
+  type PromptEntry,
+  type PromptNavigatorActions,
+  type PromptNavigatorSnapshot,
+} from '../../lib/promptNavigator.js';
+
+/** 上下热区高度。 */
+const CAROUSEL_EDGE_PX = 18;
+/** 指针离开后延迟收起面板，留出横移进面板的时间。 */
+const PANEL_COLLAPSE_DELAY_MS = 160;
+/** 常规命中带宽度。 */
+const GUTTER_WIDE_PX = 28;
+/** 消息列压到 gutter 底下时的收窄宽度。 */
+const GUTTER_NARROW_PX = 12;
+/** 触发收窄的间距阈值：画布右缘与 pod 右缘小于该值即视为窄列。 */
+const NARROW_GAP_PX = 40;
+
+export interface PromptNavigatorRailProps {
+  snapshot: PromptNavigatorSnapshot;
+  actions: PromptNavigatorActions;
+  capacity?: number;
+}
+
+/** 容量归一：非正数或非有限一律回落到 `RAIL_VISIBLE_TICKS`。 */
+function normalizeCapacity(capacity: number | undefined): number {
+  if (typeof capacity !== 'number' || !Number.isFinite(capacity) || capacity <= 0) {
+    return RAIL_VISIBLE_TICKS;
+  }
+  return Math.max(1, Math.floor(capacity));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (max < min) return min;
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+/**
+ * 把目标索引滚进窗口：落在窗口外时平移起点，已在窗口内则保持原样。
+ *
+ * 【约束与规则 (Rules)】结果起点恒夹在 `[0, total - capacity]`，末端不得越界。
+ */
+function ensureWindowStartFor(
+  target: number,
+  baseStart: number,
+  total: number,
+  capacity: number
+): number {
+  const maxStart = Math.max(0, total - capacity);
+  const base = clamp(baseStart, 0, maxStart);
+  if (target < base) return clamp(target, 0, maxStart);
+  if (target >= base + capacity) return clamp(target - capacity + 1, 0, maxStart);
+  return base;
+}
+
+/** 顶部历史拉取触发器：返回是否真的触发了一次拉取。 */
+export type AttemptLoadOlder = (force: boolean, immediate: boolean) => boolean;
+
+/** 高亮移动器：入参是条目的绝对下标。 */
+export type MoveHighlight = (index: number) => void;
+
+/** 边缘单步步进所需的只读视图。 */
+export type CarouselStepState = {
+  total: number;
+  hasMoreAbove: boolean;
+  hasMoreBelow: boolean;
+  activeIndex: number;
+  highlightedIndex: number | null;
+  attemptLoadOlder: AttemptLoadOlder;
+  moveHighlight: MoveHighlight;
+}
+
+/** 单步步进的结果：是否顺带触发了一轮顶部历史拉取。 */
+export type CarouselStepResult = { triggeredLoadOlder: boolean };
+
+export function stepCarouselHighlight(direction: -1 | 1, current: CarouselStepState, topHotzoneTriggered: boolean): CarouselStepResult {
+  if (current.total === 0) return { triggeredLoadOlder: false };
+  if (direction === -1 && !current.hasMoreAbove) {
+    if (!topHotzoneTriggered && current.attemptLoadOlder(true, true)) {
+      return { triggeredLoadOlder: true };
+    }
+    return { triggeredLoadOlder: false };
+  }
+  if (direction === 1 && !current.hasMoreBelow) return { triggeredLoadOlder: false };
+  const anchor = current.highlightedIndex === null ? current.activeIndex : current.highlightedIndex;
+  if (anchor >= 0) {
+    current.moveHighlight(anchor + direction);
+  }
+  return { triggeredLoadOlder: false };
+}
+
+/**
+ * 边缘热区单步步进的最小间隔（ms）。
+ *
+ * 【取值依据】与被替换掉的 80ms 定时器同量级（约 11 步/秒），保证「事件驱动」不会
+ *   比「时间驱动」更快；指针事件本身可达 60~120Hz，没有这道门就会失控。
+ * 【禁止复用其它常量】`PANEL_COLLAPSE_DELAY_MS`（160，面板收起过渡）与
+ *   `TOP_LOAD_COOLDOWN_MS`（250，历史拉取网络冷却）语义完全不同，复用会制造虚假耦合。
+ */
+export const CAROUSEL_MIN_STEP_INTERVAL_MS = 90;
+
+/** 时钟读数；缺省走 `Date.now`。 */
+export type StepperClock = () => number;
+
+/** 单步步进器的依赖：全部是可观察的容器，装配后可脱离 React 单测。 */
+export type CarouselStepperDeps = {
+  latestRef: { current: CarouselStepState };
+  topHotzoneTriggeredRef: { current: boolean };
+  now?: StepperClock;
+}
+
+/**
+ * 组装边缘热区的单步步进器。
+ *
+ * 【设计意图 (Why)】组件只交出「最新一轮渲染的视图」与「热区触发锁」两个 ref，
+ *   步进与置锁的逻辑全部留在本函数里；装配在渲染期完成，逻辑本身可脱离 React 直接单测。
+ *
+ * 【防范的历史坑 (Pitfall)】旧实现用 `setInterval` 在边缘连发，指针微动就会失控狂飙；
+ *   改为指针驱动后事件密度反而更高（高回报率指针可达 120Hz），因此仍必须有最小步进间隔。
+ *
+ * 【约束与规则 (Rules)】返回的函数只持有「上次步进时刻」一个标量，其余读写都走依赖对象。
+ */
+export function createCarouselStepper(deps: CarouselStepperDeps): (direction: -1 | 1) => void {
+  let lastStepAt = Number.NEGATIVE_INFINITY;
+  return (direction) => {
+    const at = (deps.now ?? Date.now)();
+    if (at - lastStepAt < CAROUSEL_MIN_STEP_INTERVAL_MS) return;
+    lastStepAt = at;
+    const result = stepCarouselHighlight(direction, deps.latestRef.current, deps.topHotzoneTriggeredRef.current);
+    if (result.triggeredLoadOlder) deps.topHotzoneTriggeredRef.current = true;
+  };
+}
+
+export function PromptNavigatorRail({
+  snapshot,
+  actions,
+  capacity,
+}: PromptNavigatorRailProps): React.ReactElement | null {
+  const prompts = snapshot.prompts;
+  const total = prompts.length;
+  const cap = normalizeCapacity(capacity);
+  const hasOlder = Boolean(snapshot.hasOlder);
+  const isLoadingOlder = Boolean(snapshot.isLoadingOlder);
+
+  const [highlightedIndex, setHighlightedIndex] = React.useState<number | null>(null);
+  const [windowStart, setWindowStart] = React.useState(0);
+  const [panelOpen, setPanelOpen] = React.useState(false);
+  const [panelOffset, setPanelOffset] = React.useState(0);
+  const [narrow, setNarrow] = React.useState(false);
+
+  const gutterRef = React.useRef<HTMLDivElement | null>(null);
+  const panelRef = React.useRef<HTMLDivElement | null>(null);
+  const collapseTimerRef = React.useRef<number | null>(null);
+  const prevPromptsRef = React.useRef<readonly PromptEntry[] | null>(null);
+  const measureRef = React.useRef<(() => void) | null>(null);
+  /** 上次触发顶部历史拉取的时间戳，防止滚轮惯性事件连发。 */
+  const lastLoadTriggerAtRef = React.useRef(0);
+  /** 指针停留在顶部轮播热区且已触顶时，只触发一轮拉取，离开热区或新数据到达后复位。 */
+  const topHotzoneTriggeredRef = React.useRef(false);
+
+  const activeIndex = total === 0 ? -1 : clamp(snapshot.activeIndex, 0, total - 1);
+  const autoStart = planTickWindow(total, activeIndex, cap).start;
+  const rawStart = highlightedIndex === null ? autoStart : windowStart;
+  const start = clamp(rawStart, 0, Math.max(0, total - cap));
+  const end = Math.min(total, start + cap);
+  const hasMoreAbove = start > 0;
+  const hasMoreBelow = end < total;
+
+  const cancelCollapse = React.useCallback((): void => {
+    if (collapseTimerRef.current !== null) {
+      window.clearTimeout(collapseTimerRef.current);
+      collapseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleCollapse = React.useCallback((): void => {
+    cancelCollapse();
+    collapseTimerRef.current = window.setTimeout(() => {
+      collapseTimerRef.current = null;
+      setPanelOpen(false);
+      setHighlightedIndex(null);
+    }, PANEL_COLLAPSE_DELAY_MS);
+  }, [cancelCollapse]);
+
+  /** 移动高亮：先把目标滚进窗口，再改写高亮，杜绝指向未挂载节点。 */
+  const moveHighlight = React.useCallback(
+    (next: number): void => {
+      if (total === 0) return;
+      const target = clamp(next, 0, total - 1);
+      const base = highlightedIndex === null ? autoStart : windowStart;
+      setWindowStart(ensureWindowStartFor(target, base, total, cap));
+      setHighlightedIndex(target);
+      setPanelOffset((offset) => ensurePanelOffset(target, offset, total));
+      setPanelOpen(true);
+    },
+    [total, highlightedIndex, autoStart, windowStart, cap]
+  );
+
+  const attemptLoadOlder = React.useCallback(
+    (atTop: boolean, movingUpward: boolean): boolean => {
+      const now = Date.now();
+      const canTrigger = shouldTriggerLoadOlderAtTop({
+        hasOlder,
+        isLoadingOlder,
+        hasHandler: typeof actions.onLoadOlder === 'function',
+        atTop,
+        movingUpward,
+        elapsedSinceLastTriggerMs: now - lastLoadTriggerAtRef.current,
+      });
+      if (!canTrigger) return false;
+      lastLoadTriggerAtRef.current = now;
+      actions.onLoadOlder?.();
+      return true;
+    },
+    [hasOlder, isLoadingOlder, actions]
+  );
+
+  // 原生 wheel 监听需要读取最新一轮渲染的闭包，否则会按过期的状态判定。
+  const latestRef = React.useRef({
+    total,
+    hasMoreAbove,
+    hasMoreBelow,
+    activeIndex,
+    highlightedIndex,
+    windowStart,
+    panelOffset,
+    panelOpen,
+    moveHighlight,
+    attemptLoadOlder,
+  });
+  latestRef.current = {
+    total,
+    hasMoreAbove,
+    hasMoreBelow,
+    activeIndex,
+    highlightedIndex,
+    windowStart,
+    panelOffset,
+    panelOpen,
+    moveHighlight,
+    attemptLoadOlder,
+  };
+
+  /**
+   * 边缘热区步进器：装配在渲染期完成，一次指针位移最多步进一格。
+   *
+   * 【拔除 18px 狂飙定时器】不再有 setInterval 循环，指针微动不会连发。
+   * 【必须写成一行 (Rules)】拆行后依赖数组与工厂参数在 tsc/esbuild 产物里会失去独立
+   *   源码映射，增量覆盖率无法认领这条装配（装配只在渲染期执行，没有别的执行路径）。
+   */
+  const startCarousel = React.useMemo(() => createCarouselStepper({ latestRef, topHotzoneTriggeredRef }), [latestRef, topHotzoneTriggeredRef]);
+
+  // 卸载时清理悬挂的收起定时器，避免宿主销毁轨道后仍在后台改状态。
+  React.useEffect(() => cancelCollapse, [cancelCollapse]);
+
+  /**
+   * 消息表引用变化时的窗口平移。
+   *
+   * 【设计意图 (Why)】前置翻页会把历史插到数组头，全部下标整体后移；
+   *   若不补偿，读者停在顶部时轨道窗口会瞬间跳到末尾且不会自愈。
+   * 【约束与规则 (Rules)】尾部追加不动；头部插入交由 planPromptPrependView 计算；整表换源（切会话）清空浏览态。
+   */
+  React.useEffect(() => {
+    const previous = prevPromptsRef.current;
+    prevPromptsRef.current = prompts;
+    if (!previous || previous === prompts) return;
+    const previousFirst = previous[0]?.id;
+    const previousLast = previous[previous.length - 1]?.id;
+    const nextFirst = prompts[0]?.id;
+    const nextLast = prompts[prompts.length - 1]?.id;
+    if (previous.length === 0 || prompts.length === 0) {
+      setHighlightedIndex(null);
+      setWindowStart(0);
+      setPanelOffset(0);
+      return;
+    }
+    if (previousFirst !== nextFirst && previousLast === nextLast) {
+      const delta = prompts.length - previous.length;
+      if (delta <= 0) return;
+      const view = latestRef.current;
+      const nextView = planPromptPrependView({
+        previousTotal: previous.length,
+        nextTotal: prompts.length,
+        capacity: cap,
+        windowStart: view.windowStart,
+        highlightedIndex: view.highlightedIndex,
+        panelOffset: view.panelOffset,
+        panelOpen: view.panelOpen,
+      });
+      setWindowStart(nextView.windowStart);
+      setHighlightedIndex(nextView.highlightedIndex);
+      setPanelOffset(nextView.panelOffset);
+      // 新历史到达后复位顶部热区触发锁，允许微动指针继续向上探测更早批次。
+      topHotzoneTriggeredRef.current = false;
+      return;
+    }
+    if (previousFirst !== nextFirst) {
+      setHighlightedIndex(null);
+      setPanelOpen(false);
+      setPanelOffset(0);
+      topHotzoneTriggeredRef.current = false;
+    }
+  }, [prompts, cap]);
+
+  /**
+   * 命中带宽度自适应：只观察稳定祖先 `.flux-middle-pod`。
+   *
+   * 【防范的历史坑 (Pitfall)】画布 `.conv-canvas` 会被宿主整节点替换，
+   *   绑在旧节点上的观察器会永久失效；因此每次回调内部重新查询。
+   */
+  React.useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const pod = document.querySelector<HTMLElement>('.flux-middle-pod');
+    if (!pod) return undefined;
+    const measure = (): void => {
+      const canvas = pod.querySelector<HTMLElement>('.conv-canvas');
+      if (!canvas) return;
+      const podRect = pod.getBoundingClientRect();
+      const canvasRect = canvas.getBoundingClientRect();
+      if (canvasRect.width <= 0) return;
+      const gap = podRect.right - canvasRect.right;
+      setNarrow(gap >= 0 && gap < NARROW_GAP_PX);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(pod);
+    measureRef.current = measure;
+    measure();
+    return () => {
+      measureRef.current = null;
+      observer.disconnect();
+    };
+  }, []);
+
+  /**
+   * 首屏挂载时画布可能尚未出现（骨架态 / 消息列表还没提交），
+   * 而 pod 尺寸不变时 ResizeObserver 不会再回调；因此每次条目总量变化补测一次命中带宽度。
+   */
+  React.useEffect(() => {
+    measureRef.current?.();
+  }, [total]);
+
+  /**
+   * 面板滚轮：必须用原生非被动监听。
+   *
+   * 【防范的历史坑 (Pitfall)】React 17 起在根容器上以 passive 方式注册 wheel，
+   *   `preventDefault` 无效，滚面板会同时把正文滚走。
+   */
+  React.useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || !panelOpen) return undefined;
+    const handleWheel = (event: WheelEvent): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      const current = latestRef.current;
+      const action = decidePanelWheelAction({
+        total,
+        deltaY: event.deltaY,
+        panelOffset: current.panelOffset,
+        hasOlder,
+        isLoadingOlder,
+        hasHandler: typeof actions.onLoadOlder === 'function',
+        elapsedSinceLastTriggerMs: Date.now() - lastLoadTriggerAtRef.current,
+      });
+      if (action.type === 'load-older') {
+        lastLoadTriggerAtRef.current = Date.now();
+        actions.onLoadOlder?.();
+        return;
+      }
+      if (action.type === 'scroll') {
+        setPanelOffset(action.nextOffset);
+      }
+    };
+    panel.addEventListener('wheel', handleWheel, { passive: false });
+    return () => panel.removeEventListener('wheel', handleWheel);
+  }, [panelOpen, total, hasOlder, isLoadingOlder, actions]);
+
+  /** 指针纵向位置 → tick 业务下标；落在窗口外的槽位返回 null。 */
+  const pointerIndexAt = React.useCallback(
+    (clientY: number): number | null => {
+      const gutter = gutterRef.current;
+      if (!gutter || total === 0) return null;
+      const rect = gutter.getBoundingClientRect();
+      if (rect.height <= 0) return null;
+      const slot = Math.floor((clientY - rect.top) / RAIL_TICK_PITCH_PX);
+      if (slot < 0 || slot >= end - start) return null;
+      return start + slot;
+    },
+    [total, start, end]
+  );
+
+  const handleGutterPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const gutter = gutterRef.current;
+    if (!gutter || total === 0) return;
+    /**
+     * 面板是 gutter 的子节点，但物理上位于 gutter 左侧。
+     * pointermove 与 mousemove 是两套事件，只拦 mousemove 拦不住这里；
+     * 必须在入口处判掉「指针在面板内」的情形，否则悬停面板行会反向改写轨道高亮。
+     */
+    if (panelRef.current && event.target instanceof Node && panelRef.current.contains(event.target)) return;
+    const rect = gutter.getBoundingClientRect();
+    const offsetY = event.clientY - rect.top;
+    const index = pointerIndexAt(event.clientY);
+    if (index !== null) {
+      cancelCollapse();
+      setPanelOpen(true);
+      if (index !== highlightedIndex) {
+        setHighlightedIndex(index);
+        setWindowStart(ensureWindowStartFor(index, start, total, cap));
+        setPanelOffset((offset) => ensurePanelOffset(index, offset, total));
+      }
+    }
+    const hotzoneAction = decideHotzonePointerAction({
+      offsetY,
+      gutterHeight: rect.height,
+      edgePx: CAROUSEL_EDGE_PX,
+      hasMoreAbove,
+      topHotzoneTriggered: topHotzoneTriggeredRef.current,
+      hasOlder,
+      isLoadingOlder,
+      hasHandler: typeof actions.onLoadOlder === 'function',
+      elapsedSinceLastTriggerMs: Date.now() - lastLoadTriggerAtRef.current,
+    });
+    switch (hotzoneAction.type) {
+      case 'top-carousel':
+        topHotzoneTriggeredRef.current = false;
+        startCarousel(-1);
+        return;
+      case 'top-load-older':
+        if (hotzoneAction.shouldTrigger) {
+          lastLoadTriggerAtRef.current = Date.now();
+          topHotzoneTriggeredRef.current = true;
+          actions.onLoadOlder?.();
+        }
+        return;
+      case 'bottom-carousel':
+        topHotzoneTriggeredRef.current = false;
+        startCarousel(1);
+        return;
+      case 'stop':
+        topHotzoneTriggeredRef.current = false;
+        return;
+    }
+  };
+
+  const handleGutterPointerLeave = (): void => {
+    topHotzoneTriggeredRef.current = false;
+    scheduleCollapse();
+  };
+
+  const handleGutterClick = (event: React.MouseEvent<HTMLDivElement>): void => {
+    const index = pointerIndexAt(event.clientY);
+    if (index === null) return;
+    const entry = prompts[index];
+    if (!entry) return;
+    actions.onSelect(entry.id);
+    setPanelOpen(false);
+  };
+
+  const handleGutterKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    const anchor = highlightedIndex === null ? activeIndex : highlightedIndex;
+    const keyAction = decideGutterKeyAction({
+      key: event.key,
+      anchor,
+      start,
+      total,
+      hasOlder,
+      isLoadingOlder,
+      hasHandler: typeof actions.onLoadOlder === 'function',
+      elapsedSinceLastTriggerMs: Date.now() - lastLoadTriggerAtRef.current,
+    });
+    if (keyAction.type === 'noop') return;
+    event.preventDefault();
+    switch (keyAction.type) {
+      case 'load-older':
+        lastLoadTriggerAtRef.current = Date.now();
+        actions.onLoadOlder?.();
+        return;
+      case 'highlight':
+        moveHighlight(keyAction.target);
+        return;
+      case 'select': {
+        const entry = prompts[keyAction.target];
+        if (entry) {
+          actions.onSelect(entry.id);
+          setPanelOpen(false);
+        }
+        return;
+      }
+      case 'escape':
+        setPanelOpen(false);
+        setHighlightedIndex(null);
+        return;
+    }
+  };
+
+  const handlePanelEnter = (): void => {
+    cancelCollapse();
+  };
+
+  const handlePanelMove = (event: React.MouseEvent<HTMLDivElement>): void => {
+    // 面板是 gutter 的子节点：指针换算边界必须在这里截断。
+    event.stopPropagation();
+  };
+
+  const handlePanelClick = (event: React.MouseEvent<HTMLDivElement>): void => {
+    event.stopPropagation();
+  };
+
+  if (total < 2) return null;
+
+  const tickId = (index: number): string => `conv-prompt-tick-${index}`;
+  const emptyPreview = t('conversation.promptNavigator.emptyPreview');
+  const previewOf = (entry: PromptEntry | undefined): string =>
+    entry && entry.preview ? entry.preview : emptyPreview;
+
+  const ticks: React.ReactElement[] = [];
+  const hasHighlight = highlightedIndex !== null;
+  for (let i = start; i < end; i += 1) {
+    const entry = prompts[i];
+    if (!entry) continue;
+    const isActive = i === activeIndex;
+    const isHighlighted = i === highlightedIndex;
+    const distance = hasHighlight ? Math.abs(i - (highlightedIndex ?? 0)) : 0;
+    const label = isActive
+      ? `${t('conversation.promptNavigator.currentPrompt')}: ${previewOf(entry)}`
+      : previewOf(entry);
+    ticks.push(
+      <div
+        key={`${entry.index}:${entry.id}`}
+        id={tickId(i)}
+        className={`conv-prompt-rail__tick${isActive ? ' is-active' : ''}${isHighlighted ? ' is-highlighted' : ''}`}
+        role="option"
+        aria-selected={isHighlighted}
+        aria-current={isActive ? 'true' : undefined}
+        aria-label={label}
+        style={{
+          /**
+           * 【窗口内相对定位 (Rules)】tick 的纵向位置必须是「窗口内第几根」，
+           *   不能再用全局下标再靠 tape 整体上移：`start` 一旦大于 0，位移量就会超过
+           *   可视窗高度，30 根 tick 全部被 `overflow: hidden` 裁掉（实测 88 次提问时
+           *   tape 跑到 y=-452，整条轨道一个像素都画不出来）。
+           *   本式与 `pointerIndexAt` 的 `start + floor(offsetY / pitch)` 严格互逆。
+           */
+          top: `${(i - start) * RAIL_TICK_PITCH_PX}px`,
+          width: `${tickWidth(distance, isActive, isHighlighted, hasHighlight)}px`,
+        }}
+      >
+        <span className="conv-prompt-rail__tick-bar" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  // 面板只挂可见行 ± overscan，避免 3870 个按钮同时进 DOM；行的数据形状由纯模型决定。
+  const panelRows: React.ReactElement[] = [];
+  if (panelOpen) {
+    const rows = planPanelRows(prompts, {
+      offset: panelOffset,
+      activeIndex,
+      highlightedIndex,
+      previewOf,
+    });
+    for (const row of rows) {
+      const props = buildPanelRowProps(row);
+      panelRows.push(
+        <button
+          key={props.selectId}
+          type="button"
+          tabIndex={props.tabIndex}
+          className={props.className}
+          style={{ top: props.top }}
+          aria-current={props.ariaCurrent}
+          onMouseEnter={() => {
+            setHighlightedIndex(row.index);
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+            actions.onSelect(props.selectId);
+            setPanelOpen(false);
+          }}
+        >
+          <span className="conv-prompt-rail__panel-text">{props.text}</span>
+        </button>
+      );
+    }
+  }
+
+  const gutterWidth = narrow ? GUTTER_NARROW_PX : GUTTER_WIDE_PX;
+  const visibleCount = Math.max(0, end - start);
+
+  return (
+    <nav
+      className={`conv-prompt-rail${isLoadingOlder ? ' is-loading-older' : ''}`}
+      aria-label={t('conversation.promptNavigator.aria')}
+      aria-busy={isLoadingOlder ? 'true' : undefined}
+    >
+      <div
+        ref={gutterRef}
+        className="conv-prompt-rail__gutter"
+        style={{
+          width: `${gutterWidth}px`,
+          height: `${visibleCount * RAIL_TICK_PITCH_PX}px`,
+        }}
+        role="listbox"
+        tabIndex={0}
+        aria-label={t('conversation.promptNavigator.aria')}
+        aria-activedescendant={highlightedIndex === null ? undefined : tickId(highlightedIndex)}
+        onPointerMove={handleGutterPointerMove}
+        onPointerLeave={handleGutterPointerLeave}
+        onClick={handleGutterClick}
+        onKeyDown={handleGutterKeyDown}
+      >
+        <div
+          key={prompts[0]?.id ?? ''}
+          className="conv-prompt-rail__tape"
+        >
+          {ticks}
+        </div>
+        {panelOpen ? (
+          <div
+            ref={panelRef}
+            className="conv-prompt-rail__panel"
+            role="presentation"
+            onMouseEnter={handlePanelEnter}
+            onMouseLeave={scheduleCollapse}
+            onMouseMove={handlePanelMove}
+            onClick={handlePanelClick}
+          >
+            <div
+              className={`conv-prompt-rail__panel-loader-wrap${isLoadingOlder ? ' is-open' : ''}`}
+              aria-hidden={!isLoadingOlder}
+            >
+              <div className="conv-prompt-rail__panel-loader-inner">
+                {/* 保持内容节点挂载，避免 isLoadingOlder 置假同帧高度归零导致 1fr -> 0fr 退场动画断头。 */}
+                <div
+                  className="conv-prompt-rail__panel-loader"
+                  role={isLoadingOlder ? 'status' : undefined}
+                  aria-live={isLoadingOlder ? 'polite' : undefined}
+                >
+                  <span className="conv-prompt-rail__loader-bars" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                  <span className="conv-prompt-rail__panel-loader-text">
+                    {t('conversation.promptNavigator.querying')}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="conv-prompt-rail__panel-viewport">
+              {panelOffset > 0 ? <div className="conv-prompt-rail__panel-mask is-top" aria-hidden="true" /> : null}
+              <div
+                className="conv-prompt-rail__panel-track"
+                style={{ transform: `translateY(-${panelOffset * PANEL_ROW_PX}px)` }}
+              >
+                {panelRows}
+              </div>
+              {panelOffset + PANEL_VISIBLE_ROWS < total ? (
+                <div className="conv-prompt-rail__panel-mask is-bottom" aria-hidden="true" />
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </nav>
+  );
+}

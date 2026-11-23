@@ -1,0 +1,78 @@
+export * from './pal/IPlatformBridge.js';
+export * from './session/guardedRun.js';
+export * from './session/SessionLifecycleService.js';
+export * from './session/sessionListGeneration.js';
+export * from './rpc/RpcErrorCode.js';
+export * from './pal/IStorage.js';
+export * from './pal/INetwork.js';
+export * from './rpc/types.js';
+export * from './rpc/fsm.js';
+export * from './rpc/client.js';
+export * from './coalesce/tokenCoalescer.js';
+export * from './models/types.js';
+export * from './models/modelNaming.js';
+export * from './models/modelCatalog.js';
+export * from './models/providerDirectory.js';
+export * from './models/providerAdmin.js';
+export * from './models/providerViews.js';
+export * from './models/providerAttachFlow.js';
+export * from './rpc/profileNormalize.js';
+export * from './session/eventReducer.js';
+export * from './session/sessionRegistry.js';
+export * from './session/sessionMerge.js';
+export * from './session/sessionStore.js';
+export * from './session/agentRouter.js';
+export * from './session/handoffService.js';
+export * from './session/activityState.js';
+export * from './agent/toolTaxonomy.js';
+export * from './agent/groupSpeaker.js';
+export * from './agent/agentPresence.js';
+export * from './fs/fileService.js';
+export * from './fs/fileTreeService.js';
+export * from './log/logger.js';
+export * from './log/redact.js';
+export * from './log/fileLogPolicy.js';
+export * from './subagent/ringBuffer.js';
+export * from './subagent/subagentStore.js';
+export * from './profile/profileService.js';
+export * from './profile/botManagement.js';
+export * from './profile/botActivitySync.js';
+export * from './settings/extensionAdmin.js';
+export * from './group/groupService.js';
+export * from './group/groupLogPollerManager.js';
+export * from './project/projectService.js';
+export * from './project/sessionProjectMatcher.js';
+export * from './queue/chatQueueStore.js';
+export * from './session/interactiveService.js';
+export * from './session/truncatePlan.js';
+export * from './motion/index.js';
+export * from './session/unifiedSessionList.js';
+export * from './cache/index.js';
+export * from './session/conversationContext.js';
+export * from './session/olderBatchMerge.js';
+export * from './session/lineage.js';
+export * from './session/compactionFilter.js';
+export * from './session/displayKind.js';
+export * from './session/messageAttachments.js';
+export * from './learning/learningConstellation.js';
+export * from './viewport/sessionScrollMemory.js';
+export * from './viewport/adaptiveMedianEstimator.js';
+export * from './viewport/renderScrollDecision.js';
+export * from './viewport/scrollEndMachine.js';
+export * from './turn/slidingWatchdog.js';
+export * from './session/sessionStatusStore.js';
+export type {
+  AttachedImageResult,
+  FileAttachResult,
+  LearningDetailResult,
+  LearningFramesResult,
+  LearningMutationResult,
+  PromptSubmitResult,
+  CommandDispatchResult,
+  SlashExecResult,
+  CompleteSlashResult,
+  CompletePathParams,
+  CompletionItemsResult,
+  SessionHistoryResult,
+  GroupsSendResult,
+} from './rpc/contracts/gateway-contract.generated.js';

@@ -1,0 +1,788 @@
+#!/usr/bin/env node
+/**
+ * Hermes Flux Desktop — 浏览器直跑开发服务器 (Browser Live Runner)
+ * 
+ * 【设计意图 (Why)】
+ *   日常开发与视觉验收完全不需要打包为 exe！
+ *   通过本脚本，前端桌面壳可直接在 Chrome / Edge 等标准浏览器中 100% 运行，
+ *   并直连真实 Hermes 网关，修改源码后只需刷新浏览器即可即时验证。
+ */
+
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
+import { attachGatewayWsProxy } from './lib/ws-proxy.mjs';
+import {
+  assessDistFreshness,
+  collectArtifactFingerprint,
+  describePortOccupant,
+  formatOccupiedReport,
+  formatStaleReport,
+  readGitBranch,
+} from './lib/live-preflight.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..');
+
+// 开源项目不内置默认网关：地址只能来自部署方环境变量或用户在连接面板填写，凭据绝不落盘
+const GW_BASE = (process.env.FLUX_GATEWAY_URL || process.env.HERMES_GATEWAY_URL || '').replace(/\/+$/, '');
+const PORT = Number(process.env.PORT) || 9120;
+
+let sessionCookie = '';
+let authenticatedOrigin = '';
+let lastKnownBaseUrl = '';
+
+function getUrlOrigin(rawUrl) {
+  try {
+    return new URL(rawUrl).origin.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function shouldAttachSessionCookie(targetUrl) {
+  if (!sessionCookie || !authenticatedOrigin) return false;
+  return getUrlOrigin(targetUrl) === authenticatedOrigin.toLowerCase();
+}
+
+process.on('uncaughtException', (err) => {
+  console.error('[Browser Live UncaughtException]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Browser Live UnhandledRejection]', reason);
+});
+
+/**
+ * 【设计意图 (Why)】浏览器直跑模式下，凭据由用户在连接面板输入并经 PAL 桥透传到 /__gw/auth，
+ *   服务端必须复刻桌面主进程 ipc.ts:167-216 的认证链路，而非依赖环境变量预登录。
+ * 【防范的历史坑 (Pitfall)】旧实现用空密码预登录导致 /auth/password-login 返回 401，
+ *   sessionCookie 为空，/api/auth/ws-ticket 返回 401 no_cookie；且 ticket 为空时仍返回
+ *   ok:true，把鉴权失败伪装成成功，使前端拼出不带 ticket 的 WS URL 被网关拒绝握手。
+ * 【约束与规则 (Rules)】登录 → 提取 Set-Cookie → 带 Cookie 换 ticket 三步必须全部成功；
+ *   任一步失败都显式返回 ok:false，ticket 缺失等同失败，绝不降级为空字符串（Failure Is Not Empty）。
+ */
+function normalizeGatewayUrl(rawUrl) {
+  let base = (rawUrl || '').trim();
+  if (!base) return '';
+  if (base.startsWith('ws://')) base = base.replace('ws://', 'http://');
+  if (base.startsWith('wss://')) base = base.replace('wss://', 'https://');
+  if (!base.startsWith('http://') && !base.startsWith('https://')) {
+    const isLoopback = /^(127\.0\.0\.1|localhost)(:\d+)?$/i.test(base) || base.startsWith('127.0.0.1:') || base.startsWith('localhost:');
+    base = isLoopback ? `http://${base}` : `https://${base}`;
+  }
+  return base.replace(/\/+$/, '');
+}
+
+async function authenticateWithCredentials(baseUrl, username, password) {
+  const base = normalizeGatewayUrl(baseUrl);
+  if (!base) throw new Error('未配置网关地址，请先在连接面板填写');
+
+  // 1. 先探测 /api/status：判断是否免密或者服务是否正常
+  let statusData = {};
+  try {
+    const statusRes = await fetch(`${base}/api/status`, { headers: { Accept: 'application/json' } });
+    if (statusRes.ok) {
+      statusData = await statusRes.json().catch(() => ({}));
+    }
+  } catch (err) {
+    // 忽略 status 探测错误，继续走认证通道
+  }
+
+  // 免密网关判定：如果不需要认证，且用户没有输入密码，清理旧凭据后直接放行无需 Basic Auth
+  if (statusData && statusData.auth_required === false && !password) {
+    sessionCookie = '';
+    authenticatedOrigin = '';
+    return null;
+  }
+
+  // 仅当目标与已认证 Origin 严格一致时，才复用已建立的会话 Cookie 换取 ticket
+  if (shouldAttachSessionCookie(base) && !username && !password) {
+    try {
+      const ticketRes = await fetch(`${base}/api/auth/ws-ticket`, {
+        method: 'POST',
+        headers: { Accept: 'application/json', Cookie: sessionCookie, Origin: base },
+      });
+      if (ticketRes.ok) {
+        const ticketData = await ticketRes.json().catch(() => ({}));
+        if (ticketData?.ticket) return ticketData.ticket;
+      }
+    } catch {}
+    return null;
+  }
+
+  // 若无用户名密码且网关需要认证，抛出清晰提示
+  if (!username && !password) {
+    if (statusData.auth_required) {
+      throw new Error('该网关开启了安全拦截，必须输入用户名与密码');
+    }
+    return null;
+  }
+
+  const loginRes = await fetch(`${base}/auth/password-login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', Origin: base },
+    body: JSON.stringify({ username, password, provider: 'basic' }),
+  });
+  if (loginRes.status === 401) {
+    sessionCookie = '';
+    authenticatedOrigin = '';
+    throw new Error('认证失败: 用户名或密码错误 (HTTP 401)');
+  }
+  if (!loginRes.ok) {
+    sessionCookie = '';
+    authenticatedOrigin = '';
+    throw new Error(`登录接口异常 HTTP ${loginRes.status}`);
+  }
+
+  // 仅取每条 Set-Cookie 的 name=value 段，剥离 Path/Expires/HttpOnly 等属性后拼成请求头
+  const setCookies = typeof loginRes.headers.getSetCookie === 'function'
+    ? loginRes.headers.getSetCookie()
+    : [loginRes.headers.get('set-cookie') || ''];
+  sessionCookie = setCookies.map((c) => c.split(';')[0].trim()).filter(Boolean).join('; ');
+  if (!sessionCookie) {
+    authenticatedOrigin = '';
+    throw new Error('登录成功但网关未下发会话 Cookie，无法换取 WS ticket');
+  }
+  try {
+    authenticatedOrigin = new URL(base).origin;
+  } catch {
+    authenticatedOrigin = '';
+  }
+
+  const ticketRes = await fetch(`${base}/api/auth/ws-ticket`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', Cookie: sessionCookie, Origin: base },
+  });
+  if (!ticketRes.ok) {
+    throw new Error(`获取 WebSocket 凭证失败 HTTP ${ticketRes.status}`);
+  }
+  const ticketData = await ticketRes.json().catch(() => ({}));
+  if (typeof ticketData.ticket !== 'string' || !ticketData.ticket) {
+    throw new Error('网关未返回有效的 WebSocket ticket');
+  }
+  return ticketData.ticket;
+}
+
+async function httpProxy(cookie, { baseUrl, path: p = '', method = 'GET', params, body, ticket } = {}) {
+  const b = normalizeGatewayUrl(baseUrl);
+  if (!b) throw new Error('未配置网关地址');
+
+  const safePath = (p || '').trim();
+  let fullUrl = safePath ? `${b}${safePath.startsWith('/') ? '' : '/'}${safePath}` : b;
+  if (params && typeof params === 'object') {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (typeof v !== 'undefined' && v !== null) q.append(k, String(v));
+    }
+    const qs = q.toString();
+    if (qs) fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs;
+  }
+
+  // REST 降级通道与桌面主进程 ipc.ts 对齐，注入 Origin、同源 Cookie 与 X-WS-Ticket
+  const effectiveCookie = shouldAttachSessionCookie(b) ? cookie : '';
+  const headers = {
+    Accept: 'application/json',
+    Origin: b,
+    ...(effectiveCookie ? { Cookie: effectiveCookie } : {}),
+  };
+  if (ticket) headers['X-WS-Ticket'] = ticket;
+
+  const fetchOptions = {
+    method,
+    headers,
+  };
+  if (body && method !== 'GET') {
+    headers['Content-Type'] = 'application/json';
+    fetchOptions.body = JSON.stringify(body);
+  }
+
+  const res = await fetch(fullUrl, fetchOptions);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('application/json')) {
+    return await res.json();
+  }
+  if (
+    contentType.startsWith('image/') ||
+    (/\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i.test(safePath) && !contentType.includes('text/html'))
+  ) {
+    const arrayBuffer = await res.arrayBuffer();
+    const base64 = Buffer.from(arrayBuffer).toString('base64');
+    const mime = (contentType.startsWith('image/') && contentType.split(';')[0]) || 'image/png';
+    return `data:${mime};base64,${base64}`;
+  }
+  return await res.text();
+}
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let buf = '';
+    req.on('data', (d) => { buf += d; });
+    req.on('end', () => { try { resolve(buf ? JSON.parse(buf) : {}); } catch { resolve({}); } });
+  });
+}
+
+function isLoopbackOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(String(origin).trim());
+}
+
+function isEnvSecretFile(name) {
+  const lower = String(name || '').trim().toLowerCase();
+  return lower === '.env' || (lower.startsWith('.env.') && lower !== '.env.example');
+}
+
+function isEnvSecretPath(targetPath) {
+  const segments = String(targetPath || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean);
+  return segments.some((seg) => isEnvSecretFile(seg));
+}
+
+let ROOT_REAL = ROOT;
+try {
+  ROOT_REAL = fs.realpathSync(ROOT);
+} catch {}
+
+function isWithinDir(baseDir, candidate) {
+  const rel = path.relative(baseDir, candidate);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function resolveInsideRoot(rawPath) {
+  const trimmed = typeof rawPath === 'string' ? rawPath.trim() : '';
+  if (trimmed.includes('\0')) return null;
+  const resolved = !trimmed
+    ? ROOT
+    : path.isAbsolute(trimmed)
+      ? path.resolve(trimmed)
+      : path.resolve(ROOT, trimmed);
+  if (!isWithinDir(ROOT, resolved)) return null;
+  const relLex = path.relative(ROOT, resolved);
+  if (relLex && isEnvSecretPath(relLex)) return null;
+  try {
+    if (fs.existsSync(resolved)) {
+      const real = fs.realpathSync(resolved);
+      if (!isWithinDir(ROOT_REAL, real)) return null;
+      const relReal = path.relative(ROOT_REAL, real);
+      if (relReal && isEnvSecretPath(relReal)) return null;
+      return real;
+    }
+    let probe = path.dirname(resolved);
+    while (probe && probe !== path.dirname(probe) && !fs.existsSync(probe)) {
+      probe = path.dirname(probe);
+    }
+    if (probe && fs.existsSync(probe)) {
+      const realProbe = fs.realpathSync(probe);
+      if (!isWithinDir(ROOT_REAL, realProbe)) return null;
+    }
+  } catch {
+    return null;
+  }
+  return resolved;
+}
+
+const IMAGE_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+};
+
+let cachedListWorkspaceDirectory = null;
+async function getListWorkspaceDirectory() {
+  if (!cachedListWorkspaceDirectory) {
+    const mod = await import('../packages/desktop/dist/main/workspaceFs.mjs');
+    cachedListWorkspaceDirectory = mod.listWorkspaceDirectory;
+  }
+  return cachedListWorkspaceDirectory;
+}
+
+/**
+ * 执行启动自检。
+ *
+ * 【设计意图 (Why)】把「端口是否被别的 worktree 占着」「dist 是否落后源码」两个
+ *   最易伪装成「功能没生效」的假象，在启动瞬间显式暴露，而不是等开发者肉眼比对界面。
+ *
+ * 【约束与规则 (Rules)】
+ *   - 端口空闲 ⇒ ok:true；
+ *   - 端口被占用 ⇒ 一律 ok:false，由退出码区分「产物一致(2)」与「产物不同(1)」；
+ *   - 本仓 dist 缺失 ⇒ ok:false，退出码 3（必须先 build）；
+ *   - 产物陈旧 ⇒ 仅打印告警，仍允许启动。
+ */
+async function runPreflight({ localFingerprint }) {
+  if (localFingerprint.missing.length > 0) {
+    console.error(`\n✖ 本仓 dist 缺失，无法启动：${localFingerprint.missing.join(', ')}`);
+    console.error('  请先执行：npm run build\n');
+    return { ok: false, exitCode: 3 };
+  }
+
+  const occupant = await describePortOccupant({ port: PORT, local: localFingerprint });
+  if (occupant.occupied) {
+    console.error(formatOccupiedReport({ port: PORT, local: localFingerprint, occupant }));
+    return { ok: false, exitCode: occupant.sameBytes ? 2 : 1 };
+  }
+
+  const freshness = assessDistFreshness(ROOT);
+  if (freshness.stale) {
+    console.warn(formatStaleReport(freshness));
+  }
+
+  return { ok: true, exitCode: 0 };
+}
+
+async function start() {
+  /**
+   * 本仓产物指纹与分支名：启动时算一次。
+   * 【设计意图 (Why)】既用于端口占用时的归属比对，也通过 /__live/identity 暴露给
+   *   后续实例，使下一次启动能直接知道「占着端口的是哪个仓库、哪条分支」。
+   * 【约束与规则 (Rules)】只算一次并常驻内存：dist 变化必须重启进程，避免身份声明与实际字节漂移。
+   */
+  const localFingerprint = collectArtifactFingerprint(ROOT);
+  const branch = readGitBranch(ROOT);
+
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+    const sendJson = (obj, status = 200) => {
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(obj));
+    };
+
+    // 0. 实例身份自述：供后续启动的自检比对「占端口的到底是谁」
+    if (url.pathname === '/__live/identity') {
+      return sendJson({
+        root: ROOT,
+        branch,
+        port: PORT,
+        pid: process.pid,
+        files: localFingerprint.files,
+        missing: localFingerprint.missing,
+        combined: localFingerprint.combined,
+      });
+    }
+
+    // 1. 网关认证换票据接口：凭据来自连接面板，原样透传，不做环境变量预登录
+    if (url.pathname === '/__gw/auth') {
+      const startAt = Date.now();
+      try {
+        const body = await readBody(req);
+        const ticket = await authenticateWithCredentials(
+          body.url || body.baseUrl || GW_BASE,
+          typeof body.username === 'string' ? body.username : '',
+          typeof body.password === 'string' ? body.password : '',
+        );
+        return sendJson({ ok: true, ticket, latency: Date.now() - startAt, message: `认证就绪 · Gateway ${body.url || body.baseUrl || GW_BASE || '未配置'}` });
+      } catch (e) {
+        return sendJson({ ok: false, message: e.message, latency: Date.now() - startAt });
+      }
+    }
+
+    // 2. 网关 REST 代理
+    if (url.pathname === '/__gw/proxy') {
+      let body;
+      try {
+        body = await readBody(req);
+        const targetBase = body?.baseUrl || lastKnownBaseUrl || GW_BASE;
+        if (body?.baseUrl) lastKnownBaseUrl = body.baseUrl;
+        const result = await httpProxy(sessionCookie, {
+          baseUrl: targetBase,
+          path: body.path,
+          method: body.method,
+          params: body.params,
+          body: body.body,
+          ticket: body.ticket,
+        });
+        return sendJson(result ?? null);
+      } catch (err) {
+        console.error('[Browser Live Proxy Error]', err.message, body?.path);
+        res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: String(err) }));
+      }
+    }
+
+    // 2b. 本地工作区目录列举接口（仅限回环 Origin 且严格锁定在 ROOT 之内，屏蔽 .env 凭据）
+    if (url.pathname === '/__fs/list-directory') {
+      if (!isLoopbackOrigin(req)) return sendJson({ error: 'Forbidden origin' }, 403);
+      if (req.method !== 'POST') return sendJson({ error: 'Method not allowed' }, 405);
+      const body = await readBody(req);
+      const targetDir = body?.dirPath ? resolveInsideRoot(body.dirPath) : ROOT;
+      if (!targetDir) return sendJson(null);
+      try {
+        const listWorkspaceDirectory = await getListWorkspaceDirectory();
+        const entries = listWorkspaceDirectory(targetDir, { cwd: ROOT });
+        if (!Array.isArray(entries)) return sendJson(null);
+        return sendJson(entries.filter((entry) => !isEnvSecretFile(entry?.name)));
+      } catch (err) {
+        console.warn('[Browser Live FS] list-directory failed:', err);
+        return sendJson(null);
+      }
+    }
+
+    // 2c. 本地工作区文件读取接口（仅限 ROOT 内 <=5MB 文件，屏蔽 .env*）
+    if (url.pathname === '/__fs/read-file') {
+      if (!isLoopbackOrigin(req)) return sendJson({ error: 'Forbidden origin' }, 403);
+      if (req.method !== 'POST') return sendJson({ error: 'Method not allowed' }, 405);
+      const body = await readBody(req);
+      const filePath = typeof body?.filePath === 'string' ? body.filePath : '';
+      const resolved = filePath && !isEnvSecretPath(filePath) ? resolveInsideRoot(filePath) : null;
+      if (!resolved || isEnvSecretPath(path.relative(ROOT_REAL, resolved))) {
+        return sendJson({ content: null });
+      }
+      try {
+        if (!fs.existsSync(resolved)) return sendJson({ content: null });
+        const st = fs.statSync(resolved);
+        if (!st.isFile() || st.size > 5 * 1024 * 1024) return sendJson({ content: null });
+        const ext = path.extname(resolved).toLowerCase();
+        if (IMAGE_MIME[ext]) {
+          const b64 = fs.readFileSync(resolved).toString('base64');
+          return sendJson({ content: `data:${IMAGE_MIME[ext]};base64,${b64}` });
+        }
+        return sendJson({ content: fs.readFileSync(resolved, 'utf8') });
+      } catch (err) {
+        console.warn('[Browser Live FS] read-file failed:', err);
+        return sendJson({ content: null });
+      }
+    }
+
+    // 2d. 本地工作区大文件 / 二进制文件流式下载（支持 HEAD 探测与 GET 附件下载，严格锁定在 ROOT 内且屏蔽 .env*）
+    if (url.pathname === '/__fs/download') {
+      if (!isLoopbackOrigin(req)) return sendJson({ error: 'Forbidden origin' }, 403);
+      if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson({ error: 'Method not allowed' }, 405);
+      const filePath = url.searchParams.get('path') || '';
+      const resolved = filePath && !isEnvSecretPath(filePath) ? resolveInsideRoot(filePath) : null;
+      if (!resolved || isEnvSecretPath(path.relative(ROOT_REAL, resolved)) || !fs.existsSync(resolved)) {
+        return sendJson({ error: 'Not found' }, 404);
+      }
+      try {
+        const st = fs.statSync(resolved);
+        if (!st.isFile()) return sendJson({ error: 'Not a file' }, 404);
+        const fileName = path.basename(resolved);
+        const safeAscii = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(st.size),
+          'Content-Disposition': `attachment; filename="${safeAscii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        });
+        if (req.method === 'HEAD') return res.end();
+        fs.createReadStream(resolved).pipe(res);
+        return;
+      } catch (err) {
+        console.warn('[Browser Live FS] download failed:', err);
+        return sendJson({ error: 'Download failed' }, 500);
+      }
+    }
+
+    // 2e. 远程网关文件流式附件下载（携带已登录会话 Cookie，支持 /api/fs/download 在 404 时回退 /api/files/download）
+    if (url.pathname === '/__gw/download') {
+      if (!isLoopbackOrigin(req)) return sendJson({ error: 'Forbidden origin' }, 403);
+      if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson({ error: 'Method not allowed' }, 405);
+      const filePath = url.searchParams.get('path') || '';
+      const base = normalizeGatewayUrl(url.searchParams.get('baseUrl') || lastKnownBaseUrl || GW_BASE);
+      const profile = url.searchParams.get('profile') || '';
+      const sessionId = url.searchParams.get('session_id') || '';
+      if (!base || !filePath) {
+        return sendJson({ error: 'Missing gateway baseUrl or path' }, 400);
+      }
+      try {
+        const qPrimary = new URLSearchParams({ path: filePath });
+        if (profile) qPrimary.set('profile', profile);
+        if (sessionId) qPrimary.set('session_id', sessionId);
+        const upstreamHeaders = {
+          Origin: base,
+          ...(shouldAttachSessionCookie(base) ? { Cookie: sessionCookie } : {}),
+        };
+        const upstreamMethod = req.method === 'HEAD' ? 'HEAD' : 'GET';
+        let dlRes = await fetch(`${base}/api/fs/download?${qPrimary.toString()}`, {
+          method: upstreamMethod,
+          headers: upstreamHeaders,
+        });
+        if (dlRes.status === 404) {
+          await dlRes.body?.cancel?.();
+          dlRes = await fetch(`${base}/api/files/download?path=${encodeURIComponent(filePath)}`, {
+            method: upstreamMethod,
+            headers: upstreamHeaders,
+          });
+        }
+        if (!dlRes.ok) {
+          await dlRes.body?.cancel?.();
+          return sendJson({ error: `HTTP ${dlRes.status}` }, dlRes.status);
+        }
+        const fileName = path.basename(filePath.replace(/\\/g, '/')) || 'download';
+        const safeAscii = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+        const outHeaders = {
+          'Content-Type': dlRes.headers.get('content-type') || 'application/octet-stream',
+          'Content-Disposition':
+            dlRes.headers.get('content-disposition') ||
+            `attachment; filename="${safeAscii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        };
+        const contentLen = dlRes.headers.get('content-length');
+        if (contentLen) outHeaders['Content-Length'] = contentLen;
+        res.writeHead(200, outHeaders);
+        if (req.method === 'HEAD' || !dlRes.body) return res.end();
+        Readable.fromWeb(dlRes.body).pipe(res);
+        return;
+      } catch (err) {
+        console.error('[Browser Live GW Download Error]', err);
+        return sendJson({ error: String(err) }, 502);
+      }
+    }
+
+    // 3. 页面入口
+    if (url.pathname === '/' || url.pathname === '/index.html') {
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      });
+      const t = Date.now();
+      res.end(`<!DOCTYPE html>
+<html lang="zh-CN" data-theme="obsidian-gold">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hermes Flux — 桌面壳浏览器直跑模式</title>
+  <link rel="stylesheet" href="/packages/desktop/dist/renderer/styles.css?v=${t}">
+  <link rel="stylesheet" href="/packages/desktop/dist/renderer/conversation.css?v=${t}">
+  <link rel="stylesheet" href="/packages/desktop/dist/renderer/status-pod.css?v=${t}">
+  <link rel="stylesheet" href="/packages/desktop/dist/renderer/tailwind.css?v=${t}">
+</head>
+<body>
+  <div id="flux-app-root"></div>
+  <script src="/inject.js?v=${t}"></script>
+  <script type="module" src="/packages/desktop/dist/renderer/index.js?v=${t}"></script>
+</body>
+</html>`);
+      return;
+    }
+
+    // 4. 桌面桥注入
+    if (url.pathname === '/inject.js') {
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      });
+      res.end(`
+        window.hermesDesktop = {
+          getSystemInfo: async () => ({ platform: 'windows', arch: 'x64' }),
+          isMaximized: async () => false,
+          onWindowStateChange: () => () => {},
+          getDefaultGatewayConfig: async () => ({
+            url: localStorage.getItem('hermes_flux_gateway_url') || ${JSON.stringify(GW_BASE)},
+            key: '',
+            profile: localStorage.getItem('hermes_flux_profile') || 'default'
+          }),
+          authenticateGateway: async (options) => {
+            const r = await fetch('/__gw/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options || {}) });
+            return await r.json();
+          },
+          httpProxy: async (options) => {
+            const r = await fetch('/__gw/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options || {}) });
+            if (!r.ok) {
+              const errData = await r.json().catch(() => null);
+              throw new Error(errData && errData.error ? errData.error : 'HTTP ' + r.status);
+            }
+            return await r.json();
+          },
+          proxyWebSocketUrl: (wsUrl) => {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            return proto + '//' + location.host + '/__gw/ws?target=' + encodeURIComponent(wsUrl);
+          },
+          appendLog: () => {},
+          getLogDir: async () => null,
+          listDirectory: async (dirPath) => {
+            const r = await fetch('/__fs/list-directory', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ dirPath }),
+            });
+            if (!r.ok) return null;
+            return await r.json();
+          },
+          readFile: async (filePath) => {
+            const r = await fetch('/__fs/read-file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ filePath }),
+            });
+            if (!r.ok) return null;
+            const data = await r.json();
+            return data && typeof data.content === 'string' ? data.content : null;
+          },
+          saveFile: async ({ fileName, content, isBase64, sourcePath, remoteUrl } = {}) => {
+            const triggerHrefDownload = (href, name) => {
+              const a = document.createElement('a');
+              a.href = href;
+              a.download = name || 'download';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            };
+            if (sourcePath) {
+              const probeUrl = '/__fs/download?path=' + encodeURIComponent(sourcePath);
+              try {
+                const headRes = await fetch(probeUrl, { method: 'HEAD' });
+                if (headRes.ok) {
+                  triggerHrefDownload(probeUrl, fileName);
+                  return { success: true };
+                }
+              } catch {}
+              if (!remoteUrl && !content) {
+                return { success: false, error: '无法读取本地源文件' };
+              }
+            }
+            if (remoteUrl) {
+              try {
+                const u = new URL(remoteUrl);
+                if (u.pathname.startsWith('/api/')) {
+                  const q = new URLSearchParams(u.search);
+                  q.set('baseUrl', u.origin);
+                  triggerHrefDownload('/__gw/download?' + q.toString(), fileName);
+                  return { success: true };
+                }
+              } catch {}
+              triggerHrefDownload(remoteUrl, fileName);
+              return { success: true };
+            }
+            if (typeof content === 'string' && content.startsWith('data:')) {
+              triggerHrefDownload(content, fileName);
+              return { success: true };
+            }
+            if (typeof content === 'string' && isBase64) {
+              triggerHrefDownload('data:application/octet-stream;base64,' + content, fileName);
+              return { success: true };
+            }
+            const blob = new Blob([content || ''], { type: 'application/octet-stream' });
+            const blobUrl = URL.createObjectURL(blob);
+            triggerHrefDownload(blobUrl, fileName);
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+            return { success: true };
+          },
+          clipboardWrite: async (t) => {
+            try { await navigator.clipboard.writeText(t); return true; } catch { return false; }
+          },
+          clipboardRead: async () => {
+            try { return await navigator.clipboard.readText(); } catch { return ''; }
+          },
+        };
+        try {
+          // 网关地址与用户名只能由用户在连接面板填写，首次启动不注入任何默认值
+          if (!localStorage.getItem('hermes_flux_profile')) {
+            localStorage.setItem('hermes_flux_profile', 'default');
+          }
+          if (!localStorage.getItem('hermes_flux_theme')) {
+            localStorage.setItem('hermes_flux_theme', 'obsidian-gold');
+          }
+          // 默认进入随窗口大小弹性自适应模式
+          const oldW = localStorage.getItem('hermes_flux_rail_w_left');
+          if (oldW === '264' || oldW === '296') {
+            localStorage.removeItem('hermes_flux_rail_w_left');
+          }
+        } catch (e) {}
+      `);
+      return;
+    }
+
+    // 5. 静态资源伺服（禁止访问 .env* 机密及根目录外路径，含 symlink realpath 越界防护，一律 404）
+    const reqPath = url.pathname.replace(/^\/+/, '');
+    if (isEnvSecretPath(reqPath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not Found');
+      return;
+    }
+    // 【规则】浏览器直跑模式的入口页面在 `/`，但真实桌面产物在 `packages/desktop/dist/renderer/`。
+    // 组件里 `<img src="icons/lobe/...">` 按文档基准解析时会请求 `/icons/lobe/...`，
+    // 必须映射到渲染产物目录，否则全部彩色厂商图标在浏览器直跑下 404 破图。
+    let fullPath = reqPath ? resolveInsideRoot(reqPath) : null;
+    if ((!fullPath || !fs.existsSync(fullPath) || fs.statSync(fullPath).isDirectory()) && reqPath.startsWith('icons/lobe/')) {
+      const iconsBaseLex = path.resolve(ROOT_REAL, 'packages', 'desktop', 'dist', 'renderer', 'icons', 'lobe');
+      const iconsBase = fs.existsSync(iconsBaseLex) ? fs.realpathSync(iconsBaseLex) : iconsBaseLex;
+      const fallback = resolveInsideRoot(path.join('packages', 'desktop', 'dist', 'renderer', reqPath));
+      if (fallback && isWithinDir(iconsBase, fallback)) {
+        fullPath = fallback;
+      }
+    }
+    if (!fullPath || !fs.existsSync(fullPath) || fs.statSync(fullPath).isDirectory()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not Found');
+      return;
+    }
+
+    const ext = path.extname(fullPath).toLowerCase();
+    const mimeMap = {
+      '.js': 'application/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.html': 'text/html; charset=utf-8',
+      '.png': 'image/png',
+      '.ico': 'image/x-icon',
+      '.json': 'application/json; charset=utf-8',
+      '.woff2': 'font/woff2',
+      // 【规则】厂商图标是 SVG，必须给出正确 MIME：Chromium 对 `application/octet-stream`
+      // 的 <img>/mask 一律拒绝解码，表现为「图标全丢但不报错」，极难定位。
+      '.svg': 'image/svg+xml',
+    };
+    res.writeHead(200, {
+      'Content-Type': mimeMap[ext] || 'application/octet-stream',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+    });
+    fs.createReadStream(fullPath).pipe(res);
+  });
+
+  attachGatewayWsProxy(server, () => sessionCookie, () => authenticatedOrigin);
+
+  /**
+   * 启动自检（Preflight）：端口占用与产物新鲜度。
+   *
+   * 【设计意图 (Why)】本仓多 worktree 并行，每个 worktree 各有一份 dist。端口先到先得，
+   *   任何残留进程都会让浏览器显示【别的分支的界面】，且完全正常（HTTP 200、无报错），
+   *   历史上已据此误判「提示词导航器优化没生效」。因此启动前必须验证「被服务字节的归属」。
+   *
+   * 【约束与规则 (Rules)】
+   *   1. 端口被占用一律不启动，避免双实例静默抢端口；
+   *   2. 判定依据只能是产物字节指纹，禁止用进程名 / HTTP 200 / 监听状态；
+   *   3. 占用者产物与本仓一致时给出「可复用」结论并退出码 2，产物不同则退出码 1；
+   *   4. 产物落后于源码只告警不阻断（增量构建可合法保留旧时间戳）。
+   */
+  const preflight = await runPreflight({ localFingerprint });
+  if (!preflight.ok) {
+    process.exitCode = preflight.exitCode;
+    return;
+  }
+
+  server.listen(PORT, '127.0.0.1', () => {
+    const liveUrl = `http://127.0.0.1:${PORT}/`;
+    console.log(`\n======================================================`);
+    console.log(`🚀 Hermes Flux Desktop 桌面壳浏览器直跑服务已就绪！`);
+    console.log(`👉 地址: ${liveUrl}`);
+    console.log(`📦 仓库: ${ROOT}`);
+    if (branch) console.log(`🌿 分支: ${branch}`);
+    console.log(`🔑 产物指纹: ${localFingerprint.combined.slice(0, 12)}…`);
+    console.log(`⚡ 无需打包 exe，浏览器刷新即可预览最新代码改动！`);
+    console.log(`======================================================\n`);
+
+    // 自动打开浏览器；CI / 自动化探针通过 FLUX_NO_OPEN_BROWSER 关闭，避免拉起真实窗口
+    if (!process.env.FLUX_NO_OPEN_BROWSER) {
+      if (process.platform === 'win32') {
+        spawn('cmd.exe', ['/c', 'start', liveUrl], { stdio: 'ignore', detached: true }).unref();
+      } else if (process.platform === 'darwin') {
+        spawn('open', [liveUrl], { stdio: 'ignore', detached: true }).unref();
+      }
+    }
+  });
+}
+
+start().catch(console.error);

@@ -1,0 +1,190 @@
+/**
+ * 消息列表（嵌入式）
+ *
+ * 设计意图(Why)：
+ *   接入期只接管消息列表本身，保留旧模板的 main / 滚动容器 / 输入舱，
+ *   避免一次性重写 render() 分支；结构稳定后再升级为 ConversationStage。
+ *
+ * 约束与规则(Rules)：
+ *   流式期间宿主不推送新快照，正文由 #msg-content-* 锚点直写。
+ */
+
+import * as React from 'react';
+import { t } from '../../i18n/index.js';
+import type { ConversationSnapshot } from './types.js';
+import { ConversationSkeleton } from './ConversationSkeleton.js';
+import { TurnGroup, groupTurns } from './TurnGroup.js';
+import { selectVisibleMessages } from './visibility.js';
+import { collectTouchedFiles } from '../../lib/fileRefs.js';
+
+export interface ConversationMessageListProps {
+  snapshot: ConversationSnapshot;
+  readOnly?: boolean;
+  onOpenSubagent?: (subagentId: string) => void;
+  onCopyMessage?: (content: string) => void;
+}
+
+export function ConversationMessageList({
+  snapshot,
+  readOnly = false,
+  onOpenSubagent,
+  onCopyMessage,
+}: ConversationMessageListProps): React.ReactElement {
+  // 【规则】分组前剔除不上屏的行（display_kind='hidden'）。宿主保留它们在 state.messages 里
+  // 以维持与服务端逐行对应，但视图层若也保留，会产出空的 data-conv-turn 容器，制造无意义间距。
+  const visibleMessages = React.useMemo(
+    () => selectVisibleMessages(snapshot.messages),
+    [snapshot.messages]
+  );
+  const turns = React.useMemo(() => groupTurns(visibleMessages), [visibleMessages]);
+  // 文件引用只在 Agent 真实读写过该文件时才可点击；按工具数组引用缓存，避免每次渲染重扫。
+  // 【设计意图 (Why)】knownFiles 保持稳定引用，让 TurnGroup / MessageRow 的 memo 在消息与工具都未变时
+  //   真正跳过 Markdown 重算；否则每次快照都返回新数组，已挂载消息会整屏重算。
+  // 【约束与规则 (Rules)】仅在工具调用数组引用变化时重算。流式末条的 toolCalls 会随回合收敛重建，
+  //   此时 knownFiles 换引用并触发一次全量校正是必要成本——工具输出可能新增文件，不能沿用旧集合。
+  const knownFilesRef = React.useRef<{ tools: ReadonlyArray<unknown>; files: readonly string[] }>({ tools: [], files: [] });
+  const computedKnownFiles = React.useMemo(() => {
+    const tools = snapshot.messages.map((message) => message.toolCalls);
+    const previous = knownFilesRef.current;
+    const unchanged = tools.length === previous.tools.length
+      && tools.every((tool, index) => tool === previous.tools[index]);
+    if (unchanged) return previous.files;
+    const files = collectTouchedFiles(snapshot.messages.flatMap((message) => message.toolCalls ?? []));
+    knownFilesRef.current = { tools, files };
+    return files;
+  }, [snapshot.messages]);
+  // 宿主按完整会话计算 knownFiles（窗口外工具也会影响可点击性）；旧调用方无此字段时回退到窗口内自算。
+  const knownFiles = snapshot.knownFiles ?? computedKnownFiles;
+
+  // 【加载提示延迟出现 (Why)】桌面端单页往返 600~900ms，若每轮都立刻闪出转圈，
+  // 用户看到的是持续闪烁的"正在加载"，观感等同于卡死。
+  // 约定：超过 400ms 仍未完成才显示，快速页完全无感。
+  const [showLoading, setShowLoading] = React.useState(false);
+  React.useEffect(() => {
+    if (!snapshot.isLoadingOlder) {
+      setShowLoading(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowLoading(true), 400);
+    return () => clearTimeout(timer);
+  }, [snapshot.isLoadingOlder]);
+
+  // 【已废弃 (Deprecated)】宿主自 2026-11-16 起切换为纯原生流，computeVirtualHeightPx() 恒返回 0，
+  // 本分支与 .conv-virtual-window 永远不会渲染。保留仅为兼容旧快照类型，禁止再按虚拟窗口实现新逻辑。
+  const virtualHeight = snapshot.virtualHeightPx && snapshot.virtualHeightPx > 0 ? snapshot.virtualHeightPx : 0;
+  const offset = snapshot.contentOffsetPx && snapshot.contentOffsetPx > 0 ? snapshot.contentOffsetPx : 0;
+
+  /**
+   * 末尾窗口的真实高度。
+   *
+   * 【设计意图 (Why)】窗口覆盖末尾时容器底边必须与末条内容严格重合。虚拟全高若取
+   *   「总条数 × 平均行高」，窗口外历史与窗口内行高的差异会累积成上千像素偏差：
+   *   估算偏大时滚到底是整屏空白，偏小时末条内容压到输入舱下方。窗口自己就是最权威的
+   *   尺子，量它即可，不必再猜。
+   * 【防范的历史坑 (Pitfall)】工具执行组是原生 <details>，展开与收起由浏览器改布局，
+   *   既不经过 React state，也不通知宿主；只在快照推送时算一次，高度会永久停在旧值。
+   * 【约束与规则 (Rules)】
+   *   1. 只在末尾窗口启用；窗口不在末尾时仍用宿主的全量估算，否则滚动条到不了会话开头；
+   *   2. 实测高度直接写视口 style，不进 React state。流式期间正文直写 DOM 就是为了绕开
+   *      整列表重渲染，每帧 setState 会把这份优化彻底抵消；
+   *   3. 锚点绑定窗口首条消息 id：切会话与窗口搬迁后旧高度对新窗口没有意义。
+   */
+  const virtualWindowRef = React.useRef<HTMLDivElement | null>(null);
+  const viewportRef = React.useRef<HTMLDivElement | null>(null);
+  const measuredRef = React.useRef<{ anchor: string | undefined; height: number }>({ anchor: undefined, height: 0 });
+  const windowAnchorId = snapshot.messages[0]?.id;
+  const windowed = virtualHeight > 0;
+  React.useEffect(() => {
+    const element = windowed ? virtualWindowRef.current : null;
+    if (!element || typeof ResizeObserver === 'undefined') {
+      measuredRef.current = { anchor: windowAnchorId, height: 0 };
+      return;
+    }
+    const anchor = windowAnchorId;
+    const apply = (height: number): void => {
+      const next = Math.round(height);
+      measuredRef.current = { anchor, height: next };
+      const viewport = viewportRef.current;
+      if (!viewport || !snapshot.virtualWindowAtTail) return;
+      viewport.style.height = `${Math.round(offset + next)}px`;
+    };
+    apply(element.getBoundingClientRect().height);
+    const observer = new ResizeObserver((entries) => {
+      const borderBox = entries[0]?.borderBoxSize?.[0]?.blockSize;
+      apply(borderBox ?? entries[0]?.contentRect.height ?? element.getBoundingClientRect().height);
+    });
+    observer.observe(element, { box: 'border-box' });
+    return () => observer.disconnect();
+  }, [windowed, windowAnchorId]);
+  /**
+   * 【每次提交后重放实测值 (Rules)】React 会用自己的 props 值写回 height（窗口搬迁时是估算值），
+   *   而观察器只在高度变化时回调，不会再把实测值补回来。渲染后统一重放一次，保证实测值优先。
+   */
+  React.useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || !windowed) return;
+    const measured = measuredRef.current;
+    if (measured.anchor !== windowAnchorId || measured.height <= 0) return;
+    if (!snapshot.virtualWindowAtTail) return;
+    viewport.style.height = `${Math.round(offset + measured.height)}px`;
+  });
+
+  // 【空态与骨架 (Rules)】生产桌面端挂的是本组件（mountMessageList），不是 ConversationStage。
+  //   只在「本帧一条消息都没有」时出空态或骨架；窗口内恰好全是 hidden 行时不能插空态，
+  //   否则长会话滑到那一段会在列表中部弹出一张「开始新的对话」插页。
+  //   历史仍在路上时出骨架：此时断言"没有会话"是假消息。
+  if (snapshot.messages.length === 0) {
+    if (snapshot.messagesPhase === 'loading') return <ConversationSkeleton />;
+    return (
+      <div className="conv-state" data-conv-state="empty">
+        <div className="conv-state__title">{snapshot.emptyTitle ?? t('conversation.emptyTitle')}</div>
+        {snapshot.emptyHint ? <div className="conv-state__hint">{snapshot.emptyHint}</div> : null}
+      </div>
+    );
+  }
+
+  const content = (
+    <>
+      {showLoading ? (
+        <div className="conv-history-indicator" data-loading="true">
+          <span className="conv-history-indicator__spinner" />
+          <span>{t('conversation.loadingOlder')}</span>
+        </div>
+      ) : null}
+      {turns.map((turn, index) => (
+        <TurnGroup
+          key={turn[0]?.id ?? `turn-${index}`}
+          messages={turn}
+          mode={snapshot.mode}
+          locale={snapshot.locale}
+          isLastTurn={index === turns.length - 1}
+          isStreaming={!readOnly && snapshot.isStreaming && index === turns.length - 1}
+          knownFiles={knownFiles}
+          readOnly={readOnly}
+          onOpenSubagent={onOpenSubagent}
+          onCopyMessage={onCopyMessage}
+          compactTrace={snapshot.compactTrace}
+          onOpenSubagentDetail={snapshot.onOpenSubagentDetail}
+        />
+      ))}
+    </>
+  );
+
+  /**
+   * 【虚拟高度定位 (Rules)】长会话下窗口只挂载一段，必须把这段内容绝对定位到它在
+   *   全量历史中的真实纵向位置，同时把外层撑到"总条数 × 平均行高"。
+   *   这样 scrollHeight 恒定、滚动条比例稳定，且滚到任意位置都能看到对应内容而不是空白。
+   *   末尾窗口改用「起点偏移 + 实测窗口高度」，与末条内容严格重合。
+   */
+  if (virtualHeight > 0) {
+    return (
+      <div className="conv-virtual-viewport" ref={viewportRef} style={{ height: `${virtualHeight}px` }}>
+        <div className="conv-virtual-window" ref={virtualWindowRef} style={{ top: `${offset}px` }}>
+          {content}
+        </div>
+      </div>
+    );
+  }
+
+  return content;
+}

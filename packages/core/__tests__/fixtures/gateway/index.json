@@ -1,0 +1,1632 @@
+{
+  "recordedAt": "2026-11-01T01:59:35.303Z",
+  "gatewayVersion": "0.22.5",
+  "profile": "default",
+  "promptProbesEnabled": true,
+  "modules": [
+    {
+      "module": "system",
+      "cases": [
+        {
+          "module": "system",
+          "method": "ping",
+          "ok": true,
+          "params": {},
+          "resultKeys": [
+            "pong"
+          ]
+        },
+        {
+          "module": "system",
+          "method": "gateway.capabilities",
+          "ok": true,
+          "params": {},
+          "resultKeys": [
+            "per_session_exclusive_submit"
+          ]
+        },
+        {
+          "module": "system",
+          "method": "model.options",
+          "ok": true,
+          "params": {
+            "profile": "default"
+          },
+          "resultKeys": [
+            "providers",
+            "model",
+            "provider"
+          ]
+        }
+      ]
+    },
+    {
+      "module": "profiles",
+      "cases": [
+        {
+          "module": "profiles",
+          "method": "profiles.list",
+          "ok": true,
+          "params": {},
+          "resultKeys": [
+            "profiles",
+            "bot_mode_protocol",
+            "install_id"
+          ]
+        },
+        {
+          "module": "profiles",
+          "method": "profiles.describe",
+          "ok": true,
+          "params": {
+            "name": "default"
+          },
+          "resultKeys": [
+            "name",
+            "description",
+            "soul",
+            "model",
+            "skills",
+            "toolsets",
+            "toolsets_pinned",
+            "mcp_servers"
+          ]
+        },
+        {
+          "module": "profiles",
+          "method": "profiles.get_asset",
+          "ok": true,
+          "params": {
+            "name": "default",
+            "asset": "avatar"
+          },
+          "resultKeys": [
+            "found",
+            "mime",
+            "size",
+            "data"
+          ]
+        },
+        {
+          "module": "profiles",
+          "method": "profiles.create",
+          "error": {
+            "code": 4062,
+            "message": "A profile named 'flux-probe-bot' already exists. Switch to it with `hermes profile use flux-probe-bot`, see all profiles with `hermes profile list`, or choose a different name."
+          },
+          "ok": true,
+          "expectedGuard": 4062
+        },
+        {
+          "module": "profiles",
+          "method": "profiles.configure",
+          "ok": true,
+          "params": {
+            "name": "flux-probe-bot",
+            "description": "Hermes Flux 契约探针专用 Bot"
+          },
+          "resultKeys": [
+            "ok",
+            "applied"
+          ]
+        },
+        {
+          "module": "profiles",
+          "method": "profiles.set_asset",
+          "ok": true,
+          "params": {
+            "name": "flux-probe-bot",
+            "asset": "avatar",
+            "data": "",
+            "clear": true
+          },
+          "resultKeys": [
+            "ok",
+            "asset",
+            "size",
+            "removed"
+          ]
+        }
+      ]
+    },
+    {
+      "module": "sessions",
+      "cases": [
+        {
+          "module": "sessions",
+          "method": "session.list",
+          "ok": true,
+          "params": {
+            "profile": "default",
+            "limit": 5
+          },
+          "resultKeys": [
+            "sessions"
+          ]
+        },
+        {
+          "module": "sessions",
+          "method": "session.resume",
+          "ok": true,
+          "params": {
+            "session_id": "20261101_015936_e3c8cb",
+            "profile": "default",
+            "lazy": true
+          },
+          "resultKeys": [
+            "session_id",
+            "stored_session_id",
+            "message_count",
+            "messages",
+            "info"
+          ]
+        },
+        {
+          "module": "sessions",
+          "method": "session.title",
+          "ok": true,
+          "params": {
+            "session_id": "5a93f653",
+            "profile": "default",
+            "title": "flux-probe-renamed-mvx6mjtr"
+          },
+          "resultKeys": [
+            "pending",
+            "title"
+          ]
+        },
+        {
+          "module": "sessions",
+          "method": "session.set_hidden",
+          "ok": true,
+          "params": {
+            "session_id": "5a93f653",
+            "profile": "default",
+            "hidden": true
+          },
+          "resultKeys": [
+            "hidden",
+            "session_key"
+          ]
+        },
+        {
+          "module": "sessions",
+          "method": "session.archive",
+          "ok": true,
+          "params": {
+            "session_id": "5a93f653",
+            "profile": "default",
+            "archived": false
+          },
+          "resultKeys": [
+            "archived",
+            "session_key"
+          ]
+        },
+        {
+          "module": "sessions",
+          "method": "session.interrupt",
+          "ok": true,
+          "params": {
+            "session_id": "5a93f653",
+            "profile": "default"
+          },
+          "resultKeys": [
+            "status"
+          ]
+        },
+        {
+          "module": "sessions",
+          "method": "session.branch_whole",
+          "error": {
+            "code": 4008,
+            "message": "nothing to branch — send a message first"
+          },
+          "ok": true,
+          "expectedGuard": 4008
+        },
+        {
+          "module": "sessions",
+          "method": "config.set",
+          "ok": true,
+          "params": {
+            "session_id": "5a93f653",
+            "profile": "default",
+            "key": "model",
+            "value": "gemini-3.8-flash"
+          },
+          "resultKeys": [
+            "key",
+            "value",
+            "warning",
+            "confirm_required",
+            "confirm_message",
+            "scope"
+          ]
+        },
+        {
+          "module": "sessions",
+          "method": "session.create",
+          "ok": true,
+          "params": {
+            "profile": "default",
+            "title": "flux-probe-create-mvx6mkkg",
+            "hidden": true
+          },
+          "resultKeys": [
+            "session_id",
+            "stored_session_id",
+            "message_count",
+            "messages",
+            "info"
+          ]
+        },
+        {
+          "module": "sessions",
+          "method": "session.delete",
+          "error": {
+            "code": 4023,
+            "message": "cannot delete an active session"
+          },
+          "ok": true,
+          "expectedGuard": 4023
+        },
+        {
+          "module": "sessions",
+          "method": "session.close",
+          "ok": true,
+          "params": {
+            "session_id": "89452054",
+            "profile": "default"
+          },
+          "resultKeys": [
+            "closed",
+            "messages"
+          ]
+        }
+      ]
+    },
+    {
+      "module": "groups",
+      "cases": [
+        {
+          "module": "groups",
+          "method": "groups.list",
+          "ok": true,
+          "params": {},
+          "resultKeys": [
+            "rooms",
+            "next_offset"
+          ]
+        },
+        {
+          "module": "groups",
+          "method": "groups.state",
+          "ok": true,
+          "params": {
+            "room_id": "rmvx6mlf7-552bw"
+          },
+          "resultKeys": [
+            "room",
+            "driver_status"
+          ]
+        },
+        {
+          "module": "groups",
+          "method": "groups.send",
+          "ok": true,
+          "params": {
+            "room_id": "rmvx6mlf7-552bw",
+            "event_id": "evt-mvx6mnnn-izjw7rwj",
+            "payload": {
+              "text": "契约探针：验证 groups.send 的 payload 形状",
+              "thread_id": "tmvx6mnnn-zag4x"
+            }
+          },
+          "resultKeys": [
+            "event",
+            "client_event_id",
+            "accepted",
+            "driver_started"
+          ]
+        },
+        {
+          "module": "groups",
+          "method": "groups.log",
+          "ok": true,
+          "params": {
+            "room_id": "rmvx6mlf7-552bw",
+            "limit": 10
+          },
+          "resultKeys": [
+            "events",
+            "cursor",
+            "latest_seq",
+            "has_more",
+            "authority"
+          ]
+        },
+        {
+          "module": "groups",
+          "method": "groups.rename",
+          "ok": true,
+          "params": {
+            "room_id": "rmvx6mlf7-552bw",
+            "event_id": "evt-mvx6mogj-14oeco6l",
+            "name": "flux-probe-renamed-mvx6mogj"
+          },
+          "resultKeys": [
+            "room"
+          ]
+        },
+        {
+          "module": "groups",
+          "method": "groups.create",
+          "ok": true,
+          "params": {
+            "room_id": "rmvx6mojd-eipt6",
+            "name": "flux-probe-create-mvx6moje",
+            "members": [
+              {
+                "member_id": "m_default_0",
+                "profile": "default",
+                "handle": "default",
+                "display_name": "default"
+              },
+              {
+                "member_id": "m_aura_1",
+                "profile": "aura",
+                "handle": "aura",
+                "display_name": "aura"
+              }
+            ]
+          },
+          "resultKeys": [
+            "room"
+          ]
+        },
+        {
+          "module": "groups",
+          "method": "groups.disband",
+          "ok": true,
+          "params": {
+            "room_id": "rmvx6mlf7-552bw"
+          },
+          "resultKeys": [
+            "tombstone"
+          ]
+        }
+      ]
+    },
+    {
+      "module": "projects",
+      "cases": [
+        {
+          "module": "projects",
+          "method": "projects.list",
+          "ok": true,
+          "params": {
+            "profile": "default"
+          },
+          "resultKeys": [
+            "projects",
+            "active_id"
+          ]
+        },
+        {
+          "module": "projects",
+          "method": "projects.get",
+          "ok": true,
+          "params": {
+            "id": "p_99c43ce7"
+          },
+          "resultKeys": [
+            "project"
+          ]
+        },
+        {
+          "module": "projects",
+          "method": "projects.update",
+          "ok": true,
+          "params": {
+            "id": "p_99c43ce7",
+            "description": "契约探针已更新描述"
+          },
+          "resultKeys": [
+            "project"
+          ]
+        },
+        {
+          "module": "projects",
+          "method": "projects.tree",
+          "ok": true,
+          "params": {
+            "profile": "default",
+            "preview_limit": 3,
+            "session_limit": 1
+          },
+          "resultKeys": [
+            "projects",
+            "active_id",
+            "scoped_session_ids"
+          ]
+        },
+        {
+          "module": "projects",
+          "method": "projects.add_folder",
+          "ok": true,
+          "params": {
+            "id": "p_99c43ce7",
+            "path": "<path>"
+          },
+          "resultKeys": [
+            "project"
+          ]
+        },
+        {
+          "module": "projects",
+          "method": "projects.remove_folder",
+          "ok": true,
+          "params": {
+            "id": "p_99c43ce7",
+            "path": "<path>"
+          },
+          "resultKeys": [
+            "project"
+          ]
+        },
+        {
+          "module": "projects",
+          "method": "projects.set_active",
+          "ok": true,
+          "params": {
+            "id": "p_99c43ce7"
+          },
+          "resultKeys": [
+            "active_id"
+          ]
+        },
+        {
+          "module": "projects",
+          "method": "projects.create",
+          "ok": true,
+          "params": {
+            "profile": "default",
+            "name": "flux-probe-create-mvx6mrby",
+            "folders": [
+              "<path>"
+            ],
+            "primary_path": "<path>"
+          },
+          "resultKeys": [
+            "project"
+          ]
+        },
+        {
+          "module": "projects",
+          "method": "projects.delete",
+          "ok": true,
+          "params": {
+            "id": "p_99c43ce7"
+          },
+          "resultKeys": [
+            "projects",
+            "active_id"
+          ]
+        }
+      ]
+    },
+    {
+      "module": "rollback",
+      "cases": [
+        {
+          "module": "rollback",
+          "method": "rollback.list",
+          "error": {
+            "code": 4001,
+            "message": "session not found"
+          },
+          "ok": true,
+          "expectedGuard": 4001
+        },
+        {
+          "module": "rollback",
+          "method": "rollback.diff",
+          "error": {
+            "code": 4001,
+            "message": "session not found"
+          },
+          "ok": true,
+          "expectedGuard": 4001
+        },
+        {
+          "module": "rollback",
+          "method": "rollback.restore",
+          "error": {
+            "code": 4001,
+            "message": "session not found"
+          },
+          "ok": true,
+          "expectedGuard": 4001
+        }
+      ]
+    },
+    {
+      "module": "subagent",
+      "cases": [
+        {
+          "module": "subagent",
+          "method": "subagent.list",
+          "error": {
+            "code": 4001,
+            "message": "session not found or not owned by this transport"
+          },
+          "ok": true,
+          "expectedGuard": 4001
+        },
+        {
+          "module": "subagent",
+          "method": "subagent.steer",
+          "error": {
+            "code": 4001,
+            "message": "session not found"
+          },
+          "ok": true,
+          "expectedGuard": 4001
+        },
+        {
+          "module": "subagent",
+          "method": "subagent.interrupt",
+          "error": {
+            "code": 4001,
+            "message": "session not found or not owned by this transport"
+          },
+          "ok": true,
+          "expectedGuard": 4001
+        },
+        {
+          "module": "subagent",
+          "method": "subagent.tail",
+          "error": {
+            "code": 4001,
+            "message": "session not found or not owned by this transport"
+          },
+          "ok": true,
+          "expectedGuard": 4001
+        }
+      ]
+    },
+    {
+      "module": "prompt",
+      "cases": [
+        {
+          "module": "prompt",
+          "method": "prompt.submit",
+          "ok": true,
+          "params": {
+            "session_id": "8227bd0b",
+            "profile": "default",
+            "text": "契约探针：请只回复 ok"
+          },
+          "resultKeys": [
+            "status",
+            "user_row_id"
+          ]
+        },
+        {
+          "module": "prompt",
+          "method": "prompt.btw",
+          "ok": true,
+          "params": {
+            "session_id": "8227bd0b",
+            "profile": "default",
+            "text": "契约探针：旁路问题，请只回复 ok"
+          },
+          "resultKeys": [
+            "task_id"
+          ]
+        },
+        {
+          "module": "prompt",
+          "method": "prompt.cancel",
+          "ok": false,
+          "skipped": true,
+          "reason": "未做真实网关验证：取消需要真实排队中的准入（仅在有在途回合时存在），离线探针造不出该状态，误传真实 admission_id 又会撤掉用户自己的排队消息；目前仅由本地参数构造单测与契约表守护"
+        },
+        {
+          "module": "prompt",
+          "method": "prompt.steer_queued",
+          "ok": false,
+          "skipped": true,
+          "reason": "未做真实网关验证：立即执行需要真实排队中的准入与在途回合，离线探针造不出该状态；目前仅由本地参数构造单测与契约表守护"
+        }
+      ]
+    },
+    {
+      "module": "extensions",
+      "cases": [
+        {
+          "module": "extensions",
+          "method": "mcp.servers.status",
+          "ok": true,
+          "params": {
+            "profile": "default"
+          },
+          "resultKeys": [
+            "servers",
+            "checked_at"
+          ]
+        },
+        {
+          "module": "extensions",
+          "method": "skills.manage",
+          "ok": true,
+          "params": {
+            "profile": "default",
+            "action": "list"
+          },
+          "resultKeys": [
+            "skills"
+          ]
+        },
+        {
+          "module": "extensions",
+          "method": "skills.reload",
+          "ok": true,
+          "params": {
+            "profile": "default"
+          },
+          "resultKeys": [
+            "output",
+            "result"
+          ]
+        },
+        {
+          "module": "extensions",
+          "method": "mcp.catalog",
+          "ok": false,
+          "skipped": true,
+          "reason": "新增 MCP 目录查询 RPC 在无 .env 离线探针下显式跳过，由契约白名单与核心/桌面端单测守护；连真实网关跑 probe:gateway 可补录"
+        },
+        {
+          "module": "extensions",
+          "method": "mcp.servers.add",
+          "ok": false,
+          "skipped": true,
+          "reason": "新增 MCP 服务器写操作在无 .env 离线探针下显式跳过，由契约白名单与参数构造单测守护；连真实网关跑 probe:gateway 可补录"
+        },
+        {
+          "module": "extensions",
+          "method": "mcp.servers.remove",
+          "ok": false,
+          "skipped": true,
+          "reason": "移除 MCP 服务器写操作在无 .env 离线探针下显式跳过，由契约白名单与控制器单测守护；连真实网关跑 probe:gateway 可补录"
+        },
+        {
+          "module": "extensions",
+          "method": "mcp.servers.test",
+          "ok": false,
+          "skipped": true,
+          "reason": "MCP 服务器探活 RPC 在无 .env 离线探针下显式跳过，由契约白名单与结果归一化单测守护；连真实网关跑 probe:gateway 可补录"
+        },
+        {
+          "module": "extensions",
+          "method": "model.save_key",
+          "ok": false,
+          "skipped": true,
+          "reason": "写操作会覆盖用户真实 API Key 且无法还原，仅由 CDP 场景在无凭据沙箱手工验证"
+        },
+        {
+          "module": "extensions",
+          "method": "model.disconnect",
+          "ok": false,
+          "skipped": true,
+          "reason": "断开提供商会破坏用户已配置的凭据，禁止在真实网关上执行"
+        },
+        {
+          "module": "extensions",
+          "method": "reload.env",
+          "ok": false,
+          "skipped": true,
+          "reason": "环境热重载会改变运行中的凭据状态，须与 model.save_key 成对执行，禁止单独探针"
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "module": "system",
+      "method": "ping",
+      "ok": true,
+      "params": {},
+      "resultKeys": [
+        "pong"
+      ]
+    },
+    {
+      "module": "system",
+      "method": "gateway.capabilities",
+      "ok": true,
+      "params": {},
+      "resultKeys": [
+        "per_session_exclusive_submit"
+      ]
+    },
+    {
+      "module": "system",
+      "method": "model.options",
+      "ok": true,
+      "params": {
+        "profile": "default"
+      },
+      "resultKeys": [
+        "providers",
+        "model",
+        "provider"
+      ]
+    },
+    {
+      "module": "profiles",
+      "method": "profiles.list",
+      "ok": true,
+      "params": {},
+      "resultKeys": [
+        "profiles",
+        "bot_mode_protocol",
+        "install_id"
+      ]
+    },
+    {
+      "module": "profiles",
+      "method": "profiles.describe",
+      "ok": true,
+      "params": {
+        "name": "default"
+      },
+      "resultKeys": [
+        "name",
+        "description",
+        "soul",
+        "model",
+        "skills",
+        "toolsets",
+        "toolsets_pinned",
+        "mcp_servers"
+      ]
+    },
+    {
+      "module": "profiles",
+      "method": "profiles.get_asset",
+      "ok": true,
+      "params": {
+        "name": "default",
+        "asset": "avatar"
+      },
+      "resultKeys": [
+        "found",
+        "mime",
+        "size",
+        "data"
+      ]
+    },
+    {
+      "module": "profiles",
+      "method": "profiles.create",
+      "error": {
+        "code": 4062,
+        "message": "A profile named 'flux-probe-bot' already exists. Switch to it with `hermes profile use flux-probe-bot`, see all profiles with `hermes profile list`, or choose a different name."
+      },
+      "ok": true,
+      "expectedGuard": 4062
+    },
+    {
+      "module": "profiles",
+      "method": "profiles.configure",
+      "ok": true,
+      "params": {
+        "name": "flux-probe-bot",
+        "description": "Hermes Flux 契约探针专用 Bot"
+      },
+      "resultKeys": [
+        "ok",
+        "applied"
+      ]
+    },
+    {
+      "module": "profiles",
+      "method": "profiles.set_asset",
+      "ok": true,
+      "params": {
+        "name": "flux-probe-bot",
+        "asset": "avatar",
+        "data": "",
+        "clear": true
+      },
+      "resultKeys": [
+        "ok",
+        "asset",
+        "size",
+        "removed"
+      ]
+    },
+    {
+      "module": "sessions",
+      "method": "session.list",
+      "ok": true,
+      "params": {
+        "profile": "default",
+        "limit": 5
+      },
+      "resultKeys": [
+        "sessions"
+      ]
+    },
+    {
+      "module": "sessions",
+      "method": "session.resume",
+      "ok": true,
+      "params": {
+        "session_id": "20261101_015936_e3c8cb",
+        "profile": "default",
+        "lazy": true
+      },
+      "resultKeys": [
+        "session_id",
+        "stored_session_id",
+        "message_count",
+        "messages",
+        "info"
+      ]
+    },
+    {
+      "module": "sessions",
+      "method": "session.title",
+      "ok": true,
+      "params": {
+        "session_id": "5a93f653",
+        "profile": "default",
+        "title": "flux-probe-renamed-mvx6mjtr"
+      },
+      "resultKeys": [
+        "pending",
+        "title"
+      ]
+    },
+    {
+      "module": "sessions",
+      "method": "session.set_hidden",
+      "ok": true,
+      "params": {
+        "session_id": "5a93f653",
+        "profile": "default",
+        "hidden": true
+      },
+      "resultKeys": [
+        "hidden",
+        "session_key"
+      ]
+    },
+    {
+      "module": "sessions",
+      "method": "session.archive",
+      "ok": true,
+      "params": {
+        "session_id": "5a93f653",
+        "profile": "default",
+        "archived": false
+      },
+      "resultKeys": [
+        "archived",
+        "session_key"
+      ]
+    },
+    {
+      "module": "sessions",
+      "method": "session.interrupt",
+      "ok": true,
+      "params": {
+        "session_id": "5a93f653",
+        "profile": "default"
+      },
+      "resultKeys": [
+        "status"
+      ]
+    },
+    {
+      "module": "sessions",
+      "method": "session.branch_whole",
+      "error": {
+        "code": 4008,
+        "message": "nothing to branch — send a message first"
+      },
+      "ok": true,
+      "expectedGuard": 4008
+    },
+    {
+      "module": "sessions",
+      "method": "config.set",
+      "ok": true,
+      "params": {
+        "session_id": "5a93f653",
+        "profile": "default",
+        "key": "model",
+        "value": "gemini-3.8-flash"
+      },
+      "resultKeys": [
+        "key",
+        "value",
+        "warning",
+        "confirm_required",
+        "confirm_message",
+        "scope"
+      ]
+    },
+    {
+      "module": "sessions",
+      "method": "session.create",
+      "ok": true,
+      "params": {
+        "profile": "default",
+        "title": "flux-probe-create-mvx6mkkg",
+        "hidden": true
+      },
+      "resultKeys": [
+        "session_id",
+        "stored_session_id",
+        "message_count",
+        "messages",
+        "info"
+      ]
+    },
+    {
+      "module": "sessions",
+      "method": "session.delete",
+      "error": {
+        "code": 4023,
+        "message": "cannot delete an active session"
+      },
+      "ok": true,
+      "expectedGuard": 4023
+    },
+    {
+      "module": "sessions",
+      "method": "session.close",
+      "ok": true,
+      "params": {
+        "session_id": "89452054",
+        "profile": "default"
+      },
+      "resultKeys": [
+        "closed",
+        "messages"
+      ]
+    },
+    {
+      "module": "groups",
+      "method": "groups.list",
+      "ok": true,
+      "params": {},
+      "resultKeys": [
+        "rooms",
+        "next_offset"
+      ]
+    },
+    {
+      "module": "groups",
+      "method": "groups.state",
+      "ok": true,
+      "params": {
+        "room_id": "rmvx6mlf7-552bw"
+      },
+      "resultKeys": [
+        "room",
+        "driver_status"
+      ]
+    },
+    {
+      "module": "groups",
+      "method": "groups.send",
+      "ok": true,
+      "params": {
+        "room_id": "rmvx6mlf7-552bw",
+        "event_id": "evt-mvx6mnnn-izjw7rwj",
+        "payload": {
+          "text": "契约探针：验证 groups.send 的 payload 形状",
+          "thread_id": "tmvx6mnnn-zag4x"
+        }
+      },
+      "resultKeys": [
+        "event",
+        "client_event_id",
+        "accepted",
+        "driver_started"
+      ]
+    },
+    {
+      "module": "groups",
+      "method": "groups.log",
+      "ok": true,
+      "params": {
+        "room_id": "rmvx6mlf7-552bw",
+        "limit": 10
+      },
+      "resultKeys": [
+        "events",
+        "cursor",
+        "latest_seq",
+        "has_more",
+        "authority"
+      ]
+    },
+    {
+      "module": "groups",
+      "method": "groups.rename",
+      "ok": true,
+      "params": {
+        "room_id": "rmvx6mlf7-552bw",
+        "event_id": "evt-mvx6mogj-14oeco6l",
+        "name": "flux-probe-renamed-mvx6mogj"
+      },
+      "resultKeys": [
+        "room"
+      ]
+    },
+    {
+      "module": "groups",
+      "method": "groups.create",
+      "ok": true,
+      "params": {
+        "room_id": "rmvx6mojd-eipt6",
+        "name": "flux-probe-create-mvx6moje",
+        "members": [
+          {
+            "member_id": "m_default_0",
+            "profile": "default",
+            "handle": "default",
+            "display_name": "default"
+          },
+          {
+            "member_id": "m_aura_1",
+            "profile": "aura",
+            "handle": "aura",
+            "display_name": "aura"
+          }
+        ]
+      },
+      "resultKeys": [
+        "room"
+      ]
+    },
+    {
+      "module": "groups",
+      "method": "groups.disband",
+      "ok": true,
+      "params": {
+        "room_id": "rmvx6mlf7-552bw"
+      },
+      "resultKeys": [
+        "tombstone"
+      ]
+    },
+    {
+      "module": "projects",
+      "method": "projects.list",
+      "ok": true,
+      "params": {
+        "profile": "default"
+      },
+      "resultKeys": [
+        "projects",
+        "active_id"
+      ]
+    },
+    {
+      "module": "projects",
+      "method": "projects.get",
+      "ok": true,
+      "params": {
+        "id": "p_99c43ce7"
+      },
+      "resultKeys": [
+        "project"
+      ]
+    },
+    {
+      "module": "projects",
+      "method": "projects.update",
+      "ok": true,
+      "params": {
+        "id": "p_99c43ce7",
+        "description": "契约探针已更新描述"
+      },
+      "resultKeys": [
+        "project"
+      ]
+    },
+    {
+      "module": "projects",
+      "method": "projects.tree",
+      "ok": true,
+      "params": {
+        "profile": "default",
+        "preview_limit": 3,
+        "session_limit": 1
+      },
+      "resultKeys": [
+        "projects",
+        "active_id",
+        "scoped_session_ids"
+      ]
+    },
+    {
+      "module": "projects",
+      "method": "projects.add_folder",
+      "ok": true,
+      "params": {
+        "id": "p_99c43ce7",
+        "path": "<path>"
+      },
+      "resultKeys": [
+        "project"
+      ]
+    },
+    {
+      "module": "projects",
+      "method": "projects.remove_folder",
+      "ok": true,
+      "params": {
+        "id": "p_99c43ce7",
+        "path": "<path>"
+      },
+      "resultKeys": [
+        "project"
+      ]
+    },
+    {
+      "module": "projects",
+      "method": "projects.set_active",
+      "ok": true,
+      "params": {
+        "id": "p_99c43ce7"
+      },
+      "resultKeys": [
+        "active_id"
+      ]
+    },
+    {
+      "module": "projects",
+      "method": "projects.create",
+      "ok": true,
+      "params": {
+        "profile": "default",
+        "name": "flux-probe-create-mvx6mrby",
+        "folders": [
+          "<path>"
+        ],
+        "primary_path": "<path>"
+      },
+      "resultKeys": [
+        "project"
+      ]
+    },
+    {
+      "module": "projects",
+      "method": "projects.delete",
+      "ok": true,
+      "params": {
+        "id": "p_99c43ce7"
+      },
+      "resultKeys": [
+        "projects",
+        "active_id"
+      ]
+    },
+    {
+      "module": "rollback",
+      "method": "rollback.list",
+      "error": {
+        "code": 4001,
+        "message": "session not found"
+      },
+      "ok": true,
+      "expectedGuard": 4001
+    },
+    {
+      "module": "rollback",
+      "method": "rollback.diff",
+      "error": {
+        "code": 4001,
+        "message": "session not found"
+      },
+      "ok": true,
+      "expectedGuard": 4001
+    },
+    {
+      "module": "rollback",
+      "method": "rollback.restore",
+      "error": {
+        "code": 4001,
+        "message": "session not found"
+      },
+      "ok": true,
+      "expectedGuard": 4001
+    },
+    {
+      "module": "subagent",
+      "method": "subagent.list",
+      "error": {
+        "code": 4001,
+        "message": "session not found or not owned by this transport"
+      },
+      "ok": true,
+      "expectedGuard": 4001
+    },
+    {
+      "module": "subagent",
+      "method": "subagent.steer",
+      "error": {
+        "code": 4001,
+        "message": "session not found"
+      },
+      "ok": true,
+      "expectedGuard": 4001
+    },
+    {
+      "module": "subagent",
+      "method": "subagent.interrupt",
+      "error": {
+        "code": 4001,
+        "message": "session not found or not owned by this transport"
+      },
+      "ok": true,
+      "expectedGuard": 4001
+    },
+    {
+      "module": "subagent",
+      "method": "subagent.tail",
+      "error": {
+        "code": 4001,
+        "message": "session not found or not owned by this transport"
+      },
+      "ok": true,
+      "expectedGuard": 4001
+    },
+    {
+      "module": "prompt",
+      "method": "prompt.submit",
+      "ok": true,
+      "params": {
+        "session_id": "8227bd0b",
+        "profile": "default",
+        "text": "契约探针：请只回复 ok"
+      },
+      "resultKeys": [
+        "status",
+        "user_row_id"
+      ]
+    },
+    {
+      "module": "prompt",
+      "method": "prompt.btw",
+      "ok": true,
+      "params": {
+        "session_id": "8227bd0b",
+        "profile": "default",
+        "text": "契约探针：旁路问题，请只回复 ok"
+      },
+      "resultKeys": [
+        "task_id"
+      ]
+    },
+    {
+      "module": "negative",
+      "method": "profiles.get_asset",
+      "name": "profiles.get_asset 多传 key 必须被拒",
+      "kind": "negative",
+      "ok": true,
+      "code": 4000,
+      "message": "invalid params for profiles.get_asset: key: Extra inputs are not permitted — the client and the Hermes backend are out of sync (different versions); run `hermes update` and restart both"
+    },
+    {
+      "module": "negative",
+      "method": "groups.send",
+      "name": "groups.send 平铺 text 必须被拒",
+      "kind": "negative",
+      "ok": true,
+      "code": 4000,
+      "message": "invalid params for groups.send: text: Extra inputs are not permitted — the client and the Hermes backend are out of sync (different versions); run `hermes update` and restart both"
+    },
+    {
+      "module": "negative",
+      "method": "groups.send",
+      "name": "groups.send payload 缺少 thread_id 必须被拒",
+      "kind": "negative",
+      "ok": true,
+      "code": 5112,
+      "message": "user payload is missing fields: thread_id"
+    },
+    {
+      "module": "negative",
+      "method": "session.delete",
+      "name": "session.delete 用不存在的会话必须被拒",
+      "kind": "negative",
+      "ok": true,
+      "code": 4007,
+      "message": "session not found"
+    },
+    {
+      "module": "session",
+      "method": "session.branch",
+      "skipped": true,
+      "reason": "会话分支派生需依赖包含历史消息的活跃会话，在离线离境探针下显式跳过，由自动化单测与契约表严格守护"
+    },
+    {
+      "module": "session",
+      "method": "session.undo",
+      "skipped": true,
+      "reason": "单步撤销需依赖刚刚产生交互的活跃回合，在离线探针下显式跳过，由领域单测严格守护"
+    },
+    {
+      "module": "session",
+      "method": "session.steer",
+      "skipped": true,
+      "reason": "运行时轻量纠偏仅在 Agent 处于执行在途态有效，在离线探针下显式跳过，由单测与契约表严格守护"
+    },
+    {
+      "module": "session",
+      "method": "session.usage",
+      "skipped": true,
+      "reason": "上下文用量统计依赖正在运行的模型上下文数据，离线探针显式跳过，由契约表严格守护"
+    },
+    {
+      "module": "system",
+      "method": "commands.catalog",
+      "skipped": true,
+      "reason": "动态命令目录由在线网关运行时按 profile 动态生成，离线探针显式跳过，由契约表严格守护"
+    },
+    {
+      "module": "prompt",
+      "method": "image.attach_bytes",
+      "skipped": true,
+      "reason": "图片二进制字节附加通道需依赖在线活跃通道与图文模型，在离线探针下显式跳过，由契约表与 CDP 物理测试严格守护"
+    },
+    {
+      "module": "prompt",
+      "method": "complete.slash",
+      "skipped": true,
+      "reason": "斜杠实时补全需绑定活跃会话的 profile 与项目技能上下文，离线探针无会话可绑，显式跳过，由契约表与 CDP 场景守护"
+    },
+    {
+      "module": "prompt",
+      "method": "complete.path",
+      "skipped": true,
+      "reason": "文件路径补全依赖活跃会话的 cwd 与工作区文件系统实时遍历，离线探针无有效 cwd，显式跳过，由契约表与 CDP 场景守护"
+    },
+    {
+      "module": "prompt",
+      "method": "slash.exec",
+      "skipped": true,
+      "reason": "斜杠指令执行需活跃会话与在线命令分发器（exec/alias/send/prefill/skill），离线探针显式跳过，由契约表与领域单测守护"
+    },
+    {
+      "module": "prompt",
+      "method": "command.dispatch",
+      "skipped": true,
+      "reason": "指令分派需活跃会话与在线命令分发器（exec/send/skill/prefill），离线探针显式跳过，由契约表与领域单测守护"
+    },
+    {
+      "module": "prompt",
+      "method": "prompt.background",
+      "skipped": true,
+      "reason": "后台子代理旁路呼叫需活跃会话与跨 profile 计算宿主，应答经事件流异步到达，离线探针显式跳过，由契约表与路由单测守护"
+    },
+    {
+      "module": "extensions",
+      "method": "mcp.servers.status",
+      "ok": true,
+      "params": {
+        "profile": "default"
+      },
+      "resultKeys": [
+        "servers",
+        "checked_at"
+      ],
+      "gatewayVersion": "0.21.6",
+      "recordedAt": "2026-11-08T13:18:53.038Z",
+      "note": "本机回环网关实测录制；主基线其余条目录制自 0.22.5"
+    },
+    {
+      "module": "extensions",
+      "method": "skills.manage",
+      "ok": true,
+      "params": {
+        "profile": "default",
+        "action": "list"
+      },
+      "resultKeys": [
+        "skills"
+      ],
+      "gatewayVersion": "0.21.6",
+      "recordedAt": "2026-11-08T13:18:53.038Z",
+      "note": "本机回环网关实测录制；主基线其余条目录制自 0.22.5"
+    },
+    {
+      "module": "extensions",
+      "method": "skills.reload",
+      "ok": true,
+      "params": {
+        "profile": "default"
+      },
+      "resultKeys": [
+        "output",
+        "result"
+      ],
+      "gatewayVersion": "0.21.6",
+      "recordedAt": "2026-11-08T13:18:53.038Z",
+      "note": "本机回环网关实测录制；主基线其余条目录制自 0.22.5"
+    },
+    {
+      "module": "extensions",
+      "method": "mcp.catalog",
+      "ok": false,
+      "skipped": true,
+      "reason": "新增 MCP 目录查询 RPC 在无 .env 离线探针下显式跳过，由契约白名单与核心/桌面端单测守护；连真实网关跑 probe:gateway 可补录"
+    },
+    {
+      "module": "extensions",
+      "method": "mcp.servers.add",
+      "ok": false,
+      "skipped": true,
+      "reason": "新增 MCP 服务器写操作在无 .env 离线探针下显式跳过，由契约白名单与参数构造单测守护；连真实网关跑 probe:gateway 可补录"
+    },
+    {
+      "module": "extensions",
+      "method": "mcp.servers.remove",
+      "ok": false,
+      "skipped": true,
+      "reason": "移除 MCP 服务器写操作在无 .env 离线探针下显式跳过，由契约白名单与控制器单测守护；连真实网关跑 probe:gateway 可补录"
+    },
+    {
+      "module": "extensions",
+      "method": "mcp.servers.test",
+      "ok": false,
+      "skipped": true,
+      "reason": "MCP 服务器探活 RPC 在无 .env 离线探针下显式跳过，由契约白名单与结果归一化单测守护；连真实网关跑 probe:gateway 可补录"
+    },
+    {
+      "module": "extensions",
+      "method": "model.save_key",
+      "ok": false,
+      "skipped": true,
+      "reason": "写操作会覆盖用户真实 API Key 且无法还原，仅由 CDP 场景在无凭据沙箱手工验证"
+    },
+    {
+      "module": "extensions",
+      "method": "model.disconnect",
+      "ok": false,
+      "skipped": true,
+      "reason": "断开提供商会破坏用户已配置的凭据，禁止在真实网关上执行"
+    },
+    {
+      "module": "extensions",
+      "method": "reload.env",
+      "ok": false,
+      "skipped": true,
+      "reason": "环境热重载会改变运行中的凭据状态，须与 model.save_key 成对执行，禁止单独探针"
+    },
+    {
+      "module": "prompt",
+      "method": "prompt.cancel",
+      "ok": false,
+      "skipped": true,
+      "reason": "未做真实网关验证：取消需要真实排队中的准入（仅在有在途回合时存在），离线探针造不出该状态，误传真实 admission_id 又会撤掉用户自己的排队消息；目前仅由本地参数构造单测与契约表守护"
+    },
+    {
+      "module": "prompt",
+      "method": "prompt.steer_queued",
+      "ok": false,
+      "skipped": true,
+      "reason": "未做真实网关验证：立即执行需要真实排队中的准入与在途回合，离线探针造不出该状态；目前仅由本地参数构造单测与契约表守护"
+    },
+    {
+      "module": "prompt",
+      "method": "file.attach",
+      "ok": false,
+      "skipped": true,
+      "reason": "文件附件上传通道需依赖活跃会话暂存区与在线模型上下文，在离线探针下显式跳过，由契约表与发送单测守护"
+    },
+    {
+      "module": "learning",
+      "method": "learning.frames",
+      "ok": true,
+      "params": {
+        "cols": 40,
+        "rows": 16,
+        "frames": 1
+      },
+      "resultKeys": [
+        "frames",
+        "legend",
+        "categories",
+        "buckets",
+        "summary",
+        "axis",
+        "count",
+        "cols",
+        "rows"
+      ]
+    },
+    {
+      "module": "learning",
+      "method": "learning.detail",
+      "ok": true,
+      "params": {
+        "id": "blackboard-writing"
+      },
+      "resultKeys": [
+        "ok",
+        "kind",
+        "id",
+        "label",
+        "content"
+      ]
+    },
+    {
+      "module": "learning",
+      "method": "learning.edit",
+      "ok": false,
+      "skipped": true,
+      "reason": "修改学习记忆内容属于写操作，禁止在真实网关覆盖用户既有记忆，由学习服务单测与契约白名单守护"
+    },
+    {
+      "module": "learning",
+      "method": "learning.delete",
+      "ok": false,
+      "skipped": true,
+      "reason": "删除学习记忆或技能属于破坏性写操作，禁止在真实网关执行，由学习服务单测与契约白名单守护"
+    },
+    {
+      "module": "system",
+      "method": "config.get",
+      "ok": false,
+      "skipped": true,
+      "reason": "离线基线未连真实网关录制 config.get，由契约白名单与会话状态栏 Threshold 单测守护；连真实网关跑 probe:gateway 可补录"
+    },
+    {
+      "module": "sessions",
+      "method": "session.context_breakdown",
+      "ok": false,
+      "skipped": true,
+      "reason": "上下文构成拆解依赖带活跃模型的会话状态，离线探针显式跳过，由契约白名单、Core 解析与状态栏组件单测守护"
+    },
+    {
+      "module": "sessions",
+      "method": "session.compress",
+      "ok": false,
+      "skipped": true,
+      "reason": "上下文压缩会持久化改写会话历史与压缩节点，离线探针显式跳过，由空闲态守卫单测与契约白名单守护"
+    },
+    {
+      "module": "subagent",
+      "method": "session.transcript",
+      "ok": false,
+      "skipped": true,
+      "reason": "实测网关 0.23.2 返回 -32601，客户端自动降级走 REST fetchSessionMessages 与 subagent.tail，离线探针显式跳过并由降级不变量单测守护"
+    },
+    {
+      "module": "subagent",
+      "method": "spawn_tree.list",
+      "ok": false,
+      "skipped": true,
+      "reason": "历史衍生树索引依赖持久化磁盘记录，离线探针显式跳过，由非活跃会话 4001 隔离单测与不变量证明守护"
+    },
+    {
+      "module": "subagent",
+      "method": "spawn_tree.load",
+      "ok": false,
+      "skipped": true,
+      "reason": "历史衍生树按路径读取依赖磁盘树文件，离线探针显式跳过，由标准化合并单测与形式化不变量守护"
+    }
+  ],
+  "note": "主基线录制自 0.22.5；extensions 模块（mcp.servers.status / skills.manage / skills.reload）录制自 0.21.6 @ 2026-11-08T13:22:20.724Z，逐条带 gatewayVersion 标注。"
+}

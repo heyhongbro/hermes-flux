@@ -1,0 +1,544 @@
+/**
+ * Multi-Agent Group Room Service & 4-Stage Promotion Orchestrator
+ * (packages/core/src/group/groupService.ts)
+ *
+ * 设计意图 (Why):
+ *   当单个会话的深度探讨需要多位专家（如架构师、前端、安全审计）联合研讨时，
+ *   不能在单会话内混杂上下文，必须通过官方 groups.* 协议建立独立房间实体（hosted_rooms）。
+ *   为了让全平台（Desktop / Web / Mobile）无缝复用：
+ *   1. 群聊生命周期（增删改查、发言、日志同步）；
+ *   2. 单聊一键原地拉群（Session-to-Group Promotion）四阶工程管道；
+ *   必须将该纯逻辑沉淀在 packages/core 中。
+ *
+ * 防范的历史坑 (Pitfall):
+ *   1. 记忆污染（Memory Poisoning）：群聊内任何对话只沉淀在 groups.log 中，
+ *      严禁回写污染单个 Bot 的个人 MEMORY.md。
+ *   2. 上下文断层：单聊拉群绝不是直接开一个空房间让用户重新打字，
+ *      必须通过四阶管道自动提取前序对话精要，以 Room 0 种子系统备忘录注入。
+ *   3. 权限与空名单：拉群成员必须至少包含 2 名专家，否则拒绝创建。
+ *
+ * 约束与规则 (Rules):
+ *   - 纯 TypeScript 实现，零宿主 API 或 DOM 依赖。
+ *   - 显式失败（Failure Is Not Empty）：网络或参数异常必须显式抛出。
+ */
+
+import type {
+  GroupRoomSummary,
+  GroupMessageEntry,
+  GroupsListResult,
+  GroupsCreateParams,
+  GroupsCreateResult,
+  GroupsStateParams,
+  GroupsStateResult,
+  GroupsSendParams,
+  GroupsSendResult,
+  GroupsLogParams,
+  GroupsLogResult,
+  GroupsDisbandParams,
+  GroupsDisbandResult,
+  GroupsRenameParams,
+  GroupsRenameResult,
+  IRpcCaller,
+} from '../rpc/types.js';
+
+export interface PromoteSessionToGroupParams {
+  parentSessionId: string;
+  originalTitle?: string;
+  groupName: string;
+  selectedMembers: string[];
+  sourceMessages?: Array<{ role: string; content: string }>;
+}
+
+export interface PromoteSessionToGroupResult {
+  roomId: string;
+  groupName: string;
+  members: string[];
+  briefingMemo: string;
+  anchorCardText: string;
+}
+
+export type GroupLogListener = (entry: GroupMessageEntry) => void;
+
+/**
+ * 铸造群聊线程 ID（与官方桌面端 1:1 对齐）
+ *
+ * 【设计意图 (Why)】
+ * 网关要求 payload.thread_id 必须存在，且用它把同一轮研讨的多次发言归组。
+ * 官方实现为 `t${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`。
+ *
+ * 【规则 (Rules)】
+ * 前缀必须是字母 t，整体长度可控，禁止携带非法字符（网关 _identifier 会校验）。
+ */
+export function mintGroupThreadId(): string {
+  return `t${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** 铸造群聊事件 ID（幂等键，官方为 UUID） */
+export function mintGroupEventId(): string {
+  const cryptoObj = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
+  return `evt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export class GroupRoomStore {
+  /**
+   * 房间信息缓存：roomId -> GroupRoomSummary
+   */
+  private rooms = new Map<string, GroupRoomSummary>();
+
+  /**
+   * 房间发言日志缓存：roomId -> GroupMessageEntry[]
+   */
+  private roomLogs = new Map<string, GroupMessageEntry[]>();
+
+  /**
+   * 活跃房间事件监听器：roomId -> Set<GroupLogListener>
+   */
+  private logListeners = new Map<string, Set<GroupLogListener>>();
+
+  /**
+   * 拉取所有多 Agent 群聊房间列表
+   * 兼容官方 Gateway 返回结构：{ rooms: [...] } 与客户端解包结构 { groups: [...] }
+   */
+  public async listRooms(bridge: IRpcCaller): Promise<GroupRoomSummary[]> {
+    const res = await bridge.request<GroupsListResult>('groups.list');
+    const rawList = Array.isArray(res?.groups)
+      ? res.groups
+      : Array.isArray(res?.rooms)
+      ? res.rooms
+          // 防御：网关可能返回非对象行（脱敏/占位/历史脏数据），
+          // 直接 map 会造出 roomId 为空的幽灵房间，在 UI 里表现为一条点不开的空白项。
+          .filter((r) => r && typeof r === 'object')
+          .map((r) => ({
+            roomId: r.room_id,
+            name: r.name,
+            members: Array.isArray(r.members)
+              ? r.members.map((m) => m.profile || m.handle || 'member')
+              : [],
+            createdAt: typeof r.created_at === 'number' ? r.created_at * 1000 : Date.now(),
+            updatedAt: typeof r.updated_at === 'number' ? r.updated_at * 1000 : Date.now(),
+            isDisbanded: Boolean(r.disbanded_at),
+          }))
+      : null;
+
+    if (!rawList) {
+      throw new Error('网关返回了非法的 groups.list 响应数据结构');
+    }
+
+    // 没有 room_id 的行无法寻址，直接丢弃并留痕（Failure Is Not Empty 的对偶：
+    // 丢弃必须有理由，不能悄悄产生不可用的实体）
+    const usable = rawList.filter((room) => {
+      if (room.roomId) return true;
+      console.warn('[GroupRoomStore] groups.list 返回了缺少 room_id 的房间行，已跳过');
+      return false;
+    });
+
+    this.rooms.clear();
+    for (const room of usable) {
+      this.rooms.set(room.roomId, room);
+    }
+    return usable;
+  }
+
+  /**
+   * 获取指定群聊房间状态
+   */
+  public async getRoomState(roomId: string, bridge: IRpcCaller): Promise<GroupsStateResult> {
+    if (!roomId) throw new Error('Room ID is mandatory for getRoomState');
+    return bridge.request<GroupsStateResult, GroupsStateParams>('groups.state', {
+      room_id: roomId,
+    });
+  }
+
+  /**
+   * 直接创建一个全新群聊房间
+   */
+  public async createRoom(
+    name: string,
+    members: Array<string | { member_id?: string; profile?: string; handle?: string; display_name?: string; name?: string }>,
+    bridge: IRpcCaller,
+    roomId?: string
+  ): Promise<GroupsCreateResult> {
+    if (!name || typeof name !== 'string') {
+      throw new Error('Group name cannot be empty');
+    }
+    if (!Array.isArray(members) || members.length < 2) {
+      throw new Error('Group room requires at least 2 members');
+    }
+
+    const assignedRoomId = roomId || `r${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+
+    // 官方网关要求 member 必须是对象: { member_id, profile, handle, display_name }
+    const formattedMembers: Array<{ member_id: string; profile: string; handle: string; display_name?: string }> = members.map((m, idx) => {
+      if (typeof m === 'object' && m !== null) {
+        const prof = m.profile || m.name || 'default';
+        return {
+          member_id: m.member_id || `m_${prof}_${idx}`,
+          profile: prof,
+          handle: m.handle || prof,
+          display_name: m.display_name || prof,
+        };
+      }
+      const prof = String(m);
+      return {
+        member_id: `m_${prof}_${idx}`,
+        profile: prof,
+        handle: prof,
+        display_name: prof,
+      };
+    });
+
+    const res = await bridge.request<GroupsCreateResult, GroupsCreateParams>('groups.create', {
+      room_id: assignedRoomId,
+      name,
+      members: formattedMembers,
+    });
+
+    // 契约：groups.create -> { room }；兼容早期网关的扁平字段
+    const room = res.room;
+    const resolvedRoomId = room?.room_id || res.room_id || assignedRoomId;
+    const rawMembers = room?.members ?? res.members;
+    const summary: GroupRoomSummary = {
+      roomId: resolvedRoomId,
+      name: room?.name || res.name || name,
+      members: Array.isArray(rawMembers)
+        ? rawMembers.map((m) => {
+            if (typeof m === 'string') return m;
+            const obj = m as Record<string, unknown>;
+            return String(obj.profile || obj.handle || obj.display_name || 'member');
+          })
+        : formattedMembers.map((m) => m.profile),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.rooms.set(summary.roomId, summary);
+    return res;
+  }
+
+  /**
+   * 向指定群聊房间发送一条人类消息
+   *
+   * 【设计意图 (Why)】
+   * 官方 groups.send 只接受 `{ room_id, event_id, payload: { text, thread_id } }`。
+   * thread_id 由客户端铸造，用于把同一轮研讨的多次发言归入同一线程。
+   *
+   * 【防范的历史坑 (Pitfall)】
+   * 1. 把 text 平铺到顶层 → 网关 4000 Extra inputs are not permitted；
+   * 2. 只传 payload.text → 5112 user payload is missing fields: thread_id；
+   * 3. 不传 event_id → 4111 event_id must be a string。
+   *    以上三种都会被上层误读成"群聊发不出去"，实际是契约不符。
+   *
+   * 【规则 (Rules)】
+   * - 本方法只负责写房间日志，不负责触发成员回合（由网关 driver 决定）；
+   * - 返回值优先取官方 `event.seq`，无则退回本地序号。
+   */
+  public async sendMessage(
+    roomId: string,
+    text: string,
+    senderProfile: string,
+    bridge: IRpcCaller,
+    options: { threadId?: string; isSeed?: boolean } = {}
+  ): Promise<GroupsSendResult> {
+    const trimmed = (text || '').trim();
+    if (!roomId || !trimmed) {
+      throw new Error('Room ID and text are mandatory for sendMessage');
+    }
+
+    const threadId = options.threadId || mintGroupThreadId();
+    const eventId = mintGroupEventId();
+
+    const res = await bridge.request<GroupsSendResult, GroupsSendParams>('groups.send', {
+      room_id: roomId,
+      event_id: eventId,
+      payload: { text: trimmed, thread_id: threadId },
+    });
+
+    const entry: GroupMessageEntry = {
+      messageId: res.event?.event_id || res.message_id || eventId,
+      seq: Number(res.event?.seq ?? res.seq ?? 0),
+      senderProfile: senderProfile || 'user',
+      timestamp: typeof res.event?.created_at === 'number'
+        ? (res.event.created_at > 1e11 ? res.event.created_at : res.event.created_at * 1000)
+        : Date.now(),
+      text: trimmed,
+      isSeed: Boolean(options.isSeed),
+      threadId,
+      actorKind: 'user',
+    };
+
+    this.appendEntry(roomId, entry);
+    return res;
+  }
+
+  /**
+   * 同步房间的历史日志流 (groups.log)
+   *
+   * 【设计意图 (Why)】
+   *   网关单次 groups.log 存在分页上限（最大 500，超过 500 报 4001 invalid_params）。
+   *   当群聊事件超过 limit（如群聊产生 100+ 讨论流）时，若不进行多页游标接续与自动增量对齐，
+   *   客户端将永远卡在 seq 1~99 的老日志，导致新消息与 Agent 回复永远拉不下来。
+   *
+   * 【防范的历史坑 (Pitfall)】
+   *   1. 假分页与日志截断（P-021）：如果不传 sinceSeq 且本地已有日志，必须自动以本地最大 seq
+   *      作为起点增量向后拉取，避免无休止重复拉取第一页；
+   *   2. 首次进入多页接续：若本地无日志且网关指示 has_more: true，必须循环按 cursor 接续拉取，
+   *      直至拉全最新消息；
+   *   3. 避免死循环：设置 maxPages: 20 安全上限，且下一页 cursor 必须严格大于上一轮 since_seq。
+   *
+   * 【约束与规则 (Rules)】
+   *   - 单次请求 limit 统一采用安全的 200（在网关 100~500 安全区间内）；
+   *   - 纯 TypeScript 实现，零宿主 API 或 DOM 依赖；
+   *   - 保证返回该房间在本地 store 中的最新完整线序日志。
+   */
+  public async fetchLogs(
+    roomId: string,
+    bridge: IRpcCaller,
+    sinceSeq?: number,
+    limit = 200
+  ): Promise<GroupMessageEntry[]> {
+    if (!roomId) throw new Error('Room ID is mandatory for fetchLogs');
+
+    const localLogs = this.roomLogs.get(roomId);
+    let currentSince = sinceSeq;
+    // 若未显式指定起始序号，且本地已缓存该房间日志，自动从已知最大 seq 开始增量拉取
+    if (currentSince === undefined && localLogs && localLogs.length > 0) {
+      let maxKnownSeq = 0;
+      for (const e of localLogs) {
+        if (typeof e.seq === 'number' && e.seq > maxKnownSeq) {
+          maxKnownSeq = e.seq;
+        }
+      }
+      if (maxKnownSeq > 0) {
+        currentSince = maxKnownSeq;
+      }
+    }
+
+    const pageLimit = Math.min(Math.max(limit, 50), 300);
+    let hasMore = true;
+    let pageCount = 0;
+    const maxPages = 20;
+
+    while (hasMore && pageCount < maxPages) {
+      pageCount += 1;
+      const res = await bridge.request<GroupsLogResult, GroupsLogParams>('groups.log', {
+        room_id: roomId,
+        since_seq: currentSince,
+        limit: pageLimit,
+      });
+
+      // 官方网关返回 { events: [...], cursor, latest_seq }，客户端本地结构支持 entries
+      const rawEvents = Array.isArray(res?.events)
+        ? res.events
+        : Array.isArray(res?.entries)
+        ? res.entries
+        : [];
+
+      for (const raw of rawEvents) {
+        const r = raw as Record<string, unknown>;
+        const actor = (r.actor && typeof r.actor === 'object' ? r.actor : {}) as Record<string, unknown>;
+        const payload = (r.payload && typeof r.payload === 'object' ? r.payload : {}) as Record<string, unknown>;
+        const text = String(payload.text || r.text || '');
+        const kind = String(r.kind || '');
+        // 过滤非消息类系统纯控制事件（room.created / room.activity 等没有正文的事件）
+        if (!text && kind.startsWith('room.')) continue;
+        if (!text) continue;
+
+        // 官方 actor 形如 { kind: 'user'|'member', id, profile?, display_name? }，没有 name 字段
+        const actorKind = String(actor.kind || '');
+        const senderProfile = String(
+          actor.display_name || actor.profile || actor.id || r.senderProfile || (actorKind === 'user' ? 'user' : 'Agent')
+        );
+        const timestamp = typeof r.created_at === 'number'
+          ? (r.created_at > 1e11 ? r.created_at : r.created_at * 1000)
+          : typeof r.timestamp === 'number'
+          ? r.timestamp
+          : Date.now();
+
+        const entry: GroupMessageEntry = {
+          messageId: String(r.event_id || r.messageId || `msg_${r.seq || Date.now()}`),
+          seq: Number(r.seq || 0),
+          senderProfile,
+          timestamp,
+          text,
+          isSeed: Boolean(payload.is_seed || r.isSeed),
+          threadId: typeof payload.thread_id === 'string' ? payload.thread_id : undefined,
+          actorKind: actorKind || undefined,
+        };
+        this.appendEntry(roomId, entry);
+      }
+
+      if (
+        Boolean(res?.has_more) &&
+        typeof res?.cursor === 'number' &&
+        res.cursor > (currentSince ?? 0)
+      ) {
+        currentSince = res.cursor;
+      } else {
+        hasMore = false;
+      }
+    }
+
+    return this.getLogs(roomId);
+  }
+
+  /**
+   * 解散群聊房间
+   */
+  public async disbandRoom(roomId: string, bridge: IRpcCaller): Promise<boolean> {
+    const res = await bridge.request<GroupsDisbandResult, GroupsDisbandParams>('groups.disband', {
+      room_id: roomId,
+    });
+    // 契约：groups.disband -> { tombstone }，不是 success 布尔
+    const disbanded = Boolean(res.tombstone) || res.success === true;
+    if (disbanded) {
+      const existing = this.rooms.get(roomId);
+      if (existing) {
+        existing.isDisbanded = true;
+      }
+    }
+    return disbanded;
+  }
+
+  /**
+   * 重命名群聊房间
+   *
+   * 【契约依据】GroupsRenameParams: { profile?, room_id, event_id, name }
+   * 【防范的历史坑】曾传 `new_name` 且不带 `event_id`，网关会先报 4111 再报 4000。
+   */
+  public async renameRoom(roomId: string, newName: string, bridge: IRpcCaller): Promise<boolean> {
+    const res = await bridge.request<GroupsRenameResult, GroupsRenameParams>('groups.rename', {
+      room_id: roomId,
+      event_id: mintGroupEventId(),
+      name: newName,
+    });
+    // 契约：groups.rename -> { room }，不是 success 布尔
+    const renamed = Boolean(res.room);
+    if (renamed) {
+      const existing = this.rooms.get(roomId);
+      if (existing) {
+        existing.name = res.room?.name || newName;
+      }
+    }
+    return renamed;
+  }
+
+  /**
+   * 订阅指定房间的实时消息流
+   */
+  public subscribeRoom(roomId: string, listener: GroupLogListener): () => void {
+    let set = this.logListeners.get(roomId);
+    if (!set) {
+      set = new Set();
+      this.logListeners.set(roomId, set);
+    }
+    set.add(listener);
+
+    return () => {
+      const current = this.logListeners.get(roomId);
+      if (current) {
+        current.delete(listener);
+        if (current.size === 0) {
+          this.logListeners.delete(roomId);
+        }
+      }
+    };
+  }
+
+  public getLogs(roomId: string): GroupMessageEntry[] {
+    const logs = this.roomLogs.get(roomId);
+    return logs ? [...logs] : [];
+  }
+
+  private appendEntry(roomId: string, entry: GroupMessageEntry): void {
+    let list = this.roomLogs.get(roomId);
+    if (!list) {
+      list = [];
+      this.roomLogs.set(roomId, list);
+    }
+    const existingIdx = list.findIndex((e) => e.messageId === entry.messageId);
+    if (existingIdx >= 0) {
+      const prev = list[existingIdx];
+      list[existingIdx] = {
+        ...prev,
+        ...entry,
+        seq: entry.seq > 0 ? entry.seq : prev.seq,
+      };
+      list.sort((a, b) => a.seq - b.seq);
+    } else {
+      list.push(entry);
+      list.sort((a, b) => a.seq - b.seq);
+    }
+
+    const listeners = this.logListeners.get(roomId);
+    if (listeners) {
+      for (const l of listeners) {
+        l(entry);
+      }
+    }
+  }
+
+  /**
+   * 四阶单聊一键拉群升级编排管线 (Session-to-Group Promotion Pipeline)
+   *
+   * 设计意图 (Why):
+   *   为解决单聊探讨遇到复杂深水区时，用户需要将单聊快速升级为多专家研讨房间的诉求。
+   *
+   * 防范的历史坑 (Pitfall):
+   *   严禁无头创建空群！必须把单聊背景压缩成 Briefing Memo 种子系统消息固化到 Room 0，
+   *   并在原单聊追加不可变锚点卡片。
+   */
+  public async promoteSessionToGroup(
+    params: PromoteSessionToGroupParams,
+    bridge: IRpcCaller
+  ): Promise<PromoteSessionToGroupResult> {
+    const { parentSessionId, originalTitle = '探索会话', groupName, selectedMembers, sourceMessages = [] } = params;
+
+    if (!parentSessionId) {
+      throw new Error('Parent session ID is required for promotion');
+    }
+    if (!selectedMembers || selectedMembers.length < 2) {
+      throw new Error('多智能体群聊升级至少需要选择 2 位专家成员');
+    }
+
+    // 阶段二：背景简报提取与压缩 (Context Briefing Memo)
+    let contextSummary = '';
+    if (sourceMessages.length > 0) {
+      // 提取核心对话片断
+      const slice = sourceMessages.slice(-8);
+      contextSummary = slice.map((m) => `${m.role}: ${m.content.slice(0, 150)}`).join('\n');
+    } else {
+      contextSummary = `基于前序会话 [${originalTitle}] 发起协同研讨。`;
+    }
+
+    const briefingMemo = [
+      `### 📋 会议前序背景摘要 (From Session: ${originalTitle})`,
+      `• **议题起源**: ${originalTitle}`,
+      `• **参会专家**: ${selectedMembers.map((m) => `@${m}`).join(', ')}`,
+      `• **前序关键上下文**:`,
+      contextSummary,
+      `• **本次群聊聚焦解决**: 针对上述技术方案开展多智能体协同推演与争议裁判。`,
+    ].join('\n');
+
+    // 阶段三：创建群房间与种子注入 (Group Creation & Seed Injection)
+    const createRes = await this.createRoom(groupName, selectedMembers, bridge);
+    // 契约：groups.create -> { room }；兼容早期扁平字段
+    const roomId = createRes.room?.room_id || createRes.room_id;
+    if (!roomId) {
+      throw new Error('创建群聊成功但网关未返回 room_id，无法继续注入种子备忘录');
+    }
+
+    // 将 Briefing Memo 作为 Room 0 种子备忘录注入
+    await this.sendMessage(roomId, briefingMemo, 'system', bridge, { isSeed: true });
+
+    // 阶段四：构造原单聊末尾的不可变跳转锚点卡片
+    const anchorCardText = `📌 本会话已升级为多Agent研讨群聊: [进入会议室 ➔] (room: ${roomId})`;
+
+    return {
+      roomId,
+      groupName,
+      members: selectedMembers,
+      briefingMemo,
+      anchorCardText,
+    };
+  }
+}

@@ -1,0 +1,141 @@
+# 会话生命周期
+
+> 本文件由 `npm run contract:doc` 从网关契约、探针结果与源码调用点自动生成，请勿手工编辑。
+> 契约快照：e3cf16a3d983… · 同步于 2026-11-12T09:29:35.736Z
+
+| 方法 | 入参（契约） | 出参（契约） | 调用点 | 真实探针 |
+| --- | --- | --- | --- | --- |
+| `config.set` | `profile` `key` `value` `session_id` `scope` `confirm_expensive_model` | `key` `value` `warning` `confirm_required` `confirm_message` `scope` `deferred` `tool_progress` `cwd` `branch` `history_reset` `info` | `packages/desktop/src/renderer/services/sessionOperationService.ts:629`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:693`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:734`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:764` | ✅ 0.22.5 |
+| `session.archive` | `session_id` `session_key` `archived` `profile` | `archived` `session_key` | `packages/desktop/src/renderer/services/sessionOperationService.ts:509` | ✅ 0.22.5 |
+| `session.branch_whole` | `session_id` `profile` `name` `idempotency_key` | `session_id` `stored_session_id` `title` `parent` `message_count` `messages_omitted` `info` | `packages/core/src/session/handoffService.ts:91` | ✅ 0.22.5 |
+| `session.close` | `session_id` `profile` | `closed` `messages` | `packages/core/src/session/SessionLifecycleService.ts:40` | ✅ 0.22.5 |
+| `session.compress` | `session_id` `profile` `focus_topic` | `status` `removed` `before_messages` `after_messages` `before_tokens` `after_tokens` `summary` `usage` `info` `messages` `compressed` `lock_held` `message` `turn_isolation` `host_ack` | `packages/core/src/rpc/client.ts:1108` | 跳过：上下文压缩会持久化改写会话历史与压缩节点，离线探针显式跳过，由空闲态守卫单测与契约白名单守护 |
+| `session.context_breakdown` | `session_id` `profile` | `categories` `context_max` `context_percent` `context_used` `estimated_total` `context_estimated` `context_source` `model` `context_files` | `packages/core/src/rpc/client.ts:1097` | 跳过：上下文构成拆解依赖带活跃模型的会话状态，离线探针显式跳过，由契约白名单、Core 解析与状态栏组件单测守护 |
+| `session.create` | `profile` `cols` `source` `cwd` `cwd_explicit` `messages` `parent_session_id` `title` `model` `provider` `reasoning_effort` `fast` `service_tier` `close_on_disconnect` `hidden` `room_plumbing` `follow_profile_config` `idempotency_key` `request_id` `row_cwd` `base_url` `api_key` `toolsets` `reasoning` `max_turns` `ignore_rules` `yolo` `safe_mode` `ignore_user_config` `skills` `checkpoints` `accept_hooks` `pass_session_id` `editor` `run_budget` `verbose` `client_env` `client` | `session_id` `stored_session_id` `message_count` `messages` `info` | `packages/core/src/profile/profileService.ts:362`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:215`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:219` | ✅ 0.22.5 |
+| `session.delete` | `session_id` `profile` | `deleted` | `packages/core/src/session/SessionLifecycleService.ts:52` | ✅ 0.22.5 |
+| `session.interrupt` | `session_id` `profile` `expected_hosted_task_id` `execution_generation` | `status` `interrupted` `turn_isolation` | `packages/core/src/session/SessionLifecycleService.ts:45`<br>`packages/core/src/session/interactiveService.ts:196`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:610` | ✅ 0.22.5 |
+| `session.list` | `profile` `title` `limit` `include_hidden` `scope` `workspace` `picker` | `sessions` | `packages/core/src/profile/profileService.ts:335`<br>`packages/core/src/rpc/client.ts:769` | ✅ 0.22.5 |
+| `session.resume` | `session_id` `profile` `cols` `source` `lazy` `defer_history` `omit_messages` `eager_build` `close_on_disconnect` `inline_images` `title` `latest` `workspace` `editor` `api_key` `display_projection` | `session_id` `message_count` `messages` `info` `stored_session_id` `resumed` `session_key` `messages_omitted` `hydrating` `running` `turn_started_at` `started_at` `status` `inflight` `queued` `pending_approval` `open_requests` `pending_connection` `todo_state` `auto_continue` | `packages/desktop/src/renderer/index.ts:844`<br>`packages/desktop/src/renderer/index.ts:846`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:419`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:426` | ✅ 0.22.5 |
+| `session.set_hidden` | `session_id` `hidden` `profile` | `hidden` `session_key` | `packages/core/src/profile/profileService.ts:374`<br>`packages/core/src/session/SessionLifecycleService.ts:57` | ✅ 0.22.5 |
+| `session.title` | `session_id` `profile` `title` | `title` `session_key` `pending` | `packages/desktop/src/renderer/services/sessionOperationService.ts:432` | ✅ 0.22.5 |
+
+## 明细
+
+### `config.set`
+
+- 参数类型：`ConfigSetParams`
+- 结果类型：`ConfigSetResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:629`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:693`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:734`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:764`
+
+### `session.archive`
+
+- 参数类型：`SessionArchiveParams`
+- 结果类型：`SessionArchiveResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:509`
+
+### `session.branch_whole`
+
+- 参数类型：`SessionBranchWholeParams`
+- 结果类型：`SessionBranchWholeResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 本次探针走的是守卫分支：错误码 `4008`（属于正确行为，不是失败）
+- 调用点：
+  - `packages/core/src/session/handoffService.ts:91`
+
+### `session.close`
+
+- 参数类型：`SessionCloseParams`
+- 结果类型：`SessionCloseResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/core/src/session/SessionLifecycleService.ts:40`
+
+### `session.compress`
+
+- 参数类型：`SessionCompressParams`
+- 结果类型：`SessionCompressResult`
+- 真实探针：跳过 —— 上下文压缩会持久化改写会话历史与压缩节点，离线探针显式跳过，由空闲态守卫单测与契约白名单守护
+- 调用点：
+  - `packages/core/src/rpc/client.ts:1108`
+
+### `session.context_breakdown`
+
+- 参数类型：`SessionContextBreakdownParams`
+- 结果类型：`SessionContextBreakdownResult`
+- 真实探针：跳过 —— 上下文构成拆解依赖带活跃模型的会话状态，离线探针显式跳过，由契约白名单、Core 解析与状态栏组件单测守护
+- 调用点：
+  - `packages/core/src/rpc/client.ts:1097`
+
+### `session.create`
+
+- 参数类型：`SessionCreateParams`
+- 结果类型：`SessionCreateResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/core/src/profile/profileService.ts:362`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:215`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:219`
+
+### `session.delete`
+
+- 参数类型：`SessionDeleteParams`
+- 结果类型：`SessionDeleteResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 本次探针走的是守卫分支：错误码 `4023`（属于正确行为，不是失败）
+- 调用点：
+  - `packages/core/src/session/SessionLifecycleService.ts:52`
+
+### `session.interrupt`
+
+- 参数类型：`SessionInterruptParams`
+- 结果类型：`SessionInterruptResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/core/src/session/SessionLifecycleService.ts:45`
+  - `packages/core/src/session/interactiveService.ts:196`
+  - `packages/desktop/src/renderer/services/turnExecutionService.ts:610`
+
+### `session.list`
+
+- 参数类型：`SessionListParams`
+- 结果类型：`SessionListResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/core/src/profile/profileService.ts:335`
+  - `packages/core/src/rpc/client.ts:769`
+
+### `session.resume`
+
+- 参数类型：`SessionResumeParams`
+- 结果类型：`SessionResumeResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/desktop/src/renderer/index.ts:844`
+  - `packages/desktop/src/renderer/index.ts:846`
+  - `packages/desktop/src/renderer/services/messageLoadingService.ts:419`
+  - `packages/desktop/src/renderer/services/messageLoadingService.ts:426`
+
+### `session.set_hidden`
+
+- 参数类型：`SessionSetHiddenParams`
+- 结果类型：`SessionSetHiddenResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/core/src/profile/profileService.ts:374`
+  - `packages/core/src/session/SessionLifecycleService.ts:57`
+
+### `session.title`
+
+- 参数类型：`SessionTitleParams`
+- 结果类型：`SessionTitleResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:432`
+

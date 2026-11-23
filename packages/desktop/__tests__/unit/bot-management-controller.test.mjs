@@ -1,0 +1,1165 @@
+/**
+ * BOT 面板壳层编排的行为测试（真实模块，假网关）。
+ *
+ * 【为什么需要】renderer 里的接线只能证明"方法名存在"，证明不了：
+ *   160ms 防抖真的生效、迟到响应真的被令牌丢弃、保存失败真的保留草稿、
+ *   无草稿时真的不发 RPC。这些分支必须直接驱动控制器并观察副作用。
+ *
+ * 【口径】所有断言只观察注入的 state 与调用记录，不依赖真实 DOM / 网关。
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createBotManagementController, createBotWizardController } from '../../dist/renderer/botManagementController.mjs';
+
+const detail = (overrides = {}) => ({
+  id: 'arch',
+  displayName: '架构老王',
+  description: '负责架构评审',
+  model: '',
+  provider: '',
+  soul: '',
+  avatar: undefined,
+  isDefault: false,
+  skills: { authoritative: false, rows: [] },
+  toolsets: { authoritative: false, rows: [] },
+  mcpServers: { authoritative: false, rows: [] },
+  ...overrides,
+});
+
+const roster = (overrides = []) => (overrides.length > 0
+  ? overrides
+  : [
+      { name: 'default', displayName: 'Hermes', isDefault: true },
+      { name: 'arch', displayName: '架构老王', isDefault: false },
+    ]);
+
+function makeHarness(options = {}) {
+  const state = {
+    status: { status: 'uninitialized' },
+    activeBotId: '',
+    activeDetail: undefined,
+    drafts: {},
+    errorBanner: undefined,
+    confirmPending: undefined,
+    isBusy: false,
+  };
+  const profiles = { status: 'idle' };
+  const calls = [];
+  const toasts = [];
+  const schedules = [];
+  const avatarChanges = [];
+  let renders = 0;
+
+  /** 真实网关只回请求里携带的段；默认成功必须逐段回 true，否则严格判定会失败。 */
+  const appliedFromParams = (params) => {
+    const applied = {};
+    if (params.description !== undefined) applied.description = true;
+    if (params.soul !== undefined) applied.soul = true;
+    if (params.model !== undefined || params.provider !== undefined) applied.model = true;
+    if (params.disabled_skills !== undefined) applied.skills = true;
+    if (params.enabled_toolsets !== undefined) applied.toolsets = true;
+    if (params.enabled_mcp_servers !== undefined) applied.mcp_servers = true;
+    if (params.ui_meta !== undefined) applied.ui_meta = true;
+    return applied;
+  };
+
+  const deps = {
+    isConnected: () => options.connected !== false,
+    loadProfiles: async () => {
+      profiles.status = options.listError ? 'error' : 'ready';
+      if (options.listError) profiles.message = options.listError;
+      else profiles.data = options.profiles ?? [];
+    },
+    getProfiles: () => profiles,
+    getState: () => ({ ...state }),
+    setState: (patch) => {
+      Object.assign(state, patch);
+    },
+    describeBot: async (botId, hint) => {
+      calls.push({ method: 'profiles.describe', botId, hint });
+      if (options.describeError) throw new Error(options.describeError);
+      return options.describeDetail ?? detail({ id: botId, displayName: hint.displayName });
+    },
+    fetchSkillInventory: async (botId) => {
+      calls.push({ method: 'skills.manage', botId });
+      if (options.skillInventoryError) throw new Error(options.skillInventoryError);
+      return options.skillInventory ?? null;
+    },
+    ...(options.skillDescriptions !== undefined || options.skillDescriptionsError
+      ? {
+          fetchSkillDescriptions: async (botId) => {
+            calls.push({ method: 'complete.slash', botId });
+            if (options.skillDescriptionsError) throw new Error(options.skillDescriptionsError);
+            return options.skillDescriptions ?? null;
+          },
+        }
+      : {}),
+    fetchMcpStatus: async (botId) => {
+      calls.push({ method: 'mcp.servers.status', botId });
+      if (options.mcpStatusError) throw new Error(options.mcpStatusError);
+      return options.mcpStatus ?? null;
+    },
+    configureBot: async (params) => {
+      calls.push({ method: 'profiles.configure', params });
+      if (options.configureError) throw new Error(options.configureError);
+      return options.configureResult ?? { ok: true, applied: appliedFromParams(params) };
+    },
+    setAsset: async (botId, dataUrl, clear) => {
+      calls.push({ method: 'profiles.set_asset', botId, dataUrl, clear });
+      return options.setAssetOk !== false;
+    },
+    render: () => {
+      renders += 1;
+    },
+    translate: (key) => key,
+    describeError: (error) => (error instanceof Error ? error.message : String(error)),
+    notify: (message) => toasts.push(message),
+    onProfilesChanged: () => {
+      calls.push({ method: 'profiles.changed' });
+    },
+    onAvatarChanged: (botId, dataUrl) => {
+      avatarChanges.push({ botId, dataUrl });
+    },
+    schedule: (fn, ms) => {
+      const entry = { fn, ms, cancelled: false };
+      schedules.push(entry);
+      return () => {
+        entry.cancelled = true;
+      };
+    },
+  };
+
+  const controller = createBotManagementController(deps);
+
+  return {
+    controller,
+    deps,
+    state,
+    profiles,
+    calls,
+    toasts,
+    schedules,
+    avatarChanges,
+    get renders() {
+      return renders;
+    },
+    flushSchedules() {
+      for (const entry of schedules) {
+        if (!entry.cancelled) entry.fn();
+      }
+      schedules.length = 0;
+    },
+  };
+}
+
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test('未连接：落 list_error 且不发任何 RPC', async () => {
+  const h = makeHarness({ connected: false });
+  await h.controller.loadRoster();
+  assert.deepEqual(h.state.status, { status: 'list_error', message: 'settings.notConnected' });
+  assert.deepEqual(h.calls, []);
+});
+
+test('空花名册：落 empty_list，不伪造默认 BOT', async () => {
+  const h = makeHarness({ profiles: [] });
+  await h.controller.loadRoster();
+  assert.deepEqual(h.state.status, { status: 'empty_list' });
+  assert.equal(h.state.activeBotId, '');
+  assert.equal(h.state.activeDetail, undefined);
+});
+
+test('列表失败：落 list_error 并保留真实原因', async () => {
+  const h = makeHarness({ listError: 'profiles down' });
+  await h.controller.loadRoster();
+  assert.deepEqual(h.state.status, { status: 'list_error', message: 'profiles down' });
+});
+
+test('花名册就绪：默认选中首项并立即进入 loading_detail，160ms 后才发 describe', async () => {
+  const h = makeHarness({ profiles: roster() });
+  await h.controller.loadRoster();
+  assert.equal(h.state.activeBotId, 'default');
+  assert.deepEqual(h.state.status, { status: 'loading_detail', activeBotId: 'default' });
+  assert.equal(h.calls.filter((call) => call.method === 'profiles.describe').length, 0, '防抖窗口内不得发 RPC');
+  assert.equal(h.schedules[0].ms, 160);
+
+  h.flushSchedules();
+  await tick();
+  assert.equal(h.calls.filter((call) => call.method === 'profiles.describe').length, 1);
+  assert.deepEqual(h.state.status, { status: 'idle', activeBotId: 'default' });
+  assert.equal(h.state.activeDetail.id, 'default');
+});
+
+test('详情并发：迟到的旧响应不得覆盖新选择', async () => {
+  const pending = [];
+  const h = makeHarness({ profiles: roster() });
+  h.deps.describeBot = (botId, hint) =>
+    new Promise((resolve) => {
+      pending.push({ botId, resolve: () => resolve(detail({ id: botId, displayName: hint.displayName })) });
+    });
+
+  await h.controller.loadRoster();
+  h.flushSchedules();
+  await tick();
+  h.controller.selectBot('arch', { immediate: true });
+  await tick();
+
+  // 先返回新选择，再返回旧选择：旧响应必须被令牌丢弃。
+  pending[1].resolve();
+  await tick();
+  pending[0].resolve();
+  await tick();
+
+  assert.equal(h.state.activeBotId, 'arch');
+  assert.equal(h.state.activeDetail.id, 'arch');
+});
+
+test('详情失败：落 detail_error 带原始原因，草稿绝不清理', async () => {
+  const h = makeHarness({ profiles: roster(), describeError: 'describe boom' });
+  h.state.drafts = { arch: { displayName: '草稿' } };
+  await h.controller.loadRoster();
+  h.flushSchedules();
+  await tick();
+  assert.deepEqual(h.state.status, { status: 'detail_error', activeBotId: 'default', message: 'describe boom' });
+  assert.deepEqual(h.state.drafts, { arch: { displayName: '草稿' } });
+});
+
+test('草稿：改动入池、改回原值自动清池、无详情时忽略', () => {
+  const h = makeHarness({ profiles: roster() });
+  h.state.activeDetail = detail();
+  h.state.activeBotId = 'arch';
+
+  h.controller.updateDraft('arch', { displayName: '首席架构' });
+  assert.equal(h.state.drafts.arch.displayName, '首席架构');
+
+  h.controller.updateDraft('arch', { displayName: '架构老王' });
+  assert.equal('arch' in h.state.drafts, false, '改回权威值后不得继续亮脏点');
+
+  h.controller.updateDraft('default', { displayName: '错人' });
+  assert.equal('default' in h.state.drafts, false, '非 activeDetail 的补丁必须忽略');
+});
+
+test('保存：无草稿不发 RPC，直接成功', async () => {
+  const h = makeHarness({ profiles: roster() });
+  const result = await h.controller.saveBot('arch');
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(h.calls, []);
+});
+
+test('保存成功：只提交差异字段，头像走 set_asset，成功后清草稿并通知', async () => {
+  const h = makeHarness({ profiles: roster() });
+  h.state.activeDetail = detail();
+  h.state.activeBotId = 'arch';
+  h.state.status = { status: 'idle', activeBotId: 'arch' };
+  h.state.drafts = {
+    arch: {
+      displayName: '首席架构',
+      description: '负责架构评审',
+      model: '',
+      provider: '',
+      isDefault: false,
+      soul: '',
+      avatar: { kind: 'replace', dataUrl: 'data:image/webp;base64,BB' },
+      disabledSkills: [],
+      enabledToolsets: [],
+      enabledMcpServers: [],
+    },
+  };
+
+  const result = await h.controller.saveBot('arch');
+  assert.deepEqual(result, { ok: true });
+
+  const configure = h.calls.find((call) => call.method === 'profiles.configure');
+  assert.ok(configure);
+  assert.equal(configure.params.name, 'arch');
+  assert.equal(configure.params.description, undefined, '未改动字段不得提交');
+  assert.deepEqual(configure.params.ui_meta, { 'hermes-bots': { title: '首席架构' } });
+
+  const asset = h.calls.find((call) => call.method === 'profiles.set_asset');
+  assert.equal(asset.dataUrl, 'data:image/webp;base64,BB');
+  assert.equal(asset.clear, false);
+
+  assert.equal('arch' in h.state.drafts, false, '保存成功必须删除草稿，否则脏点复活');
+  assert.equal(h.state.activeDetail.displayName, '首席架构');
+  assert.equal(h.state.isBusy, false);
+  assert.deepEqual(h.toasts, ['bot.saved']);
+  assert.ok(h.calls.some((call) => call.method === 'profiles.changed'));
+  assert.deepEqual(h.avatarChanges, [{ botId: 'arch', dataUrl: 'data:image/webp;base64,BB' }], '头像保存后必须同步本地缓存');
+});
+
+test('保存失败：保留草稿、挂失败横幅、恢复可交互状态', async () => {
+  const h = makeHarness({ profiles: roster(), configureError: 'gateway 500' });
+  h.state.activeDetail = detail();
+  h.state.activeBotId = 'arch';
+  h.state.status = { status: 'idle', activeBotId: 'arch' };
+  const draft = {
+    displayName: '首席架构',
+    description: '负责架构评审',
+    model: '',
+    provider: '',
+    isDefault: false,
+    soul: '',
+    avatar: { kind: 'unchanged' },
+    disabledSkills: [],
+    enabledToolsets: [],
+    enabledMcpServers: [],
+  };
+  h.state.drafts = { arch: draft };
+
+  const result = await h.controller.saveBot('arch');
+  assert.deepEqual(result, { ok: false, message: 'gateway 500' });
+  assert.deepEqual(h.state.drafts.arch, draft, '失败必须 100% 保留草稿');
+  assert.equal(h.state.errorBanner, 'gateway 500');
+  assert.equal(h.state.isBusy, false);
+  assert.deepEqual(h.state.status, { status: 'idle', activeBotId: 'arch' });
+});
+
+test('保存头像清除：必须显式 clear=true', async () => {
+  const h = makeHarness({ profiles: roster() });
+  h.state.activeDetail = detail();
+  h.state.activeBotId = 'arch';
+  h.state.status = { status: 'idle', activeBotId: 'arch' };
+  h.state.drafts = {
+    arch: {
+      displayName: '架构老王',
+      description: '负责架构评审',
+      model: '',
+      provider: '',
+      isDefault: false,
+      soul: '',
+      avatar: { kind: 'clear' },
+      disabledSkills: [],
+      enabledToolsets: [],
+      enabledMcpServers: [],
+    },
+  };
+
+  const result = await h.controller.saveBot('arch');
+  assert.deepEqual(result, { ok: true });
+  const asset = h.calls.find((call) => call.method === 'profiles.set_asset');
+  assert.equal(asset.clear, true);
+  assert.equal(asset.dataUrl, '');
+  assert.equal(h.calls.some((call) => call.method === 'profiles.configure'), false, '只改头像时不得发 configure');
+});
+
+test('保存防重入：saving 状态下再次保存被拒绝且不发第二个 RPC', async () => {
+  const h = makeHarness({ profiles: roster() });
+  h.state.activeDetail = detail();
+  h.state.activeBotId = 'arch';
+  h.state.status = { status: 'saving', activeBotId: 'arch' };
+  h.state.drafts = {
+    arch: {
+      displayName: '首席架构',
+      description: '负责架构评审',
+      model: '',
+      provider: '',
+      isDefault: false,
+      soul: '',
+      avatar: { kind: 'unchanged' },
+      disabledSkills: [],
+      enabledToolsets: [],
+      enabledMcpServers: [],
+    },
+  };
+
+  const result = await h.controller.saveBot('arch');
+  assert.equal(result.ok, false);
+  assert.deepEqual(h.calls, []);
+});
+
+test('保存 displayName 时合并现有 ui_meta，不抹掉群聊房间', async () => {
+  const h = makeHarness({
+    profiles: [
+      {
+        name: 'arch',
+        displayName: '架构老王',
+        isDefault: false,
+        uiMeta: { 'hermes-bots-groups': { rooms: { r1: { name: '研讨' } } }, 'hermes-bots': { color: 'gold' } },
+      },
+    ],
+  });
+  h.state.activeDetail = detail();
+  h.state.activeBotId = 'arch';
+  h.state.status = { status: 'idle', activeBotId: 'arch' };
+  // 保存时要读取花名册行的 ui_meta；先走一次真实装载，避免用 idle 空表掩盖合并逻辑。
+  await h.deps.loadProfiles();
+  h.state.drafts = {
+    arch: {
+      displayName: '首席架构',
+      description: '负责架构评审',
+      model: '',
+      provider: '',
+      isDefault: false,
+      soul: '',
+      avatar: { kind: 'unchanged' },
+      disabledSkills: [],
+      enabledToolsets: [],
+      enabledMcpServers: [],
+    },
+  };
+
+  await h.controller.saveBot('arch');
+  const configure = h.calls.find((call) => call.method === 'profiles.configure');
+  assert.deepEqual(configure.params.ui_meta, {
+    'hermes-bots-groups': { rooms: { r1: { name: '研讨' } } },
+    'hermes-bots': { color: 'gold', title: '首席架构' },
+  });
+});
+
+test('能力补全：保存成功后迟到的探活结果不得覆盖新投影', async () => {
+  const mcpDetail = detail({
+    mcpServers: {
+      authoritative: true,
+      rows: [{ id: 'github', label: 'github', enabled: true, transport: 'stdio' }],
+    },
+  });
+  let releaseProbe;
+  const h = makeHarness({
+    profiles: roster(),
+    describeDetail: mcpDetail,
+    mcpStatus: [{ name: 'github', connected: true, tools: 9 }],
+  });
+  // 首次补全改为手动放行，模拟探活比保存慢。
+  h.deps.fetchMcpStatus = () =>
+    new Promise((resolve) => {
+      releaseProbe = () => resolve([{ name: 'github', connected: true, tools: 9 }]);
+    });
+
+  await h.controller.selectBot('arch', { immediate: true });
+  await tick();
+
+  h.state.status = { status: 'idle', activeBotId: 'arch' };
+  h.state.drafts = { arch: fullDraft({ description: '新描述' }) };
+  const result = await h.controller.saveBot('arch');
+  assert.equal(result.ok, true);
+
+  releaseProbe();
+  await tick();
+  assert.equal(
+    h.state.activeDetail.mcpServers.rows[0].online,
+    undefined,
+    '保存后的新投影不得被迟到的旧探活结果覆盖',
+  );
+});
+
+test('重置草稿：只清当前 BOT，其它草稿不受影响', () => {
+  const h = makeHarness({ profiles: roster() });
+  h.state.drafts = { arch: { displayName: 'a' }, other: { displayName: 'b' } };
+  h.controller.resetDraft('arch');
+  assert.equal('arch' in h.state.drafts, false);
+  assert.equal('other' in h.state.drafts, true);
+});
+
+test('ensureLoaded：未初始化才拉列表，已有详情不重复取数', async () => {
+  const h = makeHarness({ profiles: roster() });
+  h.controller.ensureLoaded();
+  await tick();
+  assert.equal(h.calls.filter((call) => call.method === 'profiles.describe').length, 0, '先走防抖');
+  h.flushSchedules();
+  await tick();
+  const describeCount = h.calls.filter((call) => call.method === 'profiles.describe').length;
+  assert.equal(describeCount, 1);
+
+  h.controller.ensureLoaded();
+  await tick();
+  assert.equal(
+    h.calls.filter((call) => call.method === 'profiles.describe').length,
+    describeCount,
+    '已有 idle + 详情时不得重复取数',
+  );
+});
+
+test('dismissError：只清失败横幅，确认横幅与草稿都不动', () => {
+  const h = makeHarness({ profiles: roster() });
+  h.state.errorBanner = 'boom';
+  h.state.confirmPending = { message: 'guard' };
+  h.state.drafts = { arch: { displayName: 'a' } };
+  h.state.activeDetail = detail();
+  h.controller.dismissError();
+  assert.equal(h.state.errorBanner, undefined);
+  assert.deepEqual(h.state.confirmPending, { message: 'guard' }, '关闭错误不得顺带清掉确认态');
+  assert.equal('arch' in h.state.drafts, true);
+  assert.equal(h.state.activeDetail.id, 'arch');
+});
+
+test('dismissConfirm：只清确认横幅，错误横幅与草稿都不动', () => {
+  const h = makeHarness({ profiles: roster() });
+  h.state.errorBanner = 'boom';
+  h.state.confirmPending = { message: 'guard' };
+  h.state.drafts = { arch: { displayName: 'a' } };
+  h.controller.dismissConfirm();
+  assert.equal(h.state.confirmPending, undefined);
+  assert.equal(h.state.errorBanner, 'boom', '确认关闭动作不得顺带清掉错误横幅');
+  assert.equal('arch' in h.state.drafts, true, '草稿必须保留');
+});
+
+/** 构造一个字段齐全的草稿，避免每个用例重复铺 13 个字段。 */
+const fullDraft = (overrides = {}) => ({
+  displayName: '架构老王',
+  description: '负责架构评审',
+  model: '',
+  provider: '',
+  isDefault: false,
+  soul: '',
+  avatar: { kind: 'unchanged' },
+  disabledSkills: [],
+  enabledToolsets: [],
+  enabledMcpServers: [],
+  ...overrides,
+});
+
+test('保存部分写入：ok:true 但 applied 缺段时必须报失败并保留草稿', async () => {
+  const h = makeHarness({
+    profiles: roster(),
+    // 只写了 description，soul 没写：界面不能宣称整包保存成功。
+    configureResult: { ok: true, applied: { description: true } },
+  });
+  h.state.activeDetail = detail();
+  h.state.activeBotId = 'arch';
+  h.state.status = { status: 'idle', activeBotId: 'arch' };
+  h.state.drafts = { arch: fullDraft({ description: '新描述', soul: '新灵魂' }) };
+
+  const result = await h.controller.saveBot('arch');
+  assert.equal(result.ok, false);
+  assert.equal(h.state.errorBanner, 'bot.savePartial');
+  assert.equal('arch' in h.state.drafts, true, '部分写入不是成功，草稿必须保留');
+  assert.equal(h.calls.some((call) => call.method === 'profiles.set_asset'), false);
+});
+
+test('保存等待确认：confirm_required 时一个字段都没写，保留草稿并给确认出路', async () => {
+  const h = makeHarness({
+    profiles: roster(),
+    configureResult: {
+      ok: true,
+      applied: {},
+      confirm_required: true,
+      confirm_message: '该模型单价较高，需要确认',
+    },
+  });
+  h.state.activeDetail = detail();
+  h.state.activeBotId = 'arch';
+  h.state.status = { status: 'idle', activeBotId: 'arch' };
+  h.state.drafts = { arch: fullDraft({ model: 'expensive/model', provider: 'p' }) };
+
+  const result = await h.controller.saveBot('arch');
+  assert.equal(result.ok, false);
+  assert.equal(result.message, '该模型单价较高，需要确认');
+  assert.deepEqual(h.state.confirmPending, { message: '该模型单价较高，需要确认' });
+  assert.equal(h.state.errorBanner, undefined, '确认不是错误横幅，必须单独呈现');
+  assert.equal('arch' in h.state.drafts, true);
+  assert.equal(h.calls.some((call) => call.method === 'profiles.set_asset'), false);
+});
+
+test('确认后重发：confirmExpensive 必须转成 confirm_expensive_model=true', async () => {
+  const h = makeHarness({ profiles: roster() });
+  h.state.activeDetail = detail();
+  h.state.activeBotId = 'arch';
+  h.state.status = { status: 'idle', activeBotId: 'arch' };
+  h.state.drafts = { arch: fullDraft({ model: 'expensive/model', provider: 'p' }) };
+
+  await h.controller.saveBot('arch', { confirmExpensive: true });
+  const configure = h.calls.find((call) => call.method === 'profiles.configure');
+  assert.equal(configure.params.confirm_expensive_model, true);
+});
+
+test('能力补全：MCP 探活写入 online/toolCount；探活失败保持未知，不画红灯', async () => {
+  const mcpDetail = detail({
+    mcpServers: {
+      authoritative: true,
+      rows: [{ id: 'github', label: 'github', enabled: true, transport: 'stdio' }],
+    },
+  });
+  const ok = makeHarness({
+    profiles: roster(),
+    describeDetail: mcpDetail,
+    mcpStatus: [{ name: 'github', connected: true, tools: 9 }],
+  });
+  await ok.controller.selectBot('arch', { immediate: true });
+  await tick();
+  assert.equal(ok.state.activeDetail.mcpServers.rows[0].online, true);
+  assert.equal(ok.state.activeDetail.mcpServers.rows[0].toolCount, 9);
+
+  const failed = makeHarness({ profiles: roster(), describeDetail: mcpDetail, mcpStatusError: 'probe down' });
+  await failed.controller.selectBot('arch', { immediate: true });
+  await tick();
+  assert.equal(
+    failed.state.activeDetail.mcpServers.rows[0].online,
+    undefined,
+    '探活失败必须保持 undefined（状态未知），不能画成离线',
+  );
+});
+
+test('能力补全：技能清单非权威时才拉全局目录，权威清单不得被污染', async () => {
+  const nonAuthoritative = makeHarness({
+    profiles: roster(),
+    describeDetail: detail(),
+    skillInventory: ['alpha', 'beta'],
+  });
+  await nonAuthoritative.controller.selectBot('arch', { immediate: true });
+  await tick();
+  assert.deepEqual(
+    nonAuthoritative.state.activeDetail.skills.rows.map((row) => row.id),
+    ['alpha', 'beta'],
+  );
+  assert.equal(nonAuthoritative.state.activeDetail.skills.authoritative, false);
+
+  const authoritative = makeHarness({
+    profiles: roster(),
+    describeDetail: detail({
+      skills: { authoritative: true, rows: [{ id: 'alpha', label: 'alpha', enabled: true }] },
+    }),
+    skillInventory: ['alpha', 'beta'],
+  });
+  await authoritative.controller.selectBot('arch', { immediate: true });
+  await tick();
+  assert.deepEqual(
+    authoritative.state.activeDetail.skills.rows.map((row) => row.id),
+    ['alpha'],
+    'describe 已给出权威清单时不得合并全局目录',
+  );
+  assert.equal(
+    authoritative.calls.some((call) => call.method === 'skills.manage'),
+    false,
+    '权威清单不需要额外 RPC',
+  );
+});
+
+test('refreshActiveCapabilities：静默重拉详情、保留未冲突草稿并清理已删 MCP 勾选', async () => {
+  const describeDetail = detail({
+    id: 'arch',
+    displayName: '架构老王',
+    mcpServers: {
+      authoritative: true,
+      rows: [
+        { id: 'github-mcp', label: 'github-mcp', enabled: true, transport: 'stdio', online: true },
+        { id: 'temp-mcp', label: 'temp-mcp', enabled: true, transport: 'http', online: true },
+      ],
+    },
+  });
+  const h = makeHarness({
+    profiles: roster(),
+    describeDetail,
+  });
+  await h.controller.selectBot('arch', { immediate: true });
+  await tick();
+
+  // 用户在草稿中修改了 displayName 且同时勾选着两个 MCP
+  h.controller.updateDraft('arch', {
+    displayName: '未保存的新昵称',
+    enabledMcpServers: ['github-mcp', 'temp-mcp'],
+  });
+
+  // 后端删除了 temp-mcp，静默重拉后应只保留 github-mcp，同时保留用户编辑过的 displayName
+  describeDetail.mcpServers = {
+    authoritative: true,
+    rows: [{ id: 'github-mcp', label: 'github-mcp', enabled: true, transport: 'stdio', online: true }],
+  };
+  await h.controller.refreshActiveCapabilities('arch', { removedMcpName: 'temp-mcp' });
+  await tick();
+
+  assert.equal(h.state.activeDetail.mcpServers.rows.length, 1);
+  assert.equal(h.state.activeDetail.mcpServers.rows[0].id, 'github-mcp');
+  assert.equal(h.state.drafts.arch.displayName, '未保存的新昵称');
+  assert.deepEqual(h.state.drafts.arch.enabledMcpServers, ['github-mcp']);
+  assert.equal(h.state.status.status, 'idle');
+
+  // 已有脏草稿时新增默认启用的 MCP，必须合并进草稿 enabledMcpServers；新增未启用 MCP 时不误开启
+  describeDetail.mcpServers = {
+    authoritative: true,
+    rows: [
+      { id: 'github-mcp', label: 'github-mcp', enabled: true, transport: 'stdio', online: true },
+      { id: 'fresh-mcp', label: 'fresh-mcp', enabled: true, transport: 'http', online: undefined },
+      { id: 'off-mcp', label: 'off-mcp', enabled: false, transport: 'http', online: undefined },
+    ],
+  };
+  await h.controller.refreshActiveCapabilities('arch', { addedMcpName: 'fresh-mcp' });
+  await tick();
+  assert.deepEqual(h.state.drafts.arch.enabledMcpServers, ['github-mcp', 'fresh-mcp']);
+  assert.equal(h.state.drafts.arch.displayName, '未保存的新昵称');
+  await h.controller.refreshActiveCapabilities('arch', { addedMcpName: 'off-mcp' });
+  await tick();
+  assert.deepEqual(h.state.drafts.arch.enabledMcpServers, ['github-mcp', 'fresh-mcp']);
+});
+
+test('refreshActiveCapabilities：切换 BOT 后陈旧返回必须被令牌丢弃', async () => {
+  // 观察竞态：selectBot 切换走后旧 refreshActiveCapabilities 的返回不得覆盖当前激活 BOT
+  const staleHarness = makeHarness({ profiles: roster() });
+  await staleHarness.controller.selectBot('arch', { immediate: true });
+  await tick();
+  const slowPromise = staleHarness.controller.refreshActiveCapabilities('arch');
+  await staleHarness.controller.selectBot('default', { immediate: true });
+  await slowPromise;
+  await tick();
+  assert.equal(staleHarness.state.activeBotId, 'default');
+  assert.equal(staleHarness.state.activeDetail.id, 'default');
+});
+
+test('refreshActiveCapabilities：断连与 saving/非激活 BOT 守卫、草稿归零清理与失败横幅降级', async () => {
+  // 1. 空 botId、未连接与非激活 BOT 直接忽略，不发任何 RPC；无草稿时带 removedMcpName 安全退出
+  const offline = makeHarness({ connected: false, profiles: roster() });
+  await offline.controller.refreshActiveCapabilities('');
+  await offline.controller.refreshActiveCapabilities('arch');
+  assert.equal(offline.calls.length, 0);
+
+  const nonActive = makeHarness({ profiles: roster() });
+  await nonActive.controller.selectBot('arch', { immediate: true });
+  await tick();
+  nonActive.calls.length = 0;
+  await nonActive.controller.refreshActiveCapabilities('default');
+  assert.equal(nonActive.calls.length, 0);
+  await nonActive.controller.refreshActiveCapabilities('arch', { removedMcpName: 'unused-mcp' });
+
+  // 2. status === saving 请求前守卫：不发 RPC
+  const savingBefore = makeHarness({ profiles: roster() });
+  await savingBefore.controller.selectBot('arch', { immediate: true });
+  await tick();
+  savingBefore.calls.length = 0;
+  savingBefore.state.status = { status: 'saving', activeBotId: 'arch' };
+  await savingBefore.controller.refreshActiveCapabilities('arch');
+  assert.equal(savingBefore.calls.length, 0);
+
+  // 3. saving / 切人 在途防覆写（describeBot 解析期间状态切入 saving 或 activeBotId 变更均不得落盘覆盖）
+  const raceSaving = makeHarness({ profiles: roster() });
+  await raceSaving.controller.selectBot('arch', { immediate: true });
+  await tick();
+  raceSaving.state.activeBotId = 'arch';
+  const inflight = raceSaving.controller.refreshActiveCapabilities('arch');
+  raceSaving.state.status = { status: 'saving', activeBotId: 'arch' };
+  await inflight;
+  assert.equal(raceSaving.state.status.status, 'saving');
+
+  const raceBotChanged = makeHarness({ profiles: roster() });
+  await raceBotChanged.controller.selectBot('arch', { immediate: true });
+  await tick();
+  const inflight2 = raceBotChanged.controller.refreshActiveCapabilities('arch');
+  raceBotChanged.state.activeBotId = 'default';
+  await inflight2;
+  assert.equal(raceBotChanged.state.activeBotId, 'default');
+  assert.equal(raceBotChanged.state.activeDetail.id, 'arch');
+
+  // 4. 删除 MCP 后恰好使草稿与后端详情完全一致（不在脏态）时应从 drafts map 清除条目
+  const cleanDetail = detail({
+    id: 'arch',
+    displayName: '架构老王',
+    mcpServers: {
+      authoritative: true,
+      rows: [
+        { id: 'github-mcp', label: 'github-mcp', enabled: true, transport: 'stdio', online: true },
+        { id: 'temp-mcp', label: 'temp-mcp', enabled: false, transport: 'http', online: true },
+      ],
+    },
+  });
+  const zeroClean = makeHarness({ profiles: roster(), describeDetail: cleanDetail });
+  await zeroClean.controller.selectBot('arch', { immediate: true });
+  await tick();
+  zeroClean.controller.updateDraft('arch', { enabledMcpServers: ['github-mcp', 'temp-mcp'] });
+  assert.ok(zeroClean.state.drafts.arch, '必须先形成真实脏草稿，后续删除才真正走到归零清理分支');
+  cleanDetail.mcpServers = {
+    authoritative: true,
+    rows: [{ id: 'github-mcp', label: 'github-mcp', enabled: true, transport: 'stdio', online: true }],
+  };
+  await zeroClean.controller.refreshActiveCapabilities('arch', { removedMcpName: 'temp-mcp' });
+  await tick();
+  assert.equal(zeroClean.state.drafts.arch, undefined, '删去唯一差异项后应清空草稿池对应键');
+
+  // 5. describeBot 抛错保留既有详情并显式挂错误横幅；陈旧错误不污染新激活 BOT
+  let failNext = false;
+  let delayedReject = null;
+  // 通过 createBotManagementController 构建可注入失败的真实实例验证错误路径与陈旧错误丢弃
+  const state = {
+    status: { status: 'idle', activeBotId: 'arch' },
+    activeBotId: 'arch',
+    activeDetail: detail({ id: 'arch' }),
+    drafts: {},
+    errorBanner: undefined,
+    confirmPending: undefined,
+    isBusy: false,
+  };
+  const errController = createBotManagementController({
+    isConnected: () => true,
+    loadProfiles: async () => {},
+    getProfiles: () => ({ status: 'ready', data: roster() }),
+    getState: () => ({ ...state }),
+    setState: (patch) => Object.assign(state, patch),
+    describeBot: async (botId) => {
+      if (delayedReject) {
+        return new Promise((_res, rej) => {
+          delayedReject = rej;
+        });
+      }
+      if (failNext) throw new Error('boom-describe');
+      return detail({ id: botId });
+    },
+    fetchSkillInventory: async () => null,
+    fetchMcpStatus: async () => null,
+    configureBot: async () => ({ ok: true, applied: {} }),
+    setAsset: async () => true,
+    render: () => {},
+    translate: (k) => k,
+    describeError: (e) => (e instanceof Error ? e.message : String(e)),
+    notify: () => {},
+    onProfilesChanged: () => {},
+    onAvatarChanged: () => {},
+    schedule: (fn) => {
+      const id = setTimeout(fn, 0);
+      return () => clearTimeout(id);
+    },
+  });
+  failNext = true;
+  await errController.refreshActiveCapabilities('arch');
+  assert.equal(state.errorBanner, 'boom-describe');
+  assert.equal(state.activeDetail.id, 'arch', '失败时必须保留原有 activeDetail');
+
+  state.errorBanner = undefined;
+  failNext = false;
+  delayedReject = () => {};
+  const staleErrPromise = errController.refreshActiveCapabilities('arch');
+  const rejectNow = delayedReject;
+  delayedReject = null;
+  await errController.selectBot('default', { immediate: true });
+  await tick();
+  rejectNow(new Error('late-error'));
+  await staleErrPromise;
+  assert.equal(state.errorBanner, undefined, '过时令牌的拒绝不得污染新选中 BOT 的错误横幅');
+});
+
+test('能力补全：fetchSkillDescriptions 仅补填权威技能缺失简介，失败优雅降级，过期令牌丢弃', async () => {
+  const ok = makeHarness({
+    profiles: roster(),
+    describeDetail: detail({
+      skills: {
+        authoritative: true,
+        rows: [
+          { id: 'github', label: 'github', enabled: true, description: '原生说明' },
+          { id: 'dogfood', label: 'dogfood', enabled: false },
+        ],
+      },
+    }),
+    skillDescriptions: {
+      github: '不应覆写',
+      dogfood: '端到端浏览器走查',
+      extra: '无关技能不得混入权威清单',
+    },
+  });
+  await ok.controller.selectBot('arch', { immediate: true });
+  await tick();
+  assert.equal(ok.calls.some((call) => call.method === 'complete.slash'), true);
+  assert.equal(ok.calls.some((call) => call.method === 'skills.manage'), false, '权威技能清单补简介不得触发 skills.manage');
+  assert.deepEqual(ok.state.activeDetail.skills.rows, [
+    { id: 'github', label: 'github', enabled: true, description: '原生说明' },
+    { id: 'dogfood', label: 'dogfood', enabled: false, description: '端到端浏览器走查' },
+  ]);
+
+  // 权威技能全部自带有效简介时不得再请求 complete.slash
+  const alreadyDescribed = makeHarness({
+    profiles: roster(),
+    describeDetail: detail({
+      skills: {
+        authoritative: true,
+        rows: [{ id: 'github', label: 'github', enabled: true, description: '已自带说明' }],
+      },
+    }),
+    skillDescriptions: { github: '不应被调用' },
+  });
+  await alreadyDescribed.controller.selectBot('arch', { immediate: true });
+  await tick();
+  assert.equal(alreadyDescribed.calls.some((call) => call.method === 'complete.slash'), false);
+
+  // 失败优雅降级：技能行与启用态照常保留
+  const degraded = makeHarness({
+    profiles: roster(),
+    describeDetail: detail({
+      skills: { authoritative: true, rows: [{ id: 'dogfood', label: 'dogfood', enabled: false }] },
+    }),
+    skillDescriptionsError: 'slash-timeout',
+  });
+  await degraded.controller.selectBot('arch', { immediate: true });
+  await tick();
+  assert.equal(degraded.state.activeDetail.skills.rows.length, 1);
+  assert.equal(degraded.state.activeDetail.skills.rows[0].enabled, false);
+
+  // 过期令牌丢弃：慢响应 fetchSkillDescriptions 在切走 BOT 后不得回写旧 BOT 简介
+  let resolveSlowDesc = null;
+  const race = makeHarness({ profiles: roster() });
+  race.deps.describeBot = async (botId) =>
+    detail({
+      id: botId,
+      skills: { authoritative: true, rows: [{ id: 'dogfood', label: 'dogfood', enabled: false }] },
+    });
+  race.deps.fetchSkillDescriptions = (botId) =>
+    botId === 'arch'
+      ? new Promise((resolve) => {
+          resolveSlowDesc = resolve;
+        })
+      : Promise.resolve(null);
+  race.controller.selectBot('arch', { immediate: true });
+  await tick();
+  race.controller.selectBot('default', { immediate: true });
+  await tick();
+  resolveSlowDesc?.({ dogfood: '迟到的架构描述' });
+  await tick();
+  assert.equal(race.state.activeDetail.id, 'default');
+  assert.equal(race.state.activeDetail.skills.rows[0].description, undefined);
+});
+
+test('createBotWizardController 完整覆盖新建/克隆校验、重入保护与异常保留', async () => {
+  let connected = false;
+  let existing = ['default', 'Arch'];
+  let defaultClone = 'default';
+  let renders = 0;
+  const notifies = [];
+  const created = [];
+  const configured = [];
+  const rpcParams = [];
+  let createImpl = async (params) => {
+    rpcParams.push(params);
+    return { ok: true };
+  };
+  let includeDisplayHook = true;
+
+  const makeWizard = () =>
+    createBotWizardController({
+      isConnected: () => connected,
+      getDefaultCloneFrom: () => defaultClone,
+      getExistingBotIds: () => existing,
+      createProfile: (params) => createImpl(params),
+      ...(includeDisplayHook
+        ? {
+            configureDisplayName: async (botId, displayName) => {
+              configured.push([botId, displayName]);
+            },
+          }
+        : {}),
+      onCreated: async (id) => {
+        created.push(id);
+      },
+      render: () => {
+        renders += 1;
+      },
+      notify: (msg) => notifies.push(msg),
+      translate: (key) => key,
+      describeError: (err) => (err instanceof Error ? err.message : String(err)),
+    });
+
+  const wiz = makeWizard();
+  assert.equal(wiz.getState().open, false);
+
+  wiz.open('blank');
+  assert.equal(wiz.getState().open, true);
+  assert.equal(wiz.getState().draft.mode, 'blank');
+  assert.equal(wiz.getState().draft.cloneFrom, '');
+
+  // ID 非法 -> bot.idError
+  wiz.patchDraft({ name: 'bad id!' });
+  assert.deepEqual(await wiz.submit(), { ok: false, message: 'bot.idError' });
+  assert.equal(wiz.getState().error, 'bot.idError');
+
+  // 大小写重复 -> bot.idConflict
+  wiz.patchDraft({ name: 'arch' });
+  assert.deepEqual(await wiz.submit(), { ok: false, message: 'bot.idConflict' });
+  assert.equal(wiz.getState().error, 'bot.idConflict');
+
+  // 离线 -> settings.notConnected
+  wiz.patchDraft({ name: 'qa-bot' });
+  assert.deepEqual(await wiz.submit(), { ok: false, message: 'settings.notConnected' });
+
+  // 在途重入保护 + res.ok === false
+  connected = true;
+  let resolveSlow;
+  createImpl = (params) => {
+    rpcParams.push(params);
+    return new Promise((r) => {
+      resolveSlow = r;
+    });
+  };
+  wiz.patchDraft({
+    name: 'qa-bot',
+    description: 'QA Desc',
+    model: 'openai/gpt-4o',
+    provider: 'openai',
+    displayName: 'QA Agent',
+  });
+  const inFlight = wiz.submit();
+  // busy 期间 close() 不得中断在途状态
+  wiz.close();
+  assert.equal(wiz.getState().open, true);
+  assert.equal(wiz.getState().busy, true);
+  assert.deepEqual(await wiz.submit(), { ok: false });
+  resolveSlow({ ok: false });
+  assert.deepEqual(await inFlight, { ok: false, message: 'bot.createFailed' });
+
+  // open() 重置 submitToken 阻断在途 createProfile resolve 与 reject 写回
+  let resolveRaceCreate;
+  createImpl = () =>
+    new Promise((r) => {
+      resolveRaceCreate = r;
+    });
+  wiz.open('blank');
+  wiz.patchDraft({ name: 'race-ok' });
+  const staleResolve = wiz.submit();
+  wiz.open('blank');
+  resolveRaceCreate({ ok: true });
+  assert.deepEqual(await staleResolve, { ok: false });
+  assert.equal(wiz.getState().open, true);
+
+  let rejectRaceCreate;
+  createImpl = () =>
+    new Promise((_res, rej) => {
+      rejectRaceCreate = rej;
+    });
+  wiz.patchDraft({ name: 'race-err' });
+  const staleReject = wiz.submit();
+  wiz.open('blank');
+  rejectRaceCreate(new Error('late-fail'));
+  assert.deepEqual(await staleReject, { ok: false });
+  assert.equal(wiz.getState().open, true);
+  assert.equal(wiz.getState().error, undefined);
+
+  // 抛错分支
+  createImpl = async () => {
+    throw new Error('rpc-timeout');
+  };
+  wiz.patchDraft({ name: 'qa-bot', description: 'QA Desc', model: 'openai/gpt-4o', provider: 'openai', displayName: 'QA Agent' });
+  assert.deepEqual(await wiz.submit(), { ok: false, message: 'rpc-timeout' });
+  assert.equal(wiz.getState().busy, false);
+
+  // configureDisplayName 返回 false / 抛错 / onCreated 抛错：必须隔离善后、不误报 bot.saved
+  createImpl = async (params) => {
+    rpcParams.push(params);
+    return { ok: true };
+  };
+  const isoCreated = [];
+  const postNotifies = [];
+  let configureMode = 'false';
+  let onCreatedThrow = null;
+  const isolatedWiz = createBotWizardController({
+    isConnected: () => true,
+    getDefaultCloneFrom: () => 'default',
+    getExistingBotIds: () => existing,
+    createProfile: (params) => createImpl(params),
+    configureDisplayName: async () => {
+      if (configureMode === 'throw') throw new Error('rename-denied');
+      if (configureMode === 'false') return false;
+      return true;
+    },
+    onCreated: async (id) => {
+      isoCreated.push(id);
+      if (onCreatedThrow) throw onCreatedThrow;
+    },
+    render: () => {
+      renders += 1;
+    },
+    notify: (msg) => postNotifies.push(msg),
+    translate: (key) => key,
+    describeError: (err) => (err instanceof Error ? err.message : String(err)),
+  });
+  isolatedWiz.open('blank');
+  isolatedWiz.patchDraft({ name: 'partial-false', displayName: 'Display' });
+  assert.deepEqual(await isolatedWiz.submit(), { ok: false, message: 'bot.saveFailed' });
+  assert.equal(isolatedWiz.getState().open, false);
+  assert.equal(postNotifies.at(-1), 'bot.saveFailed');
+  assert.equal(isoCreated.at(-1), 'partial-false');
+
+  configureMode = 'throw';
+  isolatedWiz.open('blank');
+  isolatedWiz.patchDraft({ name: 'partial-throw', displayName: 'Display' });
+  assert.deepEqual(await isolatedWiz.submit(), { ok: false, message: 'rename-denied' });
+  assert.equal(isolatedWiz.getState().open, false);
+  assert.equal(postNotifies.at(-1), 'rename-denied');
+
+  configureMode = 'ok';
+  onCreatedThrow = new Error('refresh-boom');
+  isolatedWiz.open('blank');
+  isolatedWiz.patchDraft({ name: 'refresh-err', displayName: 'Display' });
+  assert.deepEqual(await isolatedWiz.submit(), { ok: false, message: 'refresh-boom' });
+  assert.equal(isolatedWiz.getState().open, false);
+  assert.equal(postNotifies.at(-1), 'refresh-boom');
+
+  configureMode = 'false';
+  isolatedWiz.open('blank');
+  isolatedWiz.patchDraft({ name: 'both-err', displayName: 'Display' });
+  assert.deepEqual(await isolatedWiz.submit(), { ok: false, message: 'bot.saveFailed' });
+
+  // 在途 post-create 期间重开向导（token !== submitToken）且带 postWarning
+  let resolvePost;
+  const racePostWiz = createBotWizardController({
+    isConnected: () => true,
+    getDefaultCloneFrom: () => 'default',
+    getExistingBotIds: () => existing,
+    createProfile: async () => ({ ok: true }),
+    configureDisplayName: async () => false,
+    onCreated: () =>
+      new Promise((r) => {
+        resolvePost = r;
+      }),
+    render: () => {},
+    notify: (msg) => postNotifies.push(msg),
+    translate: (key) => key,
+    describeError: (err) => String(err),
+  });
+  racePostWiz.open('blank');
+  racePostWiz.patchDraft({ name: 'post-race', displayName: 'Display' });
+  const stalePost = racePostWiz.submit();
+  await tick();
+  racePostWiz.open('blank');
+  resolvePost();
+  assert.deepEqual(await stalePost, { ok: false, message: 'bot.saveFailed' });
+  assert.equal(racePostWiz.getState().open, true);
+
+  let resolvePostOk;
+  const racePostOkWiz = createBotWizardController({
+    isConnected: () => true,
+    getDefaultCloneFrom: () => 'default',
+    getExistingBotIds: () => existing,
+    createProfile: async () => ({ ok: true }),
+    onCreated: () =>
+      new Promise((r) => {
+        resolvePostOk = r;
+      }),
+    render: () => {},
+    notify: (msg) => postNotifies.push(msg),
+    translate: (key) => key,
+    describeError: (err) => String(err),
+  });
+  racePostOkWiz.open('blank');
+  racePostOkWiz.patchDraft({ name: 'post-ok-race' });
+  const stalePostOk = racePostOkWiz.submit();
+  await tick();
+  racePostOkWiz.open('blank');
+  resolvePostOk();
+  assert.deepEqual(await stalePostOk, { ok: true });
+  assert.equal(racePostOkWiz.getState().open, true);
+
+  // 成功创建（空白 + 带 description/model/provider/displayName）
+  createImpl = async (params) => {
+    rpcParams.push(params);
+    return { ok: true };
+  };
+  assert.deepEqual(await wiz.submit(), { ok: true });
+  assert.equal(wiz.getState().open, false);
+  assert.deepEqual(configured, [['qa-bot', 'QA Agent']]);
+  assert.deepEqual(created, ['qa-bot']);
+  assert.deepEqual(notifies, ['bot.saved']);
+  assert.equal(rpcParams.at(-1).description, 'QA Desc');
+
+  // clone 模式 + mirrorCredentials + onClose
+  wiz.open('clone');
+  assert.equal(wiz.getState().draft.cloneFrom, 'default');
+  wiz.patchDraft({ name: 'cloned-bot', mirrorCredentials: true, cloneChannels: false });
+  assert.deepEqual(await wiz.submit(), { ok: true });
+  assert.equal(rpcParams.at(-1).clone_from, 'default');
+  assert.equal(rpcParams.at(-1).mirror_credentials, true);
+  assert.equal(rpcParams.at(-1).clone_channels, false);
+
+  wiz.open('blank');
+  wiz.close();
+  assert.equal(wiz.getState().open, false);
+
+  // 省略可选 configureDisplayName 钩子与空可选字段
+  includeDisplayHook = false;
+  const minWiz = makeWizard();
+  minWiz.open('blank');
+  minWiz.patchDraft({ name: 'min-bot' });
+  assert.deepEqual(await minWiz.submit(), { ok: true });
+  assert.ok(renders > 0);
+});

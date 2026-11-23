@@ -1,0 +1,1176 @@
+/**
+ * Hermes Gateway JSON-RPC 2.0 WebSocket Client
+ */
+
+import {
+  JsonRpcRequest,
+  JsonRpcResponse,
+  JsonRpcNotification,
+  NormalizedSession,
+  ModelDetail,
+  AgentProfile,
+  SessionUsageResult,
+  SessionContextBreakdownResult,
+  SessionCompressResult,
+  StoredTranscriptParams,
+  StoredTranscriptResult,
+  SpawnTreeListResult,
+  SpawnTreeLoadResult,
+} from './types.js';
+import { WebSocketFsm, FsmState } from './fsm.js';
+import { normalizeSessionsResult, extractAvailableModels, extractModelDetails } from '../models/types.js';
+import { buildModelCatalogView, type ModelCatalogEntry } from '../models/modelCatalog.js';
+import { createLogger } from '../log/logger.js';
+import { redactSensitive } from '../log/redact.js';
+import { CONTRACT_METHODS } from './contracts/contractTable.generated.js';
+import { EXTRA_METHODS } from './contracts/extraMethods.js';
+import { normalizeAgentProfile } from './profileNormalize.js';
+
+const log = createLogger('rpc');
+
+/** 单个 RPC 的参数脱敏口径：通用键名 + method 级额外字段。 */
+function redactParams(method: string, params: unknown): unknown {
+  return redactSensitive(params, {
+    extraKeys: method === 'mcp.servers.set_api_key' ? ['value'] : [],
+  });
+}
+
+/**
+ * 契约守卫开关。
+ *
+ * 【规则 (Rules)】
+ * 默认开启。仅在排障时可用 `FLUX_CONTRACT_GUARD=0` 临时关闭，
+ * 关闭期间产生的 4000 错误仍必须落日志，不得作为长期方案。
+ */
+function contractGuardEnabled(): boolean {
+  try {
+    const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+    const value = proc?.env?.FLUX_CONTRACT_GUARD;
+    if (value === '0' || value === 'false') return false;
+  // gate-degrade: 浏览器环境没有 process.env，属于正常的不可达分支而非失败
+  } catch {
+    // 无 process 环境（浏览器）时保持开启
+  }
+  return true;
+}
+
+/**
+ * 契约违规错误：请求字段不在网关契约白名单内。
+ *
+ * 【设计意图 (Why)】
+ *   把"我们以为网关要什么"与"网关实际要什么"的差异，从运行时的
+ *   `4000 Extra inputs are not permitted` 提前到发送前，并给出精确字段名。
+ *
+ * 【防范的历史坑 (Pitfall)】
+ // gate-degrade: 连接已判定半开，close 失败也要继续走重连流程，不能卡在看门狗里
+ *   profiles.get_asset 多传 `key` 被网关 4000 拒绝，调用方 catch 后返回 null，
+ *   界面只表现为"没有头像"，排查成本极高。
+ *
+ * 【规则 (Rules)】
+ *   该错误必须显式抛出，严禁被调用方降级为空数据。
+ */
+export class ContractViolationError extends Error {
+  public readonly code = 'CONTRACT_VIOLATION';
+  public readonly method: string;
+  public readonly unknownFields: string[];
+  public readonly allowedFields: string[];
+
+  constructor(method: string, unknownFields: string[], allowedFields: string[]) {
+    super(
+      `RPC "${method}" 传入了网关契约未声明的字段 [${unknownFields.join(', ')}]，` +
+        `允许字段为 [${allowedFields.join(', ') || '无'}]。请对照网关契约修正调用参数。`
+    );
+    this.name = 'ContractViolationError';
+    this.method = method;
+    this.unknownFields = unknownFields;
+    this.allowedFields = allowedFields;
+  }
+}
+
+export interface RpcClientOptions {
+  url: string;
+  /**
+   * 每次断线重连或唤醒重连前调用，用于刷新一次性凭证（如 ws-ticket）并生成最新 WS URL。
+   * 首次 connect() 直接使用 url；自第二次连接（重连）起优先调用本回调。
+   */
+  resolveUrl?: () => Promise<string | null>;
+  /** 候选连接地址池，直连失败或重连时支持按优先级自动轮转（如 [LAN直连, Relay中继]） */
+  candidateUrls?: string[];
+  timeoutMs?: number;
+  autoConnect?: boolean;
+  /** 是否启用周期性心跳探测看门狗（默认开启） */
+  enableHeartbeat?: boolean;
+  /** 心跳探测周期（毫秒，默认 15000ms） */
+  heartbeatIntervalMs?: number;
+  /** 心跳超时判定阈值（毫秒，默认 5000ms） */
+  heartbeatTimeoutMs?: number;
+  /** 是否监听移动端/浏览器前后台可见性与网络状态实现即刻唤醒自愈（默认开启） */
+  enableLifecycleWake?: boolean;
+}
+
+export interface RestFallbackOptions {
+  method?: string;
+  params?: Record<string, unknown>;
+  body?: unknown;
+  headers?: Record<string, string>;
+}
+
+export type RestFallbackHandler = (path: string, options?: RestFallbackOptions) => Promise<unknown>;
+
+/** Result of a session listing attempt, including why it failed when it did. */
+export interface SessionListOutcome {
+  sessions: NormalizedSession[];
+  ok: boolean;
+  error?: string;
+}
+
+export type SessionMessagesOutcome =
+  | { status: 'success'; messages: SessionMessageRecord[]; pagination?: { returned?: number; total?: number } }
+  | { status: 'error'; error: string };
+
+export interface SessionMessageRecord {
+  [key: string]: unknown;
+}
+
+/** Models plus the provider that owns the currently active one. */
+export interface ModelCatalog {
+  models: string[];
+  details: ModelDetail[];
+  /**
+   * 归一化后的完整目录：扁平、带可读显示名与价格/能力元数据。
+   *
+   * 【设计意图 (Why)】
+   *   `models` / `details` 是历史契约（只给 ID 与粗粒度详情），前端渲染时仍要自己拼字符串。
+   *   `entries` 是新的权威视图：前端选择器、输入舱标签、设置页统一消费它，显示名不再各处漂移。
+   *
+   * 【规则 (Rules)】
+   *   `entries` 是 `models` 的子集来源：`models` = entries 去重 id + （若不在其中）根层当前模型。
+   *   当前模型可能因网关目录截断而缺失于 `providers[].models[]`，必须保留在 `models` 里，
+   *   但**不为它伪造 entry**（无 provider 归属与价格，不能造可渲染条目）。
+   */
+  entries: ModelCatalogEntry[];
+  currentModel: string;
+  currentProvider: string;
+  ok: boolean;
+  error?: string;
+}
+
+function describeError(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const candidate = error as { message?: unknown; code?: unknown; data?: unknown };
+    if (typeof candidate.message === 'string' && candidate.message.trim()) {
+      return candidate.message;
+    }
+    if (typeof candidate.code !== 'undefined') {
+      return `RPC 错误 ${String(candidate.code)}`;
+    }
+  }
+  return typeof error === 'string' ? error : '未知错误';
+}
+
+export class HermesGatewayClient {
+  private url: string;
+  private resolveUrl?: () => Promise<string | null>;
+  private initialUrlConsumed = false;
+  private isResolvingUrl = false;
+  private connectEpoch = 0;
+  private candidateUrls: string[] = [];
+  private currentCandidateIndex = 0;
+  private timeoutMs: number;
+  private ws: WebSocket | null = null;
+  private nextId = 1;
+  private restFallbackHandler: RestFallbackHandler | null = null;
+  private pendingRequests = new Map<
+    string | number,
+    {
+      resolve: (result: unknown) => void;
+      reject: (error: unknown) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  private notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
+  private fsm: WebSocketFsm;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private intentionalClose = false;
+
+  // 心跳看门狗状态
+  private enableHeartbeat: boolean;
+  private heartbeatIntervalMs: number;
+  private heartbeatTimeoutMs: number;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+  // 移动端/跨端前后台生命周期唤醒
+  private enableLifecycleWake: boolean;
+  private visibilityListener: (() => void) | null = null;
+  private onlineListener: (() => void) | null = null;
+
+  constructor(options: RpcClientOptions) {
+    this.url = options.url;
+    this.resolveUrl = options.resolveUrl;
+    this.candidateUrls = options.candidateUrls && options.candidateUrls.length > 0
+      ? [...options.candidateUrls]
+      : [options.url];
+    this.timeoutMs = options.timeoutMs ?? 15000;
+    this.enableHeartbeat = options.enableHeartbeat ?? true;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15000;
+    this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 5000;
+    this.enableLifecycleWake = options.enableLifecycleWake ?? true;
+
+    this.fsm = new WebSocketFsm({
+      heartbeatIntervalMs: this.heartbeatIntervalMs,
+      heartbeatTimeoutMs: this.heartbeatTimeoutMs,
+    });
+
+    this.setupLifecycleListeners();
+
+    if (options.autoConnect) {
+      this.connect();
+    }
+  }
+
+  public setRestFallbackHandler(handler: RestFallbackHandler | null): void {
+    this.restFallbackHandler = handler;
+  }
+
+  public getRawWebSocket(): WebSocket | null {
+    return this.ws;
+  }
+
+  public getFsm(): WebSocketFsm {
+    return this.fsm;
+  }
+
+  public getState(): FsmState {
+    return this.fsm.getState();
+  }
+
+  public getActiveUrl(): string {
+    return this.url;
+  }
+
+  public getCandidateUrls(): string[] {
+    return [...this.candidateUrls];
+  }
+
+  /**
+   * 设计意图 (Why):
+   *   在移动端或弱网环境下，长连接容易因网络抖动发生直连超时，
+   *   通过在重连阶段轮换候选地址（如 [LAN直连, Relay中继]），提供多级网络冗余兜底。
+   *
+   * 防范的历史坑 (Pitfall):
+   *   若单一死守失效的 LAN IP（如离开了工位 Wi-Fi），重连只会死循环超时直至用户手动重启。
+   *
+   * 约束与规则 (Rules):
+   *   - 仅在配置了多于 1 个候选地址时进行循环轮转；
+   *   - 轮换后立即更新 this.url 为当前候选。
+   */
+  public rotateCandidate(): string {
+    if (this.candidateUrls.length <= 1) return this.url;
+    this.currentCandidateIndex = (this.currentCandidateIndex + 1) % this.candidateUrls.length;
+    this.url = this.candidateUrls[this.currentCandidateIndex];
+    return this.url;
+  }
+
+  /**
+   * 设计意图 (Why):
+   *   注册移动端/Web 浏览器生命周期事件监听（visibilitychange 和 online）。
+   *   当 App 从后台切到前台或网络断开恢复时，触发毫秒级即刻唤醒重连。
+   *
+   * 防范的历史坑 (Pitfall):
+   *   移动操作系统（iOS/Android）在 App 切后台或锁屏时会强行冻结或掐断 WebSocket 连接。
+   *   若依赖原生 Exponential Backoff，用户重新打开 App 经常需要干等 10~30 秒才能恢复连接。
+   *
+   * 约束与规则 (Rules):
+   *   - 兼容非 DOM/Node.js 运行环境（安全校验 typeof document !== 'undefined'）；
+   *   - 必须保存 listener 引用以便在 disconnect() 时彻底解绑，防止内存泄漏。
+   */
+  private setupLifecycleListeners(): void {
+    if (!this.enableLifecycleWake) return;
+
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      this.visibilityListener = () => {
+        if (document.visibilityState === 'visible') {
+          this.wakeImmediately('visibilitychange:visible');
+        }
+      };
+      document.addEventListener('visibilitychange', this.visibilityListener);
+    }
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      this.onlineListener = () => {
+        this.wakeImmediately('network:online');
+      };
+      window.addEventListener('online', this.onlineListener);
+    }
+  }
+
+  private teardownLifecycleListeners(): void {
+    if (this.visibilityListener && typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+      document.removeEventListener('visibilitychange', this.visibilityListener);
+      this.visibilityListener = null;
+    }
+    if (this.onlineListener && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('online', this.onlineListener);
+      this.onlineListener = null;
+    }
+  }
+
+  /**
+   * 设计意图 (Why):
+   *   前台唤醒或网络恢复触发时，主动打破指数退避休眠，以 0ms 延迟立即发起重连。
+   *
+   * 防范的历史坑 (Pitfall):
+   *   若正在连接或已经处于握手态，盲目重连会导致重复创建 WebSocket 形成脑裂；
+   *   若不重置退避计数器（resetAttempts），后续正常断线依然会被污染残留的高延迟。
+   *
+   * 约束与规则 (Rules):
+   *   - 已处于 CONNECTED 或 HANDSHAKING 时无操作直接返回；
+   *   - 必须清理已调度的 reconnectTimer 定时器；
+   *   - 必须调用 fsm.resetAttempts() 清空退避累积。
+   */
+  public wakeImmediately(reason = 'manual'): void {
+    if (this.intentionalClose) return;
+    const current = this.fsm.getState();
+    if (current === 'CONNECTED' || current === 'HANDSHAKING') {
+      return;
+    }
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    this.fsm.resetAttempts();
+    this.connect();
+  }
+
+  /**
+   * 设计意图 (Why):
+   *   在长连接成功建立后启动周期性应用层心跳看门狗。
+   *
+   * 防范的历史坑 (Pitfall):
+   *   1. 移动网络与 NAT 路由存在短生存期的半开连接陷阱（客户端认为连接正常但网关已死）。
+   *      若无周期性心跳应答超时检测，客户端将永久挂在假在线状态无法感知断网。
+   *   2. 曾使用不存在的方法名 `system.ping`：网关直接返回 -32601，
+   *      而 `.finally` 又把超时看门狗清掉，导致看门狗**从未真正生效**。
+   *      正确方法是网关在 `tui_gateway/methods_voice.py` 单独注册的 `ping`
+   *      （返回 `{ pong: true }`，专门用于 sleep/wake 后的半开探测）。
+   *   3. 失败分支也曾无条件清理看门狗：传输层超时被当作"有应答"处理，
+   *      半开连接永远不会被主动关闭。只有「服务器确实回了包」才允许清理。
+   *
+   * 约束与规则 (Rules):
+   *   - 仅在 CONNECTED 状态下运行；
+   *   - 发起 ping 后必须设置超时看门狗，超时未应答直接主动 close() 销毁死连接触发重连自愈；
+   *   - 只有收到服务器响应（成功或带 JSON-RPC 错误码）才清理看门狗；
+   *     传输层失败一律保留看门狗，让它把死连接关掉。
+   */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    if (!this.enableHeartbeat) return;
+
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.fsm.getState() !== 'CONNECTED') {
+        return;
+      }
+
+      this.heartbeatTimeoutHandle = setTimeout(() => {
+        log.warn('heartbeat watchdog timeout, terminating half-open connection', {
+          heartbeatTimeoutMs: this.heartbeatTimeoutMs,
+          state: this.fsm.getState(),
+        });
+        this.stopHeartbeat();
+        if (this.ws) {
+          try {
+            this.ws.close();
+          } catch (err) {
+            // gate-degrade: 连接已判定半开，close 失败也要继续走重连流程，不能卡在看门狗里
+            log.debug('close() on half-open socket failed', err);
+          }
+        }
+      }, this.heartbeatTimeoutMs);
+
+      this.call('ping', {})
+        .then(() => {
+          this.clearHeartbeatTimeout();
+        })
+        .catch((err: unknown) => {
+          const code = (err as { code?: unknown } | null)?.code;
+          // 服务器回了 JSON-RPC 错误码说明链路是活的，可以清理看门狗；
+          // 传输层超时/断开则保留看门狗，交给它关闭死连接。
+          if (typeof code === 'number') {
+            this.clearHeartbeatTimeout();
+            return;
+          }
+          log.warn('heartbeat ping failed without server response', err);
+        });
+    }, this.heartbeatIntervalMs);
+  }
+
+  private clearHeartbeatTimeout(): void {
+    if (this.heartbeatTimeoutHandle) {
+      clearTimeout(this.heartbeatTimeoutHandle);
+      this.heartbeatTimeoutHandle = null;
+    }
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.heartbeatTimeoutHandle) {
+      clearTimeout(this.heartbeatTimeoutHandle);
+      this.heartbeatTimeoutHandle = null;
+    }
+  }
+
+  /**
+   * 发起 WebSocket 连接。
+   *
+   * 【设计意图 (Why)】
+   *   新版 Hermes 网关（v0.23.1+）的 `/api/auth/ws-ticket` 为 30s 短效且严格一次性消费：
+   *   初次建连或握手失败后一旦断开，重连若复用旧 URL 里的旧 ticket 会被网关永久返回 403。
+   *
+   * 【防范的历史坑 (Pitfall)】
+   *   构造器同步将 ticket 写死进 `this.url`，导致网络抖动、心跳超时或唤醒重连时一直拿着
+   *   已消费/过期的 `?ticket=...` 死循环重连。
+   *
+   * 【约束与规则 (Rules)】
+   *   - 首次建连直接使用构造传入的 `this.url`（保持同步建连行为与测试兼容）；
+   *   - 自第二次尝试起，若配置了 `resolveUrl` 则先递增 `connectEpoch` 异步刷新最新 ticket URL；
+   *   - 任何时候调用 `disconnect()` 均递增 `connectEpoch`，彻底废止在途异步回调。
+   */
+  public connect(): void {
+    if (typeof WebSocket === 'undefined') {
+      console.warn('[HermesGatewayClient] WebSocket runtime is unavailable');
+      return;
+    }
+
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    if (this.isResolvingUrl) {
+      return;
+    }
+
+    this.intentionalClose = false;
+    this.fsm.transitionTo('CONNECTING');
+
+    if (this.initialUrlConsumed && this.resolveUrl) {
+      const myEpoch = ++this.connectEpoch;
+      this.isResolvingUrl = true;
+      void this.resolveAndOpenWebSocket(myEpoch);
+      return;
+    }
+
+    this.initialUrlConsumed = true;
+    this.openWebSocket(this.url);
+  }
+
+  private async resolveAndOpenWebSocket(myEpoch: number): Promise<void> {
+    try {
+      const nextUrl = await this.resolveUrl?.();
+      if (this.intentionalClose || myEpoch !== this.connectEpoch) {
+        return;
+      }
+      this.isResolvingUrl = false;
+      if (!nextUrl) {
+        this.scheduleReconnect();
+        return;
+      }
+      this.url = nextUrl;
+      this.openWebSocket(nextUrl);
+    } catch (err) {
+      if (this.intentionalClose || myEpoch !== this.connectEpoch) {
+        return;
+      }
+      this.isResolvingUrl = false;
+      log.warn('resolveUrl failed before reconnect, scheduling retry', err);
+      this.scheduleReconnect();
+    }
+  }
+
+  private openWebSocket(targetUrl: string): void {
+    try {
+      const socket = new WebSocket(targetUrl);
+      this.ws = socket;
+
+      socket.onopen = () => {
+        if (this.intentionalClose || this.ws !== socket) return;
+        this.fsm.transitionTo('HANDSHAKING');
+        log.info('websocket open, handshaking', { url: targetUrl });
+        // 握手探针：网关 `ping` 返回 { pong: true }，是最轻量的存活确认
+        this.call('ping', {})
+          .then(() => {
+            if (this.intentionalClose || this.ws !== socket) return;
+            log.info('handshake ok, connected');
+            this.fsm.transitionTo('CONNECTED');
+            this.startHeartbeat();
+          })
+          .catch((err: unknown) => {
+            if (this.intentionalClose || this.ws !== socket) return;
+            // 握手探针失败不代表连接不可用（老版本网关可能未注册 ping），
+            // 但必须留下证据，避免"假在线"。
+            log.warn('handshake ping failed, proceeding as connected', err);
+            this.fsm.transitionTo('CONNECTED');
+            this.startHeartbeat();
+          });
+      };
+
+      socket.onmessage = (event: MessageEvent) => {
+        if (this.intentionalClose || this.ws !== socket) return;
+        this.handleMessage(event.data);
+      };
+
+      socket.onerror = (err) => {
+        if (this.ws !== socket) return;
+        console.warn('[HermesGatewayClient] WebSocket error:', err);
+      };
+
+      socket.onclose = () => {
+        if (this.ws !== socket) return;
+        this.stopHeartbeat();
+        this.ws = null;
+        if (!this.intentionalClose) {
+          this.scheduleReconnect();
+        } else {
+          this.fsm.transitionTo('DISCONNECTED');
+        }
+      };
+    } catch (err) {
+      console.error('[HermesGatewayClient] Failed to instantiate WebSocket:', err);
+      this.stopHeartbeat();
+      this.scheduleReconnect();
+    }
+  }
+
+  private clearPendingRequests(reason = 'Connection closed'): void {
+    for (const [, req] of this.pendingRequests.entries()) {
+      clearTimeout(req.timer);
+      req.reject(new Error(reason));
+    }
+    this.pendingRequests.clear();
+  }
+
+  public disconnect(): void {
+    this.intentionalClose = true;
+    this.connectEpoch++;
+    this.isResolvingUrl = false;
+    this.stopHeartbeat();
+    this.teardownLifecycleListeners();
+    this.clearPendingRequests('Client disconnected');
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    this.fsm.transitionTo('DISCONNECTED');
+  }
+
+  private scheduleReconnect(): void {
+    this.stopHeartbeat();
+    this.fsm.transitionTo('RECONNECTING');
+
+    // 轮换至下一个候选地址（若配置了多候选）
+    if (this.candidateUrls.length > 1) {
+      this.rotateCandidate();
+    }
+
+    const delay = this.fsm.getNextBackoffMs();
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.connect();
+    }, delay);
+  }
+
+  /**
+   * 发送前契约守卫：字段白名单校验。
+   *
+   * 【设计意图 (Why)】
+   * 网关对入参执行 Pydantic `extra='forbid'`，多写一个字段就是 4000。
+   * 把这一步提前到本地，能让错误在开发期就带着精确字段名暴露，
+   * 而不是等网关拒绝、再被上层 catch 降级成"没数据"。
+   *
+   * 【防范的历史坑 (Pitfall)】
+   * profiles.get_asset 多传 key、groups.send 平铺 text、
+   * subagent.steer 传 instruction 等，全部属于此类静默失败。
+   *
+   * 【规则 (Rules)】
+   * - 契约快照里没有登记的方法只记 debug 日志放行（可能是网关新增方法）；
+   * - 可通过 FLUX_CONTRACT_GUARD=0 临时关闭（仅限排障，禁止长期关闭）；
+   * - 违规必须抛出 ContractViolationError，不允许静默丢弃字段后继续发送。
+   */
+  private validateContract(method: string, params: unknown): void {
+    if (!contractGuardEnabled()) return;
+    if (!params || typeof params !== 'object' || Array.isArray(params)) return;
+
+    const spec = CONTRACT_METHODS[method] ?? EXTRA_METHODS[method];
+    if (!spec) {
+      log.debug('contract: method not in snapshot, allowing through', { method });
+      return;
+    }
+
+    const allowed = new Set<string>(spec.params);
+    const unknownFields = Object.keys(params as Record<string, unknown>).filter((key) => !allowed.has(key));
+    if (unknownFields.length === 0) return;
+
+    const error = new ContractViolationError(method, unknownFields, spec.params as string[]);
+    log.error('contract violation', {
+      method,
+      unknownFields,
+      allowedFields: spec.params,
+      // 契约违规发生在参数已被接收之后，日志同样可能带明文凭据，必须同口径脱敏。
+      params: redactParams(method, params),
+    });
+    throw error;
+  }
+
+  /**
+   * 慢速长耗时 RPC 默认超时时间表（单位：毫秒）。
+   *
+   * 【设计意图 (Why)】
+   *   大上下文提炼压缩（session.compress）、执行外部斜杠技能与压缩指令（slash.exec）等操作
+   *   依赖服务端大语言模型真实推理。在数十轮、数万 Token 的对话历史下，服务端推理耗时通常在 20s ~ 90s 之间。
+   *   全局默认的 25s 超时会在服务端生成完成前单方面超时熔断，造成前端误报失败且丢失状态重拉。
+   *
+   * 【防范的历史坑 (Pitfall)】
+   *   硬编码统一短超时会导致所有慢速操作在大上下文下 100% 报 timed out after 25000ms。
+   *
+   * 【约束与规则 (Rules)】
+   *   - 显式传入 timeoutMs 优先；
+   *   - 命中 LONG_RUNNING_METHOD_TIMEOUT_MS 查表次之；
+   *   - 其余普通快速查询保持默认 this.timeoutMs。
+   */
+  public static readonly LONG_RUNNING_METHOD_TIMEOUT_MS: Readonly<Record<string, number>> = {
+    'slash.exec': 120_000,
+    'command.dispatch': 120_000,
+    'session.compress': 120_000,
+    'prompt.submit': 180_000,
+    'cli.exec': 120_000,
+  };
+
+  public call<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
+    // 契约校验失败必须以 rejected promise 形式返回，保证调用方的
+    // `await` / `.catch()` 语义统一，不会出现"同步抛错绕过 catch"的漏洞。
+    try {
+      this.validateContract(method, params);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    const id = this.nextId++;
+    const request: JsonRpcRequest = {
+      jsonrpc: '2.0',
+      id,
+      method,
+      params,
+    };
+
+    // 【规则】params 必须先过脱敏：model.save_key 的 api_key、登录密码、token
+    // 一旦进入文件日志就是明文凭据泄露（见 log/redact.ts 的历史坑说明）。
+    // mcp.servers.set_api_key 的凭据字段名是 value，单看键名无法判定，按 method 补。
+    log.debug('rpc call', {
+      id,
+      method,
+      params: redactParams(method, params),
+    });
+
+    const effectiveTimeout = timeoutMs ?? HermesGatewayClient.LONG_RUNNING_METHOD_TIMEOUT_MS[method] ?? this.timeoutMs;
+
+    return new Promise<T>((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        log.warn('rpc call rejected: socket not open', { method, state: this.fsm.getState() });
+        return reject(new Error(`WebSocket is not connected (current state: ${this.fsm.getState()})`));
+      }
+
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        log.warn('rpc call timed out', { id, method, timeoutMs: effectiveTimeout });
+        reject(new Error(`RPC request '${method}' with id ${id} timed out after ${effectiveTimeout}ms`));
+      }, effectiveTimeout);
+
+      this.pendingRequests.set(id, {
+        resolve: resolve as (result: unknown) => void,
+        reject,
+        timer,
+      });
+
+      this.ws.send(JSON.stringify(request));
+    });
+  }
+
+  /**
+   * IRpcCaller adaptation for direct plug-in compatibility with ProfileService, ProjectService and GroupRoomStore
+   */
+  public request<TResult = unknown, TParams = unknown>(method: string, params?: TParams, timeoutMs?: number): Promise<TResult> {
+    return this.call<TResult>(method, params, timeoutMs);
+  }
+
+  public onNotification<T = unknown>(method: string, handler: (params: T) => void): () => void {
+    if (!this.notificationHandlers.has(method)) {
+      this.notificationHandlers.set(method, new Set());
+    }
+    const handlers = this.notificationHandlers.get(method)!;
+    handlers.add(handler as (params: unknown) => void);
+
+    return () => {
+      handlers.delete(handler as (params: unknown) => void);
+    };
+  }
+
+  /**
+   * Resilient dual-channel session listing that keeps the failure reason.
+   *
+   * "No sessions" and "the gateway refused to list them" are different facts; the
+   * rail must be able to tell them apart instead of rendering an empty list for
+   * both.
+   *
+   * 【设计意图 (Why)】
+   *   左侧栏的排序依据是"会话最后一条消息时间"。经真实网关实测：
+   *   - WS `session.list` 只返回 `started_at`（会话创建时间），**没有 last_active**；
+   *   - REST `/api/sessions`（同一份数据的持久化视图）额外返回 `last_active`、`unread`、
+   *     `last_read_at`、`hidden`、`pinned`，且返回条数更全（实测 56 条 vs WS 54 条）。
+   *   因此 REST 是"顺序与时间正确"的权威通道，必须优先。
+   *
+   * 【防范的历史坑 (Pitfall)】
+   *   曾以 WS 为主通道：列表退化为"按创建时间排序"，前缀时间邻接的会话看起来顺序
+   *   与真实最后活跃不符（实测 local-ec166a 从末位跳到第二位），用户直觉就是"顺序不对"。
+   *
+   * 【约束与规则 (Rules)】
+   *   - 有 REST 通道时优先 REST；REST 失败或为空才回落 WS，保证弱网可用；
+   *   - 两条通道都失败时返回 ok:false 并带上错误原因（失败 ≠ 空）；
+   *   - REST limit 实测上限 100，超出返回 422，调用方传入的 limit 需收敛到 [1,100]。
+   */
+  public async listSessions(profile = 'default', limit = 50): Promise<SessionListOutcome> {
+    let lastError: string | undefined;
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit) || 50));
+
+    if (this.restFallbackHandler) {
+      try {
+        const restResult = await this.restFallbackHandler('/api/sessions', {
+          method: 'GET',
+          params: { profile, limit: safeLimit },
+        });
+        const sessions = normalizeSessionsResult(restResult);
+        // REST 是权威持久化视图：即便为空也代表"该 Profile 确实没有会话"
+        return { sessions, ok: true };
+      } catch (restErr) {
+        lastError = describeError(restErr);
+        console.warn('[HermesGatewayClient] REST session.list failed, trying WS fallback:', lastError);
+      }
+    }
+
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        const wsResult = await this.call<unknown>('session.list', { profile, limit: safeLimit });
+        const sessions = normalizeSessionsResult(wsResult);
+        return { sessions, ok: true };
+      } catch (wsErr) {
+        lastError = describeError(wsErr);
+        console.warn('[HermesGatewayClient] WS session.list also failed:', lastError);
+      }
+    } else if (!lastError) {
+      lastError = `WebSocket 未连接 (当前状态: ${this.fsm.getState()})`;
+    }
+
+    return { sessions: [], ok: false, error: lastError ?? '网关未返回会话列表' };
+  }
+
+  /**
+   * Session listing without diagnostics. Prefer `listSessions` when the caller
+   * needs to distinguish an empty result from a failed one.
+   */
+  public async listSessionsSafe(profile = 'default', limit = 50): Promise<NormalizedSession[]> {
+    const outcome = await this.listSessions(profile, limit);
+    return outcome.sessions;
+  }
+
+  /**
+   * Resilient session messages pagination via official high-speed REST channel.
+   * 
+   * 【设计意图 (Why)】
+   * 遵循 Hermes Agent 官方协议矩阵（docs/architecture/gateway-api-and-features-matrix.md）。
+   * 网关 session.resume 在超大会话下无分页且耗时高达 6~7 秒，官方专门开放了高速 REST 消息游标/分页接口。
+   * 
+   * 【防范的历史坑 (Pitfall)】
+   * 1. 严禁上层业务直接用浏览器裸 fetch 跨层调用（file:// 协议会剥离 Cookie 导致 401）；
+   * 2. 严禁传 order='newest' 或 order='desc'（网关 Pydantic 校验严格，非法值直接返回 400）；
+   * 3. 必须通过 restFallbackHandler 转接宿主代理通道，统一注入鉴权凭证。
+   * 
+   * 【规则 (Rules)】
+   * order 只能取 'latest' 或 'oldest'；首屏必须限制在 50 条以内实现 30ms 极速加载。
+   */
+  public async fetchSessionMessages(
+    sessionId: string,
+    options: {
+      limit?: number;
+      offset?: number;
+      order?: 'latest' | 'oldest';
+      profile?: string;
+      /**
+       * 是否包含被上下文压缩（compaction）归档的原始消息。
+       *
+       * 【设计意图 (Why)】
+       *   网关在上下文超限时会把旧消息标记 `compacted=1` 并在活动表插入一条压缩摘要节点。
+       *   默认 `false` 只返回活动表，用户向上翻页到摘要节点就"到底了"，
+       *   而原始历史其实完好保存在库中。翻页与首屏必须传 `true` 才能连续回溯。
+       *
+       * 【约束与规则 (Rules)】
+       *   首屏与翻页必须使用同一个取值，否则 offset 基数错位会导致跳条或重复。
+       */
+      includeCompacted?: boolean;
+    } = {}
+  ): Promise<SessionMessagesOutcome> {
+    if (!this.restFallbackHandler) {
+      return { status: 'error', error: '未注入 REST 通信代理处理器' };
+    }
+
+    try {
+      const res = await this.restFallbackHandler(
+        `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+        {
+          method: 'GET',
+          params: {
+            limit: options.limit ?? 50,
+            offset: options.offset ?? 0,
+            order: options.order ?? 'latest',
+            ...(options.profile ? { profile: options.profile } : {}),
+            ...(options.includeCompacted ? { include_compacted: true } : {}),
+          },
+        }
+      );
+
+      const resObj = res && typeof res === 'object' ? res as { messages?: unknown; pagination?: unknown } : null;
+      if (!resObj || !Array.isArray(resObj.messages)) return { status: 'error', error: '消息响应格式无效' };
+      const messages = resObj.messages.filter((message): message is SessionMessageRecord => Boolean(message && typeof message === 'object'));
+      if (messages.length !== resObj.messages.length) return { status: 'error', error: '消息记录格式无效' };
+      return {
+        status: 'success',
+        messages,
+        ...(resObj.pagination && typeof resObj.pagination === 'object' ? { pagination: normalizeSessionPagination(resObj.pagination) } : {}),
+      };
+    } catch (err) {
+      const errorMsg = describeError(err);
+      return { status: 'error', error: errorMsg };
+    }
+  }
+
+  /**
+   * 取某会话的"真实最后一条消息"。
+   *
+   * 【设计意图 (Why)】
+   *   左侧栏副标题必须对得上会话真实最后一条消息。网关 REST `/api/sessions` 的
+   *   `preview` 字段实测是"最后一条**用户**消息"，而最后一条通常是 AI 回复，
+   *   两者内容不同 —— 直接拿 preview 当副标题就会"对不上"。
+   *   真实最后一条必须从 `/api/sessions/:id/messages?limit=1&order=latest` 取。
+   *
+   * 【约束与规则 (Rules)】
+   *   - 只取 1 条，避免拉全量历史；
+   *   - 无 REST 通道或请求失败时返回 null，由调用方决定降级策略（失败 ≠ 空字符串）；
+   *   - 返回文本统一压平换行，便于直接做副标题。
+   */
+  public async fetchLastMessage(
+    sessionId: string,
+    options?: { profile?: string }
+  ): Promise<{ text: string; timestamp: number; role: string } | null> {
+    if (!this.restFallbackHandler || !sessionId) return null;
+    try {
+      const res = await this.restFallbackHandler(
+        `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+        {
+          method: 'GET',
+          params: {
+            limit: 1,
+            offset: 0,
+            order: 'latest',
+            ...(options?.profile ? { profile: options.profile } : {}),
+          },
+        }
+      );
+      const resObj = res && typeof res === 'object' ? (res as Record<string, unknown>) : null;
+      const messages = Array.isArray(resObj?.messages) ? resObj!.messages as Array<Record<string, unknown>> : [];
+      const last = messages[0];
+      if (!last) return null;
+      const rawText = typeof last.content === 'string' ? last.content : typeof last.text === 'string' ? last.text : '';
+      const rawTs = typeof last.timestamp === 'number' ? last.timestamp : 0;
+      const ts = rawTs > 1e11 ? rawTs : rawTs > 0 ? rawTs * 1000 : 0;
+      return {
+        text: rawText.replace(/\s+/g, ' ').trim(),
+        timestamp: ts,
+        role: typeof last.role === 'string' ? last.role : '',
+      };
+    // gate-degrade: 单条消息取失败时降级为"保留既有副标题"，不阻断列表主流程
+    } catch (err) {
+      // 失败不可静默为"空消息"：返回 null 让调用方保留既有副标题
+      console.warn('[HermesGatewayClient] fetchLastMessage failed:', describeError(err), { sessionId });
+      return null;
+    }
+  }
+
+  /**
+   * Resilient model catalog extraction.
+   *
+   * `model.options` answers `{ model, provider, providers: [{ slug, models }] }`.
+   * Both the flattened model list and the provider that owns the active model are
+   * kept, because `config.set` rejects a model id that several providers declare.
+   *
+   * 【设计意图 (Why)】
+   *   一次读取同时产出三份视图：`entries`（带可读显示名与价格/能力的权威扁平视图）、
+   *   `models`（纯 ID，兼容既有调用方）、`details`（历史粗粒度详情）。
+   *   三者同源，避免前端各自解析原始 payload 造成显示名漂移。
+   *
+   * 【防范的历史坑 (Pitfall)】
+   *   1. REST 兜底曾打 `/api/models`——该路由在网关上**不存在**（只有 `/api/model/options`、
+   *      `/api/model/info`、`/v1/models`）。WS 一断，兜底必然 404，等于没有兜底。
+   *   2. **漏传 `explicit_only`**：不传时网关会把它机器上"环境里恰好存在的凭据"
+   *      （如残留的 Nous 会话、CLI 借来的 token）也当成 provider 行返回。用户没买 Nous，
+   *      选择器里却挂着整行 72 个一模一样的模型，一选就失败。官方桌面端
+   *      `requestModelOptions` 的默认值就是 `explicitOnly = true`，注释写得很明确：
+   *      "Chat pickers default to true so only explicitly configured providers are listed (#56974)"。
+   *
+   * 【约束与规则 (Rules)】
+   *   - WS 与 REST 两条通道都必须携带 `explicit_only`，否则同一用户在不同网络条件下
+   *     会看到两套不同的 provider 列表；
+   *   - REST 用 `1` 而非 `true`：官方 `api/models.ts` 用 `explicit_only=1`，FastAPI 的
+   *     bool 解析两者都接受，但沿用官方拼法可避免某些代理对 `true` 字符串的兼容差异；
+   *   - 读取失败必须返回 `ok: false` 并携带 `error`，严禁用虚构模型列表填坑（Failure Is Not Empty）。
+   */
+  private legacyModelDetails(payload: unknown): ModelDetail[] {
+    // 【规则】`extractModelDetails` 会把探针占位符 `<more:N>` 也当成模型，
+    // 导致 details 里出现不可选的伪条目，与 entries 视图不一致。这里统一剔除。
+    return extractModelDetails(payload).filter(
+      (detail) => !detail.id.startsWith('<') && !detail.id.endsWith('>'),
+    );
+  }
+
+  public async getModelCatalog(profile = 'default', fallbackModels: string[] = []): Promise<ModelCatalog> {
+    let lastError: string | undefined;
+
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        const res = await this.call<Record<string, unknown>>('model.options', { profile, explicit_only: true });
+        const view = buildModelCatalogView(res);
+        if (view.ok) {
+          return {
+            models: view.models,
+            details: this.legacyModelDetails(res),
+            entries: view.entries,
+            currentModel: view.currentModel,
+            currentProvider: view.currentProvider,
+            ok: true,
+          };
+        }
+        lastError = view.error;
+      } catch (wsErr) {
+        lastError = describeError(wsErr);
+        console.warn('[HermesGatewayClient] WS model.options failed, trying REST fallback:', lastError);
+      }
+    } else {
+      lastError = `WebSocket 未连接 (当前状态: ${this.fsm.getState()})`;
+    }
+
+    if (this.restFallbackHandler) {
+      try {
+        const restResult = await this.restFallbackHandler('/api/model/options', {
+          method: 'GET',
+          params: { profile, explicit_only: 1 },
+        });
+        const view = buildModelCatalogView(restResult);
+        if (view.ok) {
+          return {
+            models: view.models,
+            details: this.legacyModelDetails(restResult),
+            entries: view.entries,
+            currentModel: view.currentModel,
+            currentProvider: view.currentProvider,
+            ok: true,
+          };
+        }
+        lastError = view.error ?? 'REST 模型接口返回为空';
+      } catch (restErr) {
+        lastError = describeError(restErr);
+        console.warn('[HermesGatewayClient] REST model fallback also failed:', lastError);
+      }
+    }
+
+    return {
+      models: extractAvailableModels(null, fallbackModels),
+      details: [],
+      entries: [],
+      currentModel: '',
+      currentProvider: '',
+      ok: false,
+      error: lastError ?? '网关未返回模型列表',
+    };
+  }
+
+  /**
+   * Model list without diagnostics. Prefer `getModelCatalog` when the caller needs
+   * the active provider or the failure reason.
+   */
+  public async getModelOptionsSafe(profile = 'default', fallbackModels: string[] = []): Promise<string[]> {
+    const catalog = await this.getModelCatalog(profile, fallbackModels);
+    return catalog.models;
+  }
+
+  /**
+   * Fetches agent profiles configured on the gateway.
+   */
+  public async listProfiles(): Promise<AgentProfile[]> {
+    try {
+      const res = await this.call<Record<string, unknown> | unknown[]>('profiles.list', {});
+      const list = Array.isArray(res)
+        ? res
+        : Array.isArray((res as Record<string, unknown>)?.profiles)
+          ? ((res as Record<string, unknown>).profiles as unknown[])
+          : [];
+      return list.map((item: unknown) => normalizeAgentProfile(item));
+    } catch (e) {
+      console.warn('[HermesGatewayClient] profiles.list failed, returning default profile:', e);
+      return [
+        { name: 'default', displayName: '通用助手 (Default)', description: '默认通用智能体', isDefault: true },
+      ];
+    }
+  }
+
+  /**
+   * 拉取网关全局配置快照（自动压缩阈值等）。
+   *
+   * 【设计意图 (Why)】REST `/api/config` 直接返回顶层配置字典，而 WS `config.get`
+   * 必须传 `{ key: 'full' }` 且配置字典被包裹在 `res.config` 内；统一在此解包收敛。
+   */
+  public async fetchGatewayConfig(profile?: string): Promise<Record<string, unknown>> {
+    let lastError: unknown;
+    if (this.restFallbackHandler) {
+      try {
+        const rest = await this.restFallbackHandler('/api/config', {
+          method: 'GET',
+          ...(profile ? { params: { profile } } : {}),
+        });
+        if (rest && typeof rest === 'object' && !Array.isArray(rest)) {
+          const obj = rest as Record<string, unknown>;
+          return obj.config && typeof obj.config === 'object' && !Array.isArray(obj.config)
+            ? (obj.config as Record<string, unknown>)
+            : obj;
+        }
+      } catch (err) {
+        lastError = err;
+        log.warn('REST /api/config failed, trying config.get WS fallback', err);
+      }
+    }
+
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const wsRes = await this.call<Record<string, unknown>>('config.get', {
+        key: 'full',
+        ...(profile ? { profile } : {}),
+      });
+      if (wsRes && typeof wsRes === 'object') {
+        const cfg = (wsRes as { config?: unknown }).config;
+        if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+          return cfg as Record<string, unknown>;
+        }
+        return wsRes;
+      }
+    }
+
+    if (lastError) {
+      throw lastError instanceof Error ? lastError : new Error(describeError(lastError));
+    }
+    throw new Error('网关未连接且无法读取配置');
+  }
+
+  public async getSessionUsage(liveSessionId: string, profile?: string): Promise<SessionUsageResult> {
+    return this.call<SessionUsageResult>('session.usage', {
+      session_id: liveSessionId,
+      ...(profile ? { profile } : {}),
+    });
+  }
+
+  public async getSessionContextBreakdown(
+    liveSessionId: string,
+    profile?: string
+  ): Promise<SessionContextBreakdownResult> {
+    return this.call<SessionContextBreakdownResult>('session.context_breakdown', {
+      session_id: liveSessionId,
+      ...(profile ? { profile } : {}),
+    });
+  }
+
+  public async compressSession(
+    liveSessionId: string,
+    profile?: string,
+    focusTopic?: string
+  ): Promise<SessionCompressResult> {
+    return this.call<SessionCompressResult>('session.compress', {
+      session_id: liveSessionId,
+      ...(profile ? { profile } : {}),
+      ...(focusTopic ? { focus_topic: focusTopic } : {}),
+    });
+  }
+
+  public async fetchSubagentTranscript(params: StoredTranscriptParams): Promise<StoredTranscriptResult> {
+    return this.call<StoredTranscriptResult>('session.transcript', {
+      session_id: params.session_id,
+      ...(params.profile ? { profile: params.profile } : {}),
+      ...(params.subagent_id ? { subagent_id: params.subagent_id } : {}),
+      ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+      ...(typeof params.limit === 'number' ? { limit: params.limit } : {}),
+      ...(params.order ? { order: params.order } : {}),
+      ...(typeof params.inline_images === 'boolean' ? { inline_images: params.inline_images } : {}),
+    });
+  }
+
+  public async listSpawnTrees(sessionId?: string, profile?: string, limit?: number): Promise<SpawnTreeListResult> {
+    return this.call<SpawnTreeListResult>('spawn_tree.list', {
+      ...(sessionId ? { session_id: sessionId } : {}),
+      ...(profile ? { profile } : {}),
+      ...(typeof limit === 'number' ? { limit } : {}),
+    });
+  }
+
+  public async loadSpawnTree(path: string, profile?: string): Promise<SpawnTreeLoadResult> {
+    return this.call<SpawnTreeLoadResult>('spawn_tree.load', {
+      path,
+      ...(profile ? { profile } : {}),
+    });
+  }
+
+  private handleMessage(raw: unknown): void {
+    if (typeof raw !== 'string') return;
+    try {
+      const data = JSON.parse(raw);
+      if (typeof data.id !== 'undefined' && this.pendingRequests.has(data.id)) {
+        // RPC Response
+        const pending = this.pendingRequests.get(data.id)!;
+        this.pendingRequests.delete(data.id);
+        clearTimeout(pending.timer);
+
+        if (data.error) {
+          pending.reject(data.error);
+        } else {
+          pending.resolve(data.result);
+        }
+      } else if (data.method) {
+        // RPC Notification or Server Event
+        const handlers = this.notificationHandlers.get(data.method);
+        if (handlers) {
+          handlers.forEach((fn) => fn(data.params));
+        }
+      }
+    } catch (e) {
+      console.warn('[HermesGatewayClient] JSON parse error on message:', e);
+    }
+  }
+}
+
+function normalizeSessionPagination(value: object): { returned?: number; total?: number } {
+  const pagination = value as { returned?: unknown; total?: unknown };
+  return {
+    ...(typeof pagination.returned === 'number' ? { returned: pagination.returned } : {}),
+    ...(typeof pagination.total === 'number' ? { total: pagination.total } : {}),
+  };
+}

@@ -1,0 +1,609 @@
+/**
+ * Hermes Flux 皮肤单一真值表（PR-1a 起为唯一皮肤源）。
+ * 设计意图(Why)：审查证实运行时皮肤此前只有 styles.css 手写块生效、registry 表零调用；
+   本表由 scripts/design-audit/emit-skins.mjs 从运行时块一次性提取，此后 styles.css 的皮肤
+   标记区只能由本表再生成（--emit/--check），改皮肤=改这张表，缺槽=编译错。
+ * 防范的历史坑(Pitfall)：多源漂移（三源）、suet-jade 幽灵皮肤、--bg-surface-1 类幽灵 Token
+   （pitfall-registry：存在≠生效、定义≠引用）。
+ * 约束与规则(Rules)：
+ *   1. 本表是唯一皮肤真值，styles.css 标记区外的手写规则不得再定义皮肤级变量。
+ *   2. 新增皮肤必须填满 SkinSlots 全部键，TS 编译强制；别名皮肤只进 SKIN_ALIASES。
+ *   3. 旧变量名以 alias 形式继续输出，组件波③迁移时逐舱删除对应 alias。
+ */
+export const SLOT_IDS = ['--background', '--card', '--card-hover', '--card-active', '--popover', '--sidebar', '--panel', '--input', '--code', '--backdrop', '--secondary', '--muted', '--foreground', '--secondary-foreground', '--muted-foreground', '--faint', '--primary', '--primary-hover', '--primary-dim', '--primary-glow', '--primary-subtle', '--primary-border', '--primary-foreground', '--ring', '--success', '--success-glow', '--warning', '--destructive', '--border', '--border-subtle', '--border-strong', '--shadow-window', '--shadow-card', '--shadow-dock', '--hl-comment', '--hl-string', '--hl-keyword', '--hl-number', '--hl-type', '--specular-line', '--theme-thumb-color', '--chat-user-message-bg', 'badge-palette'] as const;
+export type SlotId = (typeof SLOT_IDS)[number];
+export const BADGE_LANGS = ['ts', 'js', 'py', 'html', 'css'] as const;
+export type BadgeLang = (typeof BADGE_LANGS)[number];
+export type BadgePalette = { [lang in BadgeLang]: { bg: string; text: string; border: string } };
+export const BADGE_PALETTES: Record<string, BadgePalette> = {
+  "palette-1": {
+    "ts": {
+      "bg": "rgba(59, 130, 246, 0.16)",
+      "text": "#60A5FA",
+      "border": "rgba(59, 130, 246, 0.35)"
+    },
+    "js": {
+      "bg": "rgba(245, 158, 11, 0.16)",
+      "text": "#FBBF24",
+      "border": "rgba(245, 158, 11, 0.35)"
+    },
+    "py": {
+      "bg": "rgba(56, 189, 248, 0.16)",
+      "text": "#38BDF8",
+      "border": "rgba(56, 189, 248, 0.35)"
+    },
+    "html": {
+      "bg": "rgba(249, 115, 22, 0.16)",
+      "text": "#FB923C",
+      "border": "rgba(249, 115, 22, 0.35)"
+    },
+    "css": {
+      "bg": "rgba(168, 85, 247, 0.16)",
+      "text": "#C084FC",
+      "border": "rgba(168, 85, 247, 0.35)"
+    }
+  },
+  "palette-2": {
+    "ts": {
+      "bg": "rgba(37, 99, 235, 0.08)",
+      "text": "#1D4ED8",
+      "border": "rgba(37, 99, 235, 0.24)"
+    },
+    "js": {
+      "bg": "rgba(217, 119, 6, 0.08)",
+      "text": "#B45309",
+      "border": "rgba(217, 119, 6, 0.24)"
+    },
+    "py": {
+      "bg": "rgba(2, 132, 199, 0.08)",
+      "text": "#0369A1",
+      "border": "rgba(2, 132, 199, 0.24)"
+    },
+    "html": {
+      "bg": "rgba(234, 88, 12, 0.08)",
+      "text": "#C2410C",
+      "border": "rgba(234, 88, 12, 0.24)"
+    },
+    "css": {
+      "bg": "rgba(147, 51, 234, 0.08)",
+      "text": "#7E22CE",
+      "border": "rgba(147, 51, 234, 0.24)"
+    }
+  },
+  "palette-3": {
+    "ts": {
+      "bg": "rgba(74, 168, 200, 0.08)",
+      "text": "#2F9BCE",
+      "border": "rgba(74, 168, 200, 0.28)"
+    },
+    "js": {
+      "bg": "rgba(237, 152, 46, 0.08)",
+      "text": "#ED982E",
+      "border": "rgba(237, 152, 46, 0.28)"
+    },
+    "py": {
+      "bg": "rgba(47, 155, 206, 0.08)",
+      "text": "#2F9BCE",
+      "border": "rgba(47, 155, 206, 0.28)"
+    },
+    "html": {
+      "bg": "rgba(239, 125, 113, 0.08)",
+      "text": "#EF7D71",
+      "border": "rgba(239, 125, 113, 0.28)"
+    },
+    "css": {
+      "bg": "rgba(123, 60, 218, 0.08)",
+      "text": "#7B3CDA",
+      "border": "rgba(123, 60, 218, 0.28)"
+    }
+  }
+};
+export interface SkinDefinition { label: string; variant: 'dark' | 'light'; slots: Record<SlotId, string>; sources: Record<SlotId, string> }
+export const SKINS: Record<string, SkinDefinition> = {
+  "obsidian-gold": {
+    "label": "黑曜琥珀",
+    "variant": "dark",
+    "slots": {
+      "--background": "#0E0F13",
+      "--card": "#1B1C23",
+      "--card-hover": "#22242D",
+      "--card-active": "#292B37",
+      "--popover": "#1B1C23",
+      "--sidebar": "#131419",
+      "--panel": "#16171D",
+      "--input": "#131419",
+      "--code": "#0E0F13",
+      "--backdrop": "rgba(20, 21, 28, 0.90)",
+      "--secondary": "#16171D",
+      "--muted": "#1B1C23",
+      "--foreground": "#E8E9EC",
+      "--secondary-foreground": "#9CA3AF",
+      "--muted-foreground": "#8E949E",
+      "--faint": "#3E4148",
+      "--primary": "#FFFFFF",
+      "--primary-hover": "#E5E7EB",
+      "--primary-dim": "#9CA3AF",
+      "--primary-glow": "rgba(255, 255, 255, 0.12)",
+      "--primary-subtle": "rgba(255, 255, 255, 0.06)",
+      "--primary-border": "rgba(255, 255, 255, 0.20)",
+      "--primary-foreground": "#0E0F13",
+      "--ring": "rgba(255, 255, 255, 0.30)",
+      "--success": "#10B981",
+      "--success-glow": "rgba(16, 185, 129, 0.20)",
+      "--warning": "#F59E0B",
+      "--destructive": "#EF4444",
+      "--border": "rgba(255, 255, 255, 0.09)",
+      "--border-subtle": "rgba(255, 255, 255, 0.06)",
+      "--border-strong": "rgba(255, 255, 255, 0.16)",
+      "--shadow-window": "0 8px 32px rgba(0, 0, 0, 0.45)",
+      "--shadow-card": "0 1px 3px rgba(0, 0, 0, 0.25)",
+      "--shadow-dock": "0 6px 24px rgba(0, 0, 0, 0.35)",
+      "--hl-comment": "#636773",
+      "--hl-string": "#E5E7EB",
+      "--hl-keyword": "#FFFFFF",
+      "--hl-number": "#D1D5DB",
+      "--specular-line": "inset 0 1px 0 0 rgba(255, 255, 255, 0.05)",
+      "--theme-thumb-color": "#1B1C23",
+      "--hl-type": "#A78BFA",
+      "--chat-user-message-bg": "#1C1E26",
+      "badge-palette": "palette-1"
+    },
+    "sources": {
+      "--background": "HEAD:--bg-window",
+      "--card": "HEAD:--bg-card",
+      "--card-hover": "HEAD:--bg-card-hover",
+      "--card-active": "HEAD:--bg-card-active",
+      "--popover": "HEAD:--bg-elevated",
+      "--sidebar": "HEAD:--bg-rail",
+      "--panel": "HEAD:--bg-panel",
+      "--input": "HEAD:--bg-input",
+      "--code": "HEAD:--bg-code",
+      "--backdrop": "HEAD:--bg-backdrop",
+      "--secondary": "HEAD:--bg-panel",
+      "--muted": "HEAD:--bg-elevated",
+      "--foreground": "HEAD:--text-main",
+      "--secondary-foreground": "HEAD:--text-secondary",
+      "--muted-foreground": "HEAD:--text-muted",
+      "--faint": "HEAD:--text-faint",
+      "--primary": "HEAD:--accent",
+      "--primary-hover": "HEAD:--accent-hover",
+      "--primary-dim": "HEAD:--accent-dim",
+      "--primary-glow": "HEAD:--accent-glow",
+      "--primary-subtle": "HEAD:--accent-subtle",
+      "--primary-border": "HEAD:--accent-border",
+      "--primary-foreground": "HEAD:--accent-text",
+      "--ring": "HEAD:--accent",
+      "--success": "HEAD:--jade-pulse",
+      "--success-glow": "HEAD:--jade-glow",
+      "--warning": "CONST:#F59E0B",
+      "--destructive": "CONST:#EF4444",
+      "--border": "HEAD:--border-medium",
+      "--border-subtle": "HEAD:--border-subtle",
+      "--border-strong": "HEAD:--border-strong",
+      "--shadow-window": "HEAD:--shadow-window",
+      "--shadow-card": "HEAD:--shadow-card",
+      "--shadow-dock": "HEAD:--shadow-dock",
+      "--hl-comment": "HEAD:--hl-comment",
+      "--hl-string": "HEAD:--hl-string",
+      "--hl-keyword": "HEAD:--hl-keyword",
+      "--hl-number": "HEAD:--hl-number",
+      "--hl-type": "HEAD:--hl-number",
+      "--specular-line": "HEAD:--specular-line",
+      "--theme-thumb-color": "HEAD:--theme-thumb-color",
+      "--chat-user-message-bg": "DERIVE:--card",
+      "badge-palette": "PALETTE:palette-1"
+    }
+  },
+  "jade-white": {
+    "label": "极简冷灰",
+    "variant": "light",
+    "slots": {
+      "--background": "#F8F9FA",
+      "--card": "#FFFFFF",
+      "--card-hover": "#F1F3F6",
+      "--card-active": "#E5E7EB",
+      "--popover": "#FFFFFF",
+      "--sidebar": "#F1F3F6",
+      "--panel": "#FFFFFF",
+      "--input": "#F8F9FA",
+      "--code": "#F1F3F5",
+      "--backdrop": "rgba(248, 249, 250, 0.85)",
+      "--secondary": "#F1F3F6",
+      "--muted": "#FFFFFF",
+      "--foreground": "#111827",
+      "--secondary-foreground": "#4B5563",
+      "--muted-foreground": "#616873",
+      "--faint": "#D1D5DB",
+      "--primary": "#0D7A5E",
+      "--primary-hover": "#0B6850",
+      "--primary-dim": "#095743",
+      "--primary-glow": "rgba(13, 122, 94, 0.14)",
+      "--primary-subtle": "rgba(13, 122, 94, 0.08)",
+      "--primary-border": "rgba(13, 122, 94, 0.25)",
+      "--primary-foreground": "#FFFFFF",
+      "--ring": "#0D7A5E",
+      "--success": "#047857",
+      "--success-glow": "rgba(16, 185, 129, 0.25)",
+      "--warning": "#B45309",
+      "--destructive": "#DC2626",
+      "--border": "rgba(0, 0, 0, 0.10)",
+      "--border-subtle": "rgba(0, 0, 0, 0.06)",
+      "--border-strong": "rgba(0, 0, 0, 0.20)",
+      "--shadow-window": "0 12px 36px rgba(0, 0, 0, 0.10)",
+      "--shadow-card": "0 1px 3px rgba(0, 0, 0, 0.05)",
+      "--shadow-dock": "0 8px 24px rgba(0, 0, 0, 0.08)",
+      "--hl-comment": "#6E7781",
+      "--hl-string": "#0A3069",
+      "--hl-keyword": "#CF222E",
+      "--hl-number": "#8250DF",
+      "--specular-line": "inset 0 1px 0 0 rgba(255, 255, 255, 0.90)",
+      "--theme-thumb-color": "#FFFFFF",
+      "--hl-type": "#8250DF",
+      "--chat-user-message-bg": "#FFFFFF",
+      "badge-palette": "palette-2"
+    },
+    "sources": {
+      "--background": "HEAD:--bg-window",
+      "--card": "HEAD:--bg-card",
+      "--card-hover": "HEAD:--bg-card-hover",
+      "--card-active": "HEAD:--bg-card-active",
+      "--popover": "HEAD:--bg-elevated",
+      "--sidebar": "HEAD:--bg-rail",
+      "--panel": "HEAD:--bg-panel",
+      "--input": "HEAD:--bg-input",
+      "--code": "HEAD:--bg-code",
+      "--backdrop": "HEAD:--bg-backdrop",
+      "--secondary": "HEAD:--bg-panel",
+      "--muted": "HEAD:--bg-elevated",
+      "--foreground": "HEAD:--text-main",
+      "--secondary-foreground": "HEAD:--text-secondary",
+      "--muted-foreground": "HEAD:--text-muted",
+      "--faint": "HEAD:--text-faint",
+      "--primary": "HEAD:--accent",
+      "--primary-hover": "HEAD:--accent-hover",
+      "--primary-dim": "HEAD:--accent-dim",
+      "--primary-glow": "HEAD:--accent-glow",
+      "--primary-subtle": "HEAD:--accent-subtle",
+      "--primary-border": "HEAD:--accent-border",
+      "--primary-foreground": "HEAD:--accent-text",
+      "--ring": "HEAD:--accent",
+      "--success": "HEAD:--jade-pulse",
+      "--success-glow": "HEAD:--jade-glow",
+      "--warning": "CONST:#B45309",
+      "--destructive": "HEAD:--danger-color",
+      "--border": "HEAD:--border-medium",
+      "--border-subtle": "HEAD:--border-subtle",
+      "--border-strong": "HEAD:--border-strong",
+      "--shadow-window": "HEAD:--shadow-window",
+      "--shadow-card": "HEAD:--shadow-card",
+      "--shadow-dock": "HEAD:--shadow-dock",
+      "--hl-comment": "HEAD:--hl-comment",
+      "--hl-string": "HEAD:--hl-string",
+      "--hl-keyword": "HEAD:--hl-keyword",
+      "--hl-number": "HEAD:--hl-number",
+      "--hl-type": "HEAD:--hl-number",
+      "--specular-line": "HEAD:--specular-line",
+      "--theme-thumb-color": "HEAD:--theme-thumb-color",
+      "--chat-user-message-bg": "DERIVE:--card",
+      "badge-palette": "PALETTE:palette-2"
+    }
+  },
+  "warm-paper": {
+    "label": "经典暖白",
+    "variant": "light",
+    "slots": {
+      "--background": "#F9F9F8",
+      "--card": "#FFFFFF",
+      "--card-hover": "#ECEBE5",
+      "--card-active": "#E3E1DA",
+      "--popover": "#FFFFFF",
+      "--sidebar": "#F4F4F1",
+      "--panel": "#EEEDE8",
+      "--input": "#FFFFFF",
+      "--code": "#F6F8FA",
+      "--backdrop": "rgba(249, 249, 248, 0.90)",
+      "--secondary": "#EEEDE8",
+      "--muted": "#FFFFFF",
+      "--foreground": "#1F2328",
+      "--secondary-foreground": "#57606A",
+      "--muted-foreground": "#57626F",
+      "--faint": "#AFB8C1",
+      "--primary": "#2563EB",
+      "--primary-hover": "#1D4ED8",
+      "--primary-dim": "#1E40AF",
+      "--primary-glow": "rgba(37, 99, 235, 0.16)",
+      "--primary-subtle": "rgba(37, 99, 235, 0.08)",
+      "--primary-border": "rgba(37, 99, 235, 0.28)",
+      "--primary-foreground": "#FFFFFF",
+      "--ring": "#2563EB",
+      "--success": "#047857",
+      "--success-glow": "rgba(16, 185, 129, 0.40)",
+      "--warning": "#B45309",
+      "--destructive": "#DC2626",
+      "--border": "rgba(31, 35, 40, 0.14)",
+      "--border-subtle": "rgba(31, 35, 40, 0.08)",
+      "--border-strong": "rgba(31, 35, 40, 0.22)",
+      "--shadow-window": "0 20px 50px -10px rgba(31, 35, 40, 0.08)",
+      "--shadow-card": "0 1px 3px rgba(31, 35, 40, 0.05)",
+      "--shadow-dock": "0 12px 32px -4px rgba(31, 35, 40, 0.06), 0 2px 8px rgba(31, 35, 40, 0.04)",
+      "--hl-comment": "#6E7781",
+      "--hl-string": "#0A3069",
+      "--hl-keyword": "#116329",
+      "--hl-number": "#953800",
+      "--specular-line": "inset 0 1px 0 0 rgba(255, 255, 255, 0.90)",
+      "--theme-thumb-color": "#FFFFFF",
+      "--hl-type": "#953800",
+      "--chat-user-message-bg": "#FFFFFF",
+      "badge-palette": "palette-2"
+    },
+    "sources": {
+      "--background": "HEAD:--bg-window",
+      "--card": "HEAD:--bg-card",
+      "--card-hover": "HEAD:--bg-card-hover",
+      "--card-active": "HEAD:--bg-card-active",
+      "--popover": "HEAD:--bg-elevated",
+      "--sidebar": "HEAD:--bg-rail",
+      "--panel": "HEAD:--bg-panel",
+      "--input": "HEAD:--bg-input",
+      "--code": "HEAD:--bg-code",
+      "--backdrop": "HEAD:--bg-backdrop",
+      "--secondary": "HEAD:--bg-panel",
+      "--muted": "HEAD:--bg-elevated",
+      "--foreground": "HEAD:--text-main",
+      "--secondary-foreground": "HEAD:--text-secondary",
+      "--muted-foreground": "HEAD:--text-muted",
+      "--faint": "HEAD:--text-faint",
+      "--primary": "HEAD:--accent",
+      "--primary-hover": "HEAD:--accent-hover",
+      "--primary-dim": "HEAD:--accent-dim",
+      "--primary-glow": "HEAD:--accent-glow",
+      "--primary-subtle": "HEAD:--accent-subtle",
+      "--primary-border": "HEAD:--accent-border",
+      "--primary-foreground": "HEAD:--accent-text",
+      "--ring": "HEAD:--accent",
+      "--success": "HEAD:--jade-pulse",
+      "--success-glow": "HEAD:--jade-glow",
+      "--warning": "CONST:#B45309",
+      "--destructive": "HEAD:--danger-color",
+      "--border": "HEAD:--border-medium",
+      "--border-subtle": "HEAD:--border-subtle",
+      "--border-strong": "HEAD:--border-strong",
+      "--shadow-window": "HEAD:--shadow-window",
+      "--shadow-card": "HEAD:--shadow-card",
+      "--shadow-dock": "HEAD:--shadow-dock",
+      "--hl-comment": "HEAD:--hl-comment",
+      "--hl-string": "HEAD:--hl-string",
+      "--hl-keyword": "HEAD:--hl-keyword",
+      "--hl-number": "HEAD:--hl-number",
+      "--hl-type": "HEAD:--hl-number",
+      "--specular-line": "HEAD:--specular-line",
+      "--theme-thumb-color": "HEAD:--theme-thumb-color",
+      "--chat-user-message-bg": "DERIVE:--card",
+      "badge-palette": "PALETTE:palette-2"
+    }
+  },
+  "ayu-light": {
+    "label": "Ayu 晨曦",
+    "variant": "light",
+    "slots": {
+      "--background": "#FDFAF4",
+      "--card": "#FAF6ED",
+      "--card-hover": "#EFE9DC",
+      "--card-active": "#E6DFD0",
+      "--popover": "#FAF6ED",
+      "--sidebar": "#F7F3EB",
+      "--panel": "#FDFAF4",
+      "--input": "#FCF9F3",
+      "--code": "#FCF9F3",
+      "--backdrop": "rgba(253, 250, 244, 0.92)",
+      "--secondary": "#F7F3EB",
+      "--muted": "#FAF6ED",
+      "--foreground": "#24292F",
+      "--secondary-foreground": "#4F5964",
+      "--muted-foreground": "#57606A",
+      "--faint": "#C6BFAF",
+      "--primary": "#4AA8C8",
+      "--primary-hover": "#6EB8D1",
+      "--primary-dim": "#4394B0",
+      "--primary-glow": "rgba(74, 168, 200, 0.20)",
+      "--primary-subtle": "rgba(74, 168, 200, 0.10)",
+      "--primary-border": "rgba(74, 168, 200, 0.30)",
+      "--primary-foreground": "#0E0F13",
+      "--ring": "rgba(74, 168, 200, 0.35)",
+      "--success": "#5FB978",
+      "--success-glow": "rgba(95, 185, 120, 0.35)",
+      "--warning": "#EA9F41",
+      "--destructive": "#B4343B",
+      "--border": "#ECE5D9",
+      "--border-subtle": "#E6DDCF",
+      "--border-strong": "#B09F8F",
+      "--shadow-window": "0 20px 50px -10px rgba(27, 35, 43, 0.08)",
+      "--shadow-card": "0 1px 3px rgba(27, 35, 43, 0.05)",
+      "--shadow-dock": "0 12px 32px -4px rgba(27, 35, 43, 0.07), 0 2px 8px rgba(27, 35, 43, 0.03)",
+      "--hl-comment": "#77818D",
+      "--hl-string": "#7FAD00",
+      "--hl-keyword": "#4AA8C8",
+      "--hl-number": "#EF7D71",
+      "--hl-type": "#ED982E",
+      "--specular-line": "inset 0 1px 0 0 rgba(255, 255, 255, 0.85)",
+      "--theme-thumb-color": "#FDFAF4",
+      "--chat-user-message-bg": "#FFF7E5",
+      "badge-palette": "palette-3"
+    },
+    "sources": {
+      "--background": "HEAD:--bg-window",
+      "--card": "HEAD:--bg-card",
+      "--card-hover": "HEAD:--bg-card-hover",
+      "--card-active": "HEAD:--bg-card-active",
+      "--popover": "HEAD:--bg-elevated",
+      "--sidebar": "HEAD:--bg-rail",
+      "--panel": "HEAD:--bg-panel",
+      "--input": "HEAD:--bg-input",
+      "--code": "HEAD:--bg-code",
+      "--backdrop": "HEAD:--bg-backdrop",
+      "--secondary": "HEAD:--bg-panel",
+      "--muted": "HEAD:--bg-elevated",
+      "--foreground": "HEAD:--text-main",
+      "--secondary-foreground": "HEAD:--text-secondary",
+      "--muted-foreground": "HEAD:--text-muted",
+      "--faint": "HEAD:--text-faint",
+      "--primary": "HEAD:--accent",
+      "--primary-hover": "HEAD:--accent-hover",
+      "--primary-dim": "HEAD:--accent-dim",
+      "--primary-glow": "HEAD:--accent-glow",
+      "--primary-subtle": "HEAD:--accent-subtle",
+      "--primary-border": "HEAD:--accent-border",
+      "--primary-foreground": "HEAD:--accent-text",
+      "--ring": "HEAD:--accent",
+      "--success": "HEAD:--jade-pulse",
+      "--success-glow": "HEAD:--jade-glow",
+      "--warning": "CONST:#EA9F41",
+      "--destructive": "HEAD:--danger-color",
+      "--border": "HEAD:--border-medium",
+      "--border-subtle": "HEAD:--border-subtle",
+      "--border-strong": "HEAD:--border-strong",
+      "--shadow-window": "HEAD:--shadow-window",
+      "--shadow-card": "HEAD:--shadow-card",
+      "--shadow-dock": "HEAD:--shadow-dock",
+      "--hl-comment": "HEAD:--hl-comment",
+      "--hl-string": "HEAD:--hl-string",
+      "--hl-keyword": "HEAD:--hl-keyword",
+      "--hl-number": "HEAD:--hl-number",
+      "--hl-type": "HEAD:--hl-type",
+      "--specular-line": "HEAD:--specular-line",
+      "--theme-thumb-color": "HEAD:--theme-thumb-color",
+      "--chat-user-message-bg": "HEAD:--chat-user-message-bg",
+      "badge-palette": "PALETTE:palette-3"
+    }
+  },
+  "ayu-dark": {
+    "label": "Ayu 暗夜",
+    "variant": "dark",
+    "slots": {
+      "--background": "#0F1419",
+      "--card": "#17202A",
+      "--card-hover": "#1E252D",
+      "--card-active": "#252E38",
+      "--popover": "#17202A",
+      "--sidebar": "#18222C",
+      "--panel": "#0F1419",
+      "--input": "#141C25",
+      "--code": "#141C25",
+      "--backdrop": "rgba(15, 20, 25, 0.92)",
+      "--secondary": "#18222C",
+      "--muted": "#17202A",
+      "--foreground": "#D6DAE0",
+      "--secondary-foreground": "#A3ADBA",
+      "--muted-foreground": "#8D96A2",
+      "--faint": "#415063",
+      "--primary": "#3FB7E3",
+      "--primary-hover": "#389FC5",
+      "--primary-dim": "#5BC1E7",
+      "--primary-glow": "rgba(63, 183, 227, 0.25)",
+      "--primary-subtle": "rgba(63, 183, 227, 0.14)",
+      "--primary-border": "rgba(63, 183, 227, 0.26)",
+      "--primary-foreground": "#0F1419",
+      "--ring": "rgba(63, 183, 227, 0.25)",
+      "--success": "#78D05C",
+      "--success-glow": "rgba(120, 208, 92, 0.22)",
+      "--warning": "#E4A75C",
+      "--destructive": "#F58572",
+      "--border": "#292C30",
+      "--border-subtle": "#2B3440",
+      "--border-strong": "#56647C",
+      "--shadow-window": "0 16px 40px rgba(0, 0, 0, 0.55)",
+      "--shadow-card": "0 2px 10px rgba(0, 0, 0, 0.28)",
+      "--shadow-dock": "0 16px 40px rgba(0, 0, 0, 0.55)",
+      "--hl-comment": "#A3ADBA",
+      "--hl-string": "#B1C74A",
+      "--hl-keyword": "#3FB7E3",
+      "--hl-number": "#F2856F",
+      "--hl-type": "#E4A75C",
+      "--specular-line": "inset 0 1px 0 0 rgba(255, 255, 255, 0.05)",
+      "--theme-thumb-color": "#17202A",
+      "--chat-user-message-bg": "#1D2935",
+      "badge-palette": "palette-1"
+    },
+    "sources": {
+      "--background": "OPENCHAMBER:ayu-dark.surface.background",
+      "--card": "OPENCHAMBER:ayu-dark.surface.elevated",
+      "--card-hover": "OPENCHAMBER:ayu-dark.surface.subtle",
+      "--card-active": "DERIVE:ayu-dark.card-active",
+      "--popover": "OPENCHAMBER:ayu-dark.surface.elevated",
+      "--sidebar": "OPENCHAMBER:ayu-dark.surface.muted",
+      "--panel": "OPENCHAMBER:ayu-dark.surface.background",
+      "--input": "OPENCHAMBER:ayu-dark.syntax.base.background",
+      "--code": "OPENCHAMBER:ayu-dark.syntax.base.background",
+      "--backdrop": "DERIVE:ayu-dark.backdrop",
+      "--secondary": "OPENCHAMBER:ayu-dark.surface.muted",
+      "--muted": "OPENCHAMBER:ayu-dark.surface.elevated",
+      "--foreground": "OPENCHAMBER:ayu-dark.surface.foreground",
+      "--secondary-foreground": "OPENCHAMBER:ayu-dark.tools.description",
+      "--muted-foreground": "DERIVE:ayu-dark.mutedForeground-AA",
+      "--faint": "OPENCHAMBER:ayu-dark.syntax.highlights.lineNumber",
+      "--primary": "OPENCHAMBER:ayu-dark.primary.base",
+      "--primary-hover": "OPENCHAMBER:ayu-dark.primary.hover",
+      "--primary-dim": "OPENCHAMBER:ayu-dark.primary.active",
+      "--primary-glow": "DERIVE:ayu-dark.primary-glow",
+      "--primary-subtle": "DERIVE:ayu-dark.primary-subtle",
+      "--primary-border": "DERIVE:ayu-dark.primary-border",
+      "--primary-foreground": "OPENCHAMBER:ayu-dark.primary.foreground",
+      "--ring": "OPENCHAMBER:ayu-dark.interactive.focusRing",
+      "--success": "OPENCHAMBER:ayu-dark.status.success",
+      "--success-glow": "DERIVE:ayu-dark.success-glow",
+      "--warning": "OPENCHAMBER:ayu-dark.status.warning",
+      "--destructive": "OPENCHAMBER:ayu-dark.status.error",
+      "--border": "OPENCHAMBER:ayu-dark.interactive.border",
+      "--border-subtle": "OPENCHAMBER:ayu-dark.chat.divider",
+      "--border-strong": "OPENCHAMBER:ayu-dark.interactive.borderFocus",
+      "--shadow-window": "CONST:shadow-window",
+      "--shadow-card": "CONST:shadow-card",
+      "--shadow-dock": "CONST:shadow-dock",
+      "--hl-comment": "OPENCHAMBER:ayu-dark.syntax.base.comment",
+      "--hl-string": "OPENCHAMBER:ayu-dark.syntax.base.string",
+      "--hl-keyword": "OPENCHAMBER:ayu-dark.syntax.base.keyword",
+      "--hl-number": "OPENCHAMBER:ayu-dark.syntax.base.number",
+      "--hl-type": "OPENCHAMBER:ayu-dark.syntax.base.type",
+      "--specular-line": "CONST:specular-line",
+      "--theme-thumb-color": "OPENCHAMBER:ayu-dark.surface.elevated",
+      "--chat-user-message-bg": "OPENCHAMBER:ayu-dark.chat.userMessageBackground",
+      "badge-palette": "PALETTE:palette-1"
+    }
+  }
+};
+export const LEGACY_VAR_NAMES = ["--bg-window","--bg-card","--bg-card-hover","--bg-card-active","--bg-elevated","--bg-rail","--bg-panel","--bg-input","--bg-code","--bg-backdrop","--text-main","--text-secondary","--text-muted","--text-faint","--accent","--accent-hover","--accent-dim","--accent-glow","--accent-subtle","--accent-border","--accent-text","--jade-pulse","--jade-glow","--danger-color","--border-medium","--badge-ts-bg","--badge-ts-text","--badge-ts-border","--badge-js-bg","--badge-js-text","--badge-js-border","--badge-py-bg","--badge-py-text","--badge-py-border","--badge-html-bg","--badge-html-text","--badge-html-border","--badge-css-bg","--badge-css-text","--badge-css-border"] as const;
+export const SKIN_ALIASES: Record<string, string> = {"suet-jade":"jade-white"};
+export type SkinId = 'obsidian-gold' | 'suet-jade' | 'jade-white' | 'warm-paper' | 'ayu-light' | 'ayu-dark';
+
+/**
+ * 皮肤 ID 全集。
+ * 【设计意图】从 SKINS 与 SKIN_ALIASES 派生，杜绝"第三份手写注册表"漂移：
+ *   新增皮肤只要进 SKINS 或 SKIN_ALIASES，解析、校验、切换三条路径自动同时生效。
+ * 【防范的历史坑】此处曾是手写字面量数组，与 SKINS 各自演化，导致 suet-jade 幽灵别名长期对不上。
+ */
+export const SKIN_IDS: readonly SkinId[] = Object.freeze([
+  ...Object.keys(SKINS),
+  ...Object.keys(SKIN_ALIASES),
+]) as readonly SkinId[];
+
+export function resolveSkinId(savedTheme: string | null | undefined): SkinId {
+  if (!savedTheme) return 'obsidian-gold';
+  return SKIN_IDS.find((skinId) => skinId === savedTheme) ?? 'obsidian-gold';
+}
+
+/**
+ * 深/浅皮肤互切的目标皮肤（暗 ↔ ayu-light）。
+ *
+ * 【设计意图】顶栏的深浅色切换按钮已由用户裁决删除，生产侧当前无消费者；
+ *   但它是被 layout.test.mjs 钉死语义的纯函数（暗皮肤一律切到 ayu-light，
+ *   浅皮肤一律切回 obsidian-gold），保留它意味着"主题快速切换"能力还在，
+ *   只是入口收敛到设置中心 / Ctrl+,，不需要在控制器里再写一遍判定。
+ * 【约束与规则】表驱动，别名先经 SKIN_ALIASES 解析；不得硬编码皮肤键列表。
+ */
+export function getToggleTheme(currentTheme: string): 'obsidian-gold' | 'ayu-light' {
+  const resolved = SKIN_ALIASES[currentTheme] ?? currentTheme;
+  const skin = SKINS[resolved];
+  const isLight = skin ? skin.variant === 'light' : false;
+  return isLight ? 'obsidian-gold' : 'ayu-light';
+}
+

@@ -1,0 +1,1124 @@
+/**
+ * JSON-RPC 2.0 & Hermes Protocol Type Definitions
+ */
+
+export type {
+  Room,
+  RoomMember,
+  RoomDriverStatus,
+  RoomMemberActivity,
+  RoomContext,
+  SessionLiveInfo,
+  Usage,
+  SessionUsageResult,
+  SessionUsagePayload,
+  SessionContextBreakdownResult,
+  ContextCategory,
+  ContextFileSource,
+  SessionCompressResult,
+  StoredTranscriptParams,
+  StoredTranscriptResult,
+  StoredTranscriptRow,
+  SpawnTreeListParams,
+  SpawnTreeListResult,
+  SpawnTreeEntry,
+  SpawnTreeLoadParams,
+  SpawnTreeLoadResult,
+  SubagentSnapshot,
+  FailedDelegation,
+  SubagentEventPayload,
+  SubagentOutputTailEntry,
+} from './contracts/gateway-contract.generated.js';
+
+import type {
+  Room as ContractRoom,
+  RoomDriverStatus as ContractRoomDriverStatus,
+  RoomContext as ContractRoomContext,
+  SubagentSnapshot as ContractSubagentSnapshot,
+  FailedDelegation as ContractFailedDelegation,
+} from './contracts/gateway-contract.generated.js';
+
+export interface JsonRpcRequest<T = unknown> {
+  jsonrpc: '2.0';
+  id: string | number;
+  method: string;
+  params?: T;
+}
+
+export interface JsonRpcResponse<T = unknown> {
+  jsonrpc: '2.0';
+  id: string | number;
+  result?: T;
+  error?: JsonRpcError;
+}
+
+export interface JsonRpcError {
+  code: number;
+  message: string;
+  data?: unknown;
+}
+
+export interface JsonRpcNotification<T = unknown> {
+  jsonrpc: '2.0';
+  method: string;
+  params?: T;
+}
+
+export type GatewayEventName =
+  | 'session.created'
+  | 'session.updated'
+  | 'session.deleted'
+  | 'stream.token'
+  | 'stream.thought'
+  | 'tool.start'
+  | 'tool.output'
+  | 'tool.finish'
+  | 'intervention.request'
+  | 'intervention.resolved'
+  | 'gateway.heartbeat';
+
+export interface StreamTokenEvent {
+  sessionId: string;
+  messageId: string;
+  delta: string;
+  index: number;
+  timestamp: number;
+}
+
+export interface StreamThoughtEvent {
+  sessionId: string;
+  messageId: string;
+  delta: string;
+  timestamp: number;
+}
+
+export interface ToolStartEvent {
+  sessionId: string;
+  toolCallId: string;
+  toolName: string;
+  parameters: Record<string, unknown>;
+  timestamp: number;
+}
+
+export interface ToolOutputEvent {
+  sessionId: string;
+  toolCallId: string;
+  delta: string;
+  timestamp: number;
+}
+
+export interface SessionItemPayload {
+  id: string;
+  title?: string;
+  model?: string;
+  started_at?: number | string;
+  last_active?: number | string;
+  created_at?: number | string;
+  preview?: string;
+  archived?: boolean;
+}
+
+export interface SessionListResult {
+  sessions?: SessionItemPayload[];
+  data?: SessionItemPayload[];
+}
+
+export interface ModelProviderOption {
+  provider?: string;
+  id?: string;
+  models?: Array<string | { id: string; name?: string }>;
+}
+
+export interface ModelDetail {
+  id: string;
+  provider: string;
+  name: string;
+  displayName: string;
+  contextLength?: number;
+}
+
+export interface ModelOptionsResult {
+  model?: string;
+  models?: string[];
+  providers?: ModelProviderOption[];
+  data?: Array<string | { id: string; name?: string }>;
+}
+
+export interface AgentProfile {
+  name: string;
+  displayName: string;
+  description?: string;
+  avatar?: string;
+  model?: string;
+  lastMessage?: string;
+  lastTime?: string;
+  timestamp?: number;
+  isDefault?: boolean;
+  /** 网关原生返回的最新会话快照（用于副标题与活跃时间联动） */
+  last_session?: {
+    preview?: string;
+    title?: string;
+    last_active?: number;
+    started_at?: number;
+  };
+  /** 网关是否已为该 Bot 上传头像资产（profiles.list 的 has_avatar） */
+  hasAvatar?: boolean;
+  /**
+   * 网关侧的 UI 元数据透传（原样保留，禁止在归一化层裁剪）。
+   *
+   * 【设计意图 (Why)】
+   * 官方桌面端把"多 Agent 研讨群聊房间"持久化在 profile 的
+   * `ui_meta['hermes-bots-groups'].rooms` 中，而不是 hosted room 服务里。
+   *
+   * 【防范的历史坑 (Pitfall)】
+   * 归一化曾只挑 name/displayName/avatar 等少数字段，把 ui_meta 整体丢弃，
+   * 导致旧群聊房间与其历史发言永远查不到（groups.log 对这类房间返回 4112）。
+   *
+   * 【规则 (Rules)】
+   * 该字段必须原样透传，任何层都不得裁剪或重命名其内部键。
+   */
+  uiMeta?: ProfileUiMeta;
+}
+
+/** profile.ui_meta 的已知子结构（保留未知键，网关可能扩展） */
+export interface ProfileUiMeta {
+  'hermes-bots-groups'?: {
+    rooms?: Record<string, HermesBotsGroupRoom>;
+  };
+  [key: string]: unknown;
+}
+
+/** 官方桌面端持久化在 ui_meta 中的群聊房间（含完整本地发言日志） */
+export interface HermesBotsGroupRoom {
+  roomId?: string;
+  name?: string;
+  members?: Array<string | { name?: string; handle?: string; profile?: string }>;
+  log?: Array<{
+    id?: string;
+    from?: { kind?: string; name?: string };
+    text?: string;
+    at?: number;
+    thread?: string;
+  }>;
+  createdAt?: number;
+  updatedAt?: number;
+  [key: string]: unknown;
+}
+
+export interface NormalizedSession {
+  id: string;
+  title: string;
+  model: string;
+  time: string;
+  preview: string;
+  isArchived: boolean;
+  timestamp: number;
+  /** 网关 hidden 标记（Bot 终身主工位等内部会话），不可进入用户时间线 */
+  hidden?: boolean;
+  /** 网关 unread 标记（持久化的未读态） */
+  unread?: boolean;
+  /** 网关 pinned 标记 */
+  pinned?: boolean;
+  /** timestamp 取自哪个字段：last_active / started_at / created_at / none */
+  timeSource?: string;
+  /** 网关权威时间戳（未被本地乐观置顶覆盖前的原值），供副标题缓存做失效键 */
+  authoritativeTimestamp?: number;
+  botName?: string;
+  botDisplayName?: string;
+  botAvatar?: string;
+  projectId?: string;
+  projectName?: string;
+  cwd?: string;
+  parentSessionId?: string;
+  source?: string;
+  isSubagent?: boolean;
+}
+
+/**
+ * 会话元数据与血缘契约 (Session Lineage & Metadata Contract)
+ *
+ * 设计意图 (Why):
+ *   为了支持「普通会话（旁聊）」、「Bot 终身主会话（Forever Chat）」以及「多 Bot 群聊（Group Room）」的
+ *   三态物理隔离与多设备跨端同步，必须在会话层固化父子血缘与专职 Bot 归属。
+ *
+ * 防范的历史坑 (Pitfall):
+ *   多设备接力或刷新页面后丢失 parent_session_id，导致派生旁聊脱离所属 Bot 成为孤儿子会话，
+ *   或者将 Bot 的 Forever Chat 误当成普通会话在列表里误删或归档。
+ *
+ * 约束与规则 (Rules):
+ *   - parent_session_id 标识直接派生来源。
+ *   - is_forever_chat=true 的会话受物理保护，前端严禁提供归档/删除操作。
+ */
+export interface SessionMetadataContract {
+  parent_session_id?: string;
+  bot_profile: string;
+  is_forever_chat: boolean;
+  spawn_source?: 'user' | 'subagent' | 'btw' | 'group_seed';
+  workspace_path?: string;
+}
+
+/**
+ * 子代理执行状态模型 (Subagent Task State Machine)
+ *
+ * 设计意图 (Why):
+ *   为「会话内显示子代理执行卡片」与「穿透查看子代理执行流」提供确定性的状态驱动模型。
+ *
+ * 防范的历史坑 (Pitfall):
+ *   1. 丢失实体句柄：严禁把子代理降级为普通单次 tool 调用。
+ *   2. 状态二义性：区分 thinking / tool_executing / running，保证进度条平滑。
+ *
+ * 约束与规则 (Rules):
+ *   - subagentId 作为全局唯一检索主键。
+ */
+export type SubagentActiveStatus = 'queued' | 'running';
+export type SubagentTerminalStatus = 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted';
+export type SubagentLifecycleStatus = SubagentActiveStatus | SubagentTerminalStatus;
+export type SubagentPhaseHint = 'queued' | 'thinking' | 'tool' | 'progress' | 'idle';
+export type SubagentRecordSource = 'live_event' | 'subagent_list' | 'spawn_tree' | 'transcript_scan';
+
+export type SubagentStatus =
+  | SubagentLifecycleStatus
+  | 'requested'
+  | 'thinking'
+  | 'tool_executing';
+
+export interface SubagentTaskState {
+  subagentId: string;
+  parentSessionId: string;
+  /** 规范目标描述（来自 SubagentSnapshot.goal / SubagentEventPayload.goal / delegate_task 参数） */
+  goal: string;
+  /** 严格生命周期终/活态（queued / running / completed / failed / error / timeout / interrupted） */
+  lifecycleStatus: SubagentLifecycleStatus;
+  /** 运行阶段细粒度提示 */
+  phaseHint: SubagentPhaseHint;
+  /** 主数据来源（驱动同秩合并优先级） */
+  source: SubagentRecordSource;
+  delegationId?: string;
+  taskIndex?: number;
+  childSessionId?: string;
+  model?: string;
+  depth?: number;
+  parentId?: string;
+  toolCount: number;
+  lastTool?: string;
+  toolNames?: string[];
+  filesRead?: string[];
+  filesWritten?: string[];
+  tokensInput?: number;
+  tokensOutput?: number;
+  tokensReasoning?: number;
+  acceptingSteer?: boolean;
+  interruptPending?: boolean;
+  durationSeconds?: number;
+  summary?: string;
+  error?: string;
+  startedAt: number;
+  updatedAt: number;
+  completedAt?: number;
+  /** @deprecated 请优先读取 `goal` / `model`；保留用于兼容历史卡片模板 */
+  targetProfile: string;
+  /** @deprecated 请优先读取 `goal` */
+  taskTitle: string;
+  /** @deprecated 请优先读取 `lifecycleStatus` + `phaseHint` */
+  status: SubagentStatus;
+  /** @deprecated 兼容历史进度字段 */
+  progressPercent: number;
+  /** @deprecated 请优先读取 `lastTool` 或日志尾部 */
+  currentActionText: string;
+  /** @deprecated 请优先读取 `summary` */
+  resultSummary?: string;
+}
+
+export interface SubagentLogEntry {
+  seq: number;
+  timestamp: number;
+  kind: 'stdout' | 'stderr' | 'thought' | 'tool_call' | 'tool_result' | 'status_change';
+  text: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface SubagentSpawnParams {
+  parent_session_id: string;
+  target_profile: string;
+  task_title: string;
+  instruction: string;
+  context_slice?: string;
+}
+
+export interface SubagentSpawnResult {
+  subagent_id: string;
+  status: SubagentStatus;
+}
+
+export interface SubagentListParams {
+  session_id?: string;
+  profile?: string;
+}
+
+export interface SubagentListResult {
+  subagents?: Array<
+    Partial<ContractSubagentSnapshot> & {
+      subagent_id: string;
+      parent_session_id?: string;
+      /** @deprecated 旧网关/夹具字段 */
+      profile?: string;
+      /** @deprecated 旧网关/夹具字段 */
+      title?: string;
+      status?: SubagentStatus | null;
+      /** @deprecated 旧网关/夹具字段 */
+      progress?: number;
+      /** @deprecated 旧网关/夹具字段 */
+      current_action?: string;
+      started_at?: number | null;
+      updated_at?: number;
+    }
+  >;
+  delegations?: ContractFailedDelegation[];
+}
+
+export interface SubagentTailParams {
+  subagent_id: string;
+  session_id?: string;
+  profile?: string;
+  limit?: number;
+  since_seq?: number;
+}
+
+export interface SubagentTailResult {
+  subagent_id: string;
+  available?: boolean;
+  text?: string;
+  truncated?: boolean;
+  entries?: SubagentLogEntry[];
+  has_more?: boolean;
+  latest_seq?: number;
+}
+
+/**
+ * 契约依据：SubagentSteerParams { session_id?, profile?, subagent_id, text? }
+ * 【防范的历史坑】曾声明 `instruction`，网关只认 `text`（多传即 4000）。
+ */
+export interface SubagentSteerParams {
+  subagent_id: string;
+  session_id?: string;
+  profile?: string;
+  text?: string;
+}
+
+export interface SubagentSteerResult {
+  accepted?: boolean;
+  status?: string;
+  subagent_id?: string;
+  text?: string;
+  message?: string;
+}
+
+export interface SubagentInterruptParams {
+  subagent_id: string;
+  session_id?: string;
+  profile?: string;
+}
+
+export interface SubagentInterruptResult {
+  interrupted?: boolean;
+  found?: boolean;
+  subagent_id?: string;
+}
+
+export interface DelegationStatusResult {
+  paused: boolean;
+  active_subagent_count: number;
+}
+
+export interface DelegationPauseParams {
+  paused: boolean;
+}
+
+export interface DelegationPauseResult {
+  paused: boolean;
+}
+
+/**
+ * 专职 Bot 与配置档契约 (Profiles & Bot Management Contracts)
+ */
+export interface AgentProfileDetail extends AgentProfile {
+  systemPrompt?: string;
+  soulContent?: string;
+  tools?: string[];
+  mcpServers?: string[];
+  workingDirectory?: string;
+}
+
+export interface ProfilesListResult {
+  profiles: AgentProfile[];
+}
+
+export interface ProfilesDescribeParams {
+  profile?: string;
+  name: string;
+}
+
+/**
+ * `profiles.describe` 的真实契约（网关 0.22.5 探针，见 docs/gateway/profiles.md）。
+ * 【规则】`skills` / `toolsets` / `mcp_servers` 必须保留 enabled 等原始字段：
+ *   压成 string[] 会让设置页无法表达"哪些能力被关掉"，保存时只能写空数组覆盖用户配置。
+ */
+export interface ProfilesDescribeResult {
+  name?: string;
+  description?: string;
+  soul?: string;
+  model?: ProfilesDescribeModelPin | string;
+  skills?: ProfilesCapabilityEntry[];
+  toolsets?: ProfilesToolsetEntry[];
+  toolsets_pinned?: boolean;
+  mcp_servers?: ProfilesMcpServerEntry[];
+  /** 旧路径兼容：部分网关把详情包在 profile 字段里。 */
+  profile?: unknown;
+}
+
+/** `describe.model` 是指向模型目录的 pin，不是模型名字符串。 */
+export interface ProfilesDescribeModelPin {
+  provider?: string;
+  default?: string;
+}
+
+export interface ProfilesCapabilityEntry {
+  name: string;
+  enabled?: boolean;
+}
+
+export interface ProfilesToolsetEntry {
+  name: string;
+  enabled?: boolean;
+  label?: string;
+  description?: string;
+  tool_count?: number;
+}
+
+export interface ProfilesMcpServerEntry {
+  name: string;
+  enabled?: boolean;
+  transport?: string;
+}
+
+
+/**
+ * 契约依据：ProfilesCreateParams
+ * { profile?, name, description?, clone_from?, clone_all?, clone_channels?,
+ *   no_skills?, no_alias?, soul?, model?, provider?, share_auth?, mirror_credentials? }
+ *
+ * 【防范的历史坑】曾传 `template` / `display_name`，两者都不是契约字段（4000）。
+ */
+export interface ProfilesCreateParams {
+  profile?: string;
+  name: string;
+  description?: string;
+  clone_from?: string;
+  clone_all?: boolean;
+  clone_channels?: boolean;
+  no_skills?: boolean;
+  no_alias?: boolean;
+  soul?: string;
+  model?: string;
+  provider?: string;
+  share_auth?: boolean;
+  mirror_credentials?: boolean;
+}
+
+export interface ProfilesCreateResult {
+  ok?: boolean;
+  name: string;
+  path?: string;
+  soul_written?: boolean;
+  model_set?: boolean;
+  mirrored?: { env?: boolean; auth?: boolean | 'shared'; model_inherited?: boolean; voice?: boolean };
+  warnings?: string[];
+  /** 兼容早期网关字段。 */
+  created?: boolean;
+}
+
+/**
+ * 契约依据：ProfilesConfigureParams
+ * { profile?, name, ui_meta?, ui_meta_expected_revisions?, soul?, description?,
+ *   model?, provider?, confirm_expensive_model?, disabled_skills?,
+ *   enabled_toolsets?, enabled_mcp_servers? }
+ *
+ * 【防范的历史坑】曾把整包 `patch` 塞进请求体，网关 4000；结果字段也误判为 `success`，
+ * 真实契约是 `ok/applied`，导致配置成功也返回 false。
+ */
+export interface ProfilesConfigureParams {
+  profile?: string;
+  name: string;
+  soul?: string;
+  description?: string;
+  model?: string;
+  provider?: string;
+  disabled_skills?: string[];
+  enabled_toolsets?: string[];
+  enabled_mcp_servers?: string[];
+  confirm_expensive_model?: boolean;
+  ui_meta?: Record<string, unknown>;
+  ui_meta_expected_revisions?: Record<string, number>;
+}
+
+/** 每个配置域是否真正写入（网关只返回请求里携带的段）。 */
+export interface ProfilesConfigureApplied {
+  ui_meta?: boolean;
+  ui_meta_revisions?: Record<string, number>;
+  ui_meta_conflicts?: Record<string, unknown>;
+  soul?: boolean;
+  description?: boolean;
+  model?: boolean;
+  skills?: boolean;
+  toolsets?: boolean;
+  mcp_servers?: boolean;
+}
+
+export interface ProfilesConfigureResult {
+  ok?: boolean;
+  /** 真实契约是分段结果对象；兼容早期网关的字符串数组。 */
+  applied?: ProfilesConfigureApplied | string[];
+  confirm_required?: boolean;
+  confirm_message?: string;
+}
+
+export interface ProfilesGetAssetParams {
+  /** 归属 Bot（网关可选参数，缺省为当前 profile） */
+  profile?: string;
+  name: string;
+  asset: string;
+}
+
+export interface ProfilesGetAssetResult {
+  found?: boolean;
+  data?: string;
+  mime?: string;
+  size?: number;
+  /** 兼容早期网关字段 */
+  asset_base64?: string;
+  avatar?: string;
+}
+
+/**
+ * 契约依据：ProfilesSetAssetParams { profile?, name, asset, data, clear? }
+ * 【防范的历史坑】曾写 `key` + `base64`，网关 4000 Extra inputs are not permitted。
+ */
+export interface ProfilesSetAssetParams {
+  profile?: string;
+  name: string;
+  asset: string;
+  data: string;
+  clear?: boolean;
+}
+
+export interface ProfilesSetAssetResult {
+  ok?: boolean;
+  asset?: string;
+  size?: number;
+  removed?: boolean | number | null;
+  /** 兼容早期网关字段 */
+  success?: boolean;
+}
+
+/**
+ * 多 Agent 群聊房间契约 (Group Room Contracts)
+ */
+export interface GroupRoomSummary {
+  roomId: string;
+  name: string;
+  members: string[];
+  createdAt: number;
+  updatedAt: number;
+  lastMessagePreview?: string;
+  isDisbanded?: boolean;
+}
+
+export interface GroupMessageEntry {
+  messageId: string;
+  seq: number;
+  senderProfile: string;
+  timestamp: number;
+  text: string;
+  isSeed?: boolean;
+  /** 官方 payload.thread_id，用于把同一轮研讨归组 */
+  threadId?: string;
+  /** actor.kind：user 表示人类发言，member 表示 Agent 发言 */
+  actorKind?: 'user' | 'member' | 'system' | string;
+}
+
+export interface GroupsListResult {
+  groups?: GroupRoomSummary[];
+  rooms?: Array<{
+    room_id: string;
+    name: string;
+    members?: Array<{ profile?: string; handle?: string }>;
+    created_at?: number;
+    updated_at?: number;
+    disbanded_at?: number | null;
+  }>;
+  next_offset?: number | null;
+}
+
+export interface GroupsCreateParams {
+  room_id?: string;
+  name: string;
+  members: Array<string | { member_id: string; profile: string; handle: string; display_name?: string }>;
+}
+
+export interface GroupsCreateResult {
+  room?: {
+    room_id?: string;
+    name?: string;
+    members?: Array<string | { profile?: string; handle?: string; display_name?: string }>;
+    created_at?: number;
+    updated_at?: number;
+  };
+  /** 兼容早期网关的扁平字段 */
+  room_id?: string;
+  name?: string;
+  members?: Array<string | { profile?: string; handle?: string; display_name?: string }>;
+}
+
+export interface GroupsStateParams {
+  room_id: string;
+  profile?: string;
+  include_disbanded?: boolean;
+}
+
+/**
+ * 兼容早期单元测试模拟桩的群聊房间扁平返回结构。
+ * @deprecated 请迁移至对齐契约的 `GroupsStateResult`（`{ room, driver_status, context }`）
+ */
+export interface LegacyGroupsStateResult {
+  room_id: string;
+  name: string;
+  members: string[];
+  status: 'active' | 'paused' | 'disbanded';
+  active_speaker?: string;
+}
+
+/**
+ * 群聊房间实时状态响应契约（对齐 `gateway-contract.generated.ts#GroupsStateResult`）。
+ * 【兼容过渡】保留可选 @deprecated 扁平字段以确保 `groupService.ts` 与存量单测零回归。
+ */
+export interface GroupsStateResult {
+  room?: ContractRoom;
+  driver_status?: ContractRoomDriverStatus | null;
+  context?: ContractRoomContext | null;
+  /** @deprecated 兼容早期扁平桩 */
+  room_id?: string;
+  /** @deprecated 兼容早期扁平桩 */
+  name?: string;
+  /** @deprecated 兼容早期扁平桩 */
+  members?: string[];
+  /** @deprecated 兼容早期扁平桩 */
+  status?: 'active' | 'paused' | 'disbanded';
+  /** @deprecated 兼容早期扁平桩 */
+  active_speaker?: string;
+}
+
+/**
+ * 官方 groups.send 契约（源码 gateway/hosted_room_discussion.py::validate_user_payload）
+ *
+ * 【设计意图 (Why)】
+ * 网关对 payload 执行"精确字段"校验（_USER_PAYLOAD_FIELDS = {text, thread_id}），
+ * 任何多余或缺失字段都会被拒。
+ *
+ * 【防范的历史坑 (Pitfall)】
+ * 曾把 text / sender_profile / is_seed 平铺在顶层，网关返回
+ * `4000 text: Extra inputs are not permitted`；
+ * 只传 payload:{text} 又返回 `5112 user payload is missing fields: thread_id`；
+ * 不传 event_id 返回 `4111 event_id must be a string`。
+ *
+ * 【规则 (Rules)】
+ * - 顶层只允许 room_id / event_id / payload（profile 可选）；
+ * - payload 精确为 { text, thread_id }，thread_id 由客户端 mint（`t<base36>-<5位>`）。
+ */
+export interface GroupsSendParams {
+  room_id: string;
+  event_id: string;
+  payload: {
+    text: string;
+    thread_id: string;
+  };
+}
+
+/** 官方 groups.send 返回：{ event, client_event_id, accepted, driver_started } */
+export interface GroupsSendResult {
+  event?: {
+    room_id?: string;
+    seq?: number;
+    event_id?: string;
+    kind?: string;
+    actor?: { kind?: string; id?: string; profile?: string; display_name?: string };
+    payload?: { text?: string; thread_id?: string; [key: string]: unknown };
+    created_at?: number;
+  };
+  client_event_id?: string | null;
+  accepted?: boolean;
+  driver_started?: boolean;
+  /** 兼容旧字段（网关早期版本或本地回放） */
+  message_id?: string;
+  seq?: number;
+}
+
+export interface GroupsLogParams {
+  room_id: string;
+  since_seq?: number;
+  limit?: number;
+}
+
+export interface GroupsLogResult {
+  room_id?: string;
+  entries?: GroupMessageEntry[];
+  events?: Array<{
+    room_id?: string;
+    seq?: number;
+    event_id?: string;
+    kind?: string;
+    actor?: { kind?: string; name?: string; profile?: string };
+    payload?: { text?: string; [key: string]: unknown };
+    created_at?: number;
+  }>;
+  latest_seq?: number;
+  cursor?: number;
+  has_more?: boolean;
+}
+
+export interface GroupsDisbandParams {
+  room_id: string;
+  cancel_id?: string;
+}
+
+export interface GroupsDisbandResult {
+  /** 契约依据：groups.disband -> { tombstone }（解散事件），不是 success 布尔 */
+  tombstone?: {
+    room_id?: string;
+    event_id?: string;
+    kind?: string;
+    seq?: number;
+  };
+  /** 兼容早期网关 */
+  success?: boolean;
+}
+
+/**
+ * 群聊房间契约（与网关 RpcMethods 1:1 对齐）
+ *
+ * 【契约依据】
+ *   groups.create   params { profile?, room_id, name, members } -> { room }
+ *   groups.rename   params { profile?, room_id, event_id, name } -> { room }
+ *   groups.disband  params { profile?, room_id, cancel_id? }     -> { tombstone }
+ *
+ * 【防范的历史坑】
+ *   手写类型曾声明 `success: boolean` 与 `new_name`，与网关完全不符：
+ *   rename 会被 4000/4111 拒绝，disband 永远读到 undefined 而被判为失败。
+ */
+export interface GroupsRenameParams {
+  room_id: string;
+  event_id: string;
+  name: string;
+}
+
+export interface GroupsRenameResult {
+  room?: {
+    room_id?: string;
+    name?: string;
+    members?: Array<string | { profile?: string; handle?: string; display_name?: string }>;
+    updated_at?: number;
+  };
+}
+
+/**
+ * 项目与工作区管理契约 (Project & Workspace Contracts)
+ */
+export interface ProjectSummary {
+  projectId: string;
+  name: string;
+  slug: string;
+  primaryPath: string;
+  additionalFolders: string[];
+  gitRepoRoot?: string;
+  activeBranch?: string;
+  isActive: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  description?: string;
+  icon?: string;
+  color?: string;
+  board_slug?: string;
+  associatedSessionIds?: string[];
+}
+
+export interface ProjectsListResult {
+  projects: Array<ProjectSummary & {
+    id?: string;
+    primary_path?: string;
+    folders?: Array<{ path: string }>;
+    is_active?: boolean;
+    created_at?: number;
+    updated_at?: number;
+  }>;
+}
+
+export interface ProjectsGetParams {
+  id?: string;
+  project_id?: string;
+}
+
+export interface ProjectsGetResult {
+  project: ProjectDetail & {
+    id?: string;
+    primary_path?: string;
+    folders?: Array<{ path: string }>;
+    is_active?: boolean;
+    created_at?: number;
+    updated_at?: number;
+  };
+}
+
+/**
+ * 契约依据：ProjectsCreateParams
+ * { profile?, name, folders, slug?, primary_path, description?, icon?, color?, board_slug?, use? }
+ * 【防范的历史坑】曾传 `path`，契约里没有这个字段（4000）。
+ */
+export interface ProjectsCreateParams {
+  name: string;
+  folders: string[];
+  primary_path: string;
+  description?: string;
+  slug?: string;
+  icon?: string;
+  color?: string;
+  board_slug?: string;
+  use?: boolean;
+}
+
+/** 本地输入类型（非线上契约）：允许只给一个 path，由服务层展开成 folders/primary_path */
+export interface CreateProjectInput {
+  name: string;
+  path?: string;
+  folders?: string[];
+  primary_path?: string;
+  description?: string;
+  slug?: string;
+  use?: boolean;
+}
+
+export interface ProjectsCreateResult {
+  project?: {
+    id: string;
+    slug: string;
+    name: string;
+    primary_path: string;
+    folders?: Array<{ path: string }>;
+  };
+  project_id?: string;
+  name?: string;
+  path?: string;
+}
+
+/**
+ * 契约依据：ProjectsUpdateParams { profile?, id, name?, description?, icon?, color?, board_slug? }
+ * 【防范的历史坑】曾声明 project_id 与整包 patch，两者都会触发 4000。
+ */
+export interface ProjectsUpdateParams {
+  id: string;
+  name?: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  board_slug?: string;
+}
+
+export interface ProjectsUpdateResult {
+  success?: boolean;
+  project?: ProjectDetail;
+}
+
+export interface ProjectsDeleteParams {
+  id?: string;
+  project_id?: string;
+}
+
+export interface ProjectsDeleteResult {
+  success?: boolean;
+}
+
+export interface ProjectsSetActiveParams {
+  id: string;
+}
+
+export interface ProjectsSetActiveResult {
+  success?: boolean;
+}
+
+export interface ProjectsAddFolderParams {
+  id: string;
+  path: string;
+  is_primary?: boolean;
+  label?: string;
+}
+
+export interface ProjectsAddFolderResult {
+  success?: boolean;
+  project?: ProjectDetail;
+}
+
+export interface ProjectsRemoveFolderParams {
+  id: string;
+  path: string;
+}
+
+export interface ProjectsRemoveFolderResult {
+  success?: boolean;
+  project?: ProjectDetail;
+}
+
+export interface ProjectTreeNode {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size?: number;
+  children?: ProjectTreeNode[];
+}
+
+/**
+ * 契约依据：ProjectsTreeParams { profile?, preview_limit?, session_limit? }
+ * 【防范的历史坑】曾声明 project_id / relative_path / depth，三个都不是契约字段。
+ */
+export interface ProjectsTreeParams {
+  profile?: string;
+  preview_limit?: number;
+  session_limit?: number;
+}
+
+export interface ProjectsTreeResult {
+  tree?: ProjectTreeNode[];
+  projects?: unknown[];
+}
+
+/**
+ * 代码时光机与还原契约 (Rollback Contracts)
+ */
+export interface RollbackVersionEntry {
+  versionId: string;
+  sessionId: string;
+  timestamp: number | string;
+  commitHash?: string;
+  title: string;
+  filesChangedCount?: number;
+}
+
+export interface RollbackListParams {
+  session_id: string;
+  profile?: string;
+}
+
+export interface RollbackListResult {
+  enabled?: boolean;
+  checkpoints?: Array<{
+    hash: string;
+    timestamp: string;
+    message: string;
+  }>;
+  versions?: RollbackVersionEntry[];
+}
+
+export interface RollbackDiffParams {
+  session_id: string;
+  hash: string;
+  profile?: string;
+}
+
+export interface RollbackDiffResult {
+  stat?: string;
+  diff?: string;
+  rendered?: string | null;
+  files_changed?: number;
+}
+
+export interface RollbackRestoreParams {
+  session_id: string;
+  hash: string;
+  file_path?: string;
+  profile?: string;
+}
+
+export interface RollbackRestoreResult {
+  success?: boolean;
+  restored?: boolean;
+  restored_to?: string | null;
+  error?: string | null;
+  version_id?: string;
+}
+
+/**
+ * 旁路问答与接力分叉契约 (BTW & Handoff Contracts)
+ *
+ * 【契约依据】SideAgentParams: { session_id, profile?, text } -> TaskIdResult { task_id }
+ * 【防范的历史坑】曾用 `target_profile` 传参、并假设同步返回 `response` 字符串；
+ * 实际网关只返回 task_id，答案经事件流异步到达。两处都会导致静默失败。
+ */
+export interface PromptBtwParams {
+  session_id: string;
+  text: string;
+  profile?: string;
+}
+
+export interface PromptBtwResult {
+  task_id: string;
+}
+
+/**
+ * 契约依据：SessionBranchWholeParams { session_id, profile?, name?, idempotency_key? }
+ * 【防范的历史坑】曾声明 `title`，契约里没有这个字段（4000）。
+ */
+export interface SessionBranchWholeParams {
+  session_id: string;
+  name?: string;
+  idempotency_key?: string;
+}
+
+export interface SessionBranchResult {
+  session_id: string;
+  stored_session_id?: string;
+  parent_session_id?: string;
+  parent?: string;
+  title?: string;
+}
+
+/**
+ * 通用命令与技能分派契约 (Command & Skill Dispatch Contract)
+ */
+export interface CommandDispatchParams {
+  name: string;
+  arg?: string | null;
+  session_id?: string | null;
+  profile?: string | null;
+}
+
+export interface CommandDispatchResult {
+  type?: string;
+  output?: string;
+  target?: string;
+  message?: string;
+  notice?: string;
+  display?: string;
+  name?: string;
+  status?: string;
+}
+
+/**
+ * 通用 RPC 调用网桥接口 (Universal RPC Caller Bridge)
+ */
+export interface IRpcCaller {
+  request<TResult = unknown, TParams = unknown>(method: string, params?: TParams, timeoutMs?: number): Promise<TResult>;
+}
+
+
+
+

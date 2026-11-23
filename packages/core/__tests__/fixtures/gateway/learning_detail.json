@@ -1,0 +1,12 @@
+{
+  "method": "learning.detail",
+  "recordedAt": "2026-11-22T11:00:40.045Z",
+  "gatewayVersion": "0.23.2",
+  "result": {
+    "ok": true,
+    "kind": "skill",
+    "id": "blackboard-writing",
+    "label": "blackboard-writing",
+    "content": "---\nname: blackboard-writing\ndescription: \"通用写作方法论（黑板版）：以结构去 AI 味为核心的写稿与质检门禁。\"\nversion: 1.1.0\nauthor: Hermes Agent\nlicense: MIT\nmetadata:\n  hermes:\n    tags: [writing, anti-aigc, methodology, review, …<truncated:3618>"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@hermes-flux/core": ["../core/src/index.ts"],
+      "@hermes-flux/ui": ["../ui/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*"]
+}

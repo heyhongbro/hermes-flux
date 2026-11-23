@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="obsidian-gold">
+<head>
+  <meta charset="UTF-8">
+  <title>Hermes Flux Interactive Conversation Stage CDP Test Harness</title>
+  <!-- 生产同一份样式：React 组件只输出类名，必须由真实 CSS 提供外观与几何 -->
+  <link rel="stylesheet" href="/packages/desktop/src/renderer/styles.css">
+  <link rel="stylesheet" href="/packages/ui/src/styles/conversation.css">
+  <link rel="stylesheet" href="/packages/ui/src/styles/status-pod.css">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      background: var(--background, #090a0f);
+      color: var(--foreground, #f8fafc);
+      font-family: var(--font-sans);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    #stage-container {
+      flex: 1;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 24px 32px 140px;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage-container"></div>
+
+  <!-- 由 CDP 测试用 esbuild 现场打包生成，内含 React 与真实对话组件 -->
+  <script src="/packages/desktop/__tests__/cdp/.tmp/react-entry.js"></script>
+  <script>
+    const { renderConversationCanvas, renderInputDock } = window.__fluxRenderers;
+    const { mountMessages } = window.__fluxReact;
+
+    const stage = document.getElementById('stage-container');
+
+    const mockMessages = [
+      {
+        id: 'user-turn-1',
+        rowId: 1,
+        role: 'user',
+        content: '请用 TypeScript 实现一个带有单调递增时钟和自动退避的状态机。',
+        timestamp: '14:28:05',
+      },
+      {
+        id: 'ast-turn-1',
+        rowId: 2,
+        role: 'assistant',
+        content: '这是经过架构防灾验证的五态 FSM 实现：\n\n```typescript\nexport class WebSocketFsm {\n  // 实现了全抖动退避\n}\n```',
+        model: 'claude-3-7-sonnet',
+        durationMs: 1850,
+        timestamp: '14:28:07',
+        thought: '深入分析 WebSocketFsm 架构契约与重连退避算法...',
+        thoughtDurationMs: 800,
+      },
+    ];
+
+    const canvasHtml = renderConversationCanvas({
+      gatewayConnected: true,
+      messages: mockMessages,
+      contextUsage: {
+        used: 42000,
+        max: 128000,
+        percent: 33,
+      },
+    });
+
+    const dockHtml = renderInputDock({
+      selectedModel: 'anthropic/claude-3-7-sonnet',
+      reasoningLevel: 'high',
+      approvalMode: 'auto',
+      isStreaming: false,
+      modelMenuOpen: false,
+      attachments: [
+        { id: 'att-1', name: 'diagram.png', type: 'image', label: 'Image 1', previewUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30"><rect width="30" height="30" fill="%233b82f6"/></svg>' },
+        { id: 'att-2', name: 'fsm.ts', type: 'file', label: 'Doc 1' },
+      ],
+      queuedMessages: [
+        { id: 'q-1', text: '请顺便补齐边界值测试用例', model: 'claude-3-7-sonnet' },
+      ],
+      modelDetails: [
+        { id: 'anthropic/claude-3-7-sonnet', provider: 'Anthropic', name: 'Claude 3.7 Sonnet', displayName: 'Claude 3.7', contextLength: 200000, supportsVision: true },
+        { id: 'openai/gpt-4o', provider: 'OpenAI', name: 'GPT-4o', displayName: 'GPT-4o', contextLength: 128000, supportsVision: true },
+      ],
+    });
+
+    stage.innerHTML = canvasHtml + dockHtml;
+
+    // 消息行由 React 真实挂载到宿主锚点（与生产同构）
+    const messageHost = document.getElementById('react-message-list-host');
+    if (messageHost) mountMessages(messageHost, mockMessages);
+
+    // 交互事件绑定（回滚回填、手风琴切换）
+    document.addEventListener('click', (e) => {
+      const target = e.target;
+      const btn = target.closest('button') || target.closest('[data-action]');
+      if (!btn) return;
+
+      const action = btn.getAttribute('data-action');
+      if (window.__fluxMessageActions) {
+        if (action === 'copy-msg') void window.__fluxMessageActions.handleCopyMessage(btn);
+        if (action === 'rollback-msg') window.__fluxMessageActions.handleRollbackMessage(btn);
+        if (action === 'fork-msg') void window.__fluxMessageActions.handleForkMessage(btn);
+      } else if (action === 'rollback-msg') {
+        const text = btn.getAttribute('data-content') || '';
+        const textarea = document.getElementById('dock-prompt-input');
+        if (textarea) {
+          textarea.value = text;
+          textarea.focus();
+          document.body.setAttribute('data-last-rollback', text);
+        }
+      }
+
+      if (action === 'interrupt-and-push') {
+        document.body.setAttribute('data-interrupted-and-pushed', 'true');
+      }
+    });
+
+    // 绑定手风琴 Provider 点击
+    document.querySelectorAll('.model-provider-group-header').forEach((hdr) => {
+      hdr.addEventListener('click', () => {
+        const group = hdr.closest('.model-provider-group');
+        const items = group.querySelector('.model-provider-items');
+        const arrow = hdr.querySelector('.provider-accordion-arrow');
+        if (items) {
+          const isCollapsed = items.style.display === 'none';
+          items.style.display = isCollapsed ? 'block' : 'none';
+          if (arrow) arrow.textContent = isCollapsed ? '▾' : '▸';
+          document.body.setAttribute('data-provider-accordion-toggled', 'true');
+        }
+      });
+    });
+
+    window.__stageReady = true;
+  </script>
+</body>
+</html>

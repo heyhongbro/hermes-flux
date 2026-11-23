@@ -1,0 +1,338 @@
+/**
+ * 设置中心接线守卫（静态探针 + 契约口径）。
+ *
+ * 【为什么需要】设置页最容易退化的方式不是渲染错，而是"接线断了但界面还在"：
+ *   旧实现有 20 个导航项、13 个点进去只有占位；语言按钮从未绑定事件；
+ *   提供商卡片是 7 个硬编码字符串。这些都不是类型错误，必须用静态断言钉住。
+ *
+ * 【与行为测试的分工】
+ *   本文件只守"结构不许回退"（宿主、契约方法、敏感字段）；
+ *   `settings-controller.test.mjs` 负责失败态、并发、幂等这些行为语义。
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const RENDERER = path.resolve(import.meta.dirname, '../../src/renderer/index.ts');
+const RENDER_COORD = path.resolve(import.meta.dirname, '../../src/renderer/renderCoordinator.ts');
+const SETTINGS_DATA = path.resolve(import.meta.dirname, '../../src/renderer/services/settingsDataService.ts');
+const LEFTRAIL_DOMAIN = path.resolve(import.meta.dirname, '../../src/renderer/leftrail/leftRailSnapshotManager.ts');
+const CONTROLLER = path.resolve(import.meta.dirname, '../../src/renderer/settingsController.ts');
+const SETTINGS_UI = path.resolve(import.meta.dirname, '../../../ui/src/components-react/settings/SettingsModal.tsx');
+const UI_INDEX = path.resolve(import.meta.dirname, '../../../ui/src/index.ts');
+const source = [
+  fs.readFileSync(RENDERER, 'utf8'),
+  fs.existsSync(RENDER_COORD) ? fs.readFileSync(RENDER_COORD, 'utf8') : '',
+  fs.existsSync(SETTINGS_DATA) ? fs.readFileSync(SETTINGS_DATA, 'utf8') : '',
+].join('\n');
+const leftRailDomain = fs.existsSync(LEFTRAIL_DOMAIN) ? fs.readFileSync(LEFTRAIL_DOMAIN, 'utf8') : '';
+const controller = fs.readFileSync(CONTROLLER, 'utf8');
+const settingsUi = fs.readFileSync(SETTINGS_UI, 'utf8');
+
+test('左轨活动指示器变体必须可配置、持久化，并真的推进左轨快照', () => {
+  assert.ok(settingsUi.includes('data-activity-variant'), '外观页必须提供变体选择卡');
+  assert.ok(settingsUi.includes('<ActivityIndicator'), '变体卡必须内嵌真实指示器组件做动态预览');
+  assert.ok(
+    settingsUi.includes('onActivityVariantChange(variant)'),
+    '卡片点击必须把自身变体传出去；写死常数会让「点陀螺得流云」',
+  );
+
+  const actionStart = source.indexOf('onActivityVariantChange:');
+  assert.ok(actionStart !== -1, '必须存在 onActivityVariantChange 动作');
+  const actionBlock = source.slice(actionStart, source.indexOf('onRefreshProfiles:', actionStart));
+  assert.ok(actionBlock.includes('saveActivityIndicatorVariant(activityIndicatorVariant)'), '必须把用户选中的变体落盘，不得写死');
+  assert.ok(actionBlock.includes('resolveActivityIndicatorVariant'), '写入前必须收敛为白名单值');
+  assert.ok(actionBlock.includes('render()'), '切换后必须触发重渲染，左轨才能立刻换动效');
+
+  const railSrc = leftRailDomain || source;
+  const railStart = railSrc.indexOf('getSnapshot(): LeftRailSnapshot');
+  const railBlock = railStart !== -1 ? railSrc.slice(railStart) : source.slice(source.indexOf('function getLeftRailSnapshot'));
+  assert.ok(
+    railBlock.includes('activityVariant: inputs.activityVariant') || (railBlock.match(/activityVariant: activityIndicatorVariant/g) || []).length >= 1,
+    '左轨快照必须携带变体',
+  );
+  // 只有字段、没有比较器时，切换变体会命中旧快照而不重推，左轨永远停在旧动效。
+  assert.ok(
+    railSrc.includes('prev.activityVariant === next.activityVariant'),
+    'sameLeftRailInputs 必须比较变体，否则换变体后左轨不会刷新',
+  );
+});
+
+test('设置页必须由 React 岛接管，禁止再走字符串模板', () => {
+  assert.equal(source.includes('renderSettingsModal'), false, '旧字符串模板渲染函数必须彻底移除');
+  assert.equal(source.includes('settingsTab'), false, '旧 settingsTab 状态必须收敛为 settingsSection');
+  assert.ok(source.includes('mountSettingsModal'), '必须挂载 React 设置岛');
+  assert.ok(source.includes('id="react-settings-host"'), '骨架里必须存在设置岛宿主');
+  assert.ok(source.includes('syncReactSettings()'), '每帧必须把最新快照推给设置岛');
+});
+
+test('设置岛宿主不得被任何 innerHTML/outerHTML 覆写（否则输入焦点与滚动会被重建）', () => {
+  const lines = source.split('\n');
+  const offenders = lines.filter(
+    (line) =>
+      (line.includes('react-settings-host') && (line.includes('innerHTML') || line.includes('outerHTML'))) ||
+      /getElementById\('react-settings-host'\)[\s\S]{0,40}outerHTML/.test(line),
+  );
+  assert.deepEqual(offenders, []);
+  assert.equal(source.includes('flux-settings-modal-root'), false, '旧弹窗根节点不得复活');
+});
+
+test('语言切换必须真正落到 i18n 单例，而不是只改高亮', () => {
+  assert.ok(source.includes('syncLocale()'), '启动与切换都必须同步 i18n locale');
+  assert.ok(/onLocaleChange:[\s\S]{0,400}setLocale|onLocaleChange:[\s\S]{0,400}syncLocale/.test(source), '语言动作必须写回 i18n');
+  assert.ok(
+    source.includes(".setItem('hermes_flux_lang'") || source.includes("safeSetItem('hermes_flux_lang'"),
+    '语言偏好必须持久化',
+  );
+});
+
+test('设置页的网关调用必须是真实契约方法，且参数在契约白名单内', () => {
+  const contract = fs.readFileSync(
+    path.resolve(import.meta.dirname, '../../../core/src/rpc/contracts/contractTable.generated.ts'),
+    'utf8',
+  );
+  // 提供商统一表把每个 Agent 的 model.options 交给 providerCatalog 并发拉取，
+  // 因此契约校验必须同时覆盖 controller 与 providerCatalog 两个真实调用点。
+  const catalog = fs.readFileSync(
+    path.resolve(import.meta.dirname, '../../src/renderer/providerCatalog.ts'),
+    'utf8',
+  );
+  const required = ['model.options', 'profiles.list', 'mcp.servers.status', 'skills.manage', 'skills.reload'];
+  for (const method of required) {
+    assert.ok(controller.includes(`'${method}'`) || catalog.includes(`'${method}'`), `设置编排必须调用真实契约方法 ${method}`);
+    assert.ok(contract.includes(`'${method}':`), `契约表里必须存在 ${method}`);
+  }
+  assert.ok(catalog.includes('explicit_only: true'), '提供商统一表必须用 explicit_only 口径，掺进未配置的骨架行就判不出谁真的配了');
+  assert.ok(controller.includes("action: 'list'"), 'skills.manage 必须显式声明 action= list');
+});
+
+test('设置快照不得包含明文密码（指纹缓存与 DevTools 都会把它带出去）', () => {
+  const snapshotBlock = source.slice(
+    source.lastIndexOf('function getSettingsSnapshot'),
+    source.lastIndexOf('function ensureSettingsSectionData'),
+  );
+  assert.ok(snapshotBlock.length > 0);
+  assert.equal(/password:\s*state\.password/.test(snapshotBlock), false, '快照禁止直出明文密码');
+  assert.ok(snapshotBlock.includes('hasStoredPassword: Boolean(state.password)'), '只允许暴露"是否已保存"');
+});
+
+test('破坏性写操作必须经过二次确认，且删除范围在点击瞬间就确定', () => {
+  const start = source.indexOf('onDeleteEndpoint:');
+  assert.ok(start !== -1, '必须存在 onDeleteEndpoint 动作');
+  // 按下一个动作名切分，不用固定字符数：窗口随代码增长会静默失焦。
+  const next = source.indexOf('onToggleProviderAgent:', start);
+  assert.ok(next > start, 'onToggleProviderAgent 必须紧跟其后，切片边界才可信');
+  const block = source.slice(start, next);
+
+  assert.ok(block.includes('confirmModal'), '删除端点前必须弹二次确认');
+  assert.ok(block.includes('cancelled: true'), '取消时必须显式返回 cancelled，而不是伪装成功');
+  assert.ok(
+    block.includes('planProviderRemoval('),
+    '删除范围必须由 planProviderRemoval 判定：作用域是配置集合，不是在用集合',
+  );
+  assert.ok(
+    block.includes('settingsEndpointProfiles['),
+    '删除必须按配置集合收敛：只删在用集合会漏掉未生效的端点，出现"能看见却删不掉"',
+  );
+  assert.equal(
+    block.includes('profilesWithProvider('),
+    false,
+    '不得再用在用集合决定删除范围（上一版的 bug 形态）',
+  );
+  assert.ok(
+    block.includes('settingsEndpointFailures.length > 0'),
+    '端点清单读取失败时必须拒删：作用域不完整会漏删却报成功',
+  );
+  assert.ok(
+    block.includes('providerDeletePartial'),
+    '部分失败必须把失败名单回显给用户，不能只 toast「已删除」',
+  );
+  assert.ok(
+    block.includes('result.failed'),
+    '控制器返回的 failed 必须被消费，不能丢弃',
+  );
+
+  const logoutStart = source.indexOf('onLogoutProvider:');
+  assert.ok(logoutStart !== -1, '必须存在 onLogoutProvider 动作');
+  const logoutBlock = source.slice(logoutStart, logoutStart + 2400);
+  assert.ok(logoutBlock.includes('confirmModal'), '退出订阅前必须弹二次确认');
+  assert.ok(
+    logoutBlock.includes('planDeleteTarget'),
+    '退出订阅只作用于当前 Agent，必须在点击瞬间锁定它',
+  );
+});
+
+test('订阅取消勾选必须走断开登录，不能去删端点', () => {
+  const start = source.indexOf('onToggleProviderAgent:');
+  assert.ok(start !== -1, '必须存在 onToggleProviderAgent 动作');
+  const block = source.slice(start, source.indexOf('onNotify:', start));
+  assert.ok(
+    block.includes("case 'logout-subscription'"),
+    '订阅没有端点记录，取消绑定只能走 OAuth 登出',
+  );
+  const logoutCase = block.slice(block.indexOf("case 'logout-subscription'"));
+  assert.ok(
+    logoutCase.slice(0, 400).includes('controller.logoutOauth('),
+    '该分支必须调用 logoutOauth',
+  );
+  assert.equal(
+    logoutCase.slice(0, 400).includes('controller.remove('),
+    false,
+    '绝不能退回去删 custom-endpoints：订阅不在端点清单里，必然 404',
+  );
+});
+
+test('勾选未配置的自定义端点：先从其它成员复制密钥，复制失败才要求手填', () => {
+  const start = source.indexOf("case 'attach':");
+  assert.ok(start !== -1, '必须存在 attach 分支');
+  const block = source.slice(start, source.indexOf("case 'logout-subscription':", start));
+  const copyAt = block.indexOf('controller.resolveEndpointKey(');
+  const needsKeyAt = block.indexOf('needsKey: true');
+  assert.ok(copyAt !== -1, '勾回已取消的成员时必须先尝试复用其它成员的密钥');
+  assert.ok(needsKeyAt > copyAt, '只有复制失败才返回 needsKey，不能让首次勾选无条件弹密钥输入');
+  assert.ok(
+    block.includes('settingsEndpointProfiles[targetId]'),
+    '复制来源必须是配置集合：按 model.options 的在用集合会漏掉未生效成员',
+  );
+  assert.ok(
+    block.includes('draftForBindingAttach(row, view.models, key)'),
+    '端点定义、密钥与"运行时目录里的默认模型"必须由同一个纯函数拼装',
+  );
+  assert.ok(
+    block.includes('makeDefault: plan.makeDefault'),
+    '是否改默认模型必须消费 core 的计划，壳层不得再自己写死 false',
+  );
+  // 默认模型的两条守卫已收敛进 core 的 classifyAttachWrite（行为断言见
+  // packages/ui/__tests__/provider-attach-orchestration.test.mjs）。这里只钉住
+  // 壳层没有绕开它自己重写判定，也不再把结论静默吞掉。
+  assert.ok(
+    block.includes('classifyAttachWrite(plan, outcome)'),
+    '默认模型结论必须由 core 的 classifyAttachWrite 统一裁定，壳层不得自行比较 isCurrent',
+  );
+  assert.ok(
+    block.includes('messageKeyForVerdict(verdict)'),
+    '结论到文案必须走 messageKeyForVerdict，壳层不得自己拼 i18n key',
+  );
+  assert.equal(
+    /plan\.makeDefault\s*&&\s*outcome\.currentIsDefault/.test(block),
+    false,
+    '壳层不得再手写默认模型守卫：两个方向必须共用同一份真值，否则一边补了另一边会忘',
+  );
+
+  const toggleBlock = source.slice(
+    source.indexOf('onToggleProviderAgent:'),
+    source.indexOf('onNotify:', source.indexOf('onToggleProviderAgent:')),
+  );
+  assert.equal(
+    toggleBlock.includes("case 'confirm-attach':"),
+    false,
+    '已移除「设为默认 / 仅启用」二次分流，绝不得残留 confirm-attach 分支',
+  );
+  assert.ok(
+    toggleBlock.includes('planBindingToggle(view, profile, nextChecked)'),
+    '壳层必须调用三参 planBindingToggle(view, profile, nextChecked)',
+  );
+  assert.ok(
+    source.slice(source.indexOf('onSaveEndpoint:'), source.indexOf('onActivateProvider:')).includes('options.targetProfiles'),
+    '保存自定义端点必须优先消费用户点选的 targetProfiles',
+  );
+  assert.ok(
+    source.includes('inFlightProviderBindings'),
+    '壳层必须维护在途合流映射防止并发重入',
+  );
+});
+
+test('Esc 关闭必须让位给输入法组合态', () => {
+  assert.ok(settingsUi.includes('event.isComposing'), '中文输入法取消候选词时不得关闭设置弹窗');
+});
+
+test('设置页禁止再出现任何竞品/占位文案与硬编码提供商', () => {
+  for (const banned of ['OPENCHAMBER', 'jev', 'agnes-ai', 'magpie', 'ipraft', 'vpi', 'tunnels']) {
+    assert.equal(source.includes(banned), false, `renderer 不得残留 ${banned}`);
+  }
+  const i18nDir = path.resolve(import.meta.dirname, '../../../ui/src/i18n');
+  const i18n = fs
+    .readdirSync(i18nDir, { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith('.ts'))
+    .map((f) => fs.readFileSync(path.join(i18nDir, f), 'utf8'))
+    .join('\n');
+  for (const banned of ['OPENCHAMBER', 'groupOpencode', 'providerJev', 'navTunnels', 'moduleWip']) {
+    assert.equal(i18n.includes(banned), false, `i18n 字典不得残留 ${banned}`);
+  }
+});
+
+test('ui barrel 必须导出设置岛入口，且旧模板文件已删除', () => {
+  const index = fs.readFileSync(UI_INDEX, 'utf8');
+  assert.ok(index.includes("export * from './components-react/settings/index.js';"));
+  assert.equal(index.includes('components/SettingsModal/SettingsModal.js'), false);
+  assert.equal(
+    fs.existsSync(path.resolve(import.meta.dirname, '../../../ui/src/components/SettingsModal/SettingsModal.ts')),
+    false,
+    '旧字符串模板设置页必须删除，避免两套真值并存',
+  );
+});
+
+test('扩展新增/删除/探活与技能市场浏览/搜索/安装动作必须真实接线至网关 RPC 与控制器重对账', () => {
+  const fetchStart = source.indexOf('onFetchMcpCatalog:');
+  const installEnd = source.indexOf('onTestGateway:', fetchStart);
+  assert.ok(fetchStart !== -1 && installEnd > fetchStart, '必须声明 6 个扩展运维 SettingsActions 回调');
+  const extBlock = source.slice(fetchStart, installEnd);
+
+  for (const method of [
+    'mcp.catalog',
+    'mcp.servers.add',
+    'mcp.servers.remove',
+    'mcp.servers.test',
+    'skills.manage',
+    'skills.reload',
+  ]) {
+    const escaped = method.replace(/\./g, '\\.');
+    assert.match(
+      extBlock,
+      new RegExp(`request(?:<[^>]+>)?\\(\\s*'${escaped}'`),
+      `扩展接线块必须调用网关 RPC ${method}`,
+    );
+  }
+  assert.ok(
+    extBlock.includes('getBotManagementController().refreshActiveCapabilities(targetProfile)'),
+    '新增 MCP / 安装技能后必须同步刷新激活 BOT 能力详情',
+  );
+  assert.ok(
+    extBlock.includes('getBotManagementController().refreshActiveCapabilities(targetProfile, { removedMcpName: name })'),
+    '删除 MCP 后必须带 removedMcpName 清理草稿残留并重拉能力详情',
+  );
+  for (const symbol of [
+    'onFetchMcpCatalog',
+    'onAddMcpServer',
+    'onRemoveMcpServer',
+    'onTestMcpServer',
+    'onSearchSkillsHub',
+    'onInstallSkill',
+  ]) {
+    assert.ok(source.includes(symbol), `渲染进程动作接线缺失 ${symbol}`);
+  }
+});
+
+test('左侧栏样式切换与新建会话 React 岛必须完成设置面板 -> 状态服务 -> 快照判等 -> 根节点同步闭环接线', () => {
+  assert.ok(settingsUi.includes('anchorId="left-rail-layout"'), '外观页必须提供 left-rail-layout 锚点');
+  assert.ok(settingsUi.includes('onLeftRailLayoutChange(layout)'), '左侧栏分段开关必须把选项透传给动作回调');
+
+  const actionStart = source.indexOf('onLeftRailLayoutChange:');
+  assert.ok(actionStart !== -1, '必须存在 onLeftRailLayoutChange 动作');
+  const actionBlock = source.slice(actionStart, actionStart + 400);
+  assert.ok(actionBlock.includes('resolveLeftRailLayout('), '写入前必须通过白名单收敛 leftRailLayout');
+  assert.ok(actionBlock.includes('saveLeftRailLayout('), '切换后必须持久化 leftRailLayout');
+  assert.ok(actionBlock.includes('applyLeftRailLayout('), '切换后必须实时同步根节点 data-left-rail-layout');
+  assert.ok(actionBlock.includes('render()'), '切换后必须触发重渲染');
+
+  assert.ok(source.includes('applyLeftRailLayout(state.leftRailLayout, rootEl)'), 'render() 必须兜底同步根节点 leftRailLayout');
+  assert.ok(source.includes('id="react-newchat-host" data-flux-island'), '骨架必须挂载 React 新建会话弹窗宿主岛');
+
+  assert.ok(leftRailDomain.includes('prev.layout === next.layout'), 'sameLeftRailInputs 必须比较 layout 避免切换无刷新');
+  assert.ok(
+    leftRailDomain.includes('prev.isBotsGroupExpanded === next.isBotsGroupExpanded'),
+    'sameLeftRailInputs 必须比较 isBotsGroupExpanded 避免分组折叠失效',
+  );
+});

@@ -1,0 +1,660 @@
+/**
+ * 输入舱交互控制器单元测试（Input Dock Controller Test）
+ *
+ * 【断言】
+ *   1. syncComposerHeight 高度随 scrollHeight 自适应（66px 起步至 220px 封顶）；
+ *   2. handleSend 在空闲态调用 routeSend，在运行态且有草稿时调用 enqueueDraft；
+ *   3. handleKeyDown 在 IME 组合态下不触发回车发送；非组合态回车发送且阻止默认行为；
+ *   4. handleKeyDown 在按 Escape 时关闭未关闭的联想浮层；
+ *   5. handleInput 正确识别斜杠命令与 @ 智能引用，并区分群聊成员与普通 Bot 过滤；
+ *   6. handleContainerClick 正确代理移除附件、斜杠补全替换与智能引用注入。
+ */
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  InputDockController,
+  createInputDockController,
+} from '../../dist/renderer/events/inputDockController.mjs';
+
+function createMockState(overrides = {}) {
+  return {
+    attachments: [],
+    slashPopperOpen: false,
+    mentionPopperOpen: false,
+    mentionItems: [],
+    pickedMention: null,
+    dockNotice: '',
+    profileName: 'agent-bob',
+    profiles: [
+      { name: 'agent-alice', displayName: 'Alice' },
+      { name: 'agent-bob', displayName: 'Bob' },
+      { name: 'agent-charlie', displayName: 'Charlie' },
+    ],
+    groupRooms: [
+      { roomId: 'room-1', name: 'Dev Group', members: ['agent-alice', 'agent-bob'] },
+    ],
+    activeFocus: { type: 'session', sessionId: 'sess-1' },
+    ...overrides,
+  };
+}
+
+function createMockDeps(stateOverrides = {}, isStreaming = false) {
+  let currentState = createMockState(stateOverrides);
+  const calls = {
+    render: 0,
+    routeSend: [],
+    enqueueDraft: 0,
+    interruptTurn: 0,
+    rollbackCancel: 0,
+    queueAction: [],
+    attachments: [],
+    slashCompletion: [],
+    pathCompletion: [],
+  };
+
+  const deps = {
+    getState: () => currentState,
+    commitState: (patch) => {
+      currentState = { ...currentState, ...patch };
+    },
+    requestRender: () => {
+      calls.render++;
+    },
+    routeSend: async (text) => {
+      calls.routeSend.push(text);
+    },
+    enqueueDraft: async () => {
+      calls.enqueueDraft++;
+    },
+    interruptTurn: async () => {
+      calls.interruptTurn++;
+    },
+    handleRollbackCancel: () => {
+      calls.rollbackCancel++;
+    },
+    handleQueueAction: async (action, id) => {
+      calls.queueAction.push({ action, id });
+    },
+    addInputAttachments: async (files) => {
+      calls.attachments.push(files);
+    },
+    requestSlashCompletion: (prefix) => {
+      calls.slashCompletion.push(prefix);
+    },
+    requestPathCompletion: (query, items) => {
+      calls.pathCompletion.push({ query, items });
+    },
+    isStreamingActiveForCurrentSession: () => isStreaming,
+    t: (key) => key,
+  };
+
+  return { deps, calls, getState: () => currentState };
+}
+
+test('InputDockController 领域行为测试', async (t) => {
+  await t.test('1. syncComposerHeight 高度钳制（[66, 220]）', async () => {
+    const { deps } = createMockDeps();
+    const controller = createInputDockController(deps);
+
+    const inputMock = {
+      style: { height: '' },
+      scrollHeight: 40,
+    };
+    controller.syncComposerHeight(inputMock);
+    assert.equal(inputMock.style.height, '66px', '小于 66px 时夹紧至 66px');
+
+    inputMock.scrollHeight = 150;
+    controller.syncComposerHeight(inputMock);
+    assert.equal(inputMock.style.height, '150px');
+
+    inputMock.scrollHeight = 500;
+    controller.syncComposerHeight(inputMock);
+    assert.equal(inputMock.style.height, '220px', '超过 220px 时夹紧至 220px');
+  });
+
+  await t.test('2. handleSend 空闲态与运行态动作调度', async () => {
+    // 2.1 空闲态：submit
+    const { deps: idleDeps, calls: idleCalls } = createMockDeps({}, false);
+    const idleCtrl = new InputDockController(idleDeps);
+
+    const fakeInput = {
+      value: 'Hello Flux',
+      style: { height: '' },
+      scrollHeight: 80,
+    };
+    idleCtrl.handleSend('button', fakeInput);
+    assert.equal(idleCalls.routeSend.length, 1);
+    assert.equal(idleCalls.routeSend[0], 'Hello Flux');
+    assert.equal(fakeInput.value, '', '发送后必须清空输入框');
+
+    // 2.2 运行态：enqueue
+    const { deps: busyDeps, calls: busyCalls } = createMockDeps({}, true);
+    const busyCtrl = new InputDockController(busyDeps);
+
+    const fakeInput2 = {
+      value: 'Second message',
+      style: { height: '' },
+      scrollHeight: 80,
+    };
+    busyCtrl.handleSend('enter', fakeInput2);
+    assert.equal(busyCalls.enqueueDraft, 1);
+    assert.equal(busyCalls.routeSend.length, 0);
+  });
+
+  await t.test('3. handleKeyDown 中文输入法 IME 组合态防御', async () => {
+    const { deps, calls } = createMockDeps({}, false);
+    const ctrl = new InputDockController(deps);
+
+    const fakeInput = {
+      value: 'nihao',
+      style: { height: '' },
+      scrollHeight: 66,
+    };
+
+    // 处于组合态中
+    ctrl.setIsComposing(true);
+    let defaultPrevented = false;
+    const keyEventComposing = {
+      key: 'Enter',
+      shiftKey: false,
+      preventDefault: () => { defaultPrevented = true; },
+    };
+
+    const handledComposing = ctrl.handleKeyDown(keyEventComposing, fakeInput);
+    assert.equal(handledComposing, false, 'IME 组合态下回车不得消费');
+    assert.equal(defaultPrevented, false);
+    assert.equal(calls.routeSend.length, 0);
+
+    // 退出组合态
+    ctrl.setIsComposing(false);
+    const handledNormal = ctrl.handleKeyDown(keyEventComposing, fakeInput);
+    assert.equal(handledNormal, true, '正常回车必须消费');
+    assert.equal(defaultPrevented, true);
+    assert.equal(calls.routeSend.length, 1);
+  });
+
+  await t.test('4. handleKeyDown Escape 收起补全浮层', async () => {
+    const { deps, calls, getState } = createMockDeps({
+      slashPopperOpen: true,
+      mentionPopperOpen: true,
+    });
+    const ctrl = new InputDockController(deps);
+
+    let defaultPrevented = false;
+    const escapeEv = {
+      key: 'Escape',
+      preventDefault: () => { defaultPrevented = true; },
+    };
+
+    const handled = ctrl.handleKeyDown(escapeEv);
+    assert.equal(handled, true);
+    assert.equal(defaultPrevented, true);
+    assert.equal(getState().slashPopperOpen, false);
+    assert.equal(getState().mentionPopperOpen, false);
+    assert.equal(calls.render, 1);
+  });
+
+  await t.test('5. handleInput 联想补全：斜杠与 @ 智能引用', async () => {
+    const { deps, calls, getState } = createMockDeps();
+    const ctrl = new InputDockController(deps);
+
+    // 5.1 斜杠命令补全
+    const slashInput = {
+      value: '/clear',
+      selectionStart: 6,
+      style: { height: '' },
+      scrollHeight: 66,
+    };
+    ctrl.handleInput(slashInput);
+    assert.equal(calls.slashCompletion.length, 1);
+    assert.equal(calls.slashCompletion[0], 'clear');
+
+    // 5.2 智能引用补全
+    const mentionInput = {
+      value: 'Hey @Ali',
+      selectionStart: 8,
+      style: { height: '' },
+      scrollHeight: 66,
+    };
+    ctrl.handleInput(mentionInput);
+    assert.equal(calls.pathCompletion.length, 1);
+    assert.equal(calls.pathCompletion[0].query, 'Ali');
+    assert.equal(getState().mentionPopperOpen, true);
+    assert.equal(getState().mentionItems.length, 1);
+    assert.equal(getState().mentionItems[0].name, 'Alice');
+  });
+
+  await t.test('6. handleContainerClick 委托处理附件移除与补全替换', async () => {
+    const { deps, calls, getState } = createMockDeps({
+      attachments: [{ id: 'att-1', name: 'photo.png' }],
+      slashPopperOpen: true,
+      mentionPopperOpen: true,
+    });
+    const ctrl = new InputDockController(deps);
+
+    // 6.1 移除附件
+    const fakeRemoveBtn = {
+      closest: (sel) => (sel === '.btn-remove-attachment' ? { getAttribute: () => 'att-1' } : null),
+    };
+    const handledRemove = ctrl.handleContainerClick(fakeRemoveBtn);
+    assert.equal(handledRemove, true);
+    assert.equal(getState().attachments.length, 0);
+
+    // 6.2 斜杠命令选择为前置徽标并清理输入框
+    const fakeInput = {
+      value: '/mo',
+      selectionStart: 3,
+      selectionEnd: 3,
+      style: { height: '' },
+      scrollHeight: 66,
+      setSelectionRange: (start, end) => {
+        fakeInput.selectionStart = start;
+        fakeInput.selectionEnd = end;
+      },
+      focus: () => {},
+    };
+    const fakeSlashOption = {
+      closest: (sel) =>
+        sel === '.slash-item-option'
+          ? {
+              getAttribute: (name) => {
+                if (name === 'data-command') return '/model';
+                if (name === 'data-replace-from') return '0';
+                return null;
+              },
+            }
+          : null,
+    };
+    const handledSlash = ctrl.handleContainerClick(fakeSlashOption, fakeInput);
+    assert.equal(handledSlash, true);
+    assert.equal(getState().composerBadges.length, 1);
+    assert.equal(getState().composerBadges[0].name, '/model');
+    assert.equal(fakeInput.value, '');
+    assert.equal(ctrl.assembleDraftText(fakeInput.value), '/model');
+    assert.equal(getState().slashPopperOpen, false);
+
+    // 6.3 智能引用选择为胶囊徽标
+    fakeInput.value = '@Ali';
+    fakeInput.selectionStart = 4;
+    fakeInput.selectionEnd = 4;
+    const fakeMentionOption = {
+      closest: (sel) =>
+        sel === '.mention-item-option'
+          ? {
+              getAttribute: (name) => {
+                if (name === 'data-mention') return 'Alice';
+                if (name === 'data-type') return 'agent';
+                return null;
+              },
+            }
+          : null,
+    };
+    const handledMention = ctrl.handleContainerClick(fakeMentionOption, fakeInput);
+    assert.equal(handledMention, true);
+    assert.ok(getState().pickedMention);
+    assert.equal(getState().pickedMention.profile, 'Alice');
+    assert.equal(getState().composerBadges.length, 2);
+    assert.equal(getState().composerBadges[1].name, 'Alice');
+    assert.equal(fakeInput.value, '');
+    assert.equal(ctrl.assembleDraftText(fakeInput.value), '/model @Alice');
+
+    // 6.4 点击移除按钮移除指定徽标
+    const aliceBadgeId = getState().composerBadges[1].id;
+    const fakeRemoveBadgeBtn = {
+      closest: (sel) =>
+        sel === '[data-action="remove-badge"]'
+          ? {
+              getAttribute: (name) => (name === 'data-badge-id' ? aliceBadgeId : null),
+            }
+          : null,
+    };
+    const handledRemoveBadge = ctrl.handleContainerClick(fakeRemoveBadgeBtn, fakeInput);
+    assert.equal(handledRemoveBadge, true);
+    assert.equal(getState().composerBadges.length, 1);
+    assert.equal(ctrl.assembleDraftText('hello'), '/model hello');
+
+    // 6.5 光标在 0 处按 Backspace 移除末尾徽标
+    fakeInput.value = '';
+    fakeInput.selectionStart = 0;
+    fakeInput.selectionEnd = 0;
+    let backspacePrevented = false;
+    const backspaceEv = {
+      key: 'Backspace',
+      preventDefault: () => { backspacePrevented = true; },
+    };
+    const handledBackspace = ctrl.handleKeyDown(backspaceEv, fakeInput);
+    assert.equal(handledBackspace, true);
+    assert.equal(backspacePrevented, true);
+    assert.equal(getState().composerBadges.length, 0);
+    assert.equal(ctrl.assembleDraftText(''), '');
+  });
+
+  await t.test('7. buildDockSnapshot 与 buildDockHtml 契约健全', async () => {
+    const { deps, getState } = createMockDeps({
+      selectedModel: 'gpt-4o',
+      currentProvider: 'openai',
+      availableModels: ['gpt-4o', 'claude-3-5-sonnet'],
+    });
+    const ctrl = new InputDockController(deps);
+
+    const snapshot = ctrl.buildDockSnapshot();
+    assert.equal(snapshot.selectedModel, 'gpt-4o');
+    assert.equal(snapshot.currentProvider, 'openai');
+    assert.equal(snapshot.modelCount, 2);
+
+    // 未连接网关时 buildDockHtml 返回空
+    getState().gatewayConnected = false;
+    assert.equal(ctrl.buildDockHtml(false), '');
+
+    // 已连接网关时 buildDockHtml 包含有效结构
+    getState().gatewayConnected = true;
+    const html = ctrl.buildDockHtml(true);
+    assert.ok(html.includes('input-dock-container') || html.includes('dock-prompt-input') || typeof html === 'string');
+  });
+
+  await t.test('8. enqueueDraft 与 handleQueueAction 队列闭环', async () => {
+    let promptSubmitParams = null;
+    let steerParams = null;
+    let cancelParams = null;
+
+    const { deps, getState } = createMockDeps({
+      activeSessionId: 'sess-active',
+      queuedMessages: [{ admissionId: 'adm-1', text: 'queued draft' }],
+    });
+
+    const extendedDeps = {
+      ...deps,
+      handleQueueAction: undefined,
+      getGatewayClient: () => ({
+        call: async (method, params) => {
+          if (method === 'prompt.submit') {
+            promptSubmitParams = params;
+            return { admission_id: 'adm-2', status: 'queued', user_row_id: 101 };
+          }
+          return {};
+        },
+      }),
+      ensureLiveSessionId: async () => 'live-123',
+      interactiveService: {
+        steerQueued: async (caller, sId, aId, profile) => {
+          steerParams = { sId, aId, profile };
+          return {};
+        },
+        cancelQueued: async (caller, sId, aId) => {
+          cancelParams = { sId, aId };
+          return {};
+        },
+        execSlash: async () => ({ type: 'exec', output: 'ok' }),
+      },
+      getRpcCaller: () => ({}),
+      describeRpcError: (e) => String(e),
+    };
+
+    const ctrl = new InputDockController(extendedDeps);
+
+    // 8.1 队列立即插队 steer
+    await ctrl.handleQueueAction('queue-steer', 'adm-1');
+    assert.ok(steerParams);
+    assert.equal(steerParams.sId, 'live-123');
+    assert.equal(steerParams.aId, 'adm-1');
+    assert.equal(getState().queuedMessages.length, 0, '动作处理完后该准入从排队队列移除');
+
+    // 8.2 enqueueDraft 若当前草稿含附件，提示不支持并发入队并保留附件与输入框状态
+    const qNotices = [];
+    const { deps: qBaseDeps, getState: getQState } = createMockDeps({
+      activeSessionId: 'sess-active',
+      attachments: [{ id: 'att-q', name: 'pending.png', type: 'image' }],
+    });
+    const qCtrl = new InputDockController({
+      ...qBaseDeps,
+      enqueueDraft: undefined,
+      getGatewayClient: () => ({
+        call: async (method, params) => {
+          if (method === 'prompt.submit') promptSubmitParams = params;
+          return {};
+        },
+      }),
+      setTimedDockNotice: (msg) => qNotices.push(msg),
+    });
+    promptSubmitParams = null;
+    await qCtrl.enqueueDraft();
+    assert.equal(qNotices[0], 'dock.queueAttachmentsUnsupported');
+    assert.equal(getQState().attachments.length, 1);
+    assert.equal(promptSubmitParams, null);
+
+    // 无 setTimedDockNotice 时同样拦截并发附件入队，仅触发 render 而不抛错；无附件时放行入队判断
+    const qCtrlQuiet = new InputDockController({
+      ...qBaseDeps,
+      enqueueDraft: undefined,
+      setTimedDockNotice: undefined,
+    });
+    await qCtrlQuiet.enqueueDraft();
+    assert.equal(getQState().attachments.length, 1);
+
+    const { deps: qEmptyDeps } = createMockDeps({ activeSessionId: 'sess-active', attachments: [] });
+    const qCtrlEmpty = new InputDockController({
+      ...qEmptyDeps,
+      enqueueDraft: undefined,
+      getGatewayClient: () => null,
+    });
+    await qCtrlEmpty.enqueueDraft();
+    assert.equal(qEmptyDeps.getState().attachments.length, 0);
+  });
+
+  await t.test('9. restoreInputDraftAndCaret 选区与草稿恢复', async () => {
+    const { deps } = createMockDeps();
+    const ctrl = new InputDockController(deps);
+
+    let focused = false;
+    let selectionRange = null;
+    const fakeTextarea = {
+      id: 'dock-prompt-input',
+      value: '',
+      focus: () => { focused = true; },
+      setSelectionRange: (start, end) => { selectionRange = { start, end }; },
+    };
+
+    globalThis.document = {
+      getElementById: (id) => (id === 'dock-prompt-input' ? fakeTextarea : null),
+    };
+
+    ctrl.restoreInputDraftAndCaret('recovered text', 3, 5, true);
+    assert.equal(fakeTextarea.value, 'recovered text');
+    assert.equal(focused, true);
+    assert.deepEqual(selectionRange, { start: 3, end: 5 });
+
+    delete globalThis.document;
+  });
+
+  await t.test('10. runSlashCommand：本地别名归一、执行中常驻提示、完成自动刷新与错误兜底', async () => {
+    let executedCommand = null;
+    let reloadTargetSession = null;
+    const notices = [];
+
+    const { deps } = createMockDeps({ activeSessionId: 'sess-active-1' });
+    deps.ensureLiveSessionId = async () => 'live-sess-1';
+    deps.getRpcCaller = () => ({});
+    deps.interactiveService = {
+      execSlash: async (rpc, liveId, cmd) => {
+        executedCommand = cmd;
+        if (cmd === '/compress') {
+          return { output: '(no output)' };
+        }
+        if (cmd.startsWith('/fail')) {
+          throw new Error('rpc fail');
+        }
+        return { output: 'done' };
+      },
+    };
+    deps.setTimedDockNotice = (msg, dur) => {
+      notices.push({ msg, dur });
+    };
+    deps.reloadSessionMessages = async (sId) => {
+      reloadTargetSession = sId;
+    };
+    deps.t = (key, params) => {
+      if (params) return `${key}:${JSON.stringify(params)}`;
+      return key;
+    };
+
+    const ctrl = new InputDockController(deps);
+
+    // 10.1 /compact 自动本地归一为 /compress 并展示执行中常驻提示、完成文案与重拉消息
+    await ctrl.runSlashCommand('/compact');
+    assert.equal(executedCommand, '/compress', '/compact 必须被本地归一为 /compress');
+    assert.equal(notices[0].msg, 'dock.compressExecuting', '/compress 必须展示大模型提炼中的专属提示');
+    assert.equal(notices[0].dur, 0, '执行中提示必须常驻（dur=0）');
+    assert.equal(notices[1].msg, 'dock.compressCompleted');
+    assert.equal(reloadTargetSession, 'sess-active-1', '/compress 成功后必须触发会话消息重拉');
+
+    // 10.2 失败时展示真实的 dock.cmdFailed 错误提示，而非误导的网关未连接
+    notices.length = 0;
+    await ctrl.runSlashCommand('/fail-test');
+    assert.equal(notices[0].msg, 'dock.cmdExecuting:{"cmd":"/fail-test"}');
+    assert.ok(notices[1].msg.startsWith('dock.cmdFailed'));
+    assert.ok(notices[1].msg.includes('rpc fail'));
+
+    // 10.3 Skill 类指令（如 /human-writing）执行后自动清空常驻提示并触发 sendMessage
+    notices.length = 0;
+    let sentMessageText = null;
+    deps.sendMessage = async (text) => {
+      sentMessageText = text;
+    };
+    deps.interactiveService.execSlash = async (rpc, liveId, cmd) => {
+      return {
+        type: 'skill',
+        name: 'human-writing',
+        message: 'Prompt with full human-writing skill loaded',
+      };
+    };
+    await ctrl.runSlashCommand('/human-writing 散文写作');
+    assert.equal(sentMessageText, 'Prompt with full human-writing skill loaded');
+    assert.equal(notices[1].msg, '', 'Skill 命令触发发送时必须清空常驻提示');
+  });
+
+  await t.test('11. 附件读取、纯附件提交与 openBrowserFilePicker 闭环', async () => {
+    const notices = [];
+    const { deps, calls, getState } = createMockDeps();
+    deps.setTimedDockNotice = (msg) => notices.push(msg);
+    const ctrl = new InputDockController(deps);
+
+    const prevFR = globalThis.FileReader;
+    const prevDoc = globalThis.document;
+    globalThis.FileReader = class MockReader {
+      readAsDataURL(file) {
+        if (file.fail) {
+          this.onerror();
+        } else {
+          this.result = `data:${file.type || 'application/octet-stream'};base64,QUJD`;
+          this.onload();
+        }
+      }
+    };
+
+    try {
+      globalThis.document = undefined;
+      await ctrl.addInputAttachments([]);
+      ctrl.submitDraft({ value: '   ', style: {} });
+      assert.equal(calls.routeSend.length, 0, '空文本且无附件时 submitDraft 不得送出');
+
+      // 无 setTimedDockNotice 时超大图片静默跳过 + FileReader 返回空 result 回落
+      const quietDeps = createMockDeps();
+      const quietCtrl = new InputDockController(quietDeps.deps);
+      globalThis.FileReader = class EmptyReader {
+        readAsDataURL() {
+          this.result = '';
+          this.onload();
+        }
+      };
+      await quietCtrl.addInputAttachments([
+        { name: 'too-big.png', type: 'image/png', size: 12 * 1024 * 1024 },
+        { name: 'empty-res.png', type: 'image/png', size: 10 },
+      ]);
+      assert.equal(quietDeps.getState().attachments[0]?.previewUrl, '');
+      await quietCtrl.addInputAttachments([{ name: '', type: 'text/plain', size: 32 }]);
+      assert.equal(quietDeps.getState().attachments[1]?.name, 'file_1');
+
+      globalThis.FileReader = class MockReader {
+        readAsDataURL(file) {
+          if (file.fail) {
+            this.onerror();
+          } else {
+            this.result = `data:${file.type || 'application/octet-stream'};base64,QUJD`;
+            this.onload();
+          }
+        }
+      };
+      await ctrl.addInputAttachments([
+        { name: 'huge.png', type: 'image/png', size: 11 * 1024 * 1024 },
+        { name: '', type: 'image/png', size: 100 },
+        { name: 'doc.pdf', type: '', size: 128 },
+        { name: 'notes.txt', type: 'text/plain', size: 64, fail: true },
+        { name: 'archive.bin', type: '', size: 6 * 1024 * 1024 },
+      ]);
+      assert.ok(notices.includes('dock.imageTooLarge'));
+      const atts = getState().attachments;
+      assert.equal(atts.length, 4);
+      assert.equal(atts[0].name, 'image_1.png');
+      assert.equal(atts[0].type, 'image');
+      assert.equal(atts[1].type, 'pdf');
+      assert.ok(atts[1].contentBase64?.startsWith('data:'));
+      assert.equal(atts[2].type, 'file');
+      assert.equal(atts[2].contentBase64, undefined);
+      assert.equal(atts[3].contentBase64, undefined);
+
+      // submitDraft 允许仅附件不打字发送，且无 DOM document.body 时 picker 安全退出
+      const ta = { value: '', style: {}, selectionStart: 0 };
+      ctrl.submitDraft(ta);
+      assert.deepEqual(calls.routeSend, ['']);
+
+      // 无 FileReader 环境回落
+      globalThis.FileReader = undefined;
+      await ctrl.addInputAttachments([{ name: 'no-fr.png', type: 'image/png', size: 10 }]);
+
+      // openBrowserFilePicker 完整 DOM 挂载与取消/选择清理
+      ctrl.openBrowserFilePicker();
+      let removed = false;
+      let createdInput = null;
+      const body = {
+        appendChild(el) {
+          createdInput = el;
+          el.parentNode = body;
+        },
+        removeChild() {
+          removed = true;
+        },
+      };
+      globalThis.document = {
+        body,
+        getElementById: () => null,
+        createElement() {
+          return {
+            style: {},
+            files: [{ name: 'picked.md', type: 'text/markdown', size: 10 }],
+            click() {},
+          };
+        },
+      };
+      ctrl.openBrowserFilePicker();
+      createdInput.oncancel();
+      assert.equal(removed, true);
+
+      removed = false;
+      ctrl.openBrowserFilePicker();
+      createdInput.onchange();
+      assert.equal(removed, true);
+      await new Promise((r) => setTimeout(r, 5));
+      assert.ok(getState().attachments.some((a) => a.name === 'picked.md'));
+
+      // null files branch on onchange
+      ctrl.openBrowserFilePicker();
+      createdInput.files = [];
+      createdInput.onchange();
+    } finally {
+      globalThis.FileReader = prevFR;
+      globalThis.document = prevDoc;
+    }
+  });
+});

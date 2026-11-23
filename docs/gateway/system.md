@@ -1,0 +1,48 @@
+# 系统与能力探测
+
+> 本文件由 `npm run contract:doc` 从网关契约、探针结果与源码调用点自动生成，请勿手工编辑。
+> 契约快照：e3cf16a3d983… · 同步于 2026-11-12T09:29:35.736Z
+
+| 方法 | 入参（契约） | 出参（契约） | 调用点 | 真实探针 |
+| --- | --- | --- | --- | --- |
+| `commands.catalog` | `session_id` `profile` | `pairs` `sub` `canon` `commands` `categories` `skills` `skill_count` `warning` `plugin_discovery_error` `plugin_commands` | `packages/core/src/session/interactiveService.ts:212` | 跳过：动态命令目录由在线网关运行时按 profile 动态生成，离线探针显式跳过，由契约表严格守护 |
+| `config.get` | `profile` `key` `cwd` `session_id` | `value` `display` `tool_progress` `model` `provider` `providers` `home` `cwd` `branch` `config` `prompt` `mtime` `mcp_rev` | `packages/core/src/rpc/client.ts:1067` | 跳过：离线基线未连真实网关录制 config.get，由契约白名单与会话状态栏 Threshold 单测守护；连真实网关跑 probe:gateway 可补录 |
+| `model.options` | `profile` `session_id` `explicit_only` `include_unconfigured` `refresh` | `providers` `model` `provider` | `packages/core/src/rpc/client.ts:955`<br>`packages/desktop/src/renderer/providerCatalog.ts:95` | ✅ 0.22.5 |
+| `ping` | — | — | `packages/core/src/rpc/client.ts:393`<br>`packages/core/src/rpc/client.ts:505` | ✅ 0.22.5 |
+
+## 明细
+
+### `commands.catalog`
+
+- 参数类型：`CommandsCatalogParams`
+- 结果类型：`CommandsCatalogResult`
+- 真实探针：跳过 —— 动态命令目录由在线网关运行时按 profile 动态生成，离线探针显式跳过，由契约表严格守护
+- 调用点：
+  - `packages/core/src/session/interactiveService.ts:212`
+
+### `config.get`
+
+- 参数类型：`ConfigGetParams`
+- 结果类型：`ConfigGetResult`
+- 真实探针：跳过 —— 离线基线未连真实网关录制 config.get，由契约白名单与会话状态栏 Threshold 单测守护；连真实网关跑 probe:gateway 可补录
+- 调用点：
+  - `packages/core/src/rpc/client.ts:1067`
+
+### `model.options`
+
+- 参数类型：`ModelOptionsParams`
+- 结果类型：`ModelOptionsResult`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/core/src/rpc/client.ts:955`
+  - `packages/desktop/src/renderer/providerCatalog.ts:95`
+
+### `ping`
+
+- 参数类型：`(网关额外方法)`
+- 结果类型：`(未纳入生成契约)`
+- 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
+- 调用点：
+  - `packages/core/src/rpc/client.ts:393`
+  - `packages/core/src/rpc/client.ts:505`
+

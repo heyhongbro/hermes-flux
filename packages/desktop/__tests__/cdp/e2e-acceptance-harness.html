@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="obsidian-gold">
+<head>
+  <meta charset="UTF-8">
+  <title>Hermes Flux End-to-End CDP Acceptance Harness</title>
+  <link rel="stylesheet" href="../../dist/renderer/styles.css">
+  <!-- 输入舱的排版（发丝边 / 圆角 / 触控高度 / 字号档位）统一由对话区样式表承担，
+       验收 harness 必须加载同一份样式，否则断言的是不存在的视觉 -->
+  <link rel="stylesheet" href="../../dist/renderer/conversation.css">
+  <link rel="stylesheet" href="../../dist/renderer/status-pod.css">
+  <style>
+    :root[data-theme="obsidian-gold"] {
+      --bg-window: #090A0F;
+      --bg-rail: #0E1015;
+      --bg-panel: #111318;
+      --bg-card: #151720;
+      --bg-card-hover: #1B1E29;
+      --bg-card-active: #222634;
+      --bg-elevated: #1F2230;
+      --bg-input: #12141A;
+      --bg-code: #0A0B10;
+      --bg-backdrop: rgba(18, 20, 27, 0.88);
+      --accent: #F59E0B;
+      --accent-hover: #FBBF24;
+      --accent-dim: #D97706;
+      --accent-glow: rgba(245, 158, 11, 0.25);
+      --accent-subtle: rgba(245, 158, 11, 0.09);
+      --accent-border: rgba(245, 158, 11, 0.35);
+      --accent-text: #FEF3C7;
+      --text-main: #F8FAFC;
+      --text-secondary: #94A3B8;
+      --text-muted: #64748B;
+      --text-faint: #334155;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-medium: rgba(255, 255, 255, 0.09);
+      --border-strong: rgba(255, 255, 255, 0.16);
+      --specular-line: inset 0 1px 0 0 rgba(255, 255, 255, 0.10);
+      --shadow-window: 0 24px 70px -12px rgba(0, 0, 0, 0.85);
+      --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.45);
+      --shadow-dock: 0 20px 48px -10px rgba(0, 0, 0, 0.75);
+      --jade-pulse: #10B981;
+      --jade-glow: rgba(16, 185, 129, 0.45);
+      --danger-color: #EF4444;
+      --font-sans: system-ui, -apple-system, sans-serif;
+      --font-mono: "JetBrains Mono", monospace;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      background: var(--bg-window);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      overflow: hidden;
+      display: flex;
+    }
+    #flux-app-root {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+    .flux-body-container {
+      flex: 1;
+      display: flex;
+      position: relative;
+      overflow: hidden;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div id="flux-app-root"></div>
+
+  <!-- 由 CDP 测试用 esbuild 现场打包：壳层与左轨依赖 react，浏览器无法直接解析裸模块说明符 -->
+  <script src="/packages/desktop/__tests__/cdp/.tmp/e2e-entry.js"></script>
+  <script type="module">
+    const {
+      renderTitlebar,
+      renderLeftRailHtml,
+      renderMiddlePod,
+      renderInputDock,
+      renderContextMenu,
+    } = window.__e2e;
+
+    /** 旧模板签名兼容：把 isBotsGroupExpanded 映射到 React 模型的 isGroupsGroupExpanded */
+    const renderLeftRail = (props) =>
+      renderLeftRailHtml({
+        ...props,
+        searchQuery: props.searchQuery || '',
+        isGroupsGroupExpanded: props.isBotsGroupExpanded,
+      });
+
+    window.cdpApp = {
+      sessions: [
+        { id: 'sess-1', title: '电商支付重构方案', time: '14:20', botName: 'default', botDisplayName: '赫尔墨斯', activityState: 'read' },
+        { id: 'sess-2', title: '门禁规则不变量核验', time: '14:35', botName: 'arch-wang', botDisplayName: '架构王', activityState: 'unread' }
+      ],
+      profiles: [
+        { name: 'default', displayName: '赫尔墨斯', description: '全能助手', lastMessage: '已完成方案排版', lastTime: '10分钟前', activityState: 'read', isDefault: true },
+        { name: 'arch-wang', displayName: '架构王', description: '架构设计专家', lastMessage: '请核验门禁', lastTime: '1小时前', activityState: 'unread' }
+      ],
+      groupRooms: [
+        { roomId: 'room-1', name: '全链路微服务重构群', members: ['default', 'arch-wang'], activityState: 'running' }
+      ],
+      activeSessionId: 'sess-1',
+      sessionDrafts: new Map(),
+      activeFocus: { type: 'session', sessionId: 'sess-1' },
+      isBotsGroupExpanded: true,
+      editingGroupRoomId: null,
+      contextMenu: null,
+      messages: [
+        {
+          id: 'usr-1',
+          role: 'user',
+          content: '请检查并重构分布式锁时钟漂移方案',
+          timestamp: '14:20:00',
+        },
+        {
+          id: 'msg-1',
+          role: 'assistant',
+          content: '您好，当前架构已经通过门禁检验。',
+          toolCalls: [
+            { id: 'tc-1', name: 'read_file', status: 'completed', args: '{"path":"main.ts"}' },
+            { id: 'tc-2', name: 'execute_shell', status: 'running', args: '{"command":"npm test"}', output: 'Tests passing' }
+          ]
+        }
+      ],
+      lastActions: [],
+
+      render() {
+        const root = document.getElementById('flux-app-root');
+        const activeSess = this.sessions.find(s => s.id === this.activeSessionId);
+
+        let displayTitle = activeSess ? activeSess.title : '赫尔墨斯';
+        if (this.activeFocus?.type === 'bot') {
+          const bot = this.profiles.find(p => p.name === this.activeFocus.botName);
+          displayTitle = bot?.displayName || this.activeFocus.botName;
+        } else if (this.activeFocus?.type === 'group') {
+          const grp = this.groupRooms.find(g => g.roomId === this.activeFocus.roomId);
+          displayTitle = `👥 ${grp?.name || '多智能体研讨室'}`;
+        }
+
+        const html = `
+          ${renderTitlebar({
+            platform: 'windows',
+            title: displayTitle,
+            isMaximized: false,
+            gatewayConnected: true,
+            leftRailCollapsed: false,
+            inspectorCollapsed: true
+          })}
+          <div class="flux-body-container">
+            ${renderLeftRail({
+              collapsed: false,
+              activeSessionId: this.activeSessionId,
+              activeFocus: this.activeFocus,
+              sessions: this.sessions,
+              profileName: 'default',
+              profiles: this.profiles,
+              groups: this.groupRooms,
+              gatewayOnline: true,
+              gatewayLatencyMs: 12,
+              isBotsGroupExpanded: this.isBotsGroupExpanded,
+              editingGroupRoomId: this.editingGroupRoomId
+            })}
+            ${renderMiddlePod({
+              gatewayConnected: true,
+              messages: this.messages,
+              dockHtml: renderInputDock({
+                selectedModel: 'gpt-4o',
+                reasoningLevel: 'default',
+                approvalMode: 'auto',
+                // 由 cdpApp.isStreaming 驱动，验证运行态只剩停止按钮、按钮列变高
+                isStreaming: Boolean(this.isStreaming),
+                disabled: false,
+                attachments: this.attachments || [],
+                slashPopperOpen: this.slashPopperOpen,
+                slashItems: this.slashItems,
+                mentionPopperOpen: this.mentionPopperOpen,
+                mentionItems: this.mentionItems,
+              })
+            })}
+          </div>
+          ${renderContextMenu(this.contextMenu)}
+        `;
+        root.innerHTML = html;
+        // 消息行由 React 真实挂载到宿主锚点（renderMiddlePod 只输出骨架）
+        const messageHost = document.getElementById('react-message-list-host');
+        if (messageHost && window.__e2e?.mountMessages) {
+          if (this._messageRoot) {
+            try { this._messageRoot.unmount(); } catch {}
+          }
+          this._messageRoot = window.__e2e.mountMessages(messageHost, this.messages);
+        }
+        this.bindEvents();
+      },
+
+      bindEvents() {
+        // 群聊行内重命名：静态渲染的回调一律 noop，这里用原生事件接回 cdpApp 状态。
+        // 【防范的历史坑 (Pitfall)】确认按钮是 form 的 submit 按钮，不拦截 submit 会触发整页导航，
+        // 后续用例全部拿不到 window.cdpApp，表现为一连串 TypeError: undefined。
+        const renameInput = document.querySelector('.rail-group-rename-input');
+        const renameForm = document.querySelector('.rail-group-inline-rename-wrap form');
+        const commitRename = (e) => {
+          if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+          const target = this.groupRooms.find(g => g.roomId === this.editingGroupRoomId);
+          if (target && renameInput) target.name = renameInput.value;
+          this.editingGroupRoomId = null;
+          this.render();
+        };
+        if (renameForm) {
+          renameForm.addEventListener('submit', commitRename, true);
+        }
+        const confirmRename = document.querySelector('.btn-confirm-group-rename');
+        if (confirmRename) {
+          confirmRename.onclick = commitRename;
+        }
+        const cancelRename = document.querySelector('.btn-cancel-group-rename');
+        if (cancelRename) {
+          cancelRename.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.editingGroupRoomId = null;
+            this.render();
+          };
+        }
+
+        // Session context menu & click
+        document.querySelectorAll('.session-item').forEach(el => {
+          el.onclick = (e) => {
+            const id = el.dataset.id;
+            if (id) this.selectSession(id);
+          };
+          el.oncontextmenu = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const id = el.dataset.id;
+            const title = el.dataset.title;
+            this.contextMenu = {
+              x: e.clientX || 150,
+              y: e.clientY || 150,
+              targetType: 'session',
+              targetId: id,
+              targetName: title
+            };
+            this.render();
+          };
+        });
+
+        // Group room click
+        document.querySelectorAll('.rail-group-item').forEach(el => {
+          el.onclick = (e) => {
+            const roomId = el.dataset.roomId;
+            if (roomId) this.openGroupRoom(roomId);
+          };
+        });
+
+        // Bot context menu & click
+        document.querySelectorAll('.rail-pinned-bot-row').forEach(el => {
+          el.onclick = (e) => {
+            const profile = el.dataset.profile;
+            if (profile) this.openBotChat(profile);
+          };
+          el.oncontextmenu = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const profile = el.dataset.profile;
+            this.contextMenu = {
+              x: e.clientX || 150,
+              y: e.clientY || 150,
+              targetType: 'bot',
+              targetId: profile,
+              targetName: profile
+            };
+            this.render();
+          };
+        });
+
+        // Context menu items
+        document.querySelectorAll('#session-context-menu .ctx-item').forEach(btn => {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            const action = btn.dataset.action;
+            const ctx = this.contextMenu;
+            this.contextMenu = null;
+            this.render();
+
+            if (action === 'delete') {
+              this.deleteSession(ctx.targetId);
+            } else if (action === 'bot-edit') {
+              this.openAgentEditor(ctx.targetId);
+            }
+          };
+        });
+
+        // Group inline rename
+        document.querySelectorAll('.btn-confirm-group-rename').forEach(btn => {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            const roomId = btn.dataset.roomId;
+            const input = document.getElementById(`rail-group-rename-input-${roomId}`);
+            if (input && input.value.trim()) {
+              const grp = this.groupRooms.find(g => g.roomId === roomId);
+              if (grp) grp.name = input.value.trim();
+              this.editingGroupRoomId = null;
+              this.lastActions.push(`group_renamed:${grp.name}`);
+              this.render();
+            }
+          };
+        });
+
+        document.querySelectorAll('.btn-cancel-group-rename').forEach(btn => {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            this.editingGroupRoomId = null;
+            this.render();
+          };
+        });
+
+        const sendBtn = document.getElementById('dock-send-btn');
+        if (sendBtn) {
+          sendBtn.onclick = () => {
+            const input = document.getElementById('dock-prompt-input');
+            const val = input ? input.value.trim() : '';
+            if (val) {
+              if (this.activeFocus.type === 'bot') {
+                const bot = this.profiles.find(p => p.name === this.activeFocus.botName);
+                if (bot) {
+                  bot.activityState = 'running';
+                  bot.lastMessage = val;
+                  bot.timestamp = Date.now();
+                }
+              }
+              this.lastActions.push(`send_message:${val}`);
+              this.render();
+            }
+          };
+        }
+
+        const rollbackBtn = document.querySelector('[data-action="rollback-msg"]');
+        if (rollbackBtn) {
+          rollbackBtn.onclick = (e) => {
+            e.stopPropagation();
+            const text = rollbackBtn.getAttribute('data-content') || '请检查并重构分布式锁时钟漂移方案';
+            const input = document.getElementById('dock-prompt-input');
+            if (input) {
+              input.value = text;
+              input.focus();
+            }
+          };
+        }
+
+        const inputEl = document.getElementById('dock-prompt-input');
+        if (inputEl) {
+          inputEl.oninput = () => {
+            if (inputEl.value.endsWith('/')) {
+              this.slashPopperOpen = true;
+              this.slashItems = [
+                { name: '/clear', description: '清空会话屏幕' },
+                { name: '/model', description: '切换当前模型' },
+                { name: '/code-review', description: '代码架构质量审查', isSkill: true },
+              ];
+              this.render();
+            }
+          };
+        }
+      },
+
+      deleteSession(id) {
+        this.sessions = this.sessions.filter(s => s.id !== id);
+        if (this.activeSessionId === id) {
+          this.activeSessionId = this.sessions[0]?.id || '';
+          if (this.activeSessionId) {
+            this.activeFocus = { type: 'session', sessionId: this.activeSessionId };
+          } else {
+            this.activeFocus = { type: 'bot', botName: 'default' };
+            this.messages = [];
+          }
+        }
+        this.render();
+        // Focus restore invariant: 对齐生产代码的双阶 rAF 与选区激活
+        const restore = () => {
+          const input = document.getElementById('dock-prompt-input');
+          if (input) {
+            window.focus();
+            input.focus({ preventScroll: true });
+            const len = input.value.length;
+            input.setSelectionRange(len, len);
+          }
+        };
+        restore();
+        requestAnimationFrame(() => {
+          restore();
+          requestAnimationFrame(restore);
+        });
+      },
+
+      openAgentEditor(targetId) {
+        // BOT 编辑已迁移到设置中心 BotManagerView（React 岛）；harness 不再渲染旧内联浮层。
+        this.lastActions.push(`bot_settings_requested:${targetId}`);
+      },
+
+      openBotChat(botProfile) {
+        this.activeFocus = { type: 'bot', botName: botProfile };
+        const target = this.profiles.find(p => p.name === botProfile);
+        if (target) {
+          target.activityState = 'read';
+        }
+        this.lastActions.push(`bot_entered_read:${botProfile}`);
+        this.render();
+      },
+
+      selectSession(sessionId) {
+        const input = document.getElementById('dock-prompt-input');
+        if (this.activeSessionId && input) this.sessionDrafts.set(this.activeSessionId, input.value);
+        this.activeSessionId = sessionId;
+        this.activeFocus = { type: 'session', sessionId };
+        const sess = this.sessions.find(s => s.id === sessionId);
+        if (sess) {
+          sess.activityState = 'read';
+        }
+        this.lastActions.push(`session_entered_read:${sessionId}`);
+        this.render();
+        const restoredInput = document.getElementById('dock-prompt-input');
+        if (restoredInput) restoredInput.value = this.sessionDrafts.get(sessionId) || '';
+      },
+
+      openGroupRoom(roomId) {
+        this.activeFocus = { type: 'group', roomId };
+        const target = this.groupRooms.find(g => g.roomId === roomId);
+        if (target) {
+          target.activityState = 'read';
+        }
+        this.lastActions.push(`group_entered_read:${roomId}`);
+        this.render();
+      },
+
+      simulateSessionTurn(sessionId, text) {
+        // 【已废弃】旧版在此手写 activityState 再断言 DOM，属于循环自证，已删除。
+        // 左侧栏三态与排序的真实数据流验证见 packages/desktop/__tests__/e2e/left-rail-live-cdp.test.mjs
+        throw new Error('simulateSessionTurn removed: use the live-gateway E2E suite instead');
+      },
+
+      simulateGroupChatTurn(roomId) {
+        throw new Error('simulateGroupChatTurn removed: use the live-gateway E2E suite instead');
+      },
+
+      simulateBotTurn(botName) {
+        throw new Error('simulateBotTurn removed: use the live-gateway E2E suite instead');
+      }
+    };
+
+    window.cdpApp.render();
+  </script>
+</body>
+</html>

@@ -1,0 +1,740 @@
+/**
+ * React 左轨视图模型与组件行为测试。
+ *
+ * 【测试什么】用户在抽屉与微轨上真正能看到的东西：
+ *   焦点解析、Agent 上下文隔离、搜索过滤、时间倒序、紧凑时间格式、
+ *   会话行形态（无头像 / 48px / 时间钉右缘 / 副标题降级），以及 primitives 的真实消费。
+ * 【不测什么】内部函数名、DOM 结构顺序、内联样式字面量——这些改动不改行为。
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { LeftRail } from '../dist/components-react/LeftRail.js';
+import {
+  ActivityIndicator,
+  ACTIVITY_INDICATOR_VARIANTS,
+  POINT_CLOUD_SPECS,
+} from '../dist/index.js';
+import { renderLeftRailHtml } from '../dist/components-react/leftRailStaticRender.js';
+import { buildLeftRailModel, formatLeftRailTime, toSnippet, isAgentScopeActive } from '../dist/components-react/leftRailModel.js';
+import { assertCollapsedRailGeometry } from './helpers/rail-geometry.mjs';
+
+const NOW = new Date(2026, 10, 3, 15, 30).getTime();
+/** 仓库相对路径读取：测试统一从仓库根执行（与 desktop 侧用例一致）。 */
+const read = (rel) => fs.readFileSync(path.resolve(process.cwd(), rel), 'utf8');
+
+const PROFILES = [
+  { name: 'default', displayName: 'Default 助理', isDefault: true, lastMessage: '主中枢已就绪', lastTime: '10:00', timestamp: NOW - 600000 },
+  { name: 'arch-wang', displayName: '架构老王', description: '架构设计专家', lastMessage: '已完成锁模型复查', timestamp: NOW - 3600000 },
+];
+
+const SESSIONS = [
+  { id: 's-a', title: '电商支付重构方案', preview: '幂等键下沉到 core 层', botName: 'default', timestamp: NOW - 60000 },
+  { id: 's-b', title: '门禁规则不变量核验', preview: '探针已扩展到组件层', botName: 'default', timestamp: NOW - 86400000 },
+  { id: 's-wang', title: '老王专属架构评审', preview: '分布式锁时钟漂移', botName: 'arch-wang', timestamp: NOW - 7200000 },
+];
+
+const GROUPS = [
+  { roomId: 'room-default', name: '全链路微服务重构群', members: ['default', 'arch-wang'], lastMessage: '刚达成共识', updatedAt: NOW - 120000 },
+  { roomId: 'room-wang', name: '老王架构专班', members: ['arch-wang'], lastMessage: '只有老王', updatedAt: NOW - 60000 },
+];
+
+function model(overrides = {}) {
+  return buildLeftRailModel({
+    activeSessionId: 's-a',
+    activeFocus: { type: 'bot', botName: 'default' },
+    sessions: SESSIONS,
+    profileName: 'default',
+    profiles: PROFILES,
+    groups: GROUPS,
+    searchQuery: '',
+    ...overrides,
+  });
+}
+
+function render(overrides = {}, propOverrides = {}) {
+  const noop = () => {};
+  const built = model(overrides);
+  return renderToStaticMarkup(React.createElement(LeftRail, {
+    model: built,
+    collapsed: false,
+    searchQuery: '',
+    editingGroupRoomId: overrides.editingGroupRoomId,
+    onSelectSession: noop,
+    onSelectBot: noop,
+    onSelectGroup: noop,
+    onOpenSessionMenu: noop,
+    onOpenBotMenu: noop,
+    onOpenGroupMenu: noop,
+    onSearchChange: noop,
+    onNewChat: noop,
+    onToggleSessions: noop,
+    onToggleGroups: noop,
+    onStartGroupRename: noop,
+    onConfirmGroupRename: noop,
+    onCancelGroupRename: noop,
+    onResizeStart: noop,
+    ...propOverrides,
+  }));
+}
+
+test('搜索框：静止态无边框无底色，仅聚焦后浮出 1px 描边（用户 2026-11-20 裁决）', () => {
+  const markup = render();
+  const inputTag = /<input[^>]*id="session-search-input"[^>]*>/.exec(markup)?.[0] ?? '';
+  assert.ok(inputTag, '抽屉必须渲染 #session-search-input');
+
+  // 静止态：border-transparent + bg-transparent —— 与侧栏背景融为一体。
+  assert.match(inputTag, /border-transparent/, '静止态必须无边框');
+  assert.match(inputTag, /bg-transparent/, '静止态必须无底色');
+  assert.equal(/bg-panel/.test(inputTag), false, '静止态不得残留 panel 底色（会在抽屉里形成第二块白板）');
+  // 聚焦态：由 Input 基类的 focus-visible:border-border-strong 提供（文本输入点击即命中
+  // :focus-visible，且 --border-strong 才有 2.16:1 的可辨对比）；这里只负责压平 2px ring。
+  assert.match(inputTag, /focus-visible:ring-0/, '必须压平 Input 基类的 2px ring，否则聚焦像主操作按钮');
+  assert.equal(/focus:border-primary/.test(inputTag), false, '聚焦态不得用品牌主色描边');
+  // 负向：聚焦描边只能来自基类，调用点不得把它压平或改透明（否则"点击进来没边框"）。
+  assert.equal(/focus(-visible)?:border-transparent/.test(inputTag), false, '调用点不得压平聚焦描边');
+  const inputBase = read('packages/ui/src/components-react/primitives/Input.tsx');
+  assert.match(inputBase, /focus-visible:border-border-strong/, '聚焦描边必须由基类的 --border-strong 提供（窄屏可辨）');
+
+  // 皮肤补丁不得回归：任何 `#session-search-input { ... !important }` 都会让"无边框"在浅色皮肤失效。
+  const styles = read('packages/desktop/src/renderer/styles.css');
+  const patches = [...styles.matchAll(/#session-search-input\s*\{[^}]*!important[^}]*\}/g)];
+  assert.equal(patches.length, 0, `禁止按皮肤给搜索框挂 !important 补丁，实测发现 ${patches.length} 处`);
+});
+
+test('紧凑时间：当日 HH:mm、跨日 M/D、跨年 YYYY/M/D，非数字一律空串', async (t) => {
+  await t.test('当日只给 HH:mm', () => {
+    assert.equal(formatLeftRailTime(new Date(2026, 10, 3, 9, 5).getTime(), new Date(NOW)), '09:05');
+  });
+
+  await t.test('同年跨日给 M/D 且不带时分', () => {
+    assert.equal(formatLeftRailTime(new Date(2026, 9, 28, 16, 20).getTime(), new Date(NOW)), '10/28');
+  });
+
+  await t.test('昨天/前天只给日名，不带时分（PR-3d 收敛规格）', () => {
+    assert.equal(formatLeftRailTime(new Date(2026, 10, 2, 23, 30).getTime(), new Date(NOW)), '昨天');
+    assert.equal(formatLeftRailTime(new Date(2026, 10, 1, 8, 0).getTime(), new Date(NOW)), '前天');
+    assert.equal(formatLeftRailTime(new Date(2026, 10, 2, 0, 1).getTime(), new Date(NOW)), '昨天');
+    const now2 = new Date(2026, 10, 3, 9, 5);
+    assert.equal(formatLeftRailTime(new Date(2026, 10, 2, 23, 59).getTime(), now2), '昨天');
+    assert.equal(formatLeftRailTime(new Date(2026, 10, 1, 0, 0).getTime(), now2), '前天');
+  });
+
+  await t.test('跨年带年份', () => {
+    assert.equal(formatLeftRailTime(new Date(2025, 9, 28, 16, 20).getTime(), new Date(NOW)), '2025/10/28');
+  });
+
+  await t.test('秒级时间戳自动升到毫秒', () => {
+    const seconds = Math.floor(new Date(2026, 10, 3, 8, 7).getTime() / 1000);
+    assert.equal(formatLeftRailTime(seconds, new Date(NOW)), '08:07');
+  });
+
+  await t.test('0 / undefined / NaN 安全降级为空串', () => {
+    assert.equal(formatLeftRailTime(0, new Date(NOW)), '');
+    assert.equal(formatLeftRailTime(undefined, new Date(NOW)), '');
+    assert.equal(formatLeftRailTime(Number.NaN, new Date(NOW)), '');
+  });
+
+  await t.test('变异检验：不同日必然给出不同字符串（防止恒等实现）', () => {
+    const same = formatLeftRailTime(new Date(2026, 10, 3, 9, 5).getTime(), new Date(NOW));
+    const other = formatLeftRailTime(new Date(2026, 10, 2, 9, 5).getTime(), new Date(NOW));
+    assert.notEqual(same, other);
+  });
+});
+
+test('摘要提炼：抹掉代码块与标题噪音并单行截断', async (t) => {
+  await t.test('代码块替换为占位并压缩空白', () => {
+    const out = toSnippet('### 方案\n```ts\nconst a = 1;\n```\n这是说明');
+    assert.ok(!out.includes('###'));
+    assert.ok(!out.includes('const a = 1'));
+    assert.ok(out.includes('方案'));
+    assert.ok(out.includes('这是说明'));
+  });
+
+  await t.test('超长截断保留省略号且长度受限', () => {
+    const out = toSnippet('一二三四五六七八九十一二三四五六七八九十甲乙丙丁', 10);
+    assert.equal(out.length, 13);
+    assert.ok(out.endsWith('...'));
+  });
+
+  await t.test('纯空白降级为空串', () => {
+    assert.equal(toSnippet('   \n\t '), '');
+  });
+});
+
+test('左轨模型：焦点解析与 Agent 上下文严格隔离', async (t) => {
+  await t.test('Default 中枢只看到 default 名下会话', () => {
+    const m = model();
+    assert.deepEqual(m.activeSessions.map((s) => s.id), ['s-a', 's-b']);
+    assert.equal(m.activeSessions.some((s) => s.botName === 'arch-wang'), false);
+  });
+
+  await t.test('专职 Bot 只看到自己名下会话，绝不含 Default 会话', () => {
+    const m = model({ activeFocus: { type: 'bot', botName: 'arch-wang' }, profileName: 'arch-wang' });
+    assert.deepEqual(m.activeSessions.map((s) => s.id), ['s-wang']);
+    assert.equal(m.selectedAgent.name, 'arch-wang');
+    assert.equal(m.isDefaultHq, false);
+  });
+
+  await t.test('群聊同样按 Agent 隔离：Default 是主大厅，专职 Bot 只列自己参与的', () => {
+    const defaultView = model();
+    assert.deepEqual(defaultView.visibleGroups.map((g) => g.roomId).sort(), ['room-default', 'room-wang']);
+    const wangView = model({ activeFocus: { type: 'bot', botName: 'arch-wang' }, profileName: 'arch-wang' });
+    assert.deepEqual(wangView.visibleGroups.map((g) => g.roomId).sort(), ['room-default', 'room-wang']);
+    const isolatedMembers = GROUPS.map((g) => (g.members.includes('arch-wang') ? g.roomId : null)).filter(Boolean);
+    assert.deepEqual(wangView.visibleGroups.map((g) => g.roomId).sort(), isolatedMembers.sort());
+  });
+
+  await t.test('会话焦点解析出所属 Bot，用于抽屉上下文', () => {
+    const m = model({ activeFocus: { type: 'session', sessionId: 's-wang' }, activeSessionId: 's-wang' });
+    assert.equal(m.selectedAgent.name, 'arch-wang');
+  });
+
+  await t.test('缺失 activeFocus 时按 activeSessionId 回退到会话焦点', () => {
+    const m = model({ activeFocus: undefined, activeSessionId: 's-b' });
+    assert.deepEqual(m.currentFocus, { type: 'session', sessionId: 's-b' });
+  });
+});
+
+test('左轨模型：排序、搜索与折叠开关', async (t) => {
+  await t.test('会话按时间倒序，最新在前', () => {
+    const m = model();
+    const times = m.activeSessions.map((s) => s.timestamp);
+    assert.deepEqual(times, [...times].sort((a, b) => b - a));
+  });
+
+  await t.test('搜索同时命中标题与副标题，且不改动原始数据管道', () => {
+    const hits = model({ searchQuery: '探针' });
+    assert.deepEqual(hits.activeSessions.map((s) => s.id), ['s-b']);
+    const empty = model({ searchQuery: '不存在的关键词' });
+    assert.deepEqual(empty.activeSessions.map((s) => s.id), []);
+    assert.equal(SESSIONS.length, 3, '模型必须是纯函数，不得改写入参');
+  });
+
+  await t.test('手风琴默认展开，显式 false 才收起', () => {
+    assert.equal(model().isSessionsOpen, true);
+    assert.equal(model({ isSessionsGroupExpanded: false }).isSessionsOpen, false);
+    assert.equal(model({ isGroupsGroupExpanded: false }).isGroupsOpen, false);
+  });
+
+  await t.test('错误行与真正的空列表互斥', () => {
+    const failed = model({ error: '当前状态: RECONNECTING' });
+    assert.equal(failed.error, '当前状态: RECONNECTING');
+    assert.equal(model().error, '');
+  });
+});
+
+test('左轨组件：会话行形态与关键交互契约', async (t) => {
+  await t.test('会话行不再渲染头像，行高锁定 48px，时间钉右缘', () => {
+    const markup = render();
+    const start = markup.indexOf('data-id="s-a"');
+    const end = markup.indexOf('data-id="s-b"');
+    const row = markup.slice(start, end);
+    assert.ok(start > -1 && end > start);
+    assert.equal(row.includes('<img'), false, '行内头像已按用户定案移除');
+    assert.equal(row.includes('<svg'), false, '行内也不得残留 SVG 图腾替代头像');
+    assert.ok(row.includes('min-h-12'), '行高必须是 48px 档（min-h-12）');
+    assert.ok(row.includes('<time'), '时间必须独立成 time 元素钉在行右缘');
+    assert.ok(row.includes('tabular-nums'), '时间必须等宽对齐，避免数字宽度跳动');
+  });
+
+  await t.test('副标题降级为 12px muted 单行截断', () => {
+    const markup = render();
+    const start = markup.indexOf('data-id="s-a"');
+    const row = markup.slice(start, markup.indexOf('data-id="s-b"'));
+    assert.ok(row.includes('text-aux'), '副标题走 12px 节奏档');
+    assert.ok(row.includes('text-muted-foreground'), '副标题用 muted 前景');
+    assert.ok(row.includes('truncate'), '副标题必须单行截断');
+  });
+
+  await t.test('三态指示器按状态互斥渲染，已读零指示器，且会话行在任何状态均零 <svg>', () => {
+    const running = render({ sessions: [{ id: 's-1', title: '跑', timestamp: NOW, activityState: 'running' }] });
+    assert.ok(running.includes('activity-pulse-indicator'));
+    assert.ok(running.includes('flux-cloud-indicator--running'));
+    assert.equal((running.match(/flux-cloud-stream--/g) || []).length, 3);
+    assert.equal((running.match(/class="flux-cloud-glint"/g) || []).length, 1);
+    assert.equal(running.includes('flux-cloud-dot'), false, '禁止回退到密集圆点阵');
+    assert.ok(running.includes('执行中'));
+    assert.equal(running.includes('activity-unread-badge'), false);
+    const runningRow = running.slice(running.indexOf('data-id="s-1"'), running.indexOf('</button>', running.indexOf('data-id="s-1"')));
+    assert.equal(runningRow.includes('<svg'), false, 'SessionRow 运行态流云必须零 SVG');
+
+    const unread = render({ sessions: [{ id: 's-1', title: '未读', timestamp: NOW, activityState: 'unread' }] });
+    assert.ok(unread.includes('activity-unread-badge'));
+    assert.ok(unread.includes('flux-cloud-indicator--unread'));
+    assert.ok(unread.includes('flux-cloud-done-ring'));
+    assert.ok(unread.includes('flux-cloud-check'));
+    assert.ok(unread.includes('已完成'));
+    assert.equal(unread.includes('activity-pulse-indicator'), false);
+    const unreadRow = unread.slice(unread.indexOf('data-id="s-1"'), unread.indexOf('</button>', unread.indexOf('data-id="s-1"')));
+    assert.equal(unreadRow.includes('<svg'), false, 'SessionRow 未读态完成环必须零 SVG');
+
+    const read = render({ sessions: [{ id: 's-1', title: '已读', timestamp: NOW, activityState: 'read' }] });
+    assert.equal(read.includes('activity-pulse-indicator'), false);
+    assert.equal(read.includes('activity-unread-badge'), false);
+    assert.equal(read.includes('flux-cloud-indicator'), false);
+  });
+
+  await t.test('主工位卡只吃 profile 快照，绝不被普通会话池覆盖', () => {
+    const markup = render();
+    const start = markup.indexOf('rail-primary-agent-card');
+    assert.ok(start > -1, '抽屉第一行必须是主工位卡');
+    const card = markup.slice(start, markup.indexOf('rail-groups-accordion-trigger'));
+    assert.ok(card.includes('主中枢已就绪'), '卡片副标题来自 profile.lastMessage');
+    assert.ok(card.includes('<time'), '卡片时间来自 profile 快照（有时间戳则格式化，否则回退 lastTime）');
+    assert.equal(card.includes('电商支付重构方案'), false, '卡片绝不含普通会话标题');
+    assert.equal(card.includes('幂等键下沉'), false, '卡片绝不含普通会话摘要');
+  });
+
+  await t.test('profile 只有 lastTime 字符串时，时间回退到该字符串', () => {
+    const markup = render({ profiles: [{ name: 'default', displayName: 'Default 助理', isDefault: true, lastMessage: '就绪', lastTime: '昨天 22:49' }] });
+    const start = markup.indexOf('rail-primary-agent-card');
+    assert.ok(markup.slice(start).includes('昨天 22:49'));
+  });
+
+  await t.test('折叠态只留 52px 微轨，抽屉与把手都不渲染', () => {
+    const markup = render({}, { collapsed: true });
+    assert.ok(markup.includes('rail-collapsed'));
+    assertCollapsedRailGeometry(markup);
+    assert.equal(markup.includes('flux-context-drawer'), false);
+    assert.equal(markup.includes('rail-resize-handle'), false);
+  });
+
+  await t.test('把手挂在抽屉外层，避免被 overflow 裁掉导致拖拽失效', () => {
+    const markup = render();
+    const handleIndex = markup.indexOf('rail-resize-handle');
+    const drawerCloseIndex = markup.lastIndexOf('</div>');
+    assert.ok(handleIndex > -1, '展开态必须有拖拽把手');
+    assert.ok(handleIndex < drawerCloseIndex, '把手必须在抽屉闭合之后，属 aside 直属层级');
+  });
+
+  await t.test('群聊行内重命名渲染受控输入与确认/取消', () => {
+    const markup = render({ editingGroupRoomId: 'room-default' });
+    assert.ok(markup.includes('rail-group-inline-rename-wrap'));
+    assert.ok(markup.includes('rail-group-rename-input-room-default'));
+    assert.ok(markup.includes('rail-group-rename-input'));
+    assert.ok(!render().includes('rail-group-inline-rename-wrap'), '非编辑态不得渲染重命名表单');
+  });
+
+  await t.test('抽屉只保留会话/群聊甲板：项目甲板与微轨底部导航已整体拔除', () => {
+    const markup = render();
+    assert.ok(markup.includes('rail-sessions-nested-list'));
+    assert.ok(markup.includes('session-list-container'), '会话甲板必须常驻渲染');
+    assert.equal(markup.includes('rail-projects-deck'), false, '项目甲板已随入口一并移除，禁止残留死层');
+    assert.equal(markup.includes('rail-station-groups-btn'), false, '微轨群聊入口已拔除');
+    assert.equal(markup.includes('rail-station-projects-btn'), false, '微轨项目入口已拔除');
+  });
+});
+
+test('React 岛控件基线：原生控件不得继承 UA 白底，且不压过组件自身 utility', async (t) => {
+  const fs = await import('node:fs');
+  const entry = fs.readFileSync(new URL('../src/tailwind-entry.css', import.meta.url), 'utf8');
+
+  await t.test('基线存在且作用域限定在左轨宿主内', () => {
+    assert.ok(entry.includes('.flux-left-rail button'), '必须重置左轨内的原生 button');
+    assert.ok(entry.includes('.flux-left-rail input'), '必须重置左轨内的原生 input');
+    assert.doesNotMatch(entry, /^\s*button\s*,/m, '禁止声明全局 button 选择器（会碰存量模板）');
+    assert.doesNotMatch(entry, /^\s*input\s*,/m, '禁止声明全局 input 选择器');
+  });
+
+  await t.test('基线必须落在 base 层，否则会压过 utilities', () => {
+    const inBaseLayer = /@layer base\s*\{[\s\S]*?\.flux-left-rail button/.test(entry);
+    assert.ok(inBaseLayer, '控件基线必须写在 @layer base 内：unlayered 规则会压过 bg-panel 等 utility（本次实测搜索框丢底色）');
+  });
+
+  await t.test('扫描面显式关闭自动检测，只扫 React 组件目录', () => {
+    assert.match(entry, /source\(none\)/, '必须关闭 Tailwind 默认自动检测');
+    const sources = [...entry.matchAll(/@source\s+["']([^"']+)["']/g)].map((m) => m[1]);
+    assert.deepEqual(sources, ['./components-react/**/*.tsx'], '扫描面只允许 React 组件目录白名单');
+  });
+});
+
+test('PR-3d 形态静态守卫：微轨无新建/折叠按钮、header 无文本箭头且 + 在位（无浏览器也必须红）', () => {
+  const markup = render();
+  assert.ok(!markup.includes('new-chat-btn'), '微轨不得再渲染新建会话按钮（入口已收编到 header +）');
+  assert.ok(!markup.includes('lucide-chevron-left'), '微轨不得再渲染折叠 ChevronLeft（入口收编顶栏与 Ctrl+B）');
+  assert.ok(!markup.includes('⌄') && !markup.includes('›'), 'accordion header 禁止残留文本箭头');
+  assert.ok(markup.includes('rail-new-session-btn'), '会话 header 的 + 必须渲染');
+  assert.ok(markup.includes('rail-new-group-btn'), '群聊 header 的 + 必须渲染');
+});
+
+test('primitives 消费守卫：左轨必须真实使用 shadcn 基座而非继续造轮子', async (t) => {
+  const source = await import('node:fs').then((fs) => fs.readFileSync(
+    new URL('../src/components-react/LeftRail.tsx', import.meta.url),
+    'utf8',
+  ));
+
+  await t.test('导入并消费 Button / Input 两个 primitives', () => {
+    assert.ok(/from '\.\/primitives\/Button\.js'/.test(source), '必须导入 Button primitive');
+    assert.ok(/from '\.\/primitives\/Input\.js'/.test(source), '必须导入 Input primitive');
+    assert.ok(/<Button[\s>]/.test(source), '必须真实渲染 Button');
+    assert.ok(/<Input[\s>]/.test(source), '必须真实渲染 Input');
+    // Badge 此前只服务于已删除的项目卡片计数，现无任何使用点，禁止为凑断言留死导入。
+    assert.equal(/from '\.\/primitives\/Badge\.js'/.test(source), false, '无使用点时不得保留 Badge 死导入');
+  });
+
+  await t.test('不再自定义裸 <button>（仅会话行、归档行、群聊主体、手风琴标题复用原生按钮语义）', () => {
+    const rawButtons = (source.match(/<button[\s>]/g) || []).length;
+    const rawInputs = (source.match(/<input[\s>]/g) || []).length;
+    assert.equal(rawInputs, 0, '输入框必须走 Input primitive，禁止裸 <input>');
+    assert.ok(rawButtons <= 5, `只有需要原生按钮语义的行主体/手风琴标题可用原生 button，当前 ${rawButtons} 处`);
+  });
+});
+
+test('isAgentScopeActive: 微轨 Agent 作用域活跃判定（覆盖 bot/session/group 三重焦点）', () => {
+  // 1. 直接命中专职 Bot 工位
+  assert.equal(isAgentScopeActive({
+    agentName: 'aura',
+    focus: { type: 'bot', botName: 'aura' },
+    selectedAgentName: 'aura',
+  }), true, '专职 Bot 工位必须命中');
+
+  // 2. 命中不同大小写
+  assert.equal(isAgentScopeActive({
+    agentName: 'Aura',
+    focus: { type: 'bot', botName: 'aura' },
+    selectedAgentName: 'aura',
+  }), true, '必须支持大小写不敏感匹配');
+
+  // 3. 焦点在普通会话且归属于该 Agent
+  assert.equal(isAgentScopeActive({
+    agentName: 'aura',
+    focus: { type: 'session', sessionId: 'sess-1' },
+    selectedAgentName: 'default',
+    activeSessionBotName: 'aura',
+  }), true, '点进属于该 Bot 的普通会话时微轨必须持续高亮保活');
+
+  // 4. 焦点在普通会话但未指定会话归属时，回退匹配当前抽屉上下文 selectedAgentName
+  assert.equal(isAgentScopeActive({
+    agentName: 'aura',
+    focus: { type: 'session', sessionId: 'sess-1' },
+    selectedAgentName: 'aura',
+  }), true, '会话无明确 botName 时必须回退当前抽屉 Agent 上下文');
+
+  // 5. 焦点在群聊时，微轨保持当前抽屉 selectedAgentName 选中态
+  assert.equal(isAgentScopeActive({
+    agentName: 'aura',
+    focus: { type: 'group', roomId: 'room-1' },
+    selectedAgentName: 'aura',
+  }), true, '群聊工位下当前抽屉所属 Agent 微轨必须持续高亮');
+
+  // 6. 其他 Agent 不得误报高亮
+  assert.equal(isAgentScopeActive({
+    agentName: 'other-bot',
+    focus: { type: 'bot', botName: 'aura' },
+    selectedAgentName: 'aura',
+  }), false, '无关 Agent 必须保持未激活');
+});
+
+test('buildLeftRailModel: 微轨底部导航移除后，模型不得再派生群聊汇总态', () => {
+  const built = model({
+    groups: [
+      { roomId: 'r-run', name: '运行群', members: ['default'], activityState: 'running' },
+      { roomId: 'r-unread', name: '未读群', members: ['default'], activityState: 'unread', activityTransition: 'just-completed', activityTransitionToken: 9 },
+    ],
+  });
+  assert.equal('groupOverviewActivity' in built, false, '群聊汇总聚合随入口一并移除，禁止留死字段');
+  assert.equal('hasRunningGroup' in built, false);
+  assert.equal('hasUnreadGroup' in built, false);
+  assert.equal('visibleProjects' in built, false, '项目甲板模型随入口一并移除');
+  assert.equal('showProjectsDeck' in built, false);
+  assert.equal('showChatDeck' in built, false);
+  // 群聊本身仍必须按 Agent 作用域与搜索过滤正常派生，只是不再聚合到微轨。
+  assert.equal(built.visibleGroups.length, 2);
+});
+
+test('左轨活动指示器变体：设置里的选择必须真的透传到会话行与群聊行', () => {
+  const runningSessions = [{ id: 's-run', title: '运行中的会话', timestamp: NOW, activityState: 'running' }];
+  const matrix = render({ sessions: runningSessions }, { activityVariant: 'matrix' });
+  assert.ok(matrix.includes('flux-variant-matrix'), '会话运行态必须使用设置里的变体');
+  assert.ok(matrix.includes('data-variant="matrix"'));
+  assert.equal(matrix.includes('data-variant="cloud"'), false, '设置变体后不得残留默认变体');
+
+  const fallback = render({ sessions: runningSessions });
+  assert.ok(fallback.includes('data-variant="cloud"'), '未传变体时回落到默认值');
+
+  const runningGroups = [{ roomId: 'r-run', name: '并行群聊', members: ['default'], activityState: 'running' }];
+  const gyro = render({ sessions: [], groups: runningGroups }, { activityVariant: 'gyro' });
+  assert.ok(gyro.includes('data-variant="gyro"'), '群聊运行态必须同样跟随设置');
+
+  // 微轨（corner）只有蓝点，不随变体改形态；但 data-variant 不能继续谎报 cloud。
+  const stationRunning = [
+    { name: 'default', displayName: 'Default 助理', isDefault: true, activityState: 'running', timestamp: NOW },
+  ];
+  const station = render({ sessions: [], profiles: stationRunning }, { activityVariant: 'spring' });
+  const stationBadge = station.slice(station.indexOf('data-station-profile'), station.indexOf('</button>', station.indexOf('data-station-profile')));
+  assert.ok(stationBadge.includes('data-variant="spring"'), '微轨角标必须透传设置变体');
+});
+
+test('静态渲染快照同样携带变体，避免服务端/测试链路恒为默认值', () => {
+  const snapshot = {
+    activeSessionId: 's-run',
+    activeFocus: { type: 'bot', botName: 'default' },
+    sessions: [{ id: 's-run', title: '运行中', timestamp: NOW, activityState: 'running' }],
+    profileName: 'default',
+    profiles: PROFILES,
+    groups: [],
+    searchQuery: '',
+    collapsed: false,
+    activityVariant: 'orbit',
+  };
+  const html = renderLeftRailHtml(snapshot);
+  assert.ok(html.includes('data-variant="orbit"'), '静态渲染必须透传快照里的变体');
+  const fallback = renderLeftRailHtml({ ...snapshot, activityVariant: undefined });
+  assert.ok(fallback.includes('data-variant="cloud"'), '快照缺省时必须回落默认变体');
+});
+
+test('ActivityIndicator 统一原语：placement、entityKind、流云丝带与静态 read 零节点', () => {
+  const cornerRunning = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'running',
+    placement: 'corner',
+  }));
+  assert.ok(cornerRunning.includes('activity-pulse-indicator'));
+  assert.ok(cornerRunning.includes('flux-activity-dot--running'));
+  assert.ok(cornerRunning.includes('data-status="running"'));
+  assert.ok(cornerRunning.includes('data-placement="corner"'));
+  assert.ok(cornerRunning.includes('right-0 top-0'));
+  assert.ok(cornerRunning.includes('ring-2 ring-sidebar'));
+  assert.ok(cornerRunning.includes('role="status"'));
+  assert.ok(cornerRunning.includes('aria-live="off"'));
+  assert.equal(cornerRunning.includes('flux-cloud-canvas'), false);
+  assert.equal(cornerRunning.includes('bg-success'), false);
+  assert.equal(cornerRunning.includes('<svg'), false);
+
+  const cornerUnread = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'unread',
+    placement: 'corner',
+  }));
+  assert.ok(cornerUnread.includes('activity-unread-badge'));
+  assert.ok(cornerUnread.includes('flux-activity-dot--unread'));
+  assert.equal(cornerUnread.includes('flux-cloud-canvas'), false);
+  assert.equal(cornerUnread.includes('bg-success'), false);
+
+  const inlineRunningSession = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'running',
+    placement: 'inline',
+    entityKind: 'session',
+  }));
+  assert.ok(inlineRunningSession.includes('activity-pulse-indicator'));
+  assert.ok(inlineRunningSession.includes('flux-cloud-indicator--running'));
+  assert.ok(inlineRunningSession.includes('flux-cloud-canvas'));
+  assert.equal((inlineRunningSession.match(/flux-cloud-stream--/g) || []).length, 3);
+  assert.equal((inlineRunningSession.match(/class="flux-cloud-glint"/g) || []).length, 1);
+  assert.ok(inlineRunningSession.includes('执行中'));
+  assert.equal(inlineRunningSession.includes('<svg'), false);
+
+  const inlineRunningBot = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'running',
+    placement: 'inline',
+    entityKind: 'bot',
+  }));
+  assert.ok(inlineRunningBot.includes('思考中'));
+  assert.equal((inlineRunningBot.match(/flux-cloud-stream--/g) || []).length, 3);
+
+  const inlineRunningGroup = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'running',
+    placement: 'inline',
+    entityKind: 'group',
+  }));
+  assert.ok(inlineRunningGroup.includes('协作中'));
+  assert.equal((inlineRunningGroup.match(/flux-cloud-stream--/g) || []).length, 3);
+
+  const inlineUnreadStatic = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'unread',
+    placement: 'inline',
+  }));
+  assert.ok(inlineUnreadStatic.includes('activity-unread-badge'));
+  assert.ok(inlineUnreadStatic.includes('flux-cloud-indicator--unread'));
+  assert.ok(inlineUnreadStatic.includes('data-transition="none"'));
+  assert.ok(inlineUnreadStatic.includes('data-placement="inline"'));
+  assert.ok(inlineUnreadStatic.includes('flux-cloud-done-ring'));
+  assert.ok(inlineUnreadStatic.includes('flux-cloud-check'));
+  assert.ok(inlineUnreadStatic.includes('已完成'));
+  assert.equal(inlineUnreadStatic.includes('flux-cloud-ripple'), false);
+  assert.equal(inlineUnreadStatic.includes('ring-sidebar'), false);
+  assert.equal(inlineUnreadStatic.includes('<svg'), false);
+
+  const inlineUnreadJustCompleted = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'unread',
+    transition: 'just-completed',
+    transitionToken: 7,
+    placement: 'inline',
+  }));
+  assert.ok(inlineUnreadJustCompleted.includes('data-transition="just-completed"'));
+  assert.ok(inlineUnreadJustCompleted.includes('activity-unread-badge'));
+  assert.ok(inlineUnreadJustCompleted.includes('flux-cloud-ripple'));
+  assert.ok(inlineUnreadJustCompleted.includes('flux-cloud-done-ring'));
+  assert.ok(inlineUnreadJustCompleted.includes('已完成'));
+
+  assert.equal(renderToStaticMarkup(React.createElement(ActivityIndicator, { state: 'read' })), '');
+  assert.equal(renderToStaticMarkup(React.createElement(ActivityIndicator, { state: undefined })), '');
+
+  const readSettleCorner = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'read',
+    transition: 'just-completed',
+    transitionToken: 15,
+    placement: 'corner',
+  }));
+  assert.ok(readSettleCorner.includes('activity-settle-fade'));
+  assert.ok(readSettleCorner.includes('flux-activity-dot--settle'));
+  assert.ok(readSettleCorner.includes('data-status="read"'));
+  assert.ok(readSettleCorner.includes('data-transition="just-completed"'));
+  assert.ok(readSettleCorner.includes('data-placement="corner"'));
+  assert.ok(readSettleCorner.includes('aria-hidden="true"'));
+  assert.equal(readSettleCorner.includes('activity-pulse-indicator'), false);
+  assert.equal(readSettleCorner.includes('activity-unread-badge'), false);
+
+  const readSettleInline = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'read',
+    transition: 'just-completed',
+    transitionToken: 16,
+    placement: 'inline',
+  }));
+  assert.ok(readSettleInline.includes('activity-settle-fade'));
+  assert.ok(readSettleInline.includes('flux-cloud-settle'));
+  assert.equal((readSettleInline.match(/flux-cloud-settle-stream--/g) || []).length, 3);
+  assert.ok(readSettleInline.includes('data-status="read"'));
+  assert.ok(readSettleInline.includes('data-transition="just-completed"'));
+  assert.ok(readSettleInline.includes('data-placement="inline"'));
+  assert.ok(readSettleInline.includes('aria-hidden="true"'));
+  assert.equal(readSettleInline.includes('activity-pulse-indicator'), false);
+  assert.equal(readSettleInline.includes('activity-unread-badge'), false);
+
+  // 全部 18 种 variant 完整落盘验证（6 套几何雕塑 + 12 套 3D 点云全部纯 HTML/CSS 零 SVG）
+  assert.equal(ACTIVITY_INDICATOR_VARIANTS.length, 18);
+  for (const v of ACTIVITY_INDICATOR_VARIANTS) {
+    const runMarkup = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+      state: 'running',
+      variant: v,
+      placement: 'inline',
+    }));
+    assert.ok(runMarkup.includes('activity-pulse-indicator'));
+    assert.ok(runMarkup.includes(`data-variant="${v}"`));
+    assert.ok(runMarkup.includes(`flux-variant-${v}`));
+    assert.equal(runMarkup.includes('<svg'), false, `variant ${v} 在 running 态严禁含 <svg>`);
+
+    const unreadMarkup = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+      state: 'unread',
+      variant: v,
+      placement: 'inline',
+      transition: 'just-completed',
+      transitionToken: 9,
+    }));
+    assert.ok(unreadMarkup.includes('activity-unread-badge'));
+    assert.ok(unreadMarkup.includes(`data-variant="${v}"`));
+    assert.equal(unreadMarkup.includes('<svg'), false, `variant ${v} 在 unread 态严禁含 <svg>`);
+
+    const readMarkup = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+      state: 'read',
+      variant: v,
+      placement: 'inline',
+    }));
+    assert.equal(readMarkup, '', `variant ${v} 在静态 read 态必须返回空`);
+  }
+});
+
+test('12 套 3D 点云变体结构守卫：精准粒子数、宽/方画布、零内联样式与完成态收敛', () => {
+  for (const spec of POINT_CLOUD_SPECS) {
+    const runMarkup = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+      state: 'running',
+      variant: spec.id,
+      placement: 'inline',
+    }));
+    assert.ok(runMarkup.includes('flux-pc-canvas'), `${spec.id} 必须渲染 .flux-pc-canvas`);
+    const shapeCls = spec.shape === 'wide' ? 'flux-pc-canvas--wide' : 'flux-pc-canvas--sq';
+    assert.ok(runMarkup.includes(shapeCls), `${spec.id} 必须声明画布比例类 ${shapeCls}`);
+    assert.equal((runMarkup.match(/class="flux-pc-dot /g) || []).length, spec.dotCount, `${spec.id} 粒子数必须严格为 ${spec.dotCount}`);
+    for (let i = 0; i < spec.dotCount; i += 1) {
+      assert.ok(runMarkup.includes(`flux-pc-${spec.code}-${i}`), `${spec.id} 缺少粒子类 flux-pc-${spec.code}-${i}`);
+    }
+    assert.equal(runMarkup.includes('style='), false, `${spec.id} 禁止使用内联 style 属性，粒子定位必须全走 CSS`);
+    assert.equal(runMarkup.includes('<svg'), false, `${spec.id} 严禁含 <svg>`);
+
+    const unreadStatic = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+      state: 'unread',
+      variant: spec.id,
+      placement: 'inline',
+    }));
+    assert.ok(unreadStatic.includes('flux-pc-done-ring'), `${spec.id} 完成态必须渲染完成环`);
+    assert.ok(unreadStatic.includes('flux-pc-done-tick'), `${spec.id} 完成态必须渲染对勾`);
+    assert.equal((unreadStatic.match(/flux-pc-done-spark--/g) || []).length, 3, `${spec.id} 完成态必须带 3 颗微星收敛点`);
+    assert.equal(unreadStatic.includes('flux-cloud-ripple'), false, `${spec.id} 静态历史未读不得渲染波纹`);
+
+    const unreadJust = renderToStaticMarkup(React.createElement(ActivityIndicator, {
+      state: 'unread',
+      variant: spec.id,
+      placement: 'inline',
+      transition: 'just-completed',
+      transitionToken: 12,
+    }));
+    assert.ok(unreadJust.includes('flux-cloud-ripple'), `${spec.id} just-completed 必须渲染瞬态扩散波纹`);
+  }
+});
+
+/**
+ * 反密集点阵与六变体多谐波结构守卫。
+ *
+ * 【为什么需要】旧版流云（13 颗小点）、突触（4×4=16 格密点）、旋涡（16 颗螺旋散点）在 16px
+ *   尺寸下视觉拥挤发糊；同时单一周期旋转显得呆板。这里钉住：
+ *   1. cloud / synapse / matrix 严禁出现旧版密点类名；
+ *   2. 6 套变体各自保留足够的多层元素以承载互质多谐波演进动效；
+ *   3. 每套变体在 unread 态均有独立静态收敛形态，且全程零 SVG。
+ */
+test('反密集点阵与六变体结构守卫：三套重制彻底清零密点，六套均具备多层运动载体与完成态', () => {
+  const runningOf = (variant) => renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'running',
+    variant,
+    placement: 'inline',
+  }));
+  const unreadOf = (variant) => renderToStaticMarkup(React.createElement(ActivityIndicator, {
+    state: 'unread',
+    variant,
+    placement: 'inline',
+  }));
+
+  const cloudRun = runningOf('cloud');
+  assert.equal((cloudRun.match(/flux-cloud-stream--/g) || []).length, 3, '流云必须为 3 条稀疏丝带');
+  assert.equal((cloudRun.match(/class="flux-cloud-glint"/g) || []).length, 1, '流云必须含 1 颗微星流光');
+  assert.equal(cloudRun.includes('flux-cloud-dot'), false, '流云严禁退回密集圆点阵');
+  assert.equal(cloudRun.includes('flux-cloud-fog'), false, '流云严禁退回糊成一团的旧雾底');
+  assert.ok(unreadOf('cloud').includes('flux-cloud-done-ring'));
+
+  const gyroRun = runningOf('gyro');
+  assert.ok(gyroRun.includes('flux-gyro-gimbal'), '陀螺必须具备外框进动层');
+  assert.equal((gyroRun.match(/flux-gyro-ring--/g) || []).length, 3, '陀螺必须具备完整三轴谐振环');
+  assert.ok(gyroRun.includes('flux-gyro-core'));
+  assert.ok(unreadOf('gyro').includes('flux-gyro-done-ring'));
+
+  const orbitRun = runningOf('orbit');
+  assert.equal((orbitRun.match(/flux-orbit-plane--/g) || []).length, 2, '轨道必须具备双椭圆进动平面');
+  assert.equal((orbitRun.match(/flux-orbit-arm--/g) || []).length, 2, '轨道必须具备双伴星悬臂');
+  assert.ok(orbitRun.includes('flux-orbit-sun'));
+  assert.ok(unreadOf('orbit').includes('flux-orbit-star'));
+
+  const synapseRun = runningOf('synapse');
+  assert.ok(synapseRun.includes('flux-synapse-field'), '突触必须具备缓慢旋移星座场');
+  assert.equal((synapseRun.match(/flux-synapse-branch--/g) || []).length, 3, '突触必须为 120° 三向神经分支');
+  assert.equal((synapseRun.match(/class="flux-synapse-pulse"/g) || []).length, 3, '突触三条轴突均须有独立电脉冲');
+  assert.ok(synapseRun.includes('flux-synapse-wave'), '突触必须具备共振波环');
+  assert.equal(synapseRun.includes('flux-synapse-cell'), false, '突触严禁退回 4x4 密集点阵');
+  const synapseDone = unreadOf('synapse');
+  assert.ok(synapseDone.includes('flux-synapse-done-ring'));
+  assert.equal((synapseDone.match(/flux-synapse-done-node--/g) || []).length, 3);
+
+  const springRun = runningOf('spring');
+  assert.equal((springRun.match(/flux-spring-arc--/g) || []).length, 3, '弹簧必须具备三层游丝弧');
+  assert.ok(springRun.includes('flux-spring-dot'));
+  assert.ok(unreadOf('spring').includes('flux-spring-done-ring'));
+
+  const matrixRun = runningOf('matrix');
+  assert.ok(matrixRun.includes('flux-vortex-field'), '旋涡必须具备整体流体吸合层');
+  assert.equal((matrixRun.match(/flux-vortex-arm--/g) || []).length, 3, '旋涡必须具备三层偏心螺旋臂');
+  assert.ok(matrixRun.includes('flux-vortex-eye'));
+  assert.equal(matrixRun.includes('flux-matrix-dot'), false, '旋涡严禁退回 16 颗密集散点');
+  const matrixDone = unreadOf('matrix');
+  assert.ok(matrixDone.includes('flux-vortex-done-outer'));
+  assert.ok(matrixDone.includes('flux-vortex-done-ring'));
+});

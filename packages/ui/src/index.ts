@@ -1,0 +1,140 @@
+// 此 barrel 仅供打包消费者使用（例如 esbuild bundle）。裸浏览器模块环境禁止直接导入，避免解析 react/jsx-runtime 等裸依赖失败。
+export * from './tokens/tokens.js';
+export * from './tokens/types.js';
+export * from './tokens/skins.js';
+export * from './i18n/index.js';
+export {
+  buildLeftRailModel,
+  toSnippet,
+  formatLeftRailTime,
+  isSessionFocused,
+  isGroupFocused,
+  isBotFocused,
+  type LeftRailModel,
+  type LeftRailModelInput,
+  type LeftRailSession,
+  type LeftRailGroupRoom,
+  type LeftRailProfile,
+  type LeftRailActiveFocus,
+  type ActivityState as LeftRailActivityState,
+  type ActivityTransition,
+} from './components-react/leftRailModel.js';
+export type { LeftRailProject } from './components/LeftRail/types.js';
+export * from './components/MiddlePod/MiddlePod.js';
+export { mountFileTypeSprite, renderFileTypeIcon, resolveFileTypeIcon } from './lib/fileTypeIcons.js';
+export { warmUpHighlighting, isHighlightReady } from './lib/highlight.js';
+export { extractToolTarget, isLikelyFilePath } from './lib/text.js';
+export { collectTouchedFiles } from './lib/fileRefs.js';
+export * from './lib/promptNavigator.js';
+export {
+  UI_FONT_OPTIONS,
+  MONO_FONT_OPTIONS,
+  getUiFontSelectOptions,
+  DEFAULT_UI_FONT,
+  DEFAULT_MONO_FONT,
+  resolveFontStack,
+  type UiFontId,
+  type MonoFontId,
+  type FontSizeScale,
+} from './tokens/fonts.js';
+export {
+  loadFontPreferences,
+  saveFontPreferences,
+  applyFontPreferences,
+  DEFAULT_FONT_PREFERENCES,
+  type FontPreferences,
+} from './tokens/fontPreferences.js';
+export {
+  ACTIVITY_INDICATOR_VARIANTS,
+  DEFAULT_ACTIVITY_INDICATOR_VARIANT,
+  ACTIVITY_INDICATOR_STORAGE_KEY,
+  POINT_CLOUD_SPECS,
+  POINT_CLOUD_SPEC_MAP,
+  getPointCloudSpec,
+  resolveActivityIndicatorVariant,
+  loadActivityIndicatorVariant,
+  saveActivityIndicatorVariant,
+  type ActivityIndicatorVariant,
+  type PointCloudShape,
+  type PointCloudSpec,
+} from './tokens/activityIndicator.js';
+export * from './tokens/conversationWidth.js';
+export * from './tokens/leftRailLayout.js';
+export * from './lib/safeStorage.js';
+export * from './components/InputDock/InputDock.js';
+export * from './components/InspectionPod/InspectionPod.js';
+export * from './components/StatusBar/StatusBar.js';
+export * from './components/MiddlePod/WorkerDelegationCard.js';
+export * from './components/MiddlePod/BtwCapsule.js';
+export * from './components/InspectionPod/SubagentTerminalView.js';
+export * from './components/Bot/BotProfileCard.js';
+export * from './components/Group/GroupRoomView.js';
+export * from './components/Group/GroupPromotionDialog.js';
+export * from './components/Project/ProjectTreeViewer.js';
+export * from './components/TaskModal/NewTaskModal.js';
+export * from './components/Modal/ConfirmModal.js';
+export * from './components/ContextMenu/ContextMenu.js';
+export * from './lib/globalTooltip.js';
+export * from './utils/imagePreprocessor.js';
+export * from './components-react/primitives/index.js';
+export { StatusBar, type StatusBarProps } from './components-react/StatusBar.js';
+export { Titlebar, type TitlebarProps as ReactTitlebarProps } from './components-react/Titlebar.js';
+export { LeftRail as ReactLeftRail, type LeftRailProps as ReactLeftRailProps } from './components-react/LeftRail.js';
+export { RailEntityRow, type RailEntityRowProps } from './components-react/RailEntityRow.js';
+export { GroupedLeftRail, type GroupedLeftRailProps } from './components-react/GroupedLeftRail.js';
+export {
+  buildGroupedLeftRailModel,
+  type GroupedLeftRailModel,
+  type GroupedLeftRailModelInput,
+  type GroupedArchivedSessionVM,
+} from './components-react/groupedLeftRailModel.js';
+export { NewChatDialog, type NewChatDialogProps } from './components-react/NewChatDialog.js';
+export {
+  resolveDefaultBotName,
+  resolveInitialGroupMembers,
+  resolveValidProjectId,
+  shouldSubmitNewChatComposerKey,
+  syncDialogSelectionOnProfiles,
+  toggleGroupMember,
+  buildNewChatSubmitPayload,
+  buildAutoGroupTitle,
+  createNewChatSubmitGate,
+  type NewChatMode,
+  type NewChatProjectOption,
+  type NewChatDialogSnapshot,
+  type NewChatSubmitPayload,
+  type NewChatSubmitResult,
+  type NewChatDialogActions,
+  type NewChatSubmitGate,
+  type NewChatDraftInput,
+  type NewChatBuildOutcome,
+} from './components-react/newChatModel.js';
+export * from './components-react/loadPhase.js';
+export * from './components-react/conversation/index.js';
+export { renderLeftRailHtml, type LeftRailHtmlSnapshot } from './components-react/leftRailStaticRender.js';
+export { renderBotAvatar, escapeHtml } from './utils/botAvatar.js';
+export { mountStatusBar, mountTitlebar, mountLeftRail, mountRightPod, mountNewChatDialog, type StatusBarSnapshot, type TitlebarSnapshot, type LeftRailSnapshot, type LeftRailActions, type RightPodSnapshot, type RightPodActions } from './components-react/mount-shell-components.js';
+export type { StatusSubjectIdentity } from './components-react/status/types.js';
+export { StatusPanelGlyph } from './icons/titlebarGlyphs.js';
+export { RightPodRoot } from './components-react/status/RightPodRoot.js';
+export { SessionStatusPanel } from './components-react/status/SessionStatusPanel.js';
+export { SubagentRow } from './components-react/status/SubagentRow.js';
+export { ContextBreakdownDrawer } from './components-react/status/ContextBreakdownDrawer.js';
+export { SubagentDetailView } from './components-react/status/SubagentDetailView.js';
+export {
+  formatDurationSecondsCompact,
+  formatElapsedCompact,
+  resolveTaskDurationLabel,
+  tailKindLabel,
+} from './components-react/status/statusFormatters.js';
+export {
+  AgentPresence,
+  type AgentPresenceSnapshot,
+  type AgentPresenceIdentitySolo,
+  type AgentPresenceIdentityGroup,
+} from './components-react/AgentPresence.js';
+export * from './components-react/settings/index.js';
+export { getStatusBarSnapshot, getTitlebarSnapshot } from './components-react/mount-shell-components.js';
+export * from './components-react/mobile/index.js';
+export * from './motion/index.js';
+

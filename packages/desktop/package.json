@@ -1,0 +1,47 @@
+{
+  "name": "@hermes-flux/desktop",
+  "version": "0.1.0",
+  "author": "heyhongbro",
+  "private": true,
+  "description": "Hermes Flux Desktop: The Elegant Universal Workspace for Windows, macOS, and Linux",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist release",
+    "start": "node scripts/build.mjs && electron dist/main/index.js",
+    "package:win": "node scripts/package-win.mjs",
+    "package:win:dir": "node scripts/package-win.mjs --dir",
+    "package:win:portable": "node scripts/package-win.mjs --portable",
+    "package:mac": "node scripts/build.mjs && electron-builder --mac",
+    "package:linux": "node scripts/build.mjs && electron-builder --linux"
+  },
+  "dependencies": {
+    "@fontsource/atkinson-hyperlegible": "^5.3.0",
+    "@fontsource/cascadia-code": "^5.3.0",
+    "@fontsource/commit-mono": "^5.3.0",
+    "@fontsource/dm-sans": "^5.3.0",
+    "@fontsource/fira-code": "^5.3.0",
+    "@fontsource/geist-mono": "^5.3.0",
+    "@fontsource/geist-sans": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/ibm-plex-sans": "^5.2.7",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/iosevka": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/manrope": "^5.3.0",
+    "@fontsource/noto-sans": "^5.3.0",
+    "@fontsource/roboto": "^5.3.0",
+    "@fontsource/roboto-mono": "^5.3.0",
+    "@fontsource/source-code-pro": "^5.3.1",
+    "@fontsource/source-sans-3": "^5.3.1"
+  },
+  "devDependencies": {
+    "@hermes-flux/core": "*",
+    "@hermes-flux/ui": "*",
+    "electron": "34.2.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.8.0"
+  }
+}
