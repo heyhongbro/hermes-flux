@@ -18,6 +18,7 @@ import {
   SpawnTreeLoadResult,
 } from './types.js';
 import { WebSocketFsm, FsmState } from './fsm.js';
+import { isLegacyRpcMethodError } from './connectionPhase.js';
 import { normalizeSessionsResult, extractAvailableModels, extractModelDetails } from '../models/types.js';
 import { buildModelCatalogView, type ModelCatalogEntry } from '../models/modelCatalog.js';
 import { createLogger } from '../log/logger.js';
@@ -117,6 +118,8 @@ export interface RestFallbackOptions {
 
 export type RestFallbackHandler = (path: string, options?: RestFallbackOptions) => Promise<unknown>;
 
+export type ProbeOrWakeResult = 'alive' | 'reconnecting' | 'disconnected';
+
 /** Result of a session listing attempt, including why it failed when it did. */
 export interface SessionListOutcome {
   sessions: NormalizedSession[];
@@ -192,6 +195,8 @@ export class HermesGatewayClient {
   private fsm: WebSocketFsm;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
+  private connectStartedAt = 0;
+  private activeProbePromise: Promise<ProbeOrWakeResult> | null = null;
 
   // 心跳看门狗状态
   private enableHeartbeat: boolean;
@@ -243,6 +248,10 @@ export class HermesGatewayClient {
 
   public getState(): FsmState {
     return this.fsm.getState();
+  }
+
+  public getReconnectAttempt(): number {
+    return this.fsm.getAttemptCount();
   }
 
   public getActiveUrl(): string {
@@ -343,6 +352,106 @@ export class HermesGatewayClient {
 
     this.fsm.resetAttempts();
     this.connect();
+  }
+
+  private teardownDeadSocket(reason: string): void {
+    this.connectEpoch++;
+    this.isResolvingUrl = false;
+    this.activeProbePromise = null;
+    this.stopHeartbeat();
+    const oldSocket = this.ws;
+    this.ws = null;
+    this.clearPendingRequests(reason);
+    if (oldSocket) {
+      try {
+        oldSocket.close();
+      } catch (err) {
+        // gate-degrade: 强制拆除死连接时 close() 抛错不影响后续重建
+        log.debug('close() on stale/dead socket failed', err);
+      }
+    }
+  }
+
+  /**
+   * 主动探活或打破退避休眠立即唤醒重连。
+   *
+   * 【设计意图 (Why)】
+   *   移动端切回前台、桌面休眠唤醒或静默切换 Wi-Fi/5G 时，底层 TCP 套接字常处于"半开"状态，
+   *   而 client FSM 仍停留在 CONNECTED（甚至无感挂在 CONNECTING/HANDSHAKING）。
+   *   本方法通过单飞短超时 ping 探活，一旦发现链路失效或握手卡死，立即拆除半开连接并重置退避重连。
+   *
+   * 【防范的历史坑 (Pitfall)】
+   *   1. 卡在 CONNECTING/HANDSHAKING 时严禁调用 disconnect()（会永久置 intentionalClose=true 导致无法恢复）；
+   *   2. 卡在 isResolvingUrl=true 时必须重置标志并递增 connectEpoch，防止迟到回调篡改新连接。
+   *
+   * 【约束与规则 (Rules)】
+   *   - CONNECTED 态发往同一步并发探活必须单飞去重；
+   *   - legacy 网关返回数字型 JSON-RPC 错误码（如 -32601）判定为传输存活 ('alive')。
+   */
+  public async probeOrWake(
+    reason = 'manual',
+    opts: { probeTimeoutMs?: number; staleConnectingMs?: number } = {},
+  ): Promise<ProbeOrWakeResult> {
+    if (this.intentionalClose) return 'disconnected';
+
+    const probeTimeoutMs = opts.probeTimeoutMs ?? 2500;
+    const staleConnectingMs = opts.staleConnectingMs ?? 5000;
+    const current = this.fsm.getState();
+
+    if (current === 'CONNECTED') {
+      if (this.activeProbePromise) {
+        return this.activeProbePromise;
+      }
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        this.teardownDeadSocket(`Socket not open on probe (${reason})`);
+        this.fsm.transitionTo('RECONNECTING');
+        this.wakeImmediately(reason);
+        return 'reconnecting';
+      }
+      const probeSocket = this.ws;
+      let probePromise: Promise<ProbeOrWakeResult> | null = null;
+      probePromise = (async (): Promise<ProbeOrWakeResult> => {
+        try {
+          await this.call('ping', {}, probeTimeoutMs);
+          return 'alive';
+        } catch (err) {
+          if (isLegacyRpcMethodError(err)) {
+            return 'alive';
+          }
+          if (this.intentionalClose) {
+            return 'disconnected';
+          }
+          if (this.ws !== probeSocket) {
+            return 'reconnecting';
+          }
+          log.warn('active probe ping failed, recycling dead connection', { reason, err });
+          this.teardownDeadSocket(`Probe failed (${reason})`);
+          this.fsm.transitionTo('RECONNECTING');
+          this.wakeImmediately(reason);
+          return 'reconnecting';
+        } finally {
+          if (this.activeProbePromise === probePromise) {
+            this.activeProbePromise = null;
+          }
+        }
+      })();
+      this.activeProbePromise = probePromise;
+      return probePromise;
+    }
+
+    if (current === 'CONNECTING' || current === 'HANDSHAKING') {
+      if (Date.now() - this.connectStartedAt < staleConnectingMs) {
+        return 'reconnecting';
+      }
+      log.warn('stale connecting/handshaking detected on wake, resetting socket', { reason, state: current });
+      this.teardownDeadSocket(`Stale ${current} reset (${reason})`);
+      this.fsm.transitionTo('RECONNECTING');
+      this.wakeImmediately(reason);
+      return 'reconnecting';
+    }
+
+    this.wakeImmediately(reason);
+    return 'reconnecting';
   }
 
   /**
@@ -456,6 +565,7 @@ export class HermesGatewayClient {
     }
 
     this.intentionalClose = false;
+    this.connectStartedAt = Date.now();
     this.fsm.transitionTo('CONNECTING');
 
     if (this.initialUrlConsumed && this.resolveUrl) {
@@ -493,16 +603,19 @@ export class HermesGatewayClient {
   }
 
   private openWebSocket(targetUrl: string): void {
+    this.connectStartedAt = Date.now();
     try {
       const socket = new WebSocket(targetUrl);
       this.ws = socket;
 
       socket.onopen = () => {
         if (this.intentionalClose || this.ws !== socket) return;
+        this.connectStartedAt = Date.now();
         this.fsm.transitionTo('HANDSHAKING');
         log.info('websocket open, handshaking', { url: targetUrl });
         // 握手探针：网关 `ping` 返回 { pong: true }，是最轻量的存活确认
-        this.call('ping', {})
+        const handshakeTimeoutMs = Math.min(this.heartbeatTimeoutMs, 5000);
+        this.call('ping', {}, handshakeTimeoutMs)
           .then(() => {
             if (this.intentionalClose || this.ws !== socket) return;
             log.info('handshake ok, connected');
@@ -511,11 +624,24 @@ export class HermesGatewayClient {
           })
           .catch((err: unknown) => {
             if (this.intentionalClose || this.ws !== socket) return;
-            // 握手探针失败不代表连接不可用（老版本网关可能未注册 ping），
-            // 但必须留下证据，避免"假在线"。
-            log.warn('handshake ping failed, proceeding as connected', err);
-            this.fsm.transitionTo('CONNECTED');
-            this.startHeartbeat();
+            // 仅当老版本网关回包了数字型 JSON-RPC 错误码（如 -32601）才证明传输已连通；
+            // 传输超时/断连必须关掉半开套接字并调度重连，防止"假在线"。
+            if (isLegacyRpcMethodError(err)) {
+              log.warn('handshake ping returned RPC error, proceeding as connected', err);
+              this.fsm.transitionTo('CONNECTED');
+              this.startHeartbeat();
+              return;
+            }
+            log.warn('handshake ping failed, closing socket and scheduling reconnect', err);
+            this.ws = null;
+            this.clearPendingRequests('Handshake ping failed');
+            try {
+              socket.close();
+            } catch (closeErr) {
+              // gate-degrade: 握手失败关闭半开套接字异常时仍继续调度重连
+              log.debug('close() on failed handshake socket failed', closeErr);
+            }
+            this.scheduleReconnect();
           });
       };
 
@@ -533,6 +659,7 @@ export class HermesGatewayClient {
         if (this.ws !== socket) return;
         this.stopHeartbeat();
         this.ws = null;
+        this.clearPendingRequests('WebSocket closed');
         if (!this.intentionalClose) {
           this.scheduleReconnect();
         } else {
@@ -558,6 +685,7 @@ export class HermesGatewayClient {
     this.intentionalClose = true;
     this.connectEpoch++;
     this.isResolvingUrl = false;
+    this.activeProbePromise = null;
     this.stopHeartbeat();
     this.teardownLifecycleListeners();
     this.clearPendingRequests('Client disconnected');
@@ -699,7 +827,13 @@ export class HermesGatewayClient {
         timer,
       });
 
-      this.ws.send(JSON.stringify(request));
+      try {
+        this.ws.send(JSON.stringify(request));
+      } catch (sendErr) {
+        clearTimeout(timer);
+        this.pendingRequests.delete(id);
+        reject(sendErr instanceof Error ? sendErr : new Error(String(sendErr)));
+      }
     });
   }
 

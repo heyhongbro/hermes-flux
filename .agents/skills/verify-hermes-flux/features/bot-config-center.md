@@ -1,6 +1,6 @@
 # BOT config center
 
-设置 › BOT 是专职数字员工的唯一配置中枢：左侧是默认展开的 **204px BOT 列表**（带标题、搜索框、36px 物理正圆头像、名称与可读模型副标题），可点击底部 `PanelLeftClose`/`PanelLeftOpen` 开关按需收起到 64px 纯头像微轨（收起态头像仍保持 36px 正圆，悬停走自定义 `Tooltip` 展示轻名片）；右侧主区采用去框紧凑身份头、**扁平 5 项一级菜单**（`基本信息` / `角色设定` / `工具` / `技能` / `MCP`，菜单项零数字徽标）与按需浮起的底部胶囊保存条。所有修改先落壳层草稿池，保存时才写网关；网关照段返回 `applied`，界面据此决定"成功 / 部分未写 / 需要二次确认"。
+设置 › BOT 是专职数字员工的唯一配置中枢：左侧是默认展开的 **204px BOT 列表**（带标题、搜索框、36px 物理正圆头像、名称与可读模型副标题），可点击底部 `PanelLeftClose`/`PanelLeftOpen` 开关按需收起到 64px 纯头像微轨（收起态头像仍保持 36px 正圆，悬停走自定义 `Tooltip` 展示轻名片）；右侧主区采用去框紧凑身份头、**扁平 6 项一级菜单**（`基本信息` / `角色设定` / `工具` / `技能` / `MCP` / `记忆`，菜单项零数字徽标）与按需浮起的底部胶囊保存条。所有修改先落壳层草稿池，保存时才写网关；网关照段返回 `applied`，界面据此决定"成功 / 部分未写 / 需要二次确认"。
 
 ## Sub-features
 
@@ -19,9 +19,9 @@ Preconditions: `npm run build` is fresh, `node scripts/verify/control-flux.mjs d
 
 1. Run `node scripts/verify/control-flux.mjs run bot-config-center`.
    Observable: `[data-bot-carousel]` 初始处于展开态（`data-bot-rail-expanded="true"`，宽度 `>= 196px`），`[data-bot-rail-filter="true"]` 可见且搜索过滤生效；点击底部 `[data-bot-rail-toggle="true"]` 可收起到 `~64px` 并为头像挂载 `Tooltip` 轻名片，再点击恢复展开。
-2. Check 5 flat tabs (zero numbers) and basic fields.
-   Observable: `[data-bot-tab]` 为 5 项（`basic/soul/toolsets/skills/mcp`）且均不含数字；`36×36`/`48×48` 头像 1:1 无裁切无 `ring`；`#bot-id` / `#bot-display-name` / `#bot-model` / `#bot-description` 齐全。
-3. Switch flat tabs (`soul` / `toolsets` / `mcp`) & capability interactions.
-   Observable: `#bot-soul` 可见；`[data-bot-cap-search="toolsets"]` 搜索过滤正常；开关 `[data-bot-capability=browser]` 写入草稿且悬浮保存条浮起；重置清空草稿；`mcp` 页展示「已连接」与「状态未知」（零红色文字）并可打开/关闭 `[data-mcp-add-dialog="true"]`。
+2. Check 6 flat tabs (zero numbers) and basic fields.
+   Observable: `[data-bot-tab]` 为 6 项（`basic/soul/toolsets/skills/mcp/constellation`）且均不含数字；`36×36`/`48×48` 头像 1:1 无裁切无 `ring`；`#bot-id` / `#bot-display-name` / `#bot-model` / `#bot-description` 齐全。
+3. Switch flat tabs (`soul` / `toolsets` / `mcp` / `constellation`) & capability / star-map interactions.
+   Observable: `#bot-soul` 可见；`[data-bot-cap-search="toolsets"]` 搜索过滤正常；开关 `[data-bot-capability=browser]` 写入草稿且悬浮保存条浮起；重置清空草稿；`mcp` 页展示「已连接」与「状态未知」（零红色文字）并可打开/关闭 `[data-mcp-add-dialog="true"]`；`constellation` 页展示对应 Bot 完整无分页星图、缩放控制器、技能清单与可打开的 `xl` 详情弹窗。
 4. Click `[data-bot-id="default"]`, dispatch `ArrowDown`, wait 250ms, then inject `list_error`.
    Observable: `list_error` 原样透出且卸载花名册与表单。

@@ -8,6 +8,7 @@ import {
   Download,
   FileCode2,
   Lock,
+  Network,
   Plus,
   RotateCcw,
   Search,
@@ -62,16 +63,18 @@ import { SettingField, SettingTwoColumn } from './SettingRow.js';
 import { SkillDetailDialog } from './SkillDetailDialog.js';
 import { SkillInstallDialog } from './SkillInstallDialog.js';
 import type { SettingsActions, SettingsSnapshot } from './settingsModel.js';
+import { CognitiveStarMapPanel } from '../learning/CognitiveStarMapPanel.js';
 
 const IDENTITY_AVATAR_SIZE = '100%';
 const MIN_SOUL_GUTTER_LINES = 14;
-const DETAIL_TABS: readonly BotDetailTab[] = ['basic', 'soul', 'toolsets', 'skills', 'mcp'];
+const DETAIL_TABS: readonly BotDetailTab[] = ['basic', 'soul', 'toolsets', 'skills', 'mcp', 'constellation'];
 const TAB_LABEL_KEYS: Record<BotDetailTab, I18nKey> = {
   basic: 'bot.tabBasic',
   soul: 'bot.tabSoul',
   toolsets: 'bot.tabToolsets',
   skills: 'bot.tabSkills',
   mcp: 'bot.tabMcp',
+  constellation: 'bot.tabConstellation',
 };
 
 /**
@@ -173,6 +176,14 @@ export function BotManagerView({
     setCapFilter('all');
     setCapQuery('');
   }, [focusAnchor]);
+
+  // 外部直达入口（如右侧状态栏「认知星图」按钮）请求切换目标页签。
+  React.useEffect(() => {
+    if (!view.requestedTab) return;
+    setActiveTab(view.requestedTab.tab);
+    setCapFilter('all');
+    setCapQuery('');
+  }, [view.requestedTab]);
 
   const bootstrapRequestedRef = React.useRef(false);
   React.useEffect(() => {
@@ -844,7 +855,7 @@ export function BotManagerView({
                         aria-selected={active}
                         data-bot-tab={tab}
                         onClick={() => selectTab(tab)}
-                        className={`relative flex items-center py-2 text-aux transition-colors ${
+                        className={`relative flex shrink-0 items-center whitespace-nowrap py-2 text-aux transition-colors ${
                           active
                             ? 'font-semibold text-foreground'
                             : 'font-medium text-muted-foreground hover:text-foreground'
@@ -921,7 +932,7 @@ export function BotManagerView({
                       />
                     </SettingField>
 
-                    <Surface level="raised" padding="normal" bordered={false} specular={false} className="shrink-0 rounded-panel" data-settings-anchor="bot-memory">
+                    <Surface level="raised" padding="normal" bordered={false} specular={false} className="shrink-0 rounded-panel">
                       <div className="flex items-start gap-3">
                         <span
                           aria-hidden="true"
@@ -930,9 +941,20 @@ export function BotManagerView({
                           <Lock aria-hidden="true" className="size-4" />
                         </span>
                         <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-section font-semibold text-foreground">{t('bot.memoryTitle')}</span>
-                            <Badge variant="secondary">{t('bot.memoryLocked')}</Badge>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-section font-semibold text-foreground">{t('bot.memoryTitle')}</span>
+                              <Badge variant="secondary">{t('bot.memoryLocked')}</Badge>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="xs"
+                              onClick={() => selectTab('constellation')}
+                            >
+                              <Network aria-hidden="true" className="size-3" />
+                              <span>{t('bot.tabConstellation')}</span>
+                            </Button>
                           </div>
                           <p className="mt-1 text-caption leading-relaxed text-muted-foreground">
                             {t('bot.memoryNotice')}
@@ -1261,6 +1283,44 @@ export function BotManagerView({
                         />
                       </div>
                     </div>
+                  </div>
+
+                  {/* Tab 6：认知星图与技能关系图谱 */}
+                  <div
+                    role="tabpanel"
+                    data-bot-tabpanel="constellation"
+                    data-settings-anchor="bot-memory"
+                    className={
+                      activeTab === 'constellation'
+                        ? `animate-panel-enter scrollbar-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-4 ${
+                            dirty || showSaving ? 'pb-20' : 'pb-6'
+                          }`
+                        : 'hidden'
+                    }
+                  >
+                    <CognitiveStarMapPanel
+                      targetProfile={activeId}
+                      targetBotLabel={identityTitle}
+                      variant="desktop"
+                      testIdPrefix="desktop-constellation"
+                      learningState={snapshot.learningState ?? { status: 'idle' }}
+                      learningDetail={snapshot.learningDetail ?? { status: 'idle' }}
+                      onEnsureLoaded={
+                        activeTab === 'constellation'
+                          ? (profile) => actions.onLoadLearningGraph?.(profile, false)
+                          : undefined
+                      }
+                      onRefresh={(profile) => actions.onLoadLearningGraph?.(profile, true)}
+                      onSelectNodeDetail={(id, profile) => actions.onLoadLearningDetail?.(id, profile)}
+                      onSaveEdit={actions.onEditLearningNode}
+                      onDeleteNode={actions.onDeleteLearningNode}
+                      onInspectSkill={actions.onInspectSkill}
+                      onCopyText={(text) => {
+                        void actions.onCopy(text);
+                      }}
+                      onNotify={actions.onNotify}
+                      footerHint={t('bot.memoryNotice')}
+                    />
                   </div>
                 </div>
 

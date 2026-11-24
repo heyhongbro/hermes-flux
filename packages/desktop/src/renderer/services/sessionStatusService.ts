@@ -62,6 +62,7 @@ export interface SessionStatusServiceDeps {
   readonly syncTitlebar: () => void;
   readonly openFilePreview: (filePath: string) => Promise<void> | void;
   readonly insertQuoteToComposer: (text: string) => void;
+  readonly onOpenConstellation?: (profileName: string) => void;
   readonly writeClipboardText?: (text: string) => Promise<void>;
   readonly setTimedDockNotice?: (msg: string, durationMs?: number) => void;
   readonly render: () => void;
@@ -1005,6 +1006,11 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
     onQuoteToMain: (text: string) => {
       deps.insertQuoteToComposer(text);
     },
+    onOpenConstellation: deps.onOpenConstellation
+      ? (profileName: string) => {
+          deps.onOpenConstellation?.(profileName);
+        }
+      : undefined,
   };
 
   return {

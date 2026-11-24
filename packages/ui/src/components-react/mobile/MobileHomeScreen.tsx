@@ -17,6 +17,7 @@
  */
 
 import * as React from 'react';
+import type { GatewayConnectionPhase } from '@hermes-flux/core';
 import { ChevronRight, MessageSquare, Plus, Search, Settings } from 'lucide-react';
 import { t } from '../../i18n/index.js';
 import { renderBotAvatar, renderGroupCollageAvatar } from '../../utils/botAvatar.js';
@@ -36,6 +37,7 @@ export interface MobileHomeScreenProps {
   activeBotName: string;
   gatewayConnected: boolean;
   gatewayConnecting: boolean;
+  connectionPhase?: GatewayConnectionPhase;
   searchOpen: boolean;
   settingsSnapshot: SettingsSnapshot;
   modelDetails: MobileModelOption[];
@@ -76,6 +78,7 @@ export function MobileHomeScreen({
   activeBotName,
   gatewayConnected,
   gatewayConnecting,
+  connectionPhase,
   searchOpen,
   settingsSnapshot,
   modelDetails,
@@ -213,6 +216,7 @@ export function MobileHomeScreen({
           allProfiles={allProfiles}
           activeBotName={activeBotName}
           gatewayConnected={gatewayConnected}
+          connectionPhase={connectionPhase}
           settingsSnapshot={settingsSnapshot}
           modelDetails={modelDetails}
           onSelectBotSubpage={onSelectBotSubpage}
@@ -223,7 +227,8 @@ export function MobileHomeScreen({
         />
       ) : (
         <div className="m-home__scroll">
-        {!gatewayConnected ? (
+        {!gatewayConnected &&
+        (connectionPhase === undefined || connectionPhase === 'unconfigured') ? (
           <button
             type="button"
             className="m-home__offline-banner"

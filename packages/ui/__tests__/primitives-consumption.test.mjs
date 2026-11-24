@@ -35,15 +35,16 @@ const CONSUMPTION = {
       'components-react/mobile/MobileSubagentSheet.tsx',
     ],
   },
-  Button: { state: 'consumed', consumers: ['components-react/LeftRail.tsx', 'components-react/RailEntityRow.tsx', 'components-react/GroupedLeftRail.tsx', 'components-react/NewChatDialog.tsx', 'components-react/settings/SettingsModal.tsx', 'components-react/settings/LoadBoundary.tsx', 'components-react/settings/ProvidersAdminPanel.tsx', 'components-react/settings/AddProviderDialog.tsx', 'components-react/settings/SwitchDefaultProviderDialog.tsx', 'components-react/settings/ModelPicker.tsx', 'components-react/settings/BotHeroCarousel.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/McpAddDialog.tsx', 'components-react/settings/McpRemoveConfirmDialog.tsx', 'components-react/settings/SkillDetailDialog.tsx', 'components-react/settings/SkillInstallDialog.tsx', 'components-react/settings/LoginPanel.tsx', 'components-react/gallery/Gallery.tsx'] },
+  Button: { state: 'consumed', consumers: ['components-react/LeftRail.tsx', 'components-react/RailEntityRow.tsx', 'components-react/GroupedLeftRail.tsx', 'components-react/NewChatDialog.tsx', 'components-react/learning/ConstellationNodeDetailDialog.tsx', 'components-react/settings/SettingsModal.tsx', 'components-react/settings/LoadBoundary.tsx', 'components-react/settings/ProvidersAdminPanel.tsx', 'components-react/settings/AddProviderDialog.tsx', 'components-react/settings/SwitchDefaultProviderDialog.tsx', 'components-react/settings/ModelPicker.tsx', 'components-react/settings/BotHeroCarousel.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/McpAddDialog.tsx', 'components-react/settings/McpRemoveConfirmDialog.tsx', 'components-react/settings/SkillDetailDialog.tsx', 'components-react/settings/SkillInstallDialog.tsx', 'components-react/settings/LoginPanel.tsx', 'components-react/gallery/Gallery.tsx'] },
   Input: { state: 'consumed', consumers: ['components-react/LeftRail.tsx', 'components-react/RailEntityRow.tsx', 'components-react/GroupedLeftRail.tsx', 'components-react/settings/SettingsModal.tsx', 'components-react/settings/ProvidersAdminPanel.tsx', 'components-react/settings/AddProviderDialog.tsx', 'components-react/settings/SwitchDefaultProviderDialog.tsx', 'components-react/settings/ModelPicker.tsx', 'components-react/settings/BotHeroCarousel.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/McpAddDialog.tsx', 'components-react/settings/SkillInstallDialog.tsx'] },
   Select: { state: 'consumed', consumers: ['components-react/NewChatDialog.tsx', 'components-react/settings/SettingsModal.tsx'] },
   Textarea: { state: 'consumed', consumers: ['components-react/settings/BotManagerView.tsx', 'components-react/settings/McpAddDialog.tsx'] },
-  Badge: { state: 'consumed', consumers: ['components-react/settings/SettingsModal.tsx', 'components-react/settings/BotHeroCarousel.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/McpAddDialog.tsx', 'components-react/settings/SkillDetailDialog.tsx', 'components-react/settings/SkillInstallDialog.tsx', 'components-react/gallery/Gallery.tsx'] },
+  Badge: { state: 'consumed', consumers: ['components-react/learning/ConstellationNodeDetailDialog.tsx', 'components-react/settings/SettingsModal.tsx', 'components-react/settings/BotHeroCarousel.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/McpAddDialog.tsx', 'components-react/settings/SkillDetailDialog.tsx', 'components-react/settings/SkillInstallDialog.tsx', 'components-react/gallery/Gallery.tsx'] },
   Dialog: {
     state: 'consumed',
     consumers: [
       'components-react/NewChatDialog.tsx',
+      'components-react/learning/ConstellationNodeDetailDialog.tsx',
       'components-react/settings/SettingsModal.tsx',
       'components-react/settings/ModelPicker.tsx',
       'components-react/settings/AddProviderDialog.tsx',
@@ -86,7 +87,7 @@ const CONSUMPTION = {
    * 设计意图 (Why)：阻断浏览器原生 title 黑块墨渍，为控件注入 data-tooltip 属性，
    *   生产消费者为 LeftRail / GroupedLeftRail 等。
    */
-  Tooltip: { state: 'consumed', consumers: ['components-react/LeftRail.tsx', 'components-react/GroupedLeftRail.tsx', 'components-react/NewChatDialog.tsx', 'components-react/settings/BotHeroCarousel.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/SettingsModal.tsx', 'components-react/settings/ProvidersAdminPanel.tsx', 'components-react/settings/AddProviderDialog.tsx', 'components-react/settings/SwitchDefaultProviderDialog.tsx', 'components-react/settings/McpAddDialog.tsx', 'components-react/settings/SkillDetailDialog.tsx', 'components-react/settings/SkillInstallDialog.tsx', 'components-react/settings/ModelPicker.tsx'] },
+  Tooltip: { state: 'consumed', consumers: ['components-react/LeftRail.tsx', 'components-react/GroupedLeftRail.tsx', 'components-react/NewChatDialog.tsx', 'components-react/learning/CognitiveSkillList.tsx', 'components-react/settings/BotHeroCarousel.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/SettingsModal.tsx', 'components-react/settings/ProvidersAdminPanel.tsx', 'components-react/settings/AddProviderDialog.tsx', 'components-react/settings/SwitchDefaultProviderDialog.tsx', 'components-react/settings/McpAddDialog.tsx', 'components-react/settings/SkillDetailDialog.tsx', 'components-react/settings/SkillInstallDialog.tsx', 'components-react/settings/ModelPicker.tsx'] },
 };
 
 /** 收集 ui 包内所有未被排除的生产源文件（排除 primitives 自身与 barrel）。 */

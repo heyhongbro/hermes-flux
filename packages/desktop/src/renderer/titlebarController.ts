@@ -23,6 +23,7 @@
 import {
   resolveTitlebarTitle,
   resolveTitlebarAvatar,
+  resolveTitlebarConnectionStatus,
 } from '@hermes-flux/core';
 import {
   getTitlebarSnapshot as createTitlebarSnapshot,
@@ -85,6 +86,7 @@ export function createTitlebarController(deps: TitlebarControllerDeps): Titlebar
       }),
       isMaximized: state.isMaximized,
       gatewayConnected: state.gatewayConnected,
+      connectionStatus: resolveTitlebarConnectionStatus(state.connectionPhase, state.gatewayConnected),
       leftRailCollapsed: state.leftRailCollapsed,
       leftRailLayout: state.leftRailLayout,
       inspectorCollapsed: state.inspectorCollapsed,

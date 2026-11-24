@@ -1,0 +1,699 @@
+/* ==========================================================================
+   认知星图共享样式 (Cognitive Star Map · Desktop & Mobile Shared Tokens Only)
+   严禁出现十六进制/rgb/hsl 硬编码色相，严禁 scroll-behavior: smooth 或滚动容器 transform。
+   ========================================================================== */
+
+.constellation-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  color: var(--foreground);
+}
+
+.constellation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-window);
+  border: 1px solid var(--border-subtle);
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+  min-width: 0;
+}
+
+.constellation-card--state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  gap: 12px;
+  text-align: center;
+}
+
+.constellation-state__text,
+.m-constellation__state-text {
+  margin: 0;
+  font-size: var(--fs-aux);
+  color: var(--muted-foreground);
+}
+
+.constellation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.constellation-header__left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.constellation-header__icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.constellation-header__title {
+  font-size: var(--fs-section);
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.constellation-bot-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  line-height: 16px;
+}
+
+.constellation-header__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.constellation-stats {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.constellation-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.constellation-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.constellation-chip {
+  min-height: 28px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--secondary);
+  color: var(--muted-foreground);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.constellation-panel[data-variant="mobile"] .constellation-chip {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 16px;
+  font-size: var(--fs-aux);
+}
+
+.constellation-chip[data-active="true"] {
+  background: var(--primary-subtle);
+  border-color: var(--primary-border);
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+/* 可缩放全量认知画布 */
+.constellation-stage {
+  position: relative;
+  width: 100%;
+  height: 440px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--background);
+  background-image: radial-gradient(circle, var(--border-subtle) 1px, transparent 1px);
+  background-size: 16px 16px;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+
+.constellation-stage[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.constellation-panel[data-variant="mobile"] .constellation-stage {
+  height: 380px;
+}
+
+.constellation-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.constellation-edge {
+  stroke: var(--border);
+  stroke-width: 1.25;
+  stroke-opacity: 0.6;
+  transition: stroke-opacity 150ms ease, stroke-width 150ms ease;
+}
+
+.constellation-edge[data-kind="skill-link"] {
+  stroke: var(--primary);
+  stroke-width: 1.75;
+  stroke-opacity: 0.52;
+}
+
+.constellation-edge[data-kind="mention"] {
+  stroke: var(--muted-foreground);
+  stroke-width: 1.4;
+  stroke-dasharray: 4 3;
+  stroke-opacity: 0.65;
+}
+
+.constellation-edge[data-kind="same-bucket"],
+.constellation-edge[data-kind="same-category"] {
+  stroke-dasharray: 2 3;
+  stroke-opacity: 0.4;
+}
+
+.constellation-edge[data-dim="true"] {
+  stroke-opacity: 0.14;
+}
+
+.constellation-edge[data-active="true"] {
+  stroke: var(--primary);
+  stroke-opacity: 0.92;
+  stroke-width: 2.3;
+  stroke-dasharray: none;
+}
+
+.constellation-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.constellation-node__circle {
+  fill: var(--card);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+  transition: stroke 140ms ease, fill 140ms ease, stroke-width 140ms ease;
+}
+
+.constellation-node[data-kind="skill"] .constellation-node__circle {
+  stroke: var(--primary-border);
+  fill: color-mix(in oklab, var(--card) 92%, var(--primary) 8%);
+}
+
+.constellation-node[data-neighbor="true"] .constellation-node__circle {
+  stroke: var(--primary);
+  stroke-width: 2;
+}
+
+.constellation-node[data-selected="true"] .constellation-node__circle {
+  stroke: var(--primary);
+  stroke-width: 2.6;
+  fill: var(--primary-subtle);
+}
+
+.constellation-node[data-dim="true"] {
+  opacity: 0.42;
+}
+
+.constellation-node__ring {
+  fill: none;
+  stroke: var(--primary);
+  stroke-width: 1.5;
+  stroke-opacity: 0.4;
+}
+
+.constellation-node__glyph {
+  fill: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+
+.constellation-node[data-kind="skill"] .constellation-node__glyph {
+  fill: var(--primary);
+}
+
+.constellation-node__uses-bg {
+  fill: var(--popover);
+  stroke: var(--primary-border);
+  stroke-width: 1;
+}
+
+.constellation-node__uses-text {
+  fill: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+
+.constellation-node__label-bg {
+  fill: color-mix(in oklab, var(--card) 94%, transparent);
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+}
+
+.constellation-node[data-selected="true"] .constellation-node__label-bg {
+  stroke: var(--primary-border);
+  fill: var(--popover);
+}
+
+.constellation-node__label-text {
+  fill: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+
+/* 浮动缩放控制器 */
+.constellation-zoom-bar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in oklab, var(--popover) 92%, transparent);
+  box-shadow: var(--shadow-card);
+}
+
+.constellation-zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.constellation-zoom-btn:hover {
+  background: var(--card-hover);
+}
+
+.constellation-panel[data-variant="mobile"] .constellation-zoom-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.constellation-zoom-readout {
+  min-width: 44px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.constellation-legend {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 4;
+  max-width: calc(100% - 16px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in oklab, var(--popover) 90%, transparent);
+  font-size: var(--fs-micro);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.constellation-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.constellation-legend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--muted-foreground);
+}
+
+.constellation-legend__dot[data-kind="skill"] {
+  background: var(--primary);
+}
+
+.constellation-legend__line {
+  width: 14px;
+  height: 2px;
+  background: var(--primary);
+}
+
+.constellation-legend__line[data-kind="mention"] {
+  background: transparent;
+  border-top: 2px dashed var(--muted-foreground);
+  height: 0;
+}
+
+/* 选中星点摘要预览条 */
+.constellation-preview-bar {
+  width: 100%;
+  min-height: 52px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: color-mix(in oklab, var(--card) 92%, var(--foreground) 8%);
+  color: var(--foreground);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.constellation-preview-bar:hover {
+  background: var(--card-hover);
+  border-color: var(--border-strong);
+}
+
+.constellation-preview-bar__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.constellation-preview-bar__title {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.constellation-preview-bar__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-caption);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.constellation-preview-bar__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  color: var(--primary);
+}
+
+/* 星图下方 Skill 列表卡片 */
+.constellation-skills-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.constellation-skills-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.constellation-skills-search {
+  position: relative;
+  flex: 1;
+  min-width: 180px;
+}
+
+.constellation-skills-search__icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+.constellation-skills-search__input {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 12px 4px 32px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--input);
+  color: var(--foreground);
+  font-size: var(--fs-aux);
+}
+
+.constellation-panel[data-variant="mobile"] .constellation-skills-search__input {
+  min-height: 44px;
+  font-size: var(--fs-body);
+}
+
+.constellation-skill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+
+.constellation-panel[data-variant="mobile"] .constellation-skill-grid {
+  grid-template-columns: 1fr;
+}
+
+.constellation-skill-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 4px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-subtle);
+  background: var(--background);
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.constellation-skill-row[data-selected="true"] {
+  border-color: var(--primary-border);
+  background: var(--primary-subtle);
+}
+
+.constellation-skill-row__main {
+  flex: 1;
+  min-width: 0;
+  min-height: 52px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: var(--radius-card);
+  background: transparent;
+  color: var(--foreground);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.constellation-skill-row__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.constellation-skill-row__name {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.constellation-skill-row__uses {
+  flex-shrink: 0;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--primary-border);
+  background: var(--primary-subtle);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.constellation-skill-row__desc {
+  font-size: var(--fs-caption);
+  color: var(--muted-foreground);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.constellation-skill-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-micro);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.constellation-skill-row__focus {
+  align-self: center;
+  flex-shrink: 0;
+  min-width: 32px;
+  min-height: 32px;
+  margin-right: 4px;
+  border: none;
+  border-radius: var(--radius-card);
+  background: transparent;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.constellation-skill-row__focus:hover {
+  background: var(--card-hover);
+  color: var(--foreground);
+}
+
+.constellation-panel[data-variant="mobile"] .constellation-skill-row__focus {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.constellation-footer-hint {
+  margin: 0;
+  padding: 0 8px;
+  font-size: var(--fs-caption);
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+.constellation-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  border: none;
+  border-radius: var(--radius-card);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.constellation-icon-btn:hover {
+  background: var(--card-hover);
+  color: var(--foreground);
+}
+
+.constellation-panel[data-variant="mobile"] .constellation-icon-btn {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.constellation-detail-relations {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-subtle);
+  background: var(--background);
+}
+
+/* 浅色皮肤对比度加固（>= 4.5:1 WCAG AA） */
+[data-theme="ayu-light"] .constellation-preview-bar__cta,
+[data-theme="ayu-light"] .constellation-header__icon,
+[data-theme="jade-white"] .constellation-preview-bar__cta,
+[data-theme="jade-white"] .constellation-header__icon,
+[data-theme="warm-paper"] .constellation-preview-bar__cta,
+[data-theme="warm-paper"] .constellation-header__icon,
+[data-appearance="light"] .constellation-preview-bar__cta,
+[data-appearance="light"] .constellation-header__icon {
+  color: color-mix(in oklab, var(--primary) 48%, var(--foreground));
+}
+
+[data-theme="ayu-light"] .constellation-node[data-kind="skill"] .constellation-node__glyph,
+[data-theme="jade-white"] .constellation-node[data-kind="skill"] .constellation-node__glyph,
+[data-theme="warm-paper"] .constellation-node[data-kind="skill"] .constellation-node__glyph,
+[data-appearance="light"] .constellation-node[data-kind="skill"] .constellation-node__glyph {
+  fill: color-mix(in oklab, var(--primary) 48%, var(--foreground));
+}
+
+/* 移动端大号技能/记忆详情窗：显式避让非对称安全区并强制 >=44px 触控热区（脱离 Portal 父作用域限制） */
+[data-constellation-detail-dialog="true"][data-variant="mobile"] .constellation-icon-btn,
+[data-constellation-detail-dialog="true"][data-variant="mobile"] button:not([role="switch"]) {
+  height: auto;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+[data-constellation-detail-dialog="true"][data-variant="mobile"],
+.m-shell [data-constellation-detail-dialog="true"],
+.m-shell [data-skill-detail-dialog="true"] {
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  --tw-translate-x: -50%;
+  --tw-translate-y: 0px;
+  translate: -50% 0;
+  transform: none;
+  width: calc(100vw - 16px);
+  max-width: calc(100vw - 16px);
+  height: calc(100dvh - env(safe-area-inset-top, 0px) - var(--m-bottom-inset, env(safe-area-inset-bottom, 0px)) - 24px);
+  max-height: calc(100dvh - env(safe-area-inset-top, 0px) - var(--m-bottom-inset, env(safe-area-inset-bottom, 0px)) - 24px);
+}

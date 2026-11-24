@@ -744,27 +744,40 @@ test('MobileShellCoordinator 文件树、认知星图与触觉反馈新钩子全
         }
       },
       downloadFile: () => extCalls.push(['downloadFile']),
-      loadLearningGraph: (force) => extCalls.push(['loadLearningGraph', force]),
-      loadLearningDetail: (id) => extCalls.push(['loadLearningDetail', id]),
-      editLearningNode: async (id, c) => ({ ok: true, id, c }),
-      deleteLearningNode: async (id) => ({ ok: true, id }),
+      loadLearningGraph: (opts, explicitProf) => extCalls.push(['loadLearningGraph', opts, explicitProf]),
+      loadLearningDetail: (id, prof) => extCalls.push(['loadLearningDetail', id, prof]),
+      editLearningNode: async (id, c, prof) => ({ ok: true, id, c, prof }),
+      deleteLearningNode: async (id, prof) => ({ ok: true, id, prof }),
+      createSettingsActions: () => ({
+        onClose() {},
+        onSelectBotSettle: (id) => extCalls.push(['baseSettle', id]),
+      }),
       state: {
+        botManagementActiveBotId: 'reviewer',
         activeFocus: { type: 'session', sessionId: 's-1' },
-        sessions: [{ id: 's-1', title: 'S1', cwd: '/opt/hermes/workspace' }],
+        sessions: [{ id: 's-1', title: 'S1', botName: 'arch', cwd: '/opt/hermes/workspace' }],
       },
     });
     const acts = coordinator.getActions();
     assert.equal(coordinator.buildSnapshot().workspaceRootName, 'workspace');
+    assert.equal(coordinator.buildSnapshot().inspectorBotProfile, 'arch');
+    assert.equal(coordinator.buildSnapshot().inspectorBotLabel, '架构老王');
 
-    // Inspector 切页懒加载: files & memory(非群聊) & memory(群聊跳过)
+    // Inspector 切页懒加载: files & memory(按激活会话所属 Bot) & memory(群聊跳过) & Bot Hub memory(按目标 Bot)
     acts.onSelectInspectorTab('files');
     acts.onSelectInspectorTab('memory');
     acts.onSelectPane('inspector');
     state.activeFocus = { type: 'group', roomId: 'g-1' };
     acts.onSelectInspectorTab('memory');
     acts.onSelectBotSubpage('memory');
+    acts.settingsActions.onSelectBotSettle('reviewer');
     assert.equal(extCalls.filter(([k]) => k === 'loadFileTree').length, 1);
-    assert.equal(extCalls.filter(([k]) => k === 'loadLearningGraph').length, 3);
+    const loadGraphCalls = extCalls.filter(([k]) => k === 'loadLearningGraph');
+    assert.equal(loadGraphCalls.length, 4);
+    assert.deepEqual(loadGraphCalls[0][1], { profile: 'arch', force: false });
+    assert.deepEqual(loadGraphCalls[1][1], { profile: 'arch', force: false });
+    assert.deepEqual(loadGraphCalls[2][1], { profile: 'reviewer', force: false });
+    assert.deepEqual(loadGraphCalls[3][1], { profile: 'reviewer', force: false });
 
     // FileTree actions + openWorkspaceFile (exact / backslash / root-only / blank / missing 不回退)
     acts.onSelectInspectorTab('files');
@@ -790,10 +803,89 @@ test('MobileShellCoordinator 文件树、认知星图与触觉反馈新钩子全
     assert.equal(snap.inspectorReaderItem?.title, 'exact.ts');
 
     acts.onDownloadInspectorFile();
+    acts.onEnsureLearning();
+    acts.onRefreshLearning('arch');
+    acts.onLoadLearningDetail('memory:1', 'arch');
+    assert.deepEqual(await acts.onEditLearningNode('memory:1', 'new', 'arch'), {
+      ok: true,
+      id: 'memory:1',
+      c: 'new',
+      prof: 'arch',
+    });
+    assert.deepEqual(await acts.onDeleteLearningNode('memory:1', 'arch'), {
+      ok: true,
+      id: 'memory:1',
+      prof: 'arch',
+    });
+    const allGraphCalls = extCalls.filter(([k]) => k === 'loadLearningGraph');
+    // onSelectBotSettle 之后位于 botSubpage='memory' -> onEnsureLearning() 隐式解析 activeBot = 'reviewer'
+    assert.deepEqual(allGraphCalls.at(-2)?.[1], { profile: 'reviewer', force: false });
+    assert.deepEqual(
+      allGraphCalls.at(-1)?.[1],
+      { profile: 'arch', force: true },
+    );
+    assert.deepEqual(
+      extCalls.filter(([k]) => k === 'loadLearningDetail').at(-1),
+      ['loadLearningDetail', 'memory:1', 'arch'],
+    );
+
+    // 未传显式 profile 时，resolveActiveLearningProfile 按当前所在面板（Bot Hub memory 子页 vs Inspector）自动解析归属
+    state.activeFocus = { type: 'bot', botName: 'arch' };
+    state.botManagementActiveBotId = 'reviewer';
+    acts.onSelectBotSubpage('memory');
     acts.onRefreshLearning();
-    acts.onLoadLearningDetail('memory:1');
-    assert.deepEqual(await acts.onEditLearningNode('memory:1', 'new'), { ok: true, id: 'memory:1', c: 'new' });
-    assert.deepEqual(await acts.onDeleteLearningNode('memory:1'), { ok: true, id: 'memory:1' });
+    acts.onLoadLearningDetail('skill:rev-1');
+    assert.deepEqual(extCalls.filter(([k]) => k === 'loadLearningGraph').at(-1)?.[1], {
+      profile: 'reviewer',
+      force: true,
+    });
+    assert.deepEqual(extCalls.filter(([k]) => k === 'loadLearningDetail').at(-1), [
+      'loadLearningDetail',
+      'skill:rev-1',
+      'reviewer',
+    ]);
+    acts.onSelectBotSubpage(null);
+    acts.onRefreshLearning();
+    acts.onLoadLearningDetail('memory:arch-2');
+    assert.deepEqual(extCalls.filter(([k]) => k === 'loadLearningGraph').at(-1)?.[1], {
+      profile: 'arch',
+      force: true,
+    });
+    assert.deepEqual(extCalls.filter(([k]) => k === 'loadLearningDetail').at(-1), [
+      'loadLearningDetail',
+      'memory:arch-2',
+      'arch',
+    ]);
+
+    // activeFocus / profileName 全部缺省时的回落 'default' 与 state.profileName / isDefault 回落及 onSelectBotSettle 可选链
+    state.activeFocus = { type: 'bot', botName: '' };
+    state.profileName = '';
+    acts.onEnsureLearning();
+    state.activeFocus = { type: 'session', sessionId: 'not-found' };
+    acts.onEnsureLearning();
+    state.botManagementActiveBotId = '';
+    state.profiles = [{ name: 'main-def', isDefault: true }];
+    acts.onSelectBotSubpage('memory');
+    assert.ok(extCalls.filter(([k]) => k === 'loadLearningGraph').some(([, arg]) => arg?.profile === 'main-def'));
+    state.profiles = [{ name: '', isDefault: true }];
+    state.profileName = 'profile-fallback';
+    acts.onSelectBotSubpage('memory');
+    state.profileName = '';
+    acts.onSelectBotSubpage('memory');
+    acts.settingsActions.onSelectBotSettle('solo-mem');
+    acts.onSelectBotSubpage('basic');
+    acts.settingsActions.onSelectBotSettle('solo');
+    assert.ok(extCalls.some(([k, v]) => k === 'baseSettle' && v === 'solo'));
+    assert.ok(extCalls.filter(([k]) => k === 'loadLearningGraph').some(([, arg]) => arg?.profile === 'profile-fallback'));
+
+    // baseSettingsActions 不含 onSelectBotSettle 且 deps 不含 loadLearningGraph 时的 ?. 可选调用分支
+    const hNoSettle = createHarness({
+      createSettingsActions: () => ({ onClose() {} }),
+      loadLearningGraph: undefined,
+    });
+    const noSettleActs = hNoSettle.coordinator.getActions();
+    noSettleActs.onSelectBotSubpage('memory');
+    noSettleActs.settingsActions.onSelectBotSettle('arch');
 
     // Haptic fallback to window.hermesMobile + injected triggerHapticSelection
     acts.onHapticSelection();
@@ -835,6 +927,14 @@ test('mobileShellCoordinator: onActionDisband 回退 home 屏与异常处理', a
   acts.onSelectGroup('grp-1');
   assert.equal(h.coordinator.getActivePane(), 'stage');
   assert.equal(h.state.activeFocus.type, 'group');
+  assert.deepEqual(h.coordinator.getActiveViewContext(), {
+    isMobile: true,
+    mobilePane: 'stage',
+    homeTab: 'chats',
+    botSubpage: null,
+    settingsOpen: false,
+    settingsSubpage: null,
+  });
 
   acts.onActionDisband({ kind: 'group', id: 'grp-1', title: '群聊1' });
   await new Promise((r) => setTimeout(r, 10));

@@ -53,6 +53,7 @@ import { extractPathBasename, formatFileSize, isImageExtension } from '@hermes-f
 import type { LeftRailController } from '../events/leftRailController.js';
 import { openBrowserAttachmentPicker } from '../events/inputAttachmentPicker.js';
 import { resolveActiveWorkspaceCwd, type AppState } from '../state/appState.js';
+import type { ActiveViewContext } from '../services/foregroundSyncCoordinator.js';
 
 export const MOBILE_SECTIONS_STORAGE_KEY = 'hermes_flux_mobile_sections';
 export const MOBILE_APPEARANCE_STORAGE_KEY = 'hermes_flux_mobile_appearance';
@@ -102,14 +103,25 @@ export interface MobileShellCoordinatorDeps {
   setFileTreeFilter?: (query: string) => void;
   openWorkspaceFile?: (filePath: string) => Promise<void> | void;
   downloadFile?: (filePath?: string) => Promise<void> | void;
-  loadLearningGraph?: (force?: boolean) => Promise<void> | void;
-  loadLearningDetail?: (id: string) => Promise<void> | void;
-  editLearningNode?: (id: string, content: string) => Promise<{ ok: boolean; message?: string }>;
-  deleteLearningNode?: (id: string) => Promise<{ ok: boolean; message?: string }>;
+  loadLearningGraph?: (
+    forceOrOptions?: boolean | { profile?: string; force?: boolean },
+    profile?: string,
+  ) => Promise<void> | void;
+  loadLearningDetail?: (id: string, profile?: string) => Promise<void> | void;
+  editLearningNode?: (
+    id: string,
+    content: string,
+    profile?: string,
+  ) => Promise<{ ok: boolean; message?: string }>;
+  deleteLearningNode?: (
+    id: string,
+    profile?: string,
+  ) => Promise<{ ok: boolean; message?: string }>;
   triggerHapticSelection?: () => void;
   syncReactMessageList?: (force?: boolean) => void;
   syncAgentPresenceHost?: () => void;
   syncAgentPresence?: () => void;
+  onRetryConnect?: () => Promise<void> | void;
   syncStatusBarAppearance?: (appearance: 'dark' | 'light') => void;
   getSystemPrefersDark?: () => boolean;
   storage?: MobileStorageLike;
@@ -127,6 +139,7 @@ export interface MobileShellCoordinator {
   getActions(): MobileWorkspaceActions;
   openSubagentDetail(payload: { messageId: string; tools: ConversationToolVM[] }): void;
   getActivePane(): MobilePaneId;
+  getActiveViewContext(): ActiveViewContext;
   dispose(): void;
 }
 
@@ -236,6 +249,24 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
 
   syncSkinAndStatusBar(false);
 
+  const resolveInspectorBotProfile = (state: AppState): string => {
+    const focus = state.activeFocus;
+    if (focus.type === 'bot') {
+      return focus.botName || state.profileName || 'default';
+    }
+    if (focus.type === 'session') {
+      const targetSession = state.sessions.find((s) => s.id === focus.sessionId);
+      if (targetSession?.botName) return targetSession.botName;
+    }
+    return state.profileName || 'default';
+  };
+
+  const resolveBotHubTargetProfile = (state: AppState): string =>
+    state.botManagementActiveBotId ||
+    state.profiles.find((p) => p.isDefault)?.name ||
+    state.profileName ||
+    'default';
+
   const resolveInspectorGroupMembers = (state: AppState): Array<{ name: string; displayName: string; avatar?: string }> => {
     const focus = state.activeFocus;
     if (focus.type !== 'group') return [];
@@ -294,6 +325,10 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     const activeProfile =
       allProfiles.find((p) => p.name.toLowerCase() === (state.profileName || 'default').toLowerCase()) ||
       allProfiles.find((p) => p.isDefault);
+    const inspectorBotProfile = resolveInspectorBotProfile(state);
+    const inspectorMatched = allProfiles.find(
+      (p) => p.name.toLowerCase() === inspectorBotProfile.toLowerCase(),
+    );
 
     const modelDetails: MobileWorkspaceSnapshot['modelDetails'] =
       Array.isArray(state.modelCatalog) && state.modelCatalog.length > 0
@@ -320,6 +355,9 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       locale: state.lang === 'en' ? 'en' : 'zh',
       gatewayConnected: state.gatewayConnected,
       gatewayConnecting: state.gatewayConnecting,
+      connectionPhase: state.connectionPhase,
+      connectionReconnectAttempt: state.connectionReconnectAttempt,
+      connectionAuthError: state.connectionAuthError,
       homeModel,
       homeTab,
       allProfiles,
@@ -342,6 +380,8 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       activeSessionId: state.activeSessionId,
       activeBotName: state.profileName || 'default',
       activeBotDisplayName: activeProfile?.displayName || state.profileName || 'default',
+      inspectorBotProfile,
+      inspectorBotLabel: inspectorMatched?.displayName || inspectorBotProfile,
       isStreaming: state.isStreaming,
       messagesCount: state.messages.length,
       selectedModel: state.selectedModel,
@@ -391,12 +431,24 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
   };
 
   const ensureInspectorTabData = (tab: MobileInspectorTab): void => {
+    const state = deps.getState();
     if (tab === 'files') {
       void deps.loadFileTree?.(false);
-    } else if (tab === 'memory' && deps.getState().activeFocus.type !== 'group') {
-      void deps.loadLearningGraph?.(false);
+    } else if (tab === 'memory' && state.activeFocus.type !== 'group') {
+      void deps.loadLearningGraph?.({ profile: resolveInspectorBotProfile(state), force: false });
     }
   };
+
+  const resolveActiveLearningProfile = (explicitProfile?: string): string => {
+    const trimmed = explicitProfile?.trim();
+    if (trimmed) return trimmed;
+    const state = deps.getState();
+    return botSubpage === 'memory'
+      ? resolveBotHubTargetProfile(state)
+      : resolveInspectorBotProfile(state);
+  };
+
+  const baseSettingsActions = deps.createSettingsActions();
 
   const actions: MobileWorkspaceActions = {
     onSelectPane: (pane) => {
@@ -424,7 +476,10 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
         ensureBotHubData();
       }
       if (subpage === 'memory') {
-        void deps.loadLearningGraph?.(false);
+        void deps.loadLearningGraph?.({
+          profile: resolveBotHubTargetProfile(deps.getState()),
+          force: false,
+        });
       }
       deps.render();
     },
@@ -725,14 +780,21 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       if (!inspectorReaderItem?.filePath) return;
       void deps.downloadFile?.(inspectorReaderItem.filePath);
     },
-    onRefreshLearning: () => {
-      void deps.loadLearningGraph?.(true);
+    onEnsureLearning: (profile) => {
+      void deps.loadLearningGraph?.({ profile: resolveActiveLearningProfile(profile), force: false });
     },
-    onLoadLearningDetail: (id) => {
-      void deps.loadLearningDetail?.(id);
+    onRefreshLearning: (profile) => {
+      void deps.loadLearningGraph?.({ profile: resolveActiveLearningProfile(profile), force: true });
     },
-    onEditLearningNode: deps.editLearningNode,
-    onDeleteLearningNode: deps.deleteLearningNode,
+    onLoadLearningDetail: (id, profile) => {
+      void deps.loadLearningDetail?.(id, resolveActiveLearningProfile(profile));
+    },
+    onEditLearningNode: deps.editLearningNode
+      ? (id, content, profile) => deps.editLearningNode!(id, content, resolveActiveLearningProfile(profile))
+      : undefined,
+    onDeleteLearningNode: deps.deleteLearningNode
+      ? (id, profile) => deps.deleteLearningNode!(id, resolveActiveLearningProfile(profile))
+      : undefined,
     onHapticSelection: () => {
       if (deps.triggerHapticSelection) {
         deps.triggerHapticSelection();
@@ -777,7 +839,16 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       syncSkinAndStatusBar(true);
       deps.render();
     },
-    settingsActions: deps.createSettingsActions(),
+    onRetryConnect: deps.onRetryConnect,
+    settingsActions: {
+      ...baseSettingsActions,
+      onSelectBotSettle: (botId) => {
+        baseSettingsActions.onSelectBotSettle?.(botId);
+        if (botSubpage === 'memory') {
+          void deps.loadLearningGraph?.({ profile: botId, force: false });
+        }
+      },
+    },
   };
 
   function renderMobileShell(host: HTMLElement): void {
@@ -807,6 +878,14 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     getActions: () => actions,
     openSubagentDetail,
     getActivePane: () => activePane,
+    getActiveViewContext: () => ({
+      isMobile: true,
+      mobilePane: activePane,
+      homeTab,
+      botSubpage,
+      settingsOpen: deps.getState().isSettingsOpen,
+      settingsSubpage,
+    }),
     dispose,
   };
 }

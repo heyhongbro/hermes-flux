@@ -31,6 +31,36 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * 带确定性 AbortController 超时回收的认证请求包装器。
+ *
+ * 【设计意图 (Why)】
+ *   防止冷启动/弱网恢复期 `gateway:authenticate` 的 HTTP 往返在底层 socket 半开时无限挂起，
+ *   卡住冷启动退避调度。
+ *
+ * 【约束与规则 (Rules)】
+ *   - 显式 `AbortController + setTimeout`，`finally` 必清定时器，杜绝定时器泄漏。
+ */
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit | undefined,
+  timeoutMs: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await fetchImpl(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function getGatewayOrigin(rawUrl: string): string {
   try {
     return new URL(rawUrl).origin.toLowerCase();
@@ -192,11 +222,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       const start = Date.now();
       try {
         // Dashboard flow: GET /api/status
-        const statusRes = await fetch(`${baseUrl}/api/status`, {
-          headers: { Accept: 'application/json' },
-        });
+        const statusRes = await fetchWithTimeout(
+          `${baseUrl}/api/status`,
+          {
+            headers: { Accept: 'application/json' },
+          },
+          10_000,
+        );
         const latency = Date.now() - start;
         if (!statusRes.ok) {
+          await cancelResponseBody(statusRes);
           return { ok: false, message: `服务返回异常 HTTP ${statusRes.status}`, latency };
         }
 
@@ -225,26 +260,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         }
 
         // Password login in Node environment
-        const loginRes = await fetch(`${baseUrl}/auth/password-login`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            Origin: baseUrl,
+        const loginRes = await fetchWithTimeout(
+          `${baseUrl}/auth/password-login`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              Origin: baseUrl,
+            },
+            body: JSON.stringify({
+              username: options.username,
+              password: options.password,
+              provider: 'basic',
+            }),
           },
-          body: JSON.stringify({
-            username: options.username,
-            password: options.password,
-            provider: 'basic',
-          }),
-        });
+          10_000,
+        );
 
         if (loginRes.status === 401) {
+          await cancelResponseBody(loginRes);
           activeGatewayCookies = '';
           activeGatewayOrigin = '';
           return { ok: false, message: '认证失败: 用户名或密码错误 (HTTP 401)', latency };
         }
         if (!loginRes.ok) {
+          await cancelResponseBody(loginRes);
           activeGatewayCookies = '';
           activeGatewayOrigin = '';
           return { ok: false, message: `登录接口异常 HTTP ${loginRes.status}`, latency };
@@ -252,20 +293,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
         // 仅保留 name=value 段，避免把 Path/HttpOnly/SameSite 属性带入后续 Cookie 请求头
         const cookies = extractCookieHeader(loginRes.headers);
+        await cancelResponseBody(loginRes);
         activeGatewayCookies = cookies;
         activeGatewayOrigin = cookies ? getGatewayOrigin(baseUrl) : '';
 
         // Mint WS Ticket
-        const ticketRes = await fetch(`${baseUrl}/api/auth/ws-ticket`, {
-          method: 'POST',
-          headers: {
-            Accept: 'application/json',
-            Cookie: cookies,
-            Origin: baseUrl,
+        const ticketRes = await fetchWithTimeout(
+          `${baseUrl}/api/auth/ws-ticket`,
+          {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              Cookie: cookies,
+              Origin: baseUrl,
+            },
           },
-        });
+          10_000,
+        );
 
         if (!ticketRes.ok) {
+          await cancelResponseBody(ticketRes);
           return {
             ok: false,
             message: `获取 WebSocket 凭证失败 HTTP ${ticketRes.status}`,

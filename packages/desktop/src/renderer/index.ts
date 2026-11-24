@@ -54,6 +54,7 @@ import { createInputDockController } from './events/inputDockController.js';
 import { type AppState, createInitialState, resolveActiveViewportKey } from './state/appState.js';
 import { createTurnExecutionService } from './services/turnExecutionService.js';
 import { createGatewayEventDispatcher } from './gateway/gatewayEventDispatcher.js';
+import { createActiveViewSyncAdapters, createForegroundSyncCoordinator } from './services/foregroundSyncCoordinator.js';
 type GatewayAuthResponse = { ok: boolean; message: string; latency: number };
 import { createProjectOperationService } from './services/projectOperationService.js';
 import { createGroupOperationService } from './services/groupOperationService.js';
@@ -1131,6 +1132,7 @@ const statusIntegration = createStatusIntegration({
   syncReactMessageList: (f) => renderCoordinator.syncReactMessageList(f), syncRightPod: () => renderCoordinator.syncRightPod(),
   syncTitlebar: () => renderCoordinator.syncTitlebar(), openFilePreview: (p) => handleOpenFilePreview(p),
   syncComposerHeight: (el) => inputDockController.syncComposerHeight(el), setTimedDockNotice: (m, d) => setTimedDockNotice(m, d),
+  onOpenConstellation: (profileName) => settingsDataService.openBotSettings(profileName, { tab: 'constellation' }),
   render: () => render(), t,
 });
 
@@ -1158,6 +1160,7 @@ const renderCoordinator = createRenderCoordinator({
   isSessionEnterPending: () => streamViewportManager.isSessionEnterPending(), settleSessionEnter: (probe, sessionId, phase, count, authoritativeReady) => streamViewportManager.settleSessionEnter(probe, sessionId, phase, count, authoritativeReady), reassertActivePin: () => streamViewportManager?.reassertActivePin(),
   markProgrammaticScroll: (stream) => markProgrammaticScroll(stream),
   syncComposerPoppers: () => syncComposerPoppers(), syncComposerBadges: () => syncComposerBadges(), logRender,
+  onRetryConnect: gatewayEventDispatcher.retryNow,
 });
 
 const lockAverageRowHeight = () => { const r = messageWindowManager.lockAverageRowHeight(); syncWindowLocalState(); return r; };
@@ -1266,6 +1269,10 @@ const ensureGroupTurnClock = (r: string | null, isRunning: boolean) => presenceC
 const buildAgentPresenceSnapshot = (): AgentPresenceSnapshot => presenceController.getSnapshot();
 const getAgentPresenceSnapshot = (): AgentPresenceSnapshot => presenceController.getSnapshot();
 
+const learningService = createLearningService({
+  getState: () => state, render: () => render(), getGatewayClient: () => gatewayClient, getDesktopApi: () => desktopApi,
+  getCurrentTicket: () => currentTicket ?? null, getEffectiveUrl: (url) => getEffectiveUrl(url ?? state.gatewayUrl), t, describeRpcError,
+});
 const settingsDataService = createSettingsDataService({
   getState: () => state, getGatewayClient: () => gatewayClient, getDesktopApi: () => desktopApi,
   getCurrentTicket: () => currentTicket ?? null, getEffectiveUrl: (url) => getEffectiveUrl(url),
@@ -1278,14 +1285,9 @@ const settingsDataService = createSettingsDataService({
   getActivityIndicatorVariant: () => activityIndicatorVariant, setActivityIndicatorVariant: (v) => { activityIndicatorVariant = v; },
   saveActivityIndicatorVariant: (v) => saveActivityIndicatorVariant(v), resolveActivityIndicatorVariant: (v) => resolveActivityIndicatorVariant(v),
   resolveSkinId: (theme) => resolveSkinId(theme), writePresenceLayout: (layout) => writePresenceLayout(layout === 'dock' ? 'dock' : 'stage'),
-  onPresenceLayoutChanged: () => {
-    agentPresenceHost = null; lastAgentPresenceFingerprint = ''; presenceController.resetPresenceHost();
-    scrollEndController.syncHost();
-  },
-  profileAvatarCache, persistAvatarCache: () => persistAvatarCache(),
-  persistAgentsToCache: (profiles) => persistAgentsToCache(profiles),
+  onPresenceLayoutChanged: () => { agentPresenceHost = null; lastAgentPresenceFingerprint = ''; presenceController.resetPresenceHost(); scrollEndController.syncHost(); },
+  profileAvatarCache, persistAvatarCache: () => persistAvatarCache(), persistAgentsToCache: (profiles) => persistAgentsToCache(profiles), learningService,
 });
-
 const scopedProfileName = () => settingsDataService.scopedProfileName();
 const subscriptionProfileName = () => settingsDataService.subscriptionProfileName();
 const botRoster = () => settingsDataService.botRoster();
@@ -1296,23 +1298,14 @@ const getSettingsSnapshot = () => settingsDataService.getSettingsSnapshot();
 const ensureSettingsSectionData = (section: SettingsSectionId, force = false) => settingsDataService.ensureSettingsSectionData(section, force);
 const createSettingsActions = (): SettingsActions => settingsDataService.createSettingsActions();
 const syncReactSettings = () => settingsDataService.syncReactSettings();
-const syncLocale = () => {
-  setLocale(state.lang === 'en' ? 'en-US' : 'zh-CN');
-  scrollEndController.syncHost();
-};
+const syncLocale = () => { setLocale(state.lang === 'en' ? 'en-US' : 'zh-CN'); scrollEndController.syncHost(); };
 const mountReactShellComponents = () => renderCoordinator.mountReactShellComponents();
 const render = () => renderCoordinator.render();
 const fileViewerService = createFileViewerService({
-  getState: renderCoordinator.getState, render, getDesktopApi: () => desktopApi,
-  getGatewayClient: () => gatewayClient, safeCopyText, t,
-  onBackFromFiles: () => statusIntegration.onBackFromFiles(),
-  onInspectorStateChange: () => statusIntegration.onInspectorStateChange(),
+  getState: renderCoordinator.getState, render, getDesktopApi: () => desktopApi, getGatewayClient: () => gatewayClient, safeCopyText, t,
+  onBackFromFiles: () => statusIntegration.onBackFromFiles(), onInspectorStateChange: () => statusIntegration.onInspectorStateChange(),
 });
 const handleOpenFilePreview = fileViewerService.handleOpenFilePreview;
-const learningService = createLearningService({
-  getState: renderCoordinator.getState, render, getGatewayClient: () => gatewayClient,
-  t, describeRpcError,
-});
 const mobileShellCoordinator = createMobileShellCoordinator({
   getState: renderCoordinator.getState, render, leftRailController, resolveAgentAvatar,
   selectSession, openBotChat, openGroupRoom, createNewSession: async (opts) => { await createNewSession(opts); },
@@ -1328,8 +1321,24 @@ const mobileShellCoordinator = createMobileShellCoordinator({
   editLearningNode: learningService.editLearningNode, deleteLearningNode: learningService.deleteLearningNode,
   getSettingsSnapshot, createSettingsActions, ensureSettingsSectionData,
   copyText: safeCopyText, syncReactMessageList, syncAgentPresenceHost, syncAgentPresence,
+  onRetryConnect: gatewayEventDispatcher.retryNow,
 });
 renderCoordinator.setMobileShellCoordinator(mobileShellCoordinator);
+const foregroundSyncCoordinator = createForegroundSyncCoordinator({
+  getState: renderCoordinator.getState, render, fetchProfiles, fetchSessions, fetchGroupRooms,
+  prefetchSlashCatalog: inputCompletion.prefetchSlashCatalog, fetchModelOptions, fetchProjects,
+  refreshActiveSession: messageLoadingService.refreshActiveSession.bind(messageLoadingService),
+  refreshGroupRoomLog, openBotChat,
+  ...createActiveViewSyncAdapters({
+    getState: renderCoordinator.getState, isMobileShellActive: renderCoordinator.isMobileShellActive,
+    getMobileViewContext: mobileShellCoordinator.getActiveViewContext, settingsDataService,
+    fileViewerService, groupPollerManager,
+    getGroupRoomLogs: (roomId) => groupRoomStore.getLogs(roomId),
+    hostedRoomIds, activeRunningGroupRoomIds,
+  }),
+});
+gatewayEventDispatcher.setSyncHooks({ onConnectedSync: foregroundSyncCoordinator.syncOnConnected, onResumeAliveSync: foregroundSyncCoordinator.syncOnResumeAlive });
+messageLoadingService.setReconnectHooks({ onReconnectStillStreaming: gatewayEventDispatcher.resumeReconnectStreaming, onReconnectStreamFinished: gatewayEventDispatcher.finishReconnectStreaming, onForceSyncMessageList: syncReactMessageList });
 if (typeof window !== 'undefined') {
   window.__fluxRender = render;
   window.__fluxConnect = connect;
@@ -1458,6 +1467,8 @@ const appBootstrap = createAppBootstrap({
   getState: () => state, render: () => render(), getDesktopApi: () => desktopApi,
   getGatewayClient: () => gatewayClient, connect: () => { void connect(); },
   restoreCacheToState: () => restoreCacheToState(), refreshProfilesFromServer: () => refreshProfilesFromServer(),
+  onWakeOrRetry: gatewayEventDispatcher.wakeOrRetry, onAppPause: foregroundSyncCoordinator.onAppPause,
+  onNetworkOffline: gatewayEventDispatcher.markNetworkOffline,
   syncSystemWindow: () => titlebarController.syncSystemWindow(), fontPreferences,
   logBoot: (info) => logApp.info('renderer boot', { level: getLogLevel(), ...info }),
   logLayoutShift: (info) => logScroll.debug('layout shift', { ...info, streaming: state.isStreaming }),
@@ -1472,26 +1483,6 @@ async function init(): Promise<void> {
   document.documentElement.style.setProperty('--rail-w-left', `${restoredLeft}px`);
   localStorage.setItem('hermes_flux_rail_w_left', String(restoredLeft));
   await appBootstrap.init();
-
-  let lastFocusRefreshAt = 0;
-  window.addEventListener('focus', () => {
-    const now = Date.now();
-    if (now - lastFocusRefreshAt < 5000) return;
-    lastFocusRefreshAt = now;
-    if (gatewayClient && !state.isStreaming) void refreshProfilesFromServer();
-  });
-
-  const syncPageHiddenAttr = (): void => {
-    if (document.visibilityState === 'hidden') document.documentElement.dataset.pageHidden = 'true';
-    else delete document.documentElement.dataset.pageHidden;
-  };
-  syncPageHiddenAttr();
-
-  document.addEventListener('visibilitychange', () => {
-    document.documentElement.dataset.appHidden = String(document.visibilityState === 'hidden');
-    syncPageHiddenAttr();
-    if (document.visibilityState === 'visible') void refreshProfilesFromServer();
-  });
 }
 
 init();

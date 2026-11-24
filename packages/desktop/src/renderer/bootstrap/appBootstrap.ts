@@ -361,6 +361,9 @@ export interface AppBootstrapDeps {
   connect: () => void;
   restoreCacheToState: () => Promise<void>;
   refreshProfilesFromServer: () => Promise<void>;
+  onWakeOrRetry?: (reason: string) => Promise<unknown> | void;
+  onAppPause?: () => void;
+  onNetworkOffline?: () => void;
   syncSystemWindow: () => Promise<void>;
   fontPreferences: FontPreferences;
   logBoot: (info: Record<string, unknown>) => void;
@@ -387,6 +390,9 @@ export function createAppBootstrap(deps: AppBootstrapDeps): AppBootstrap {
     connect,
     restoreCacheToState,
     refreshProfilesFromServer,
+    onWakeOrRetry,
+    onAppPause,
+    onNetworkOffline,
     syncSystemWindow,
     fontPreferences,
     logBoot,
@@ -398,18 +404,34 @@ export function createAppBootstrap(deps: AppBootstrapDeps): AppBootstrap {
       return () => {};
     }
 
-    let lastFocusRefreshAt = 0;
-    const onFocus = () => {
-      const now = Date.now();
-      if (now - lastFocusRefreshAt < 5000) return;
-      lastFocusRefreshAt = now;
+    let wakeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const invokeWake = (reason: string): void => {
+      if (onWakeOrRetry) {
+        void onWakeOrRetry(reason);
+        return;
+      }
       const state = getState();
       const gatewayClient = getGatewayClient();
       if (gatewayClient && !state.isStreaming) {
         void refreshProfilesFromServer();
       }
     };
-    window.addEventListener('focus', onFocus);
+
+    const triggerForegroundCheck = (reason: string, opts?: { immediate?: boolean }): void => {
+      if (wakeDebounceTimer) {
+        clearTimeout(wakeDebounceTimer);
+        wakeDebounceTimer = null;
+      }
+      if (opts?.immediate) {
+        invokeWake(reason);
+        return;
+      }
+      wakeDebounceTimer = setTimeout(() => {
+        wakeDebounceTimer = null;
+        invokeWake(reason);
+      }, 250);
+      wakeDebounceTimer.unref?.();
+    };
 
     const syncPageHiddenAttr = (): void => {
       if (document.visibilityState === 'hidden') {
@@ -420,16 +442,84 @@ export function createAppBootstrap(deps: AppBootstrapDeps): AppBootstrap {
     };
     syncPageHiddenAttr();
 
-    const onVisibilityChange = () => {
+    const onFocus = (): void => {
+      triggerForegroundCheck('focus');
+    };
+    const onVisibilityChange = (): void => {
       document.documentElement.dataset.appHidden = String(document.visibilityState === 'hidden');
       syncPageHiddenAttr();
-      if (document.visibilityState === 'visible') void refreshProfilesFromServer();
+      if (document.visibilityState === 'visible') {
+        triggerForegroundCheck('visibility');
+      } else {
+        onAppPause?.();
+      }
     };
+    const onPageShow = (event: PageTransitionEvent): void => {
+      if (event.persisted) {
+        triggerForegroundCheck('pageshow', { immediate: true });
+      }
+    };
+    const onOnline = (): void => {
+      triggerForegroundCheck('online', { immediate: true });
+    };
+    const onOffline = (): void => {
+      onNetworkOffline?.();
+    };
+    const onMobileResume = (): void => {
+      triggerForegroundCheck('mobile-resume', { immediate: true });
+    };
+    const onMobilePause = (): void => {
+      onAppPause?.();
+    };
+    const onMobileNetworkChange = (event: Event): void => {
+      const detail = (event as CustomEvent<{ connected?: boolean }>).detail;
+      if (detail?.connected) {
+        triggerForegroundCheck('mobile-network-change', { immediate: true });
+      } else {
+        onNetworkOffline?.();
+      }
+    };
+    const onNetInfoChange = (): void => {
+      triggerForegroundCheck('netinfo-change', { immediate: true });
+    };
+
+    window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pageshow', onPageShow);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('hermes-mobile-resume', onMobileResume);
+    window.addEventListener('hermes-mobile-pause', onMobilePause);
+    window.addEventListener('hermes-mobile-network-change', onMobileNetworkChange);
+
+    const netConn = (typeof navigator !== 'undefined'
+      ? (navigator as { connection?: { addEventListener?: (t: string, fn: () => void) => void; removeEventListener?: (t: string, fn: () => void) => void } }).connection
+      : undefined);
+    netConn?.addEventListener?.('change', onNetInfoChange);
+
+    const offPower = getDesktopApi()?.onPowerEvent?.((kind) => {
+      if (kind === 'suspend') {
+        onAppPause?.();
+      } else {
+        triggerForegroundCheck(`power-${kind}`, { immediate: true });
+      }
+    });
 
     return () => {
+      if (wakeDebounceTimer) {
+        clearTimeout(wakeDebounceTimer);
+        wakeDebounceTimer = null;
+      }
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pageshow', onPageShow);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('hermes-mobile-resume', onMobileResume);
+      window.removeEventListener('hermes-mobile-pause', onMobilePause);
+      window.removeEventListener('hermes-mobile-network-change', onMobileNetworkChange);
+      netConn?.removeEventListener?.('change', onNetInfoChange);
+      offPower?.();
     };
   }
 

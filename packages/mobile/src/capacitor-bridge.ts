@@ -33,6 +33,7 @@ import { App } from '@capacitor/app';
 import { Keyboard } from '@capacitor/keyboard';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { Haptics } from '@capacitor/haptics';
+import { Network } from '@capacitor/network';
 
 export type PlatformType = 'windows' | 'macos' | 'linux' | 'ios' | 'android' | 'web';
 
@@ -171,6 +172,7 @@ export interface HermesMobileBridge {
   clipboardRead(): Promise<string>;
   syncStatusBarAppearance?(appearance: 'dark' | 'light'): Promise<void>;
   hapticSelection?(): Promise<void>;
+  getNetworkStatus?(): Promise<{ connected: boolean; connectionType: string }>;
 }
 
 export interface CapacitorBridgePluginOverrides {
@@ -181,8 +183,11 @@ export interface CapacitorBridgePluginOverrides {
   keyboard?: Pick<typeof Keyboard, 'addListener'>;
   statusBar?: Pick<typeof StatusBar, 'setStyle'>;
   haptics?: Pick<typeof Haptics, 'selectionChanged'>;
+  network?: Pick<typeof Network, 'getStatus' | 'addListener'>;
   filesystem?: Pick<typeof Filesystem, 'readFile' | 'writeFile'>;
   share?: Pick<typeof Share, 'share'>;
+  authTimeoutMs?: number;
+  httpProxyTimeoutMs?: number;
 }
 
 /**
@@ -274,6 +279,9 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
   const capKeyboard = overrides?.keyboard ?? Keyboard;
   const capStatusBar = overrides?.statusBar ?? StatusBar;
   const capHaptics = overrides?.haptics ?? Haptics;
+  const capNetwork = overrides?.network ?? Network;
+  const authTimeoutMs = overrides?.authTimeoutMs ?? 8000;
+  const httpProxyTimeoutMs = overrides?.httpProxyTimeoutMs ?? 30_000;
   const filesystemApi = overrides?.filesystem ?? Filesystem;
   const shareApi = overrides?.share ?? Share;
   const checkPlugin = overrides?.isPluginAvailable ?? ((name: string) => Capacitor.isPluginAvailable(name));
@@ -283,6 +291,19 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
   const isIos = currentPlatform === 'ios' || (currentPlatform === 'web' && /iphone|ipad|ipod/.test(ua));
   const wsProxyMatch = /hermeswsproxy\/(\d+)/.exec(ua);
   const wsProxyPort = wsProxyMatch ? Number(wsProxyMatch[1]) : 0;
+
+  const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs = authTimeoutMs): Promise<Response> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 
   const bridge: HermesMobileBridge = {
     // 1. 系统与平台信息
@@ -381,7 +402,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
       const start = Date.now();
       try {
         // 第一跳：探测 /api/status
-        const statusRes = await fetch(`${baseUrl}/api/status`, {
+        const statusRes = await fetchWithTimeout(`${baseUrl}/api/status`, {
           headers: { Accept: 'application/json' },
         });
         const latency = Date.now() - start;
@@ -411,7 +432,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         }
 
         // 第二跳：密码登录 (CapacitorHttp 原生接管自动维护 Cookie)
-        const loginRes = await fetch(`${baseUrl}/auth/password-login`, {
+        const loginRes = await fetchWithTimeout(`${baseUrl}/auth/password-login`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -433,7 +454,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         }
 
         // 第三跳：获取 WS Ticket
-        const ticketRes = await fetch(`${baseUrl}/api/auth/ws-ticket`, {
+        const ticketRes = await fetchWithTimeout(`${baseUrl}/api/auth/ws-ticket`, {
           method: 'POST',
           headers: {
             Accept: 'application/json',
@@ -525,7 +546,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         fetchOptions.body = JSON.stringify(options.body);
       }
 
-      const res = await fetch(fullUrl, fetchOptions);
+      const res = await fetchWithTimeout(fullUrl, fetchOptions, httpProxyTimeoutMs);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
@@ -802,6 +823,22 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         console.warn('[Mobile PAL] Haptics.selectionChanged failed:', describeError(err, 'unknown'));
       }
     },
+
+    // 13. 原生网络连通状态即时读取 (iOS NWPathMonitor / Android ConnectivityManager)
+    async getNetworkStatus(): Promise<{ connected: boolean; connectionType: string }> {
+      try {
+        const status = await capNetwork.getStatus();
+        return {
+          connected: Boolean(status.connected),
+          connectionType: status.connectionType || 'unknown',
+        };
+      } catch (err) {
+        // gate-degrade: 原生 Network 插件不可用时回退 navigator.onLine
+        console.warn('[Mobile PAL] Network.getStatus failed:', describeError(err, 'unknown'));
+        const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
+        return { connected: online, connectionType: online ? 'unknown' : 'none' };
+      }
+    },
   };
 
   const logBridgeDegrade = (err: unknown): void => {
@@ -898,8 +935,8 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
   // 前后台生命周期与 Android 物理返回键监听 (安全检查与异步未捕获异常防御)
   if (checkPlugin('App')) {
     capApp.addListener('appStateChange', (state) => {
-      if (state.isActive && typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('hermes-mobile-resume'));
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(state.isActive ? 'hermes-mobile-resume' : 'hermes-mobile-pause'));
       }
     }).catch(logBridgeDegrade);
 
@@ -911,6 +948,36 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         void capApp.minimizeApp().catch(logBridgeDegrade);
       }
     }).catch(logBridgeDegrade);
+  }
+
+  // 原生网络接口变化监听：精确捕捉 Wi-Fi <-> 5G / VPN 静默切换与断开恢复
+  if (checkPlugin('Network') || overrides?.network) {
+    let previousType = 'unknown';
+    void capNetwork
+      .getStatus()
+      .then((initial) => {
+        previousType = initial.connectionType || 'unknown';
+      })
+      .catch(logBridgeDegrade);
+
+    capNetwork
+      .addListener('networkStatusChange', (status) => {
+        const nextType = status.connectionType || 'unknown';
+        const prev = previousType;
+        previousType = nextType;
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('hermes-mobile-network-change', {
+              detail: {
+                connected: Boolean(status.connected),
+                connectionType: nextType,
+                previousType: prev,
+              },
+            }),
+          );
+        }
+      })
+      .catch(logBridgeDegrade);
   }
 
   return bridge;

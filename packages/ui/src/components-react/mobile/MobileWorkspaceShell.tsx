@@ -32,6 +32,7 @@ import { MobileNewChatSheet } from './MobileNewChatSheet.js';
 import { MobileSubagentSheet } from './MobileSubagentSheet.js';
 import { MobileSettingsPage } from './MobileSettingsPage.js';
 import { MobileBotSubpagePanel, MobileBotWizardSheet } from './MobileBotSubpage.js';
+import { ConnectionStatusPill } from '../ConnectionStatusPill.js';
 
 export interface MobileWorkspaceShellProps {
   snapshot: MobileWorkspaceSnapshot;
@@ -271,6 +272,7 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             activeBotName={snapshot.activeBotName}
             gatewayConnected={snapshot.gatewayConnected}
             gatewayConnecting={snapshot.gatewayConnecting}
+            connectionPhase={snapshot.connectionPhase}
             searchOpen={snapshot.searchOpen}
             settingsSnapshot={snapshot.settingsSnapshot}
             modelDetails={snapshot.modelDetails}
@@ -293,6 +295,10 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
 
           <MobileConversationScreen
             gatewayConnected={snapshot.gatewayConnected}
+            connectionPhase={snapshot.connectionPhase}
+            connectionReconnectAttempt={snapshot.connectionReconnectAttempt}
+            connectionAuthError={snapshot.connectionAuthError}
+            onRetryConnect={actions.onRetryConnect}
             activeFocus={snapshot.activeFocus}
             activeBotDisplayName={snapshot.activeBotDisplayName}
             isStreaming={snapshot.isStreaming}
@@ -332,6 +338,8 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             activeFilePath={snapshot.activeFilePath}
             workspaceRootName={snapshot.workspaceRootName}
             memories={snapshot.memories}
+            inspectorBotProfile={snapshot.inspectorBotProfile}
+            inspectorBotLabel={snapshot.inspectorBotLabel}
             learningState={snapshot.learningState}
             learningDetail={snapshot.learningDetail}
             groupMembers={snapshot.groupMembers}
@@ -345,10 +353,13 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             onFilterFileTree={actions.onFilterFileTree}
             onOpenWorkspaceFile={actions.onOpenWorkspaceFile}
             onDownloadInspectorFile={actions.onDownloadInspectorFile}
+            onEnsureLearning={actions.onEnsureLearning}
             onRefreshLearning={actions.onRefreshLearning}
             onLoadLearningDetail={actions.onLoadLearningDetail}
             onEditLearningNode={actions.onEditLearningNode}
             onDeleteLearningNode={actions.onDeleteLearningNode}
+            onInspectSkill={actions.settingsActions.onInspectSkill}
+            onNotify={actions.settingsActions.onNotify}
           />
         </div>
       </div>
@@ -422,6 +433,7 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
         onOpenGateway={() => actions.onOpenSettingsSubpage('gateway')}
         learningState={snapshot.learningState}
         learningDetail={snapshot.learningDetail}
+        onEnsureLearning={actions.onEnsureLearning}
         onRefreshLearning={actions.onRefreshLearning}
         onLoadLearningDetail={actions.onLoadLearningDetail}
         onEditLearningNode={actions.onEditLearningNode}
@@ -433,6 +445,21 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
         settingsSnapshot={snapshot.settingsSnapshot}
         settingsActions={actions.settingsActions}
       />
+
+      {snapshot.connectionPhase !== undefined &&
+      (snapshot.activePane !== 'stage' || snapshot.settingsOpen || snapshot.botSubpage !== null) &&
+      !(snapshot.settingsOpen && snapshot.settingsSubpage === 'gateway') ? (
+        <div className="m-conn-floating-host">
+          <ConnectionStatusPill
+            phase={snapshot.connectionPhase}
+            attempt={snapshot.connectionReconnectAttempt}
+            isAuthError={snapshot.connectionAuthError}
+            layout="floating"
+            onRetry={actions.onRetryConnect}
+            onOpenSettings={() => actions.onOpenSettingsSubpage('gateway')}
+          />
+        </div>
+      ) : null}
 
       {activeSheet ? (
         <div

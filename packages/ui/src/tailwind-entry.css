@@ -10,6 +10,7 @@
  */
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities" source(none);
+@import "./styles/constellation.css";
 
 /* 只扫 React 组件目录。
    设计意图(Why)：Tailwind v4 默认自动检测会扫全仓，把 docs/prototypes 里的任意值 class
@@ -319,6 +320,18 @@
 
 @utility max-h-modal-lg {
   max-height: min(760px, calc(100vh - 64px));
+}
+
+@utility max-h-modal-xl {
+  max-height: min(860px, calc(100vh - 48px));
+}
+
+@utility w-modal-xl {
+  width: min(1040px, calc(100vw - 48px));
+}
+
+@utility h-modal-xl {
+  height: min(820px, calc(100vh - 64px));
 }
 
 /*

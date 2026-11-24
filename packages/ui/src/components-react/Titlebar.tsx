@@ -1,5 +1,5 @@
 import * as React from 'react';
-import type { RightPodMode } from '@hermes-flux/core';
+import type { RightPodMode, TitlebarConnectionStatus } from '@hermes-flux/core';
 import type { LeftRailLayoutMode } from '../tokens/leftRailLayout.js';
 import { t } from '../i18n/index.js';
 import {
@@ -17,6 +17,8 @@ export interface TitlebarProps {
   title?: string;
   isMaximized: boolean;
   gatewayConnected: boolean;
+  /** 精细化连接状态点属性（reconnecting/syncing 闪烁过渡；缺失时按 gatewayConnected 回退） */
+  connectionStatus?: TitlebarConnectionStatus;
   /** 左栏折叠态：驱动顶栏左段宽度与折叠按钮呈现（快照单一供给，不读 DOM 属性）。 */
   leftRailCollapsed: boolean;
   /** 左侧栏布局模式：grouped 模式无微轨，折叠态顶栏左段只保留按钮容量宽度。 */
@@ -56,9 +58,18 @@ export interface TitlebarProps {
  *   5. 左簇图标（☰ / 设置）与右簇图标（检查舱 / 窗控三键）共用同一 28px 热区与同一字形网格，
  *      保证顶栏内所有元素共享一条垂直中线。
  */
-export function Titlebar({ platform, isMaximized, gatewayConnected, leftRailCollapsed, leftRailLayout = 'dual-rail', inspectorCollapsed, rightPodMode, runningSubagentCount = 0, onMinimize, onMaximize, onClose, onToggleLeftRail, onToggleInspector, onOpenSettings }: TitlebarProps): React.ReactElement {
+export function Titlebar({ platform, isMaximized, gatewayConnected, connectionStatus, leftRailCollapsed, leftRailLayout = 'dual-rail', inspectorCollapsed, rightPodMode, runningSubagentCount = 0, onMinimize, onMaximize, onClose, onToggleLeftRail, onToggleInspector, onOpenSettings }: TitlebarProps): React.ReactElement {
   const isWindows = platform === 'windows';
   const effectivePodMode = rightPodMode ?? (inspectorCollapsed === false ? 'files' : 'closed');
+  const resolvedStatus = connectionStatus ?? (gatewayConnected ? 'connected' : 'offline');
+  const statusTitle =
+    resolvedStatus === 'connected'
+      ? t('titlebar.online')
+      : resolvedStatus === 'reconnecting'
+        ? t('conn.reconnecting')
+        : resolvedStatus === 'syncing'
+          ? t('conn.syncing')
+          : t('titlebar.offline');
   return <header className="flux-titlebar" data-testid="react-titlebar" data-left-rail-layout={leftRailLayout} data-left-rail-collapsed={leftRailCollapsed ? 'true' : 'false'} data-inspector-collapsed={inspectorCollapsed === false ? 'false' : 'true'} data-right-pod-mode={effectivePodMode}>
     <div className="titlebar-left">
       {/* macOS 交通灯由系统原生绘制（titleBarStyle: 'hiddenInset'），此处严禁再画一套。
@@ -68,8 +79,8 @@ export function Titlebar({ platform, isMaximized, gatewayConnected, leftRailColl
     </div>
     <div className="titlebar-center" />
     <div className="titlebar-right">
-      <div className="titlebar-connection-box flex items-center px-1" title={gatewayConnected ? t('titlebar.online') : t('titlebar.offline')}>
-        <span className="titlebar-connection-indicator" data-connected={gatewayConnected} />
+      <div className="titlebar-connection-box flex items-center px-1" title={statusTitle}>
+        <span className="titlebar-connection-indicator" data-connected={gatewayConnected} data-status={resolvedStatus} />
       </div>
       <button
         id="toggle-inspector-btn"

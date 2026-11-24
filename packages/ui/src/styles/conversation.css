@@ -11843,6 +11843,229 @@ html[data-app-hidden="true"] .conv-presence *::after {
 }
 /* END GENERATED POINT-CLOUD INDICATORS */
 
+/* ============================================================================
+ * 连接与同步状态胶囊（ConnectionStatusPill）
+ * ============================================================================ */
+
+#react-conv-connection-host {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 35;
+  pointer-events: none;
+  max-width: calc(100% - 140px);
+}
+
+#react-conv-presence-host:not(.presence-host--dock) {
+  transition: opacity var(--duration-enter, 120ms) ease;
+}
+
+#react-conv-presence-host[data-replaced="true"]:not(.presence-host--dock) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#react-conv-presence-host:not(.presence-host--dock):not([data-mobile-slot="true"]) > .conv-presence[data-layout="stage"] {
+  transition: transform var(--duration-enter, 120ms) var(--ease-spring, cubic-bezier(0.16, 1, 0.3, 1));
+}
+
+#react-conv-presence-host[data-replaced="true"]:not(.presence-host--dock):not([data-mobile-slot="true"]) > .conv-presence[data-layout="stage"] {
+  transform: translateX(-50%) scale(0.96);
+}
+
+.conn-pill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill, 9999px);
+  background: color-mix(in srgb, var(--popover) 94%, var(--background));
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-dock);
+  color: var(--foreground);
+  font-size: var(--fs-aux, 12px);
+  line-height: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(-4px) scale(0.96);
+  transition:
+    opacity var(--duration-enter, 120ms) var(--ease-spring, cubic-bezier(0.16, 1, 0.3, 1)),
+    transform var(--duration-enter, 120ms) var(--ease-spring, cubic-bezier(0.16, 1, 0.3, 1)),
+    border-color var(--duration-enter, 120ms) ease;
+}
+
+.conn-pill[data-motion-state="entering"],
+.conn-pill[data-motion-state="entered"] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+@starting-style {
+  .conn-pill[data-motion-state="entering"] {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+}
+
+.conn-pill[data-motion-state="exiting"],
+.conn-pill[data-motion-state="exited"] {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.96);
+  pointer-events: none;
+  transition-duration: var(--duration-exit, 200ms);
+}
+
+.conn-pill--compact {
+  min-height: 24px;
+  padding: 4px 8px;
+  font-size: var(--fs-caption, 11px);
+  line-height: 14px;
+}
+
+.conn-pill[data-phase="connecting"],
+.conn-pill[data-phase="reconnecting"] {
+  --conn-pill-accent: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 36%, var(--border-strong));
+}
+
+.conn-pill[data-phase="syncing"] {
+  --conn-pill-accent: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--border-strong));
+}
+
+.conn-pill[data-phase="synced"] {
+  --conn-pill-accent: var(--success);
+  border-color: color-mix(in srgb, var(--success) 38%, var(--border-strong));
+}
+
+.conn-pill[data-phase="offline"] {
+  --conn-pill-accent: var(--destructive);
+  border-color: color-mix(in srgb, var(--destructive) 36%, var(--border-strong));
+}
+
+.conn-pill__indicator {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--conn-pill-accent, var(--primary));
+}
+
+.conn-pill__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill, 9999px);
+  background: currentColor;
+}
+
+.conn-pill__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-pill, 9999px);
+  border: 1.5px solid currentColor;
+  transform: scale(0.68);
+  opacity: 0.85;
+  transition:
+    transform 600ms var(--ease-spring, cubic-bezier(0.16, 1, 0.3, 1)),
+    opacity 600ms ease;
+}
+
+.conn-pill[data-beat="1"] .conn-pill__ring,
+.conn-pill[data-beat="3"] .conn-pill__ring {
+  transform: scale(1.28);
+  opacity: 0.16;
+}
+
+.conn-pill__wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 12px;
+}
+
+.conn-pill__bar {
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: currentColor;
+  transform: scaleY(0.45);
+  opacity: 0.55;
+  transition:
+    transform 300ms var(--ease-spring, cubic-bezier(0.16, 1, 0.3, 1)),
+    opacity 300ms ease;
+}
+
+.conn-pill[data-beat="0"] .conn-pill__bar:nth-child(1),
+.conn-pill[data-beat="1"] .conn-pill__bar:nth-child(2),
+.conn-pill[data-beat="2"] .conn-pill__bar:nth-child(3),
+.conn-pill[data-beat="3"] .conn-pill__bar:nth-child(2) {
+  transform: scaleY(1);
+  opacity: 1;
+}
+
+.conn-pill__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: connPillCheckIn 240ms var(--ease-spring, cubic-bezier(0.16, 1, 0.3, 1)) both;
+}
+
+.conn-pill__label {
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.conn-pill__action {
+  position: relative;
+  margin-left: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill, 9999px);
+  border: 1px solid color-mix(in srgb, var(--conn-pill-accent, var(--primary)) 40%, transparent);
+  background: color-mix(in srgb, var(--conn-pill-accent, var(--primary)) 12%, transparent);
+  color: var(--foreground);
+  font-size: var(--fs-caption, 11px);
+  font-weight: 600;
+  line-height: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.conn-pill__action:hover {
+  background: color-mix(in srgb, var(--conn-pill-accent, var(--primary)) 22%, transparent);
+}
+
+@keyframes connPillCheckIn {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+html[data-app-hidden="true"] .conn-pill,
+html[data-app-hidden="true"] .conn-pill *,
+html[data-page-hidden="true"] .conn-pill,
+html[data-page-hidden="true"] .conn-pill *,
+:root[data-app-hidden="true"] .conn-pill,
+:root[data-app-hidden="true"] .conn-pill *,
+:root[data-page-hidden="true"] .conn-pill,
+:root[data-page-hidden="true"] .conn-pill * {
+  animation-play-state: paused !important;
+}
+
 /* 全变体页面隐藏节能与无障碍降级统一挂接 */
 :root[data-page-hidden="true"] .flux-activity-dot--running::after,
 :root[data-page-hidden="true"] .flux-cloud-stream,
@@ -11951,5 +12174,15 @@ html[data-app-hidden="true"] .conv-presence *::after {
   .flux-cloud-indicator--unread[data-transition="just-completed"] .flux-pc-done-spark,
   .flux-cloud-indicator--unread[data-transition="just-completed"] .flux-cloud-label--done {
     animation: none;
+  }
+
+  .conn-pill,
+  .conn-pill * {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .conn-pill__ring {
+    opacity: 0;
   }
 }

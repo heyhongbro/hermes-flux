@@ -262,6 +262,29 @@
   color: var(--foreground);
 }
 
+.sp-env-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-inner);
+  background: transparent;
+  color: var(--secondary-foreground);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.sp-env-action:hover {
+  background: var(--card-hover);
+  border-color: var(--border-strong);
+  color: var(--foreground);
+}
+
 .sp-env-mono {
   font-family: var(--font-mono);
   font-size: var(--fs-caption);
@@ -1214,6 +1237,7 @@
 }
 
 @media (max-width: 768px), (hover: none) and (pointer: coarse) {
+  .sp-env-action,
   .sp-env-row--clickable,
   .sp-sub-head,
   .subagent-btn-back,
@@ -1236,6 +1260,7 @@
     min-width: 44px;
   }
 
+  .sp-env-action,
   .status-file-chip,
   .subagent-btn-back,
   [data-testid="subagent-close-btn"],
