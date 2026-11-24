@@ -54,6 +54,7 @@ import { createInputDockController } from './events/inputDockController.js';
 import { type AppState, createInitialState, resolveActiveViewportKey } from './state/appState.js';
 import { createTurnExecutionService } from './services/turnExecutionService.js';
 import { createGatewayEventDispatcher } from './gateway/gatewayEventDispatcher.js';
+import { createActiveViewSyncAdapters, createForegroundSyncCoordinator } from './services/foregroundSyncCoordinator.js';
 type GatewayAuthResponse = { ok: boolean; message: string; latency: number };
 import { createProjectOperationService } from './services/projectOperationService.js';
 import { createGroupOperationService } from './services/groupOperationService.js';
@@ -1159,6 +1160,7 @@ const renderCoordinator = createRenderCoordinator({
   isSessionEnterPending: () => streamViewportManager.isSessionEnterPending(), settleSessionEnter: (probe, sessionId, phase, count, authoritativeReady) => streamViewportManager.settleSessionEnter(probe, sessionId, phase, count, authoritativeReady), reassertActivePin: () => streamViewportManager?.reassertActivePin(),
   markProgrammaticScroll: (stream) => markProgrammaticScroll(stream),
   syncComposerPoppers: () => syncComposerPoppers(), syncComposerBadges: () => syncComposerBadges(), logRender,
+  onRetryConnect: gatewayEventDispatcher.retryNow,
 });
 
 const lockAverageRowHeight = () => { const r = messageWindowManager.lockAverageRowHeight(); syncWindowLocalState(); return r; };
@@ -1319,8 +1321,24 @@ const mobileShellCoordinator = createMobileShellCoordinator({
   editLearningNode: learningService.editLearningNode, deleteLearningNode: learningService.deleteLearningNode,
   getSettingsSnapshot, createSettingsActions, ensureSettingsSectionData,
   copyText: safeCopyText, syncReactMessageList, syncAgentPresenceHost, syncAgentPresence,
+  onRetryConnect: gatewayEventDispatcher.retryNow,
 });
 renderCoordinator.setMobileShellCoordinator(mobileShellCoordinator);
+const foregroundSyncCoordinator = createForegroundSyncCoordinator({
+  getState: renderCoordinator.getState, render, fetchProfiles, fetchSessions, fetchGroupRooms,
+  prefetchSlashCatalog: inputCompletion.prefetchSlashCatalog, fetchModelOptions, fetchProjects,
+  refreshActiveSession: messageLoadingService.refreshActiveSession.bind(messageLoadingService),
+  refreshGroupRoomLog, openBotChat,
+  ...createActiveViewSyncAdapters({
+    getState: renderCoordinator.getState, isMobileShellActive: renderCoordinator.isMobileShellActive,
+    getMobileViewContext: mobileShellCoordinator.getActiveViewContext, settingsDataService,
+    fileViewerService, groupPollerManager,
+    getGroupRoomLogs: (roomId) => groupRoomStore.getLogs(roomId),
+    hostedRoomIds, activeRunningGroupRoomIds,
+  }),
+});
+gatewayEventDispatcher.setSyncHooks({ onConnectedSync: foregroundSyncCoordinator.syncOnConnected, onResumeAliveSync: foregroundSyncCoordinator.syncOnResumeAlive });
+messageLoadingService.setReconnectHooks({ onReconnectStillStreaming: gatewayEventDispatcher.resumeReconnectStreaming, onReconnectStreamFinished: gatewayEventDispatcher.finishReconnectStreaming, onForceSyncMessageList: syncReactMessageList });
 if (typeof window !== 'undefined') {
   window.__fluxRender = render;
   window.__fluxConnect = connect;
@@ -1449,6 +1467,8 @@ const appBootstrap = createAppBootstrap({
   getState: () => state, render: () => render(), getDesktopApi: () => desktopApi,
   getGatewayClient: () => gatewayClient, connect: () => { void connect(); },
   restoreCacheToState: () => restoreCacheToState(), refreshProfilesFromServer: () => refreshProfilesFromServer(),
+  onWakeOrRetry: gatewayEventDispatcher.wakeOrRetry, onAppPause: foregroundSyncCoordinator.onAppPause,
+  onNetworkOffline: gatewayEventDispatcher.markNetworkOffline,
   syncSystemWindow: () => titlebarController.syncSystemWindow(), fontPreferences,
   logBoot: (info) => logApp.info('renderer boot', { level: getLogLevel(), ...info }),
   logLayoutShift: (info) => logScroll.debug('layout shift', { ...info, streaming: state.isStreaming }),
@@ -1463,26 +1483,6 @@ async function init(): Promise<void> {
   document.documentElement.style.setProperty('--rail-w-left', `${restoredLeft}px`);
   localStorage.setItem('hermes_flux_rail_w_left', String(restoredLeft));
   await appBootstrap.init();
-
-  let lastFocusRefreshAt = 0;
-  window.addEventListener('focus', () => {
-    const now = Date.now();
-    if (now - lastFocusRefreshAt < 5000) return;
-    lastFocusRefreshAt = now;
-    if (gatewayClient && !state.isStreaming) void refreshProfilesFromServer();
-  });
-
-  const syncPageHiddenAttr = (): void => {
-    if (document.visibilityState === 'hidden') document.documentElement.dataset.pageHidden = 'true';
-    else delete document.documentElement.dataset.pageHidden;
-  };
-  syncPageHiddenAttr();
-
-  document.addEventListener('visibilitychange', () => {
-    document.documentElement.dataset.appHidden = String(document.visibilityState === 'hidden');
-    syncPageHiddenAttr();
-    if (document.visibilityState === 'visible') void refreshProfilesFromServer();
-  });
 }
 
 init();

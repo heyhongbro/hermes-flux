@@ -26,12 +26,16 @@ const sessionOpPath = path.resolve(__dirname, '../../src/renderer/services/sessi
 const messageLoadPath = path.resolve(__dirname, '../../src/renderer/services/messageLoadingService.ts');
 const turnExecPath = path.resolve(__dirname, '../../src/renderer/services/turnExecutionService.ts');
 const gatewayDispatchPath = path.resolve(__dirname, '../../src/renderer/gateway/gatewayEventDispatcher.ts');
+const appBootstrapPath = path.resolve(__dirname, '../../src/renderer/bootstrap/appBootstrap.ts');
+const foregroundSyncPath = path.resolve(__dirname, '../../src/renderer/services/foregroundSyncCoordinator.ts');
 const rendererSource = [
   readFileSync(path.resolve(__dirname, '../../src/renderer/index.ts'), 'utf8'),
   existsSync(sessionOpPath) ? readFileSync(sessionOpPath, 'utf8') : '',
   existsSync(messageLoadPath) ? readFileSync(messageLoadPath, 'utf8') : '',
   existsSync(turnExecPath) ? readFileSync(turnExecPath, 'utf8') : '',
   existsSync(gatewayDispatchPath) ? readFileSync(gatewayDispatchPath, 'utf8') : '',
+  existsSync(appBootstrapPath) ? readFileSync(appBootstrapPath, 'utf8') : '',
+  existsSync(foregroundSyncPath) ? readFileSync(foregroundSyncPath, 'utf8') : '',
 ].join('\n');
 
 const countMatches = (re) => (rendererSource.match(re) || []).length;
@@ -261,11 +265,10 @@ test('Cache Integration - 6. 生产源码接线守卫（接线级证伪，若删
     assert.ok(readAvatars >= 1, '必须读取头像资产表');
   });
 
-  await t.test('6.6 window.focus 刷新必须具有防抖冷却时间控制（>= 5000ms）', () => {
-    const cooldownGuard = countMatches(/now\s*-\s*lastFocusRefreshAt\s*<\s*5000/g);
-    assert.ok(
-      cooldownGuard >= 1,
-      '窗口焦点事件必须包含 5 秒冷却防抖守卫'
-    );
+  await t.test('6.6 window.focus 刷新必须具备防抖与最小冷却窗口守卫', () => {
+    const focusHook = countMatches(/triggerForegroundCheck\('focus'\)/g);
+    const throttleGuard = countMatches(/now\s*-\s*lastResumeSyncAt\s*<\s*throttleMs/g);
+    assert.ok(focusHook >= 1, 'window.focus 必须经过前后台统一防抖入口');
+    assert.ok(throttleGuard >= 1, '前后台同步协调器必须包含冷却时间窗守卫');
   });
 });

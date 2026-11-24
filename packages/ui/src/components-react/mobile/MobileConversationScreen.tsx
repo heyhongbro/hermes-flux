@@ -13,16 +13,22 @@
  */
 
 import * as React from 'react';
+import type { GatewayConnectionPhase } from '@hermes-flux/core';
 import { PanelRight } from 'lucide-react';
 import { t } from '../../i18n/index.js';
 import type { InputAttachmentItem } from '../../components/InputDock/InputDock.js';
 import type { LeftRailActiveFocus } from '../leftRailModel.js';
+import { ConnectionStatusPill } from '../ConnectionStatusPill.js';
 import { shouldCompactStagePresence } from './mobileShellModel.js';
 import type { MobileModelOption } from './types.js';
 import { MobileMorphingComposer } from './MobileMorphingComposer.js';
 
 export interface MobileConversationScreenProps {
   gatewayConnected: boolean;
+  connectionPhase?: GatewayConnectionPhase;
+  connectionReconnectAttempt?: number;
+  connectionAuthError?: boolean;
+  onRetryConnect?: () => void;
   activeFocus: LeftRailActiveFocus;
   activeBotDisplayName: string;
   isStreaming: boolean;
@@ -57,6 +63,10 @@ export interface MobileConversationScreenProps {
 
 export function MobileConversationScreen({
   gatewayConnected,
+  connectionPhase,
+  connectionReconnectAttempt,
+  connectionAuthError,
+  onRetryConnect,
   activeFocus,
   activeBotDisplayName,
   isStreaming,
@@ -81,6 +91,10 @@ export function MobileConversationScreen({
   onOpenInspector,
 }: MobileConversationScreenProps): React.ReactElement {
   const [compactPresence, setCompactPresence] = React.useState(false);
+  const [pillMounted, setPillMounted] = React.useState(false);
+  const showOfflineCard =
+    !gatewayConnected &&
+    (connectionPhase === undefined || connectionPhase === 'unconfigured');
   const streamRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
@@ -133,8 +147,21 @@ export function MobileConversationScreen({
         <div
           id="react-conv-presence-host"
           data-mobile-slot="true"
+          data-replaced={pillMounted ? 'true' : 'false'}
           className="m-stage__presence-host"
         />
+        {connectionPhase !== undefined ? (
+          <ConnectionStatusPill
+            phase={connectionPhase}
+            attempt={connectionReconnectAttempt}
+            isAuthError={connectionAuthError}
+            layout="stage"
+            compact={compactPresence}
+            onRetry={onRetryConnect}
+            onOpenSettings={onOpenSettings}
+            onMountedChange={setPillMounted}
+          />
+        ) : null}
         {onOpenInspector ? (
           <button
             type="button"
@@ -154,7 +181,7 @@ export function MobileConversationScreen({
         className="conversation-stream m-stage__stream"
         onScroll={handleStreamScroll}
       >
-        {!gatewayConnected ? (
+        {showOfflineCard ? (
           <div className="m-stage__offline-card">
             <p className="m-stage__offline-title">{t('mobile.home.offlineTitle')}</p>
             <p className="m-stage__offline-hint">{t('mobile.stage.offlineHint')}</p>

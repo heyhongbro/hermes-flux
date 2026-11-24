@@ -123,6 +123,7 @@ export interface SettingsDataService {
   reloadProviderCatalog(): Promise<void>;
   openBotSettings(botId: string, options?: { tab?: BotDetailTab }): void;
   getBotManagementSnapshot(): SettingsSnapshot['botManagement'];
+  hasUnsavedBotDrafts(): boolean;
   getSettingsSnapshot(): SettingsSnapshot;
   ensureSettingsSectionData(section: SettingsSectionId, force?: boolean): void;
   createSettingsActions(): SettingsActions;
@@ -1480,6 +1481,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     reloadProviderCatalog,
     openBotSettings,
     getBotManagementSnapshot,
+    hasUnsavedBotDrafts,
     getSettingsSnapshot,
     ensureSettingsSectionData,
     createSettingsActions,

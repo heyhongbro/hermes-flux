@@ -64,6 +64,10 @@ export class WebSocketFsm {
     this.attemptCount = 0;
   }
 
+  public getAttemptCount(): number {
+    return this.attemptCount;
+  }
+
   public onStateChange(listener: (state: FsmState, prev: FsmState) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

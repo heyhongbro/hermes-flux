@@ -927,6 +927,14 @@ test('mobileShellCoordinator: onActionDisband 回退 home 屏与异常处理', a
   acts.onSelectGroup('grp-1');
   assert.equal(h.coordinator.getActivePane(), 'stage');
   assert.equal(h.state.activeFocus.type, 'group');
+  assert.deepEqual(h.coordinator.getActiveViewContext(), {
+    isMobile: true,
+    mobilePane: 'stage',
+    homeTab: 'chats',
+    botSubpage: null,
+    settingsOpen: false,
+    settingsSubpage: null,
+  });
 
   acts.onActionDisband({ kind: 'group', id: 'grp-1', title: '群聊1' });
   await new Promise((r) => setTimeout(r, 10));

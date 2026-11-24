@@ -117,7 +117,10 @@ test('在场指示器宿主接线守卫', async (t) => {
   });
 
   await t.test('8. 页面隐藏时必须写入 data-app-hidden（否则 CSS 暂停规则是死代码）', () => {
-    const src = read(RENDERER);
+    const src = [
+      read(RENDERER),
+      read('packages/desktop/src/renderer/bootstrap/appBootstrap.ts'),
+    ].join('\n');
     assert.ok(
       src.includes('dataset.appHidden'),
       'CSS 的 html[data-app-hidden="true"] 暂停规则需要宿主写入该属性，否则形变/环/光晕在后台继续跑',

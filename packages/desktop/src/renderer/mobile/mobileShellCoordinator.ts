@@ -53,6 +53,7 @@ import { extractPathBasename, formatFileSize, isImageExtension } from '@hermes-f
 import type { LeftRailController } from '../events/leftRailController.js';
 import { openBrowserAttachmentPicker } from '../events/inputAttachmentPicker.js';
 import { resolveActiveWorkspaceCwd, type AppState } from '../state/appState.js';
+import type { ActiveViewContext } from '../services/foregroundSyncCoordinator.js';
 
 export const MOBILE_SECTIONS_STORAGE_KEY = 'hermes_flux_mobile_sections';
 export const MOBILE_APPEARANCE_STORAGE_KEY = 'hermes_flux_mobile_appearance';
@@ -120,6 +121,7 @@ export interface MobileShellCoordinatorDeps {
   syncReactMessageList?: (force?: boolean) => void;
   syncAgentPresenceHost?: () => void;
   syncAgentPresence?: () => void;
+  onRetryConnect?: () => Promise<void> | void;
   syncStatusBarAppearance?: (appearance: 'dark' | 'light') => void;
   getSystemPrefersDark?: () => boolean;
   storage?: MobileStorageLike;
@@ -137,6 +139,7 @@ export interface MobileShellCoordinator {
   getActions(): MobileWorkspaceActions;
   openSubagentDetail(payload: { messageId: string; tools: ConversationToolVM[] }): void;
   getActivePane(): MobilePaneId;
+  getActiveViewContext(): ActiveViewContext;
   dispose(): void;
 }
 
@@ -352,6 +355,9 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       locale: state.lang === 'en' ? 'en' : 'zh',
       gatewayConnected: state.gatewayConnected,
       gatewayConnecting: state.gatewayConnecting,
+      connectionPhase: state.connectionPhase,
+      connectionReconnectAttempt: state.connectionReconnectAttempt,
+      connectionAuthError: state.connectionAuthError,
       homeModel,
       homeTab,
       allProfiles,
@@ -833,6 +839,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       syncSkinAndStatusBar(true);
       deps.render();
     },
+    onRetryConnect: deps.onRetryConnect,
     settingsActions: {
       ...baseSettingsActions,
       onSelectBotSettle: (botId) => {
@@ -871,6 +878,14 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     getActions: () => actions,
     openSubagentDetail,
     getActivePane: () => activePane,
+    getActiveViewContext: () => ({
+      isMobile: true,
+      mobilePane: activePane,
+      homeTab,
+      botSubpage,
+      settingsOpen: deps.getState().isSettingsOpen,
+      settingsSubpage,
+    }),
     dispose,
   };
 }

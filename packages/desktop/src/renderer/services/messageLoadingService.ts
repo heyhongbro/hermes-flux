@@ -58,6 +58,7 @@ import {
   takeServerPriority,
   planSessionLoadMerge,
   extractDurableRowId,
+  findLastDurableRowId,
 } from '../rollbackTransaction.js';
 import {
   toMessageViewModel,
@@ -144,6 +145,9 @@ export interface MessageLoadingDeps {
     info?: Record<string, unknown> | null,
     profile?: string,
   ) => void;
+  readonly onReconnectStillStreaming?: (storedSessionId: string, liveSessionId: string) => void;
+  readonly onReconnectStreamFinished?: (storedSessionId: string) => void;
+  readonly onForceSyncMessageList?: (force?: boolean) => void;
 
   // DOM 容器引用（可选）
   readonly getConversationStreamElement?: () => HTMLElement | null;
@@ -174,8 +178,23 @@ export class MessageLoadingService {
   /** 上一次历史向上漫游请求启动时间戳（用于陈旧超时熔断） */
   private olderLoadingStartedAt = 0;
 
+  private reconnectHooks: {
+    onReconnectStillStreaming?: (storedSessionId: string, liveSessionId: string) => void;
+    onReconnectStreamFinished?: (storedSessionId: string) => void;
+    onForceSyncMessageList?: (force?: boolean) => void;
+  } = {};
+
   constructor(private readonly deps: MessageLoadingDeps) {
     this.activeLoadMessagesGeneration = this.deps.getGeneration?.() ?? 0;
+  }
+
+  /** 注册断连重连期间的流式对账回调 */
+  setReconnectHooks(hooks: {
+    onReconnectStillStreaming?: (storedSessionId: string, liveSessionId: string) => void;
+    onReconnectStreamFinished?: (storedSessionId: string) => void;
+    onForceSyncMessageList?: (force?: boolean) => void;
+  }): void {
+    this.reconnectHooks = hooks;
   }
 
   /** 获取当前代际计数 */
@@ -257,21 +276,61 @@ export class MessageLoadingService {
     }
   }
 
+  private async callSessionResume(
+    gatewayClient: HermesGatewayClient,
+    sessionId: string,
+    resolvedBotName: string,
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      return await gatewayClient.call<Record<string, unknown>>('session.resume', {
+        session_id: sessionId,
+        profile: resolvedBotName,
+      });
+    } catch (firstErr: unknown) {
+      if (describeRpcError(firstErr).includes('Extra inputs')) {
+        return await gatewayClient.call<Record<string, unknown>>('session.resume', { session_id: sessionId });
+      }
+      throw firstErr;
+    }
+  }
+
+  /** 对当前激活会话发起无破坏静默增量刷新（前台唤醒/重连自愈专用） */
+  async refreshActiveSession(opts?: { forceRefreshAfterReconnect?: boolean }): Promise<void> {
+    const state = this.deps.getState();
+    const sessionId = state.activeSessionId;
+    if (!sessionId || this.deps.isGroupConversationActive(sessionId)) return;
+    const resolvedBotName = state.activeFocus.type === 'bot'
+      ? state.activeFocus.botName
+      : state.sessions.find((s) => s.id === sessionId)?.botName || state.profileName;
+    await this.loadMessagesInner(sessionId, resolvedBotName, {
+      silent: true,
+      forceRefreshAfterReconnect: opts?.forceRefreshAfterReconnect,
+    });
+  }
+
   /** 会话历史加载内核 */
-  async loadMessagesInner(sessionId: string, targetBotName?: string): Promise<void> {
+  async loadMessagesInner(
+    sessionId: string,
+    targetBotName?: string,
+    opts?: { silent?: boolean; forceRefreshAfterReconnect?: boolean },
+  ): Promise<void> {
     const state = this.deps.getState();
     const gatewayClient = this.deps.getGatewayClient();
     const cacheService = this.deps.cacheService;
+    const silent = Boolean(opts?.silent);
+    const forceRefreshAfterReconnect = Boolean(opts?.forceRefreshAfterReconnect);
 
     // 离线也允许打开会话：历史由持久化缓存提供
     if (!sessionId) {
-      state.messages = [];
-      state.hasOlderMessages = false;
-      this.deps.render();
+      if (!silent) {
+        state.messages = [];
+        state.hasOlderMessages = false;
+        this.deps.render();
+      }
       return;
     }
 
-    const currentGen = this.incrementGeneration();
+    const currentGen = silent ? this.activeLoadMessagesGeneration : this.incrementGeneration();
     const loadStartedAt = performance.now();
     state.activeSessionId = sessionId;
 
@@ -283,39 +342,80 @@ export class MessageLoadingService {
 
     this.deps.onSessionActivated?.(sessionId, resolvedBotName);
 
-    // 1. Instant Cache Hit (0ms)
-    const cached = this.deps.sessionMessagesCache.get(sessionId);
-    if (cached && cached.length > 0) {
-      state.messages = [...cached];
-      this.syncActiveSessionPreviewToRail(sessionId, state.messages, resolvedBotName);
-      state.hasOlderMessages = computeHasOlderMessages(
-        state.messages,
-        this.sessionServerOffset.get(sessionId),
-        INITIAL_WINDOW_PAGE_SIZE,
-        this.hasRemainingParentLineage(sessionId),
-      );
-      this.deps.render();
-      this.deps.logSession?.debug('session rendered from cache', {
-        sessionId,
-        mounted: state.messages.length,
-        ms: Math.round((performance.now() - loadStartedAt) * 10) / 10,
-      });
-    } else {
-      state.messages = [];
-      state.hasOlderMessages = false;
-      this.deps.render();
+    const cached = silent ? undefined : this.deps.sessionMessagesCache.get(sessionId);
+    if (!silent) {
+      // 1. Instant Cache Hit (0ms)
+      if (cached && cached.length > 0) {
+        state.messages = [...cached];
+        this.syncActiveSessionPreviewToRail(sessionId, state.messages, resolvedBotName);
+        state.hasOlderMessages = computeHasOlderMessages(
+          state.messages,
+          this.sessionServerOffset.get(sessionId),
+          INITIAL_WINDOW_PAGE_SIZE,
+          this.hasRemainingParentLineage(sessionId),
+        );
+        this.deps.render();
+        this.deps.logSession?.debug('session rendered from cache', {
+          sessionId,
+          mounted: state.messages.length,
+          ms: Math.round((performance.now() - loadStartedAt) * 10) / 10,
+        });
+      } else {
+        state.messages = [];
+        state.hasOlderMessages = false;
+        this.deps.render();
+      }
     }
 
-    // 2. If this session is currently actively streaming, DO NOT overwrite with stale REST history!
+    // 2. If this session is currently actively streaming:
+    //    - 正常切换保留实时流缓冲区；
+    //    - 断连重连后必须先调 session.resume 校验网关端是否仍在生成，已收口则清理本地卡死流态并重拉权威历史。
+    let streamFinishedOnReconnect = false;
     if (this.deps.getActiveStreamingStoredSessionId() === sessionId) {
-      this.deps.logSession?.info('session is actively streaming, preserving live state', { sessionId });
-      return;
+      if (!forceRefreshAfterReconnect) {
+        this.deps.logSession?.info('session is actively streaming, preserving live state', { sessionId });
+        return;
+      }
+      if (!gatewayClient) return;
+      try {
+        const checkRes = await this.callSessionResume(gatewayClient, sessionId, resolvedBotName);
+        if (currentGen !== this.activeLoadMessagesGeneration || state.activeSessionId !== sessionId) return;
+        const rawCheckInfo = (
+          checkRes && typeof checkRes === 'object' && checkRes.info && typeof checkRes.info === 'object'
+            ? checkRes.info
+            : checkRes
+        ) as Record<string, unknown>;
+        const checkHandles = readSessionHandles(checkRes, sessionId);
+        if (checkHandles) {
+          this.deps.defaultSessionHandleRegistry.register(checkHandles);
+          state.activeLiveSessionId = checkHandles.liveId;
+          this.deps.onLiveSessionReady?.(checkHandles.storedId, checkHandles.liveId, rawCheckInfo, resolvedBotName);
+        } else {
+          state.activeLiveSessionId = sessionId;
+        }
+        const isStillRunning = Boolean(checkRes && checkRes.running);
+        const inflightCheck = checkRes?.inflight && typeof checkRes.inflight === 'object'
+          ? (checkRes.inflight as { streaming?: boolean })
+          : null;
+        if (isStillRunning || Boolean(inflightCheck?.streaming)) {
+          (this.reconnectHooks.onReconnectStillStreaming ?? this.deps.onReconnectStillStreaming)?.(
+            sessionId,
+            state.activeLiveSessionId,
+          );
+          return;
+        }
+        (this.reconnectHooks.onReconnectStreamFinished ?? this.deps.onReconnectStreamFinished)?.(sessionId);
+        streamFinishedOnReconnect = true;
+      } catch (err) {
+        this.deps.logSession?.debug('reconnect streaming reconciliation failed, preserving live buffer', { err });
+        return;
+      }
     }
 
     // 2.5 持久化缓存命中（内存未命中时）：先把历史读出来，再拉最新
     const cacheRef: CacheChannelRef = { profile: resolvedBotName, channel: 'session', channelId: sessionId };
     let cacheFenceMax = 0;
-    if (!cached || cached.length === 0) {
+    if (!silent && (!cached || cached.length === 0)) {
       try {
         const opened = await this.deps.cacheService.openChannel(cacheRef, MESSAGE_CACHE_LIMIT);
         cacheFenceMax = opened.fenceMax;
@@ -347,9 +447,11 @@ export class MessageLoadingService {
 
     // 3. 无网关时到此为止：有缓存就已上屏，没有则保持空态
     if (!gatewayClient) {
-      this.deps.render();
+      if (!silent) this.deps.render();
       return;
     }
+
+    const dropStaleUncommittedTail = streamFinishedOnReconnect || silent;
 
     // 4. High-speed REST pagination: 50 items latest-first
     let fastLoaded = false;
@@ -378,17 +480,38 @@ export class MessageLoadingService {
           cacheFenceMax = 0;
           this.sessionServerOffset.delete(sessionId);
         }
-        const merged = planSessionLoadMerge(parsed, existing, serverPriority || replaceUntrustedCache);
+        const merged = planSessionLoadMerge(
+          parsed,
+          existing,
+          serverPriority || replaceUntrustedCache,
+          { dropStaleUncommittedTail },
+        );
+        const existingLastDurableRowId =
+          existing && existing.length > 0 ? findLastDurableRowId(existing) : undefined;
+        const nonContiguousJump =
+          !serverPriority &&
+          !replaceUntrustedCache &&
+          existingLastDurableRowId !== undefined &&
+          merged.length === parsed.length &&
+          typeof parsed[0]?.rowId === 'number' &&
+          parsed[0].rowId! > existingLastDurableRowId + 1;
         this.deps.sessionMessagesCache.set(sessionId, merged);
         this.deps.persistMessagesToCache(cacheRef, merged, cacheFenceMax);
         this.syncActiveSessionPreviewToRail(sessionId, merged, resolvedBotName);
         const serverKnownCount = outcome.pagination?.returned ?? outcome.messages.length;
         this.sessionAuthoritativeOffset.set(
           sessionId,
-          Math.max(this.sessionAuthoritativeOffset.get(sessionId) || 0, serverKnownCount),
+          nonContiguousJump
+            ? serverKnownCount
+            : Math.max(this.sessionAuthoritativeOffset.get(sessionId) || 0, serverKnownCount),
         );
+        if (nonContiguousJump) this.sessionServerOffset.delete(sessionId);
         const localCoveredRows = countLocalCoveredRows(merged, sessionId);
-        const currentKnown = Math.max(this.sessionServerOffset.get(sessionId) || 0, serverKnownCount, localCoveredRows);
+        const currentKnown = Math.max(
+          this.sessionServerOffset.get(sessionId) || 0,
+          serverKnownCount,
+          localCoveredRows,
+        );
         this.sessionServerOffset.set(sessionId, currentKnown);
         state.messages = merged;
         state.hasOlderMessages = merged.length > serverKnownCount
@@ -396,6 +519,9 @@ export class MessageLoadingService {
           : computeHasOlderMessages(merged, serverKnownCount, INITIAL_WINDOW_PAGE_SIZE, this.hasRemainingParentLineage(sessionId));
         state.dockNotice = '';
         this.deps.onSessionMessagesLoaded?.(sessionId);
+        if (streamFinishedOnReconnect) {
+          (this.reconnectHooks.onForceSyncMessageList ?? this.deps.onForceSyncMessageList)?.(true);
+        }
         this.deps.render();
         fastLoaded = true;
 
@@ -414,20 +540,7 @@ export class MessageLoadingService {
     const resumePromise = (async () => {
       const rpcStartedAt = performance.now();
       try {
-        let res: Record<string, unknown> | null = null;
-        try {
-          res = await gatewayClient.call<Record<string, unknown>>('session.resume', {
-            session_id: sessionId,
-            profile: resolvedBotName,
-          });
-        } catch (firstErr: unknown) {
-          const firstMsg = describeRpcError(firstErr);
-          if (firstMsg.includes('Extra inputs')) {
-            res = await gatewayClient.call<Record<string, unknown>>('session.resume', { session_id: sessionId });
-          } else {
-            throw firstErr;
-          }
-        }
+        const res = await this.callSessionResume(gatewayClient, sessionId, resolvedBotName);
 
         if (currentGen !== this.activeLoadMessagesGeneration || state.activeSessionId !== sessionId) {
           return;

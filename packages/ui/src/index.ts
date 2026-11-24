@@ -133,6 +133,13 @@ export {
   type AgentPresenceIdentitySolo,
   type AgentPresenceIdentityGroup,
 } from './components-react/AgentPresence.js';
+export {
+  ConnectionStatusPill,
+  mountConnectionStatusPill,
+  type ConnectionStatusPillProps,
+  type ConnectionStatusPillHandle,
+  type ConnectionPillLayout,
+} from './components-react/ConnectionStatusPill.js';
 export * from './components-react/settings/index.js';
 export * from './components-react/learning/index.js';
 export { getStatusBarSnapshot, getTitlebarSnapshot } from './components-react/mount-shell-components.js';

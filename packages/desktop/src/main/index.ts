@@ -2,12 +2,13 @@
  * Hermes Flux Desktop Main Process
  */
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, powerMonitor } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '@hermes-flux/core';
 import { createMainWindow } from './window';
 import { registerIpcHandlers } from './ipc';
+import { registerPowerEvents } from './powerEvents';
 import { HermesFluxTray } from './tray';
 import { initFileLogging } from './logFile';
 
@@ -139,6 +140,9 @@ if (!gotTheLock) {
 
     // Register IPC channels
     registerIpcHandlers(win);
+
+    // 全局注册系统休眠/恢复/解锁监听，驱动渲染层第一时间探测半开长连接
+    registerPowerEvents(powerMonitor, () => mainWindow);
 
     // Initialize tray
     trayManager = new HermesFluxTray(win);

@@ -323,13 +323,18 @@ test('StatusBar、Keyboard 软键盘避让与 Android backButton 返回消费闭
       globalThis.document = savedDoc;
     }
 
-    // App foreground resume -> hermes-mobile-resume
+    // App foreground resume -> hermes-mobile-resume, background -> hermes-mobile-pause
     let resumeCount = 0;
+    let pauseCount = 0;
     env.win.addEventListener('hermes-mobile-resume', () => {
       resumeCount += 1;
     });
+    env.win.addEventListener('hermes-mobile-pause', () => {
+      pauseCount += 1;
+    });
     appListeners.get('appStateChange')?.({ isActive: false });
     assert.equal(resumeCount, 0);
+    assert.equal(pauseCount, 1);
     appListeners.get('appStateChange')?.({ isActive: true });
     assert.equal(resumeCount, 1);
 
@@ -376,6 +381,14 @@ test('StatusBar、Keyboard 软键盘避让与 Android backButton 返回消费闭
         minimizeApp: async () => {},
         addListener: async () => {
           throw new Error('app listen rejected');
+        },
+      },
+      network: {
+        getStatus: async () => {
+          throw new Error('net status rejected');
+        },
+        addListener: async () => {
+          throw new Error('net listen rejected');
         },
       },
     });
@@ -756,5 +769,136 @@ test('hapticSelection 与 saveFile remoteUrl 下载导出契约', async () => {
     assert.equal(shareCalls[0]?.url, 'file:///docs/src.bin');
   } finally {
     globalThis.fetch = prevFetch;
+  }
+});
+
+test('Capacitor Network 原生网络切换监听、getNetworkStatus 降级与鉴权请求超时保护', async () => {
+  const env = createDomEnv();
+  const prevFetch = globalThis.fetch;
+  try {
+    let networkListener = null;
+    const dispatched = [];
+    env.win.addEventListener('hermes-mobile-network-change', (ev) => {
+      dispatched.push(ev.detail);
+    });
+
+    let statusCall = 0;
+    const bridge = createCapacitorPlatformBridge({
+      platform: 'ios',
+      isPluginAvailable: (name) => name === 'Network',
+      authTimeoutMs: 25,
+      network: {
+        getStatus: async () => {
+          statusCall += 1;
+          if (statusCall === 1) return { connected: true, connectionType: '' };
+          if (statusCall === 2) return { connected: true, connectionType: 'wifi' };
+          if (statusCall === 3) return { connected: true, connectionType: '' };
+          throw new Error('network status unavailable');
+        },
+        addListener: async (_eventName, cb) => {
+          networkListener = cb;
+          return { remove: async () => {} };
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Wi-Fi -> Cellular 触发事件并保留 previousType
+    networkListener?.({ connected: true, connectionType: 'cellular' });
+    networkListener?.({ connected: false, connectionType: '' });
+    assert.deepEqual(dispatched, [
+      { connected: true, connectionType: 'cellular', previousType: 'unknown' },
+      { connected: false, connectionType: 'unknown', previousType: 'cellular' },
+    ]);
+
+    // window 缺失时安全早退不抛错
+    const savedWin = globalThis.window;
+    globalThis.window = undefined;
+    try {
+      networkListener?.({ connected: true, connectionType: 'wifi' });
+    } finally {
+      globalThis.window = savedWin;
+    }
+
+    // getNetworkStatus 成功与降级分支
+    assert.deepEqual(await bridge.getNetworkStatus?.(), { connected: true, connectionType: 'wifi' });
+    assert.deepEqual(await bridge.getNetworkStatus?.(), { connected: true, connectionType: 'unknown' });
+
+    const navDesc = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', { value: { onLine: false }, configurable: true });
+    assert.deepEqual(await bridge.getNetworkStatus?.(), { connected: false, connectionType: 'none' });
+    Object.defineProperty(globalThis, 'navigator', { value: { onLine: true }, configurable: true });
+    assert.deepEqual(await bridge.getNetworkStatus?.(), { connected: true, connectionType: 'unknown' });
+    Object.defineProperty(globalThis, 'navigator', { value: undefined, configurable: true });
+    assert.deepEqual(await bridge.getNetworkStatus?.(), { connected: true, connectionType: 'unknown' });
+    if (navDesc) Object.defineProperty(globalThis, 'navigator', navDesc);
+
+    // authenticateGateway 超时中断必须及时 aborted 并返回 ok: false
+    globalThis.fetch = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('auth fetch aborted')));
+      });
+    const authRes = await bridge.authenticateGateway({
+      url: 'https://gw.example',
+      username: 'u',
+      password: 'p',
+    });
+    assert.equal(authRes.ok, false);
+    assert.match(authRes.message, /auth fetch aborted/);
+
+    // 3 跳完整鉴权成功闭环（覆蓋 login + ws-ticket 正常响应路径）
+    let hop = 0;
+    globalThis.fetch = async (reqUrl) => {
+      hop += 1;
+      const u = String(reqUrl);
+      if (u.endsWith('/api/status')) {
+        return { ok: true, status: 200, json: async () => ({ auth_required: true, version: '0.24.0' }) };
+      }
+      if (u.endsWith('/auth/password-login')) {
+        return { ok: true, status: 200 };
+      }
+      if (u.endsWith('/api/auth/ws-ticket')) {
+        return { ok: true, status: 200, json: async () => ({ ticket: 'mobile-ticket-1' }) };
+      }
+      throw new Error(`unexpected url ${u}`);
+    };
+    const okAuth = await bridge.authenticateGateway({
+      url: 'https://gw.example',
+      username: 'u',
+      password: 'p',
+    });
+    assert.equal(hop, 3);
+    assert.equal(okAuth.ok, true);
+    assert.equal(okAuth.ticket, 'mobile-ticket-1');
+
+    // httpProxy 必须强制超时中止悬空请求，避免后台恢复后半开通道永久卡死
+    const proxyTimeoutBridge = createCapacitorPlatformBridge({
+      platform: 'ios',
+      isPluginAvailable: () => false,
+      httpProxyTimeoutMs: 25,
+    });
+    globalThis.fetch = (_reqUrl, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('httpProxy aborted by timeout')));
+      });
+    await assert.rejects(
+      proxyTimeoutBridge.httpProxy({ baseUrl: 'https://gw.example', path: '/api/sessions' }),
+      /httpProxy aborted by timeout/,
+    );
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ ok: true }),
+    });
+    assert.deepEqual(
+      await proxyTimeoutBridge.httpProxy({ baseUrl: 'https://gw.example', path: '/api/sessions' }),
+      { ok: true },
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+    env.restore();
   }
 });

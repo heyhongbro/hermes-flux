@@ -25,7 +25,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `source` 为真实源码路径 | 违者 FAIL |
 | `source`+`symbol` 组合唯一 | 违者 FAIL |
 
-## 总览（59 条，覆盖 16 个领域）
+## 总览（62 条，覆盖 17 个领域）
 
 ### ATTACH（5 条）
 
@@ -57,6 +57,14 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-CACHE-06` | 在途展示序不撞号且强保序 | `packages/core/src/cache/cacheMerge.ts` → `mergeRemoteWindow#displaySeq` | `cache-fence-formal.test.mjs` | 拉取在途期间生成的 displaySeq 与远端冲突，界面错序 |
 | `INV-CACHE-07` | appendRows 同键展示序不漂移 | `packages/core/src/cache/cacheMerge.ts` → `appendRows` | `cache-fence-formal.test.mjs` | 重复追加同一批消息时 displaySeq 重新计算，行跳动 |
 | `INV-CACHE-08` | 更早分片展示序精确切片 | `packages/core/src/cache/cacheMerge.ts` → `sortByDisplayAsc` | `cache-fence-formal.test.mjs` | 按 orderKey 翻页取 displaySeq 不连续，历史消息顺序错乱 |
+
+### CONN（3 条）
+
+| 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
+|---|---|---|---|---|
+| `INV-CONN-01` | 认证失效与手动断连在连接相位归约中的绝对支配律（unconfigured > manual/auth-offline > transient reconnect） | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase#auth-dominance` | `connection-phase-formal.test.mjs` | 401 密码失效或用户主动断开后界面仍虚假显示重连胶囊并死循环撞墙重试 |
+| `INV-CONN-02` | 7态连接相位全序覆盖与 sync 优先级单调律 | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase` | `connection-phase-formal.test.mjs` | HANDSHAKING 或 RECONNECTING 被错误归约为已连接或完全断网，导致标题栏与输入舱状态撕裂 |
+| `INV-CONN-03` | 冷启动退避重试时延有界且单调非降 | `packages/core/src/rpc/connectionPhase.ts` → `computeColdStartRetryDelayMs` | `connection-phase-formal.test.mjs` | 冷启动网络未就绪时退避越界卡死或零延迟风暴重试打爆电池与网关 |
 
 ### FS（5 条）
 

@@ -2777,3 +2777,36 @@ html[data-page-hidden="true"] .m-trace-dot {
 [data-appearance="light"] .m-sheet-option__check {
   color: color-mix(in oklab, var(--primary) 48%, var(--foreground));
 }
+
+/* ---------------- 移动端连接与重连状态胶囊 ---------------- */
+.m-stage__presence-scrim .m-stage__presence-host[data-replaced="true"] {
+  position: absolute;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.m-stage__presence-scrim .conn-pill--stage {
+  max-width: 100%;
+  box-shadow: var(--shadow-card);
+}
+
+.m-conn-floating-host {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 62px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 55;
+  pointer-events: none;
+  max-width: calc(100vw - 28px);
+}
+
+.m-shell .conn-pill__action::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+}

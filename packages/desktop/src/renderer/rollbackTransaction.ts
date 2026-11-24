@@ -50,6 +50,28 @@ export function takeServerPriority(
 }
 
 /**
+ * 逆序查找列表中最后一条已落盘消息的索引与正数持久化 rowId。
+ * 忽略末尾尚无 rowId 的乐观气泡与系统分隔行，避免断连跨越窗口时因尾部存在临时行而漏判断层。
+ */
+export function findLastDurableRow<T extends { rowId?: number }>(
+  messages: readonly T[],
+): { index: number; rowId: number } | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const rid = messages[i]?.rowId;
+    if (typeof rid === 'number' && rid > 0) {
+      return { index: i, rowId: rid };
+    }
+  }
+  return undefined;
+}
+
+export function findLastDurableRowId<T extends { rowId?: number }>(
+  messages: readonly T[],
+): number | undefined {
+  return findLastDurableRow(messages)?.rowId;
+}
+
+/**
  * 权威加载合并决策（P0-1 防复活核心不变量的唯一裁决点）。
  * 语义：
  * - serverPriority=true（刚发生历史截断成功）：无条件以服务端为准，绝不"保留更长本地"，
@@ -61,7 +83,8 @@ export function takeServerPriority(
 export function planSessionLoadMerge<T extends { id: string; rowId?: number }>(
   parsed: readonly T[],
   existing: readonly T[] | undefined,
-  serverPriority: boolean
+  serverPriority: boolean,
+  options?: { dropStaleUncommittedTail?: boolean },
 ): T[] {
   if (serverPriority) return [...parsed];
   if (!existing || existing.length === 0) return [...parsed];
@@ -75,22 +98,33 @@ export function planSessionLoadMerge<T extends { id: string; rowId?: number }>(
     return false;
   };
 
+  /**
+   * 逆序定位最后一个具备持久化正数 rowId 的消息索引与 rowId，忽略末尾未落盘乐观气泡或系统提示。
+   */
+  const lastDurable = findLastDurableRow(existing);
+
   const lastParsed = parsed[parsed.length - 1];
   const matchIdx = lastParsed ? existing.findIndex((m) => matchKey(m, lastParsed)) : -1;
 
   if (existing.length > parsed.length) {
     if (matchIdx < 0) {
-      // 检查 parsed 是否整体是 existing 之后的新消息（按 rowId 单调递增判定）
+      // 检查 parsed 是否整体是 existing 之后的新消息（按持久化 rowId 单调递增判定）
       const firstParsed = parsed[0];
-      const lastExisting = existing[existing.length - 1];
       if (
         firstParsed &&
-        lastExisting &&
+        lastDurable &&
         typeof firstParsed.rowId === 'number' &&
-        typeof lastExisting.rowId === 'number' &&
-        firstParsed.rowId > lastExisting.rowId
+        firstParsed.rowId > lastDurable.rowId
       ) {
-        return [...existing, ...parsed];
+        // 仅当 rowId 严格紧邻连续 (+1) 时追加；一旦存在 >1 行断层（休眠/后台期间跨越 >50 条），
+        // 采用最新权威窗口防止两段拼出永久静音断层空洞；重连静默合并同时清掉末尾过期未落盘行。
+        if (firstParsed.rowId === lastDurable.rowId + 1) {
+          const head = options?.dropStaleUncommittedTail
+            ? existing.slice(0, lastDurable.index + 1)
+            : existing;
+          return [...head, ...parsed];
+        }
+        return [...parsed];
       }
       // 检查 parsed 内部是否存在任何消息能够对齐 existing（向前兼容循环查找，避免调用 ES2023 findLastIndex）
       let anyMatchExistingIdx = -1;
@@ -105,8 +139,12 @@ export function planSessionLoadMerge<T extends { id: string; rowId?: number }>(
         const matchedParsedIdx = parsed.findIndex((p) => matchKey(p, matchedItem));
         const head = existing.slice(0, anyMatchExistingIdx + 1);
         const middle = parsed.slice(matchedParsedIdx + 1);
-        // 保护在途未落盘消息：如果 existing 尾部包含没有 rowId 的临时用户消息，必须保留
-        const uncommittedTail = existing.slice(anyMatchExistingIdx + 1).filter((m) => typeof m.rowId !== 'number' || m.rowId <= 0);
+        // 若断连重连后服务端已经持久化新行（middle.length > 0）且调用方确认当前无活跃流式回合，
+        // 丢弃本地残留的无 rowId 临时行，避免同义消息双重气泡。
+        const uncommittedTail =
+          options?.dropStaleUncommittedTail && middle.length > 0
+            ? []
+            : existing.slice(anyMatchExistingIdx + 1).filter((m) => typeof m.rowId !== 'number' || m.rowId <= 0);
         return [...head, ...middle, ...uncommittedTail];
       }
       return [...existing];

@@ -4,6 +4,7 @@
 
 import type {
   FileTreeLoadState,
+  GatewayConnectionPhase,
   LearningDetailState,
   LearningLoadState,
 } from '@hermes-flux/core';
@@ -68,6 +69,9 @@ export interface MobileWorkspaceSnapshot {
   locale: 'zh' | 'en';
   gatewayConnected: boolean;
   gatewayConnecting: boolean;
+  connectionPhase?: GatewayConnectionPhase;
+  connectionReconnectAttempt?: number;
+  connectionAuthError?: boolean;
   homeModel: MobileHomeModel;
   homeTab: MobileHomeTab;
   allProfiles: LeftRailProfile[];
@@ -190,6 +194,7 @@ export interface MobileWorkspaceActions {
   onCloseSettings: () => void;
   onSelectSettingsSubpage: (subpage: MobileSettingsSubpage) => void;
   onSetAppearancePreference: (pref: MobileAppearancePreference) => void;
+  onRetryConnect?: () => void;
   settingsActions: SettingsActions;
 }
 

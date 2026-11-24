@@ -75,6 +75,8 @@ export interface SideAgentCapsuleView {
 export interface MiddlePodProps {
   gatewayConnected: boolean;
   gatewayConnecting?: boolean;
+  /** 重连/瞬态断连期保留既有对话流画布（不切回 gateway onboarding 白屏卡片） */
+  preserveStage?: boolean;
   gatewayUrl?: string;
   username?: string;
   password?: string;
@@ -154,6 +156,25 @@ export function renderConversationCanvas(props: MiddlePodProps): string {
       <div class="content-fluid-canvas conv-canvas" data-conv-layer="canvas">
         ${renderContextGauge(props.contextUsage)}
         <div id="react-message-list-host" style="display:contents"></div>
+      </div>
+    `;
+  }
+
+  if (props.preserveStage && props.messages.length > 0 && !props.messages.every((m) => (m.displayKind ?? 'user') === 'hidden')) {
+    return `
+      <div class="content-fluid-canvas conv-canvas" data-conv-layer="canvas">
+        ${renderContextGauge(props.contextUsage)}
+        <div id="react-message-list-host" style="display:contents"></div>
+        ${(props.sideAgentCapsules || []).map(renderSideAgentCapsule).join('')}
+      </div>
+    `;
+  }
+
+  if (props.preserveStage && !props.gatewayConnected) {
+    return `
+      <div class="content-fluid-canvas conv-canvas" data-conv-layer="canvas">
+        ${renderContextGauge(props.contextUsage)}
+        ${renderWelcomeEmptyState()}
       </div>
     `;
   }
@@ -274,6 +295,9 @@ export function renderMiddlePod(props: MiddlePodProps): string {
 
       <!-- Agent 在场指示器 Host（React 岛，常驻 pod 层，绝不进滚动流） -->
       <div id="react-conv-presence-host"></div>
+
+      <!-- 连接与同步状态胶囊 Host（React 岛，重连期顶替顶部在场槽位） -->
+      <div id="react-conv-connection-host" data-flux-island="true"></div>
 
       <!-- Prompt Navigator Rail Host (React 岛，常驻，绝不进滚动流) -->
       <div id="react-prompt-navigator-host"></div>

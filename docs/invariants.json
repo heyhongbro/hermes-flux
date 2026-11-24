@@ -478,6 +478,30 @@
       "symbol": "applyListSyncError",
       "test": "packages/core/__tests__/formal/subagentStatusInvariants.test.mjs",
       "failure": "subagent.list 单次超时或报错后把状态栏已有的运行中/历史子 Agent 列表整页抹白"
+    },
+    {
+      "id": "INV-CONN-01",
+      "topic": "认证失效与手动断连在连接相位归约中的绝对支配律（unconfigured > manual/auth-offline > transient reconnect）",
+      "source": "packages/core/src/rpc/connectionPhase.ts",
+      "symbol": "resolveConnectionPhase#auth-dominance",
+      "test": "packages/core/__tests__/formal/connection-phase-formal.test.mjs",
+      "failure": "401 密码失效或用户主动断开后界面仍虚假显示重连胶囊并死循环撞墙重试"
+    },
+    {
+      "id": "INV-CONN-02",
+      "topic": "7态连接相位全序覆盖与 sync 优先级单调律",
+      "source": "packages/core/src/rpc/connectionPhase.ts",
+      "symbol": "resolveConnectionPhase",
+      "test": "packages/core/__tests__/formal/connection-phase-formal.test.mjs",
+      "failure": "HANDSHAKING 或 RECONNECTING 被错误归约为已连接或完全断网，导致标题栏与输入舱状态撕裂"
+    },
+    {
+      "id": "INV-CONN-03",
+      "topic": "冷启动退避重试时延有界且单调非降",
+      "source": "packages/core/src/rpc/connectionPhase.ts",
+      "symbol": "computeColdStartRetryDelayMs",
+      "test": "packages/core/__tests__/formal/connection-phase-formal.test.mjs",
+      "failure": "冷启动网络未就绪时退避越界卡死或零延迟风暴重试打爆电池与网关"
     }
   ]
 }
