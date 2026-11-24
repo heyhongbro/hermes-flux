@@ -27,6 +27,20 @@
         },
         {
           "module": "system",
+          "method": "shell.exec",
+          "ok": true,
+          "params": {
+            "command": "pwd",
+            "profile": "default"
+          },
+          "resultKeys": [
+            "stdout",
+            "stderr",
+            "code"
+          ]
+        },
+        {
+          "module": "system",
           "method": "model.options",
           "ok": true,
           "params": {
@@ -750,6 +764,20 @@
       "params": {},
       "resultKeys": [
         "per_session_exclusive_submit"
+      ]
+    },
+    {
+      "module": "system",
+      "method": "shell.exec",
+      "ok": true,
+      "params": {
+        "command": "pwd",
+        "profile": "default"
+      },
+      "resultKeys": [
+        "stdout",
+        "stderr",
+        "code"
       ]
     },
     {

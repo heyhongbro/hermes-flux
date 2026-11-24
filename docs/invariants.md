@@ -25,7 +25,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `source` 为真实源码路径 | 违者 FAIL |
 | `source`+`symbol` 组合唯一 | 违者 FAIL |
 
-## 总览（58 条，覆盖 16 个领域）
+## 总览（66 条，覆盖 17 个领域）
 
 ### ATTACH（5 条）
 
@@ -58,7 +58,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-CACHE-07` | appendRows 同键展示序不漂移 | `packages/core/src/cache/cacheMerge.ts` → `appendRows` | `cache-fence-formal.test.mjs` | 重复追加同一批消息时 displaySeq 重新计算，行跳动 |
 | `INV-CACHE-08` | 更早分片展示序精确切片 | `packages/core/src/cache/cacheMerge.ts` → `sortByDisplayAsc` | `cache-fence-formal.test.mjs` | 按 orderKey 翻页取 displaySeq 不连续，历史消息顺序错乱 |
 
-### FS（5 条）
+### FS（6 条）
 
 | 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
 |---|---|---|---|---|
@@ -67,6 +67,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-FS-03` | 子目录懒加载合并保持非目标子树完整与幂等 | `packages/core/src/fs/fileTreeService.ts` → `mergeDirectoryChildren` | `file-tree-formal.test.mjs` | 展开一个子目录把用户已展开的其他目录重置或清空 |
 | `INV-FS-04` | 文件树过滤完备性（无空祖先残留且命中叶/祖先路径可回溯） | `packages/core/src/fs/fileTreeService.ts` → `filterFileTree` | `file-tree-formal.test.mjs` | 过滤关键字后留下大量空文件夹或漏掉深层匹配文件 |
 | `INV-FS-05` | 二进制文件与超大文件预览阻断单调性（二进制恒优先于体积上限拦截且绝不误杀图片） | `packages/core/src/fs/fileService.ts` → `evaluateFilePreviewGuard` | `file-tree-formal.test.mjs` | .exe 等二进制文件被当作文本渲染成乱码，或超大文件直接撑爆前端 DOM 表格 |
+| `INV-FS-06` | 项目目录 picker 单段命名清洗、POSIX shell 安全引用与锁定根目录不可重命名守卫 | `packages/core/src/fs/directoryPickerService.ts` → `validateDirectoryName` | `file-tree-formal.test.mjs` | 目录创建或重命名遭 `..`/控制字符/`.env` 注入越界，或误改 `/`/locked_root 破坏工作区 |
 
 ### LEARN（1 条）
 
@@ -79,6 +80,18 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
 |---|---|---|---|---|
 | `INV-MSG-01` | 用户消息附件清单与多模态分片往返解析无损收敛且去重 | `packages/core/src/session/messageAttachments.ts` → `extractMessageAttachments` | `message-attachments-formal.test.mjs` | 发送图片或文件后用户气泡不显示附件缩略图与文件名，或仅发附件无正文时被静默丢弃 |
+
+### ORG（7 条）
+
+| 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
+|---|---|---|---|---|
+| `INV-ORG-01` | Bot 终身主工位（Forever Chat）物理免疫（hidden/isForeverChat 永不归档、永不移入容器） | `packages/core/src/organization/reducer.ts` → `resolveEntityContainer#forever-chat-immunity` | `conversation-org-formal.test.mjs` | Bot 终身主工位被错误标记完成或拖入项目/自定义文件夹，破坏主工位物理隔离 |
+| `INV-ORG-02` | 单归属容器优先级裁决收敛（__none__ 哨兵阻断 cwd 自动匹配，显式归属优先于路径匹配） | `packages/core/src/organization/reducer.ts` → `resolveEntityContainer#precedence` | `conversation-org-formal.test.mjs` | 用户显式移回未分类后刷新又被 cwd 重新吸回项目，或跨自定义文件夹发生多归属分裂 |
+| `INV-ORG-03` | 项目路径最长前缀匹配与严格目录边界防溢出（排除已归档项目） | `packages/core/src/organization/pathMatch.ts` → `matchProjectByCwd#longest-prefix` | `conversation-org-formal.test.mjs` | /work/app-v2 误匹配 /work/app、父项目抢占子项目或已归档项目继续吸纳新会话 |
+| `INV-ORG-04` | 删除自定义文件夹非破坏性守恒（仅清除目标文件夹映射，100% 保留实体与他目录归属） | `packages/core/src/organization/reducer.ts` → `deleteFolderInMeta#non-destructive` | `conversation-org-formal.test.mjs` | 删除自定义文件夹导致内部普通会话或群聊被误删，或残留悬空指向 |
+| `INV-ORG-05` | 群聊完成态往返收敛与强幂等 | `packages/core/src/organization/reducer.ts` → `setRoomDoneInMeta#round-trip` | `conversation-org-formal.test.mjs` | 标记群聊已完成再恢复进行中后误清他群状态，或重复点击写入不一致 |
+| `INV-ORG-06` | ui_meta 三路 CAS 合并双端并发保序且零悬空引用 | `packages/core/src/organization/reducer.ts` → `mergeFoldersMetaForCas#disjoint-preserve` | `conversation-org-formal.test.mjs` | 多端并发新建文件夹或移动会话时 CAS 重试互相覆盖，或产生指向已删目录的幽灵键 |
+| `INV-ORG-07` | 僵尸归属键清理完备性与二次清理强幂等 | `packages/core/src/organization/reducer.ts` → `pruneStaleOrgKeys#idempotent` | `conversation-org-formal.test.mjs` | 已删会话或已解散群聊长期残留幽灵映射，或垃圾回收误删有效/未加载项 |
 
 ### PAGE（2 条）
 

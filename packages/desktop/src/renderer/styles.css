@@ -1693,6 +1693,11 @@ html[data-rail-resizing] webview {
   box-shadow: var(--shadow-window);
   padding: 4px;
   min-width: 168px;
+  max-width: min(280px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1702,6 +1707,7 @@ html[data-rail-resizing] webview {
 }
 .flux-context-menu .ctx-item {
   width: 100%;
+  min-width: 0;
   min-height: 32px;
   padding: 4px 12px;
   border-radius: var(--radius-card);
@@ -1711,10 +1717,18 @@ html[data-rail-resizing] webview {
   display: flex;
   align-items: center;
   gap: 8px;
+  box-sizing: border-box;
   cursor: pointer;
   text-align: left;
   font-size: var(--fs-aux);
   transition: background-color 0.1s ease, color 0.1s ease;
+}
+.flux-context-menu .ctx-item-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .flux-context-menu .ctx-item:hover {
   background: var(--card-hover);
@@ -1774,6 +1788,26 @@ html[data-rail-resizing] webview {
 }
 .flux-confirm-ok--danger:hover {
   background: color-mix(in srgb, var(--destructive) 20%, transparent);
+}
+.flux-confirm-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--input);
+  color: var(--foreground);
+  font-size: var(--fs-body);
+  outline: none;
+  user-select: text;
+  transition: border-color var(--duration-fast) ease, box-shadow var(--duration-fast) ease;
+}
+.flux-confirm-input::placeholder {
+  color: var(--muted-foreground);
+}
+.flux-confirm-input:focus-visible {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 2px var(--ring);
 }
 
 /* Animations */
@@ -2358,7 +2392,8 @@ blockquote {
 }
 @media (min-width: 769px) {
   .flux-left-rail[data-rail-layout="grouped"] .flux-grouped-top-actions,
-  .flux-left-rail[data-rail-layout="grouped"] .session-scroll-area {
+  .flux-left-rail[data-rail-layout="grouped"] .session-scroll-area,
+  .flux-left-rail .flux-rail-done-footer {
     margin-right: var(--geo-resize-handle);
   }
 }
@@ -2399,6 +2434,53 @@ blockquote {
   .flux-grouped-section__body {
     transition: none !important;
   }
+}
+
+.flux-rail-done-footer {
+  max-height: 42%;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+
+.flux-rail-done-footer .flux-grouped-section__body {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+.flux-rail-done-footer .flux-grouped-section__body[data-expanded="true"] {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.flux-rail-done-footer .flux-grouped-section__body-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100%;
+}
+
+.flux-rail-done-footer__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.flux-context-menu .ctx-section-label {
+  padding: 4px 12px 2px;
+  font-size: var(--fs-caption);
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
+.flux-context-menu .ctx-item--active {
+  background: var(--card-active);
+}
+
+.flux-context-menu .ctx-item-check {
+  margin-left: auto;
+  color: var(--primary);
+  font-weight: 600;
 }
 
 

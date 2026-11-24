@@ -26,7 +26,13 @@ import {
   RailEntityRow,
   RenameGroup,
   type RailEntityRowProps,
+  type RailRowHoverAction,
 } from './RailEntityRow.js';
+import {
+  RailDoneFooterSection,
+  RailOrgContainerSection,
+  buildDoneHoverAction,
+} from './RailOrgContainers.js';
 import { GroupedLeftRail } from './GroupedLeftRail.js';
 import type { GroupedLeftRailModel } from './groupedLeftRailModel.js';
 
@@ -48,7 +54,7 @@ export interface LeftRailProps {
   onSelectSession: (sessionId: string, botName?: string) => void;
   onSelectBot: (profileName: string) => void;
   onSelectGroup: (roomId: string) => void;
-  onOpenSessionMenu: (sessionId: string, title: string, x: number, y: number) => void;
+  onOpenSessionMenu: (sessionId: string, title: string, x: number, y: number, profile?: string) => void;
   onOpenBotMenu: (profileName: string, x: number, y: number) => void;
   onOpenGroupMenu: (roomId: string, name: string, x: number, y: number) => void;
   onSearchChange: (value: string) => void;
@@ -61,6 +67,14 @@ export interface LeftRailProps {
   onConfirmGroupRename: (roomId: string, name: string) => void;
   onCancelGroupRename: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onToggleContainer?: (containerId: string) => void;
+  onToggleDoneSection?: () => void;
+  onRetryDoneSection?: () => void;
+  onRequestMarkDone?: (entityKind: 'session' | 'group', id: string, title: string, profile?: string) => void;
+  onRestoreDone?: (entityKind: 'session' | 'group', id: string, profile?: string) => void;
+  onOpenFolderMenu?: (folderId: string, name: string, x: number, y: number) => void;
+  onOpenRailMenu?: (x: number, y: number) => void;
+  onNewChatInContainer?: (kind: 'session' | 'group', containerId: string) => void;
 }
 
 /**
@@ -112,17 +126,28 @@ const AgentStationItem = React.memo(function AgentStationItem({
  * 会话行（消费统一的 RailEntityRow 组件）。
  * 双轨经典模式下普通会话不支持头像，样式完全作为全局统一基准。
  */
-const SessionRow = React.memo(function SessionRow({ session, active, compact, activityVariant, onSelect, onMenu }: {
+const SessionRow = React.memo(function SessionRow({
+  session,
+  active,
+  compact,
+  activityVariant,
+  hoverAction,
+  className,
+  onSelect,
+  onMenu,
+}: {
   session: LeftRailSession;
   active: boolean;
   compact?: boolean;
   activityVariant?: ActivityIndicatorVariant;
+  hoverAction?: RailRowHoverAction;
+  className?: string;
   onSelect: () => void;
   onMenu: (x: number, y: number) => void;
 }): React.ReactElement {
   const subtitle = toSnippet(session.preview) || toSnippet(session.title);
   return <RailEntityRow
-    className="session-item"
+    className={className ? `session-item ${className}` : 'session-item'}
     active={active}
     compact={compact}
     title={session.title}
@@ -134,26 +159,47 @@ const SessionRow = React.memo(function SessionRow({ session, active, compact, ac
     activityTransitionToken={session.activityTransitionToken}
     entityKind="session"
     activityVariant={activityVariant}
+    hoverAction={hoverAction}
     onClick={onSelect}
-    onContextMenu={(event) => { event.preventDefault(); onMenu(event.clientX, event.clientY); }}
+    onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onMenu(event.clientX, event.clientY); }}
     dataAttributes={{
       'data-id': session.id,
       'data-title': session.title,
       'data-bot': session.botName || '',
     }}
   />;
-}, (prev, next) => prev.session === next.session && prev.active === next.active && prev.compact === next.compact && prev.activityVariant === next.activityVariant);
+}, (prev, next) =>
+  prev.session === next.session &&
+  prev.active === next.active &&
+  prev.compact === next.compact &&
+  prev.activityVariant === next.activityVariant &&
+  prev.hoverAction?.label === next.hoverAction?.label &&
+  prev.className === next.className);
 
 /**
  * 群聊行（消费统一的 RailEntityRow 组件）。
  * 传入多人拼贴头像 CollageAvatar，其余尺寸排版与普通会话 100% 对齐。
  */
-const GroupRow = React.memo(function GroupRow({ group, profiles, active, editing, activityVariant, onSelect, onMenu, onConfirmRename, onCancelRename }: {
+const GroupRow = React.memo(function GroupRow({
+  group,
+  profiles,
+  active,
+  editing,
+  activityVariant,
+  hoverAction,
+  className,
+  onSelect,
+  onMenu,
+  onConfirmRename,
+  onCancelRename,
+}: {
   group: LeftRailGroupRoom;
   profiles: LeftRailProfile[];
   active: boolean;
   editing: boolean;
   activityVariant?: ActivityIndicatorVariant;
+  hoverAction?: RailRowHoverAction;
+  className?: string;
   onSelect: () => void;
   onMenu: (x: number, y: number) => void;
   onStartRename: () => void;
@@ -167,7 +213,7 @@ const GroupRow = React.memo(function GroupRow({ group, profiles, active, editing
   }
   const subtitle = toSnippet(group.lastMessage) || t('rail.groupsMembers', { count: String(group.members.length) });
   return <RailEntityRow
-    className="rail-group-item"
+    className={className ? `rail-group-item ${className}` : 'rail-group-item'}
     active={active}
     avatar={<CollageAvatar members={group.members} profiles={profiles} size={36} />}
     title={group.name}
@@ -178,13 +224,21 @@ const GroupRow = React.memo(function GroupRow({ group, profiles, active, editing
     activityTransitionToken={group.activityTransitionToken}
     entityKind="group"
     activityVariant={activityVariant}
+    hoverAction={hoverAction}
     onClick={onSelect}
-    onContextMenu={(event) => { event.preventDefault(); onMenu(event.clientX, event.clientY); }}
+    onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onMenu(event.clientX, event.clientY); }}
     dataAttributes={{
       'data-room-id': group.roomId,
     }}
   />;
-}, (prev, next) => prev.group === next.group && prev.profiles === next.profiles && prev.active === next.active && prev.editing === next.editing && prev.activityVariant === next.activityVariant);
+}, (prev, next) =>
+  prev.group === next.group &&
+  prev.profiles === next.profiles &&
+  prev.active === next.active &&
+  prev.editing === next.editing &&
+  prev.activityVariant === next.activityVariant &&
+  prev.hoverAction?.label === next.hoverAction?.label &&
+  prev.className === next.className);
 
 /**
  * 左侧 dual-rail 经典形态组件实现。
@@ -219,6 +273,7 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
 
   const openBotMenu = (event: React.MouseEvent, name: string): void => {
     event.preventDefault();
+    event.stopPropagation();
     props.onOpenBotMenu(name, event.clientX, event.clientY);
   };
 
@@ -315,31 +370,118 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
           />}
       </div>
 
-      <div className="session-scroll-area min-h-0 flex-1 overflow-y-auto px-2 pb-3 mr-[var(--geo-resize-handle)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" id="session-list-container">
+      <div id="session-list-container" className="session-scroll-area min-h-0 flex-1 overflow-y-auto px-2 pb-3 mr-[var(--geo-resize-handle)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        onContextMenu={(event) => {
+          if (!props.onOpenRailMenu) return;
+          if (
+            event.target instanceof Element &&
+            event.target.closest(
+              '[data-section="bots"], [data-entity-row], [data-container-id], .rail-pinned-bot-row, .session-item, .rail-group-item, button, input',
+            )
+          ) {
+            return;
+          }
+          event.preventDefault();
+          props.onOpenRailMenu(event.clientX, event.clientY);
+        }}
+      >
         {model.error && <div id="session-list-error" role="alert" className="m-1 rounded-card border border-border-strong bg-panel p-2 text-aux text-foreground">{model.error}</div>}
 
-        {model.visibleGroups.length > 0 && <section className="mb-2">
+        {[...model.projectContainers, ...model.folderContainers].map((bucket) => (
+          <RailOrgContainerSection
+            key={bucket.containerId}
+            kind={bucket.kind}
+            id={bucket.id}
+            containerId={bucket.containerId}
+            name={bucket.name}
+            color={bucket.color}
+            expanded={bucket.effectiveExpanded}
+            isSearching={Boolean(props.searchQuery.trim())}
+            isEmpty={bucket.items.length === 0}
+            onToggle={() => props.onToggleContainer?.(bucket.containerId)}
+            onNewChat={
+              props.onNewChatInContainer
+                ? () => props.onNewChatInContainer?.('session', bucket.containerId)
+                : undefined
+            }
+            onOpenFolderMenu={
+              bucket.kind === 'folder' && props.onOpenFolderMenu
+                ? (x, y) => props.onOpenFolderMenu?.(bucket.id, bucket.name, x, y)
+                : undefined
+            }
+          >
+            {bucket.items.map((item) =>
+              item.kind === 'group' ? (
+                <GroupRow
+                  key={`group-${item.group.roomId}`}
+                  group={item.group}
+                  profiles={props.groupAvatars || []}
+                  active={isGroupFocused(focus, item.group.roomId)}
+                  editing={props.editingGroupRoomId === item.group.roomId}
+                  activityVariant={props.activityVariant}
+                  hoverAction={buildDoneHoverAction({
+                    isDone: false,
+                    title: item.group.name,
+                    onRequestMarkDone: props.onRequestMarkDone
+                      ? () => props.onRequestMarkDone?.('group', item.group.roomId, item.group.name)
+                      : undefined,
+                  })}
+                  onSelect={() => props.onSelectGroup(item.group.roomId)}
+                  onMenu={(x, y) => props.onOpenGroupMenu(item.group.roomId, item.group.name, x, y)}
+                  onStartRename={() => props.onStartGroupRename(item.group.roomId)}
+                  onConfirmRename={(name) => props.onConfirmGroupRename(item.group.roomId, name)}
+                  onCancelRename={props.onCancelGroupRename}
+                />
+              ) : (
+                <SessionRow
+                  key={`session-${item.session.botName || 'default'}-${item.session.id}`}
+                  session={item.session}
+                  active={isSessionFocused(focus, item.session.id)}
+                  activityVariant={props.activityVariant}
+                  hoverAction={buildDoneHoverAction({
+                    isDone: false,
+                    title: item.session.title,
+                    onRequestMarkDone: props.onRequestMarkDone
+                      ? () => props.onRequestMarkDone?.('session', item.session.id, item.session.title, item.session.botName)
+                      : undefined,
+                  })}
+                  onSelect={() => props.onSelectSession(item.session.id, item.session.botName)}
+                  onMenu={(x, y) => props.onOpenSessionMenu(item.session.id, item.session.title, x, y, item.session.botName)}
+                />
+              ),
+            )}
+          </RailOrgContainerSection>
+        ))}
+
+        {model.unassignedGroups.length > 0 && <section className="mb-2">
           {/* PR-3d 用户定案：header 字号行高放大一档，删 ⌄/› 文本箭头（折叠态由列表显隐与点击整行表达），
-              右侧 + 为新建群聊入口；计数徽标沿用既有 visibleGroups.length，非新增数据面。 */}
+              右侧 + 为新建群聊入口。 */}
           <div className="flex w-full items-center justify-between gap-1 px-2 py-1 text-muted-foreground hover:text-foreground transition-colors mb-1">
             <button type="button" id="rail-groups-accordion-trigger" className="flex min-h-7 min-w-0 flex-1 items-center gap-2 text-left text-body font-semibold transition-colors" onClick={props.onToggleGroups}>
               <Users size={13} className="opacity-75 shrink-0" />
               <span>{t('rail.groups')}</span>
             </button>
             <Tooltip content={t('rail.newGroup')}>
-              <Button variant="ghost" size="icon" className="rail-new-group-btn relative size-6 shrink-0 rounded p-0 text-muted-foreground hover:bg-card-hover hover:text-foreground transition-colors after:absolute after:-inset-1 after:content-['']" title={t('rail.newGroup')} data-tooltip={t('rail.newGroup')} aria-label={t('rail.newGroup')} onClick={() => props.onNewChat('group')}>
+              <Button variant="ghost" size="icon" className="rail-new-group-btn relative size-6 shrink-0 rounded-card p-0 text-muted-foreground hover:bg-card-hover hover:text-foreground transition-colors after:absolute after:-inset-1 after:content-['']" data-tooltip={t('rail.newGroup')} aria-label={t('rail.newGroup')} onClick={() => props.onNewChat('group')}>
                 <Plus size={13} />
               </Button>
             </Tooltip>
           </div>
           <div id="rail-groups-nested-list" className="flex flex-col gap-2" style={{ display: model.isGroupsOpen ? 'flex' : 'none' }}>
-            {model.visibleGroups.map((group) => <GroupRow
+            {model.unassignedGroups.map((group) => <GroupRow
               key={group.roomId}
               group={group}
               profiles={props.groupAvatars || []}
               active={isGroupFocused(focus, group.roomId)}
               editing={props.editingGroupRoomId === group.roomId}
               activityVariant={props.activityVariant}
+              hoverAction={buildDoneHoverAction({
+                isDone: false,
+                title: group.name,
+                onRequestMarkDone: props.onRequestMarkDone
+                  ? () => props.onRequestMarkDone?.('group', group.roomId, group.name)
+                  : undefined,
+              })}
               onSelect={() => props.onSelectGroup(group.roomId)}
               onMenu={(x, y) => props.onOpenGroupMenu(group.roomId, group.name, x, y)}
               onStartRename={() => props.onStartGroupRename(group.roomId)}
@@ -357,7 +499,7 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
               <span>{t('rail.conversations')}</span>
             </button>
             <Tooltip content={t('rail.newChat')}>
-              <Button variant="ghost" size="icon" className="rail-new-session-btn relative size-6 shrink-0 rounded p-0 text-muted-foreground hover:bg-card-hover hover:text-foreground transition-colors after:absolute after:-inset-1 after:content-['']" title={t('rail.newChat')} data-tooltip={t('rail.newChat')} aria-label={t('rail.newChat')} onClick={() => props.onNewChat('session')}>
+              <Button variant="ghost" size="icon" className="rail-new-session-btn relative size-6 shrink-0 rounded-card p-0 text-muted-foreground hover:bg-card-hover hover:text-foreground transition-colors after:absolute after:-inset-1 after:content-['']" data-tooltip={t('rail.newChat')} aria-label={t('rail.newChat')} onClick={() => props.onNewChat('session')}>
                 <Plus size={13} />
               </Button>
             </Tooltip>
@@ -365,42 +507,86 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
           <div id="rail-sessions-nested-list" className="flex flex-col gap-2" style={{ display: model.isSessionsOpen ? 'flex' : 'none' }}>
             {sessionsLoading
               ? <>{[0, 1, 2, 3].map((slot) => <RailEntityRow key={`session-skeleton-${slot}`} className="session-item" active={false} loading title="" />)}</>
-              : model.activeSessions.length > 0
-                ? model.activeSessions.map((session) => <SessionRow
-                  key={session.id}
+              : model.unassignedSessions.length > 0
+                ? model.unassignedSessions.map((session) => <SessionRow
+                  key={`${session.botName || 'default'}-${session.id}`}
                   session={session}
                   active={isSessionFocused(focus, session.id)}
                   activityVariant={props.activityVariant}
+                  hoverAction={buildDoneHoverAction({
+                    isDone: false,
+                    title: session.title,
+                    onRequestMarkDone: props.onRequestMarkDone
+                      ? () => props.onRequestMarkDone?.('session', session.id, session.title, session.botName)
+                      : undefined,
+                  })}
                   onSelect={() => props.onSelectSession(session.id, session.botName)}
-                  onMenu={(x, y) => props.onOpenSessionMenu(session.id, session.title, x, y)}
+                  onMenu={(x, y) => props.onOpenSessionMenu(session.id, session.title, x, y, session.botName)}
                 />)
-                : <div className="flex flex-col items-center gap-1 px-2 py-5 text-center">
-                  <span className="text-aux text-muted-foreground">{model.error ? t('rail.errorTitle') : t('rail.emptyTitle')}</span>
-                  <span className="text-caption text-muted-foreground">{model.error ? t('rail.errorSub') : t('rail.emptySub')}</span>
-                </div>}
+                : model.projectContainers.length === 0 && model.folderContainers.length === 0
+                  ? <div className="flex flex-col items-center gap-1 px-2 py-5 text-center">
+                    <span className="text-aux text-muted-foreground">{model.error ? t('rail.errorTitle') : t('rail.emptyTitle')}</span>
+                    <span className="text-caption text-muted-foreground">{model.error ? t('rail.errorSub') : t('rail.emptySub')}</span>
+                  </div>
+                  : null}
           </div>
         </section>
-
-        {model.archivedSessions.length > 0 && <section>
-          <div className="px-2 pb-1 pt-2 text-overline font-bold uppercase tracking-wide text-muted-foreground">{t('rail.archived')} ({model.archivedSessions.length})</div>
-          <div className="flex flex-col gap-1 opacity-65">
-            {model.archivedSessions.map((session) => <RailEntityRow
-              key={session.id}
-              className="session-item"
-              active={isSessionFocused(focus, session.id)}
-              compact
-              title={session.title}
-              onClick={() => props.onSelectSession(session.id, session.botName)}
-              onContextMenu={(event) => { event.preventDefault(); props.onOpenSessionMenu(session.id, session.title, event.clientX, event.clientY); }}
-              dataAttributes={{
-                'data-id': session.id,
-                'data-title': session.title,
-                'data-bot': session.botName || '',
-              }}
-            />)}
-          </div>
-        </section>}
       </div>
+
+      {model.showDoneSection && (
+        <RailDoneFooterSection
+          expanded={model.doneEffectiveExpanded}
+          loading={model.doneLoading}
+          error={model.doneError}
+          isEmpty={model.doneItems.length === 0}
+          onToggle={props.onToggleDoneSection ?? (() => props.onToggleContainer?.('done'))}
+          onRetry={props.onRetryDoneSection}
+        >
+          {model.doneItems.map((entry) =>
+            entry.kind === 'group' ? (
+              <GroupRow
+                key={`done-group-${entry.group.roomId}`}
+                group={entry.group}
+                profiles={props.groupAvatars || []}
+                active={isGroupFocused(focus, entry.group.roomId)}
+                editing={props.editingGroupRoomId === entry.group.roomId}
+                activityVariant={props.activityVariant}
+                className="opacity-75"
+                hoverAction={buildDoneHoverAction({
+                  isDone: true,
+                  title: entry.group.name,
+                  onRestoreDone: props.onRestoreDone
+                    ? () => props.onRestoreDone?.('group', entry.group.roomId)
+                    : undefined,
+                })}
+                onSelect={() => props.onSelectGroup(entry.group.roomId)}
+                onMenu={(x, y) => props.onOpenGroupMenu(entry.group.roomId, entry.group.name, x, y)}
+                onStartRename={() => props.onStartGroupRename(entry.group.roomId)}
+                onConfirmRename={(name) => props.onConfirmGroupRename(entry.group.roomId, name)}
+                onCancelRename={props.onCancelGroupRename}
+              />
+            ) : (
+              <SessionRow
+                key={`done-session-${entry.session.botName || 'default'}-${entry.session.id}`}
+                session={entry.session}
+                active={isSessionFocused(focus, entry.session.id)}
+                compact
+                activityVariant={props.activityVariant}
+                className="opacity-75"
+                hoverAction={buildDoneHoverAction({
+                  isDone: true,
+                  title: entry.session.title,
+                  onRestoreDone: props.onRestoreDone
+                    ? () => props.onRestoreDone?.('session', entry.session.id, entry.session.botName)
+                    : undefined,
+                })}
+                onSelect={() => props.onSelectSession(entry.session.id, entry.session.botName)}
+                onMenu={(x, y) => props.onOpenSessionMenu(entry.session.id, entry.session.title, x, y, entry.session.botName)}
+              />
+            ),
+          )}
+        </RailDoneFooterSection>
+      )}
 
     </div>}
 

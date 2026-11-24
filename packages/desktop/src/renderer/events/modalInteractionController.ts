@@ -35,7 +35,12 @@ export interface ModalInteractionDeps {
   readonly requestRender: () => void;
   readonly restoreComposerFocus: () => void;
   readonly showToast?: (msg: string) => void;
-  readonly createNewSession: (options: { profile?: string; projectId?: string; title?: string }) => Promise<string | null>;
+  readonly createNewSession: (options: {
+    profile?: string;
+    projectId?: string;
+    containerId?: string;
+    title?: string;
+  }) => Promise<string | null>;
   readonly deleteSession: (id: string) => Promise<void>;
   readonly renameSession: (id: string, title: string) => Promise<void>;
   readonly pinSession: (id: string) => Promise<void>;
@@ -50,6 +55,17 @@ export interface ModalInteractionDeps {
   readonly fetchGroupRooms: () => Promise<void>;
   readonly routeSend?: (text: string) => Promise<void>;
   readonly sendGroupMessage?: (roomId: string, text: string) => Promise<void>;
+  readonly requestMarkDone?: (kind: 'session' | 'group', id: string, title: string, profile?: string) => void;
+  readonly restoreDone?: (kind: 'session' | 'group', id: string, profile?: string) => Promise<boolean>;
+  readonly moveEntityToFolder?: (kind: 'session' | 'group', id: string, containerId: string | null, profile?: string) => Promise<boolean>;
+  readonly promptCreateFolder?: (moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string } | null) => void;
+  readonly promptRenameFolder?: (folderId: string, currentName: string) => void;
+  readonly confirmDeleteFolder?: (folderId: string, name: string) => void;
+  readonly openNewChatInContainer?: (kind: 'session' | 'group', containerId: string) => void;
+  readonly onGroupCreatedInContainer?: (
+    roomId: string,
+    opts: { projectId?: string; containerId?: string },
+  ) => Promise<void>;
   readonly t: (key: I18nKey, params?: Record<string, string | number>) => string;
 }
 
@@ -58,6 +74,7 @@ export interface SubmitTaskModalInput {
   agent?: string;
   title?: string;
   projectId?: string;
+  containerId?: string;
   members?: string[];
   firstMessage?: string;
 }
@@ -65,6 +82,7 @@ export interface SubmitTaskModalInput {
 export class ModalInteractionController {
   private activeModalTab: 'solo' | 'group' = 'solo';
   private selectedModalAgent = 'default';
+  private boundDoc: Document | null = null;
 
   constructor(private readonly deps: ModalInteractionDeps) {
     const state = this.deps.getState();
@@ -98,14 +116,22 @@ export class ModalInteractionController {
    *
    * @param action 'ok' 代表点击确认，'cancel' 代表取消或点击遮罩关闭
    */
-  public closeConfirmModal(action: 'ok' | 'cancel'): void {
+  public closeConfirmModal(action: 'ok' | 'cancel', inputValueOverride?: string): void {
     const state = this.deps.getState();
     const modal = state.confirmModal;
+    let inputVal = inputValueOverride;
+    const activeDoc = typeof document !== 'undefined' ? document : this.boundDoc;
+    if (inputVal === undefined && activeDoc) {
+      const inputEl = activeDoc.getElementById('flux-confirm-modal-input');
+      if (inputEl && 'value' in inputEl && typeof inputEl.value === 'string') {
+        inputVal = inputEl.value;
+      }
+    }
     this.deps.commitState({ confirmModal: undefined });
     this.deps.requestRender();
 
     if (action === 'ok' && modal?.onConfirm) {
-      void modal.onConfirm();
+      void modal.onConfirm(inputVal);
     } else if (action === 'cancel') {
       if (modal?.onCancel) {
         modal.onCancel();
@@ -155,7 +181,7 @@ export class ModalInteractionController {
    * 关闭新建任务/群聊弹窗
    */
   public closeTaskModal(): void {
-    this.deps.commitState({ isNewTaskModalOpen: false });
+    this.deps.commitState({ isNewTaskModalOpen: false, selectedNewTaskContainerId: undefined });
     this.deps.restoreComposerFocus();
     this.deps.requestRender();
   }
@@ -180,6 +206,7 @@ export class ModalInteractionController {
     let titleInput = input?.title?.trim();
     let projSelect = input?.projectId;
     const hasExplicitProjectField = input !== undefined && 'projectId' in input;
+    const hasExplicitContainerField = input !== undefined && 'containerId' in input;
     const explicitMembers = input?.members;
     const firstMessage = input?.firstMessage?.trim() || '';
 
@@ -204,10 +231,13 @@ export class ModalInteractionController {
 
     if (mode === 'solo') {
       const selectedAgent = input?.agent || this.selectedModalAgent || state.profileName || 'default';
+      const targetContainerId =
+        (hasExplicitContainerField ? input?.containerId : state.selectedNewTaskContainerId) || undefined;
       try {
         const createdSessionId = await this.deps.createNewSession({
           profile: selectedAgent,
           projectId: projSelect || undefined,
+          ...(targetContainerId ? { containerId: targetContainerId } : {}),
           title: titleInput || this.deps.t('chat.defaultTaskTitle'),
         });
         if (!createdSessionId) {
@@ -217,6 +247,7 @@ export class ModalInteractionController {
         this.deps.commitState({
           isNewTaskModalOpen: false,
           newTaskModalTab: 'solo',
+          selectedNewTaskContainerId: undefined,
           ...(hasExplicitProjectField || projSelect !== undefined
             ? { selectedNewTaskProjectId: projSelect || undefined }
             : {}),
@@ -263,9 +294,21 @@ export class ModalInteractionController {
           this.deps.requestRender();
           return { ok: false, error: notice };
         }
-        this.deps.commitState({ isNewTaskModalOpen: false, newTaskModalTab: 'group' });
+        const targetContainerId =
+          (hasExplicitContainerField ? input?.containerId : state.selectedNewTaskContainerId) || undefined;
+        this.deps.commitState({
+          isNewTaskModalOpen: false,
+          newTaskModalTab: 'group',
+          selectedNewTaskContainerId: undefined,
+        });
         this.deps.requestRender();
         await this.deps.fetchGroupRooms();
+        if (projSelect || targetContainerId) {
+          await this.deps.onGroupCreatedInContainer?.(roomId, {
+            projectId: projSelect || undefined,
+            containerId: targetContainerId || undefined,
+          });
+        }
         await this.deps.openGroupRoom(roomId);
         this.deps.restoreComposerFocus();
         if (firstMessage && this.deps.sendGroupMessage) {
@@ -348,8 +391,36 @@ export class ModalInteractionController {
       void this.deps.pinSession(ctx.targetId);
     } else if (action === 'export') {
       void this.deps.exportMarkdown(ctx.targetId);
-    } else if (action === 'archive') {
-      void this.deps.archiveSession(ctx.targetId);
+    } else if (action === 'archive' || action === 'mark-done') {
+      const kind = ctx.targetType === 'group' ? 'group' : 'session';
+      if (this.deps.requestMarkDone) {
+        this.deps.requestMarkDone(kind, ctx.targetId, ctx.targetName || ctx.targetId, ctx.sessionProfile);
+      } else if (kind === 'session') {
+        void this.deps.archiveSession(ctx.targetId);
+      }
+    } else if (action === 'restore-active') {
+      const kind = ctx.targetType === 'group' ? 'group' : 'session';
+      void this.deps.restoreDone?.(kind, ctx.targetId, ctx.sessionProfile);
+    } else if (action === 'new-folder') {
+      this.deps.promptCreateFolder?.(null);
+    } else if (action === 'new-folder-and-move') {
+      const kind = ctx.targetType === 'group' ? 'group' : 'session';
+      this.deps.promptCreateFolder?.({ kind, id: ctx.targetId, profile: ctx.sessionProfile });
+    } else if (action === 'move-folder:__unassign__') {
+      const kind = ctx.targetType === 'group' ? 'group' : 'session';
+      void this.deps.moveEntityToFolder?.(kind, ctx.targetId, null, ctx.sessionProfile);
+    } else if (action.startsWith('move-folder:')) {
+      const folderId = action.slice('move-folder:'.length);
+      const kind = ctx.targetType === 'group' ? 'group' : 'session';
+      if (folderId) {
+        void this.deps.moveEntityToFolder?.(kind, ctx.targetId, folderId, ctx.sessionProfile);
+      }
+    } else if (action === 'folder-new-chat') {
+      this.deps.openNewChatInContainer?.('session', ctx.targetId);
+    } else if (action === 'folder-rename') {
+      this.deps.promptRenameFolder?.(ctx.targetId, ctx.targetName);
+    } else if (action === 'folder-delete') {
+      this.deps.confirmDeleteFolder?.(ctx.targetId, ctx.targetName);
     } else if (action === 'delete') {
       this.requestDeleteSession(ctx.targetId, ctx.targetName || ctx.targetId);
     }
@@ -431,6 +502,9 @@ export class ModalInteractionController {
             confirmLabel: state.confirmModal.confirmLabel,
             cancelLabel: state.confirmModal.cancelLabel,
             isDanger: state.confirmModal.isDanger,
+            inputPlaceholder: state.confirmModal.inputPlaceholder,
+            inputDefaultValue: state.confirmModal.inputDefaultValue,
+            inputLabel: state.confirmModal.inputLabel,
           }
         : undefined
     );
@@ -478,16 +552,18 @@ export class ModalInteractionController {
    * 绑定所有模态弹窗与右键菜单的 DOM 事件
    */
   public bindDomEvents(doc: Document = document): void {
+    this.boundDoc = doc;
     // 1. 关闭任务弹窗按钮
     const closeTaskModalBtn = doc.getElementById('btn-close-task-modal');
     const cancelTaskModalBtn = doc.getElementById('btn-cancel-task-modal');
     if (closeTaskModalBtn) closeTaskModalBtn.onclick = () => this.closeTaskModal();
     if (cancelTaskModalBtn) cancelTaskModalBtn.onclick = () => this.closeTaskModal();
 
-    // 2. 确认模态窗按钮、遮罩与焦点陷阱
+    // 2. 确认模态窗按钮、输入区与焦点陷阱
     const confirmModalOkBtn = doc.getElementById('btn-confirm-modal-ok');
     const confirmModalCancelBtn = doc.getElementById('btn-confirm-modal-cancel');
     const confirmModalCloseBtn = doc.getElementById('btn-confirm-modal-close');
+    const confirmModalInput = doc.getElementById('flux-confirm-modal-input');
     const confirmModalOverlay = doc.getElementById('flux-confirm-modal-overlay');
     const confirmModalCard = doc.getElementById('flux-confirm-modal-card');
 
@@ -495,6 +571,15 @@ export class ModalInteractionController {
       confirmModalOkBtn.onclick = (e) => {
         e.stopPropagation();
         this.closeConfirmModal('ok');
+      };
+    }
+    if (confirmModalInput) {
+      confirmModalInput.onkeydown = (e) => {
+        if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.closeConfirmModal('ok');
+        }
       };
     }
     if (confirmModalCancelBtn) {
@@ -522,7 +607,17 @@ export class ModalInteractionController {
         ),
       );
       if (focusable.length > 0 && !confirmModalCard.contains(doc.activeElement)) {
-        (confirmModalCancelBtn || focusable[0]).focus({ preventScroll: true });
+        (confirmModalInput || confirmModalCancelBtn || focusable[0]).focus({ preventScroll: true });
+        if (
+          confirmModalInput &&
+          'value' in confirmModalInput &&
+          typeof confirmModalInput.value === 'string' &&
+          confirmModalInput.value.length > 0 &&
+          'select' in confirmModalInput &&
+          typeof confirmModalInput.select === 'function'
+        ) {
+          confirmModalInput.select();
+        }
       }
       confirmModalCard.onkeydown = (e) => {
         if (e.key !== 'Tab' || focusable.length === 0) return;
@@ -612,6 +707,20 @@ export class ModalInteractionController {
       };
     });
     if (contextMenuEl) {
+      const win = doc.defaultView;
+      if (win && typeof contextMenuEl.getBoundingClientRect === 'function') {
+        const rect = contextMenuEl.getBoundingClientRect();
+        const rawLeft = Number.parseFloat(contextMenuEl.style.left || '');
+        const rawTop = Number.parseFloat(contextMenuEl.style.top || '');
+        if (win.innerWidth > 0 && rect.width > 0 && Number.isFinite(rawLeft)) {
+          const maxLeft = Math.max(8, win.innerWidth - rect.width - 8);
+          contextMenuEl.style.left = `${Math.round(Math.min(Math.max(8, rawLeft), maxLeft))}px`;
+        }
+        if (win.innerHeight > 0 && rect.height > 0 && Number.isFinite(rawTop)) {
+          const maxTop = Math.max(8, win.innerHeight - rect.height - 8);
+          contextMenuEl.style.top = `${Math.round(Math.min(Math.max(8, rawTop), maxTop))}px`;
+        }
+      }
       if (contextMenuItems.length > 0 && !contextMenuEl.contains(doc.activeElement)) {
         contextMenuItems[0].focus({ preventScroll: true });
       }

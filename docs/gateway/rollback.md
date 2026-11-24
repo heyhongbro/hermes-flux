@@ -5,9 +5,9 @@
 
 | 方法 | 入参（契约） | 出参（契约） | 调用点 | 真实探针 |
 | --- | --- | --- | --- | --- |
-| `rollback.diff` | `session_id` `hash` `profile` | `stat` `diff` `rendered` | `packages/core/src/project/projectService.ts:334` | ✅ 0.22.5 |
-| `rollback.list` | `session_id` `profile` `undo_since` `undo_message_id` | `enabled` `checkpoints` `undo_hint` | `packages/core/src/project/projectService.ts:307` | ✅ 0.22.5 |
-| `rollback.restore` | `session_id` `hash` `file_path` `profile` `all` | `success` `restored_to` `reason` `directory` `file` `restored_files` `skipped_user_edits` `skipped_oversize` `failed_deletes` `history_removed` `error` `debug` | `packages/core/src/project/projectService.ts:352` | ✅ 0.22.5 |
+| `rollback.diff` | `session_id` `hash` `profile` | `stat` `diff` `rendered` | `packages/core/src/project/projectService.ts:360` | ✅ 0.22.5 |
+| `rollback.list` | `session_id` `profile` `undo_since` `undo_message_id` | `enabled` `checkpoints` `undo_hint` | `packages/core/src/project/projectService.ts:333` | ✅ 0.22.5 |
+| `rollback.restore` | `session_id` `hash` `file_path` `profile` `all` | `success` `restored_to` `reason` `directory` `file` `restored_files` `skipped_user_edits` `skipped_oversize` `failed_deletes` `history_removed` `error` `debug` | `packages/core/src/project/projectService.ts:378` | ✅ 0.22.5 |
 
 ## 明细
 
@@ -18,7 +18,7 @@
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 本次探针走的是守卫分支：错误码 `4001`（属于正确行为，不是失败）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:334`
+  - `packages/core/src/project/projectService.ts:360`
 
 ### `rollback.list`
 
@@ -27,7 +27,7 @@
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 本次探针走的是守卫分支：错误码 `4001`（属于正确行为，不是失败）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:307`
+  - `packages/core/src/project/projectService.ts:333`
 
 ### `rollback.restore`
 
@@ -36,5 +36,5 @@
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 本次探针走的是守卫分支：错误码 `4001`（属于正确行为，不是失败）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:352`
+  - `packages/core/src/project/projectService.ts:378`
 

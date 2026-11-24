@@ -11,12 +11,19 @@
 
 import { t } from '../i18n/index.js';
 import { resolveDataPhase, type DataPhase } from './loadPhase.js';
+import type { OrgContainerCollapseState } from '../tokens/conversationOrgPrefs.js';
+import {
+  partitionRailOrgEntities,
+  type PartitionedContainerBucket,
+} from './railOrgPartition.js';
 import type {
   ActivityState,
   ActivityTransition,
   LeftRailActiveFocus,
+  LeftRailFolder,
   LeftRailGroupRoom,
   LeftRailProfile,
+  LeftRailProject,
   LeftRailSession,
 } from '../components/LeftRail/types.js';
 
@@ -25,10 +32,34 @@ export type {
   ActivityTransition,
   DataPhase,
   LeftRailActiveFocus,
+  LeftRailFolder,
   LeftRailGroupRoom,
   LeftRailProfile,
+  LeftRailProject,
   LeftRailSession,
 };
+
+export interface LeftRailSessionEntry {
+  kind: 'session';
+  session: LeftRailSession;
+  isDone: boolean;
+  containerId: string | null;
+  hasCwdProjectMatch: boolean;
+  sortTimestamp: number;
+  isPinnedSort: boolean;
+}
+
+export interface LeftRailGroupEntry {
+  kind: 'group';
+  group: LeftRailGroupRoom;
+  isDone: boolean;
+  containerId: string | null;
+  sortTimestamp: number;
+  isPinnedSort: false;
+}
+
+export type LeftRailContainerEntry = LeftRailGroupEntry | LeftRailSessionEntry;
+export type LeftRailContainerSection = PartitionedContainerBucket<LeftRailContainerEntry>;
 
 export interface LeftRailModelInput {
   activeSessionId: string;
@@ -37,6 +68,16 @@ export interface LeftRailModelInput {
   profileName: string;
   profiles: LeftRailProfile[];
   groups: LeftRailGroupRoom[];
+  projects?: LeftRailProject[];
+  folders?: LeftRailFolder[];
+  assignments?: Readonly<Record<string, string>>;
+  doneRoomIds?: readonly string[];
+  doneRoomsMap?: Readonly<Record<string, number>>;
+  containerCollapsed?: OrgContainerCollapseState;
+  hiddenProjectIds?: readonly string[];
+  showDoneSection?: boolean;
+  doneLoading?: boolean;
+  doneError?: string;
   searchQuery: string;
   isSessionsGroupExpanded?: boolean;
   isGroupsGroupExpanded?: boolean;
@@ -56,6 +97,16 @@ export interface LeftRailModel {
   activeSessions: LeftRailSession[];
   archivedSessions: LeftRailSession[];
   visibleGroups: LeftRailGroupRoom[];
+  projectContainers: LeftRailContainerSection[];
+  folderContainers: LeftRailContainerSection[];
+  unassignedGroups: LeftRailGroupRoom[];
+  unassignedSessions: LeftRailSession[];
+  doneItems: LeftRailContainerEntry[];
+  doneIsCollapsed: boolean;
+  doneEffectiveExpanded: boolean;
+  showDoneSection: boolean;
+  doneLoading: boolean;
+  doneError: string;
   isSessionsOpen: boolean;
   isGroupsOpen: boolean;
   /** Agent 域首次到达相位：loading 时微轨与主工位卡只出骨架，不伪造默认助理。 */
@@ -181,18 +232,53 @@ export function buildLeftRailModel(input: LeftRailModelInput): LeftRailModel {
   const byRoomUpdated = (a: LeftRailGroupRoom, b: LeftRailGroupRoom): number =>
     (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
 
+  const doneRoomSet = new Set(input.doneRoomIds || []);
+
   const scoped = sessions.filter((s) => belongsToAgent(s, selectedAgent, isDefaultHq));
   const activeSessions = scoped
-    .filter((s) => !s.isArchived && matchesQuery(query, s.title, s.preview))
+    .filter((s) => !s.isArchived && !s.isDone && matchesQuery(query, s.title, s.preview))
     .sort(byNewest);
   const archivedSessions = scoped
-    .filter((s) => Boolean(s.isArchived) && matchesQuery(query, s.title))
+    .filter((s) => Boolean(s.isArchived || s.isDone) && matchesQuery(query, s.title))
     .sort(byNewest);
 
-  const visibleGroups = groups
-    .filter((g) => groupBelongsToAgent(g, selectedAgent, isDefaultHq))
+  const agentScopedGroups = groups.filter((g) => groupBelongsToAgent(g, selectedAgent, isDefaultHq));
+  const visibleGroups = agentScopedGroups
+    .filter((g) => !g.isDone && !doneRoomSet.has(g.roomId))
     .filter((g) => matchesQuery(query, g.name, g.lastMessage))
     .sort(byRoomUpdated);
+
+  const partitioned = partitionRailOrgEntities<LeftRailSessionEntry, LeftRailGroupEntry>({
+    sessions: scoped,
+    groups: agentScopedGroups,
+    projects: input.projects,
+    folders: input.folders,
+    assignments: input.assignments,
+    doneRoomIds: input.doneRoomIds,
+    doneRoomsMap: input.doneRoomsMap,
+    containerCollapsed: input.containerCollapsed,
+    hiddenProjectIds: input.hiddenProjectIds,
+    searchQuery: input.searchQuery,
+    matchesSessionSearch: (s, q) => matchesQuery(q, s.title, s.preview),
+    matchesGroupSearch: (g, q) => matchesQuery(q, g.name, g.lastMessage),
+    mapSession: (s, meta) => ({
+      kind: 'session',
+      session: s,
+      isDone: meta.isDone,
+      containerId: meta.containerId,
+      hasCwdProjectMatch: meta.hasCwdProjectMatch,
+      sortTimestamp: s.timestamp || 0,
+      isPinnedSort: Boolean(s.isPinned),
+    }),
+    mapGroup: (g, meta) => ({
+      kind: 'group',
+      group: g,
+      isDone: meta.isDone,
+      containerId: meta.containerId,
+      sortTimestamp: g.updatedAt || g.createdAt || 0,
+      isPinnedSort: false,
+    }),
+  });
 
   const otherAgents = profiles
     .filter((p) => !p.isDefault && p.name.toLowerCase() !== 'default')
@@ -208,6 +294,16 @@ export function buildLeftRailModel(input: LeftRailModelInput): LeftRailModel {
     activeSessions,
     archivedSessions,
     visibleGroups,
+    projectContainers: partitioned.projectContainers,
+    folderContainers: partitioned.folderContainers,
+    unassignedGroups: partitioned.unassignedGroups.map((entry) => entry.group),
+    unassignedSessions: partitioned.unassignedSessions.map((entry) => entry.session),
+    doneItems: partitioned.doneItems,
+    doneIsCollapsed: partitioned.doneIsCollapsed,
+    doneEffectiveExpanded: partitioned.doneEffectiveExpanded,
+    showDoneSection: input.showDoneSection !== false,
+    doneLoading: Boolean(input.doneLoading),
+    doneError: (input.doneError || '').trim(),
     isSessionsOpen: input.isSessionsGroupExpanded !== false,
     isGroupsOpen: input.isGroupsGroupExpanded !== false,
     profilesPhase: resolveDataPhase(input.profilesPhase),

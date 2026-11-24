@@ -20,17 +20,27 @@
 import * as React from 'react';
 import {
   Blocks,
+  Check,
   Download,
+  Folder,
   Info,
   KeyRound,
   Palette,
+  Pencil,
   Plug,
   Plus,
   RefreshCw,
   Trash2,
+  X,
   Zap,
 } from 'lucide-react';
 import { t, type I18nKey } from '../../i18n/index.js';
+import {
+  DEFAULT_CONVERSATION_ORG_PREFS,
+  isProjectHidden,
+  setProjectVisibility,
+  type ConversationOrgPrefs,
+} from '../../tokens/conversationOrgPrefs.js';
 import type { ActivityIndicatorVariant } from '../../tokens/activityIndicator.js';
 import type { FontPreferences } from '../../tokens/fontPreferences.js';
 import { ProvidersAdminPanel } from '../settings/ProvidersAdminPanel.js';
@@ -38,6 +48,7 @@ import { McpAddDialog } from '../settings/McpAddDialog.js';
 import { McpRemoveConfirmDialog } from '../settings/McpRemoveConfirmDialog.js';
 import { SkillDetailDialog } from '../settings/SkillDetailDialog.js';
 import { SkillInstallDialog } from '../settings/SkillInstallDialog.js';
+import { ProjectDirectoryPicker, remapPathPrefix } from '../settings/ProjectDirectoryPicker.js';
 import type { SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
 import type { MobileAppearancePreference, MobileSettingsSubpage } from './mobileShellModel.js';
 import {
@@ -57,6 +68,7 @@ export interface MobileSettingsPageProps {
   onClose: () => void;
   onSelectSubpage: (subpage: MobileSettingsSubpage) => void;
   onSetAppearancePreference: (pref: MobileAppearancePreference) => void;
+  onSetConversationOrgPrefs?: (patch: Partial<ConversationOrgPrefs>) => void;
   settingsActions: SettingsActions;
 }
 
@@ -101,6 +113,7 @@ const MOBILE_ACTIVITY_OPTIONS: ReadonlyArray<{
 
 const SUBPAGE_TITLE_KEY: Record<Exclude<MobileSettingsSubpage, null>, I18nKey> = {
   appearance: 'mobile.settings.rowAppearance',
+  projects: 'mobile.settings.rowProjects',
   gateway: 'mobile.settings.rowGateway',
   providers: 'mobile.settings.rowProviders',
   extensions: 'mobile.settings.rowExtensions',
@@ -115,11 +128,19 @@ export function MobileSettingsPage({
   onClose,
   onSelectSubpage,
   onSetAppearancePreference,
+  onSetConversationOrgPrefs,
   settingsActions,
 }: MobileSettingsPageProps): React.ReactElement {
   const [urlDraft, setUrlDraft] = React.useState(snapshot.gateway.url);
   const [userDraft, setUserDraft] = React.useState(snapshot.gateway.username);
   const [passDraft, setPassDraft] = React.useState('');
+  const [projectNameDraft, setProjectNameDraft] = React.useState('');
+  const [projectPathDraft, setProjectPathDraft] = React.useState('');
+  const [projectError, setProjectError] = React.useState<string | null>(null);
+  const [projectBusy, setProjectBusy] = React.useState(false);
+  const [editingProjectId, setEditingProjectId] = React.useState<string | null>(null);
+  const [editingProjectName, setEditingProjectName] = React.useState('');
+  const [confirmDeleteProjectId, setConfirmDeleteProjectId] = React.useState<string | null>(null);
   const [profileDraft, setProfileDraft] = React.useState(snapshot.gateway.profileName || 'default');
 
   const [mcpAddOpen, setMcpAddOpen] = React.useState(false);
@@ -145,6 +166,20 @@ export function MobileSettingsPage({
   const mcpRows = snapshot.mcp.status === 'ready' ? snapshot.mcp.data : [];
   const skillsRows = snapshot.skills.status === 'ready' ? snapshot.skills.data : [];
   const providersCount = snapshot.providerViews.status === 'ready' ? snapshot.providerViews.data.length : 0;
+  const activeProjects =
+    snapshot.projects?.status === 'ready' ? snapshot.projects.data.filter((p) => !p.archived) : [];
+  const projectsSummary =
+    snapshot.projects?.status === 'ready'
+      ? t('mobile.settings.projectsCount', { count: String(activeProjects.length) })
+      : undefined;
+  const orgPrefs = snapshot.orgPrefs ?? DEFAULT_CONVERSATION_ORG_PREFS;
+  const updateOrgPrefs = (patch: Partial<ConversationOrgPrefs>): void => {
+    if (onSetConversationOrgPrefs) {
+      onSetConversationOrgPrefs(patch);
+    } else {
+      settingsActions.onConversationOrgPrefsChange?.(patch);
+    }
+  };
   const targetProfile = snapshot.gateway.profileName || 'default';
 
   const appearanceSummary = `${t(MOBILE_SKIN_LABEL_KEY[appearancePref])} · ${snapshot.locale === 'en' ? t('mobile.settings.langEn') : t('mobile.settings.langZh')}`;
@@ -182,6 +217,13 @@ export function MobileSettingsPage({
             summary={appearanceSummary}
             testId="mobile-settings-row-appearance"
             onClick={() => onSelectSubpage('appearance')}
+          />
+          <MobileMenuRow
+            icon={<Folder size={18} strokeWidth={1.85} />}
+            title={t('mobile.settings.rowProjects')}
+            summary={projectsSummary}
+            testId="mobile-settings-row-projects"
+            onClick={() => onSelectSubpage('projects')}
           />
         </MobileMenuCard>
       </MobileMenuGroup>
@@ -319,8 +361,372 @@ export function MobileSettingsPage({
           </div>
         </div>
       </section>
+
+      <section className="m-settings-group">
+        <h2 className="m-settings-group__title">{t('mobile.settings.orgGroup')}</h2>
+        <div className="m-settings-card">
+          <div className="m-settings-kv-row">
+            <span className="m-settings-kv-row__label">{t('mobile.settings.showDoneSection')}</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={orgPrefs.showDoneSection}
+              data-state={orgPrefs.showDoneSection ? 'checked' : 'unchecked'}
+              aria-label={t('mobile.settings.showDoneSection')}
+              data-testid="mobile-org-show-done-switch"
+              className="m-toggle-switch"
+              onClick={() => updateOrgPrefs({ showDoneSection: !orgPrefs.showDoneSection })}
+            >
+              <span className="m-toggle-switch__thumb" />
+            </button>
+          </div>
+          <div className="m-settings-kv-row">
+            <span className="m-settings-kv-row__label">{t('mobile.settings.autoReopenOnSend')}</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={orgPrefs.autoReopenOnSend}
+              data-state={orgPrefs.autoReopenOnSend ? 'checked' : 'unchecked'}
+              aria-label={t('mobile.settings.autoReopenOnSend')}
+              data-testid="mobile-org-auto-reopen-switch"
+              className="m-toggle-switch"
+              onClick={() => updateOrgPrefs({ autoReopenOnSend: !orgPrefs.autoReopenOnSend })}
+            >
+              <span className="m-toggle-switch__thumb" />
+            </button>
+          </div>
+        </div>
+      </section>
     </>
   );
+
+  const handleCreateProject = async (event: React.FormEvent): Promise<void> => {
+    event.preventDefault();
+    if (!settingsActions.onCreateProject || projectBusy || snapshot.gateway.status !== 'connected') {
+      return;
+    }
+    const cleanName = projectNameDraft.trim();
+    const cleanPath = projectPathDraft.trim();
+    if (!cleanName || !cleanPath) {
+      setProjectError(t('settings.projectsValidationEmpty'));
+      return;
+    }
+    setProjectBusy(true);
+    setProjectError(null);
+    try {
+      const result = await settingsActions.onCreateProject({ name: cleanName, path: cleanPath });
+      if (result.ok) {
+        setProjectNameDraft('');
+        setProjectPathDraft('');
+      } else {
+        setProjectError(result.message || t('settings.loadFailed'));
+      }
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProjectBusy(false);
+    }
+  };
+
+  const handleRenameProject = async (projectId: string): Promise<void> => {
+    if (!settingsActions.onUpdateProject || projectBusy || snapshot.gateway.status !== 'connected') {
+      return;
+    }
+    const cleanName = editingProjectName.trim();
+    if (!cleanName) {
+      setProjectError(t('settings.projectsValidationEmpty'));
+      return;
+    }
+    setProjectBusy(true);
+    setProjectError(null);
+    try {
+      const result = await settingsActions.onUpdateProject(projectId, { name: cleanName });
+      if (result.ok) {
+        setEditingProjectId(null);
+        setEditingProjectName('');
+      } else {
+        setProjectError(result.message || t('settings.loadFailed'));
+      }
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProjectBusy(false);
+    }
+  };
+
+  const handleDeleteProject = async (projectId: string): Promise<void> => {
+    if (!settingsActions.onDeleteProject || projectBusy || snapshot.gateway.status !== 'connected') {
+      return;
+    }
+    setProjectBusy(true);
+    setProjectError(null);
+    try {
+      const result = await settingsActions.onDeleteProject(projectId);
+      if (result.ok) {
+        setConfirmDeleteProjectId(null);
+      } else {
+        setProjectError(result.message || t('settings.loadFailed'));
+      }
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProjectBusy(false);
+    }
+  };
+
+  const renderProjectsSubpage = (): React.ReactElement => {
+    const isConnected = snapshot.gateway.status === 'connected';
+    const projectsState = snapshot.projects;
+    const confirmingProject = activeProjects.find((p) => p.id === confirmDeleteProjectId);
+    return (
+      <div className="flux-settings m-settings-embedded-panel m-settings-projects" data-testid="mobile-settings-projects">
+        <section className="m-settings-group">
+          <div className="m-settings-group__header">
+            <h2 className="m-settings-group__title">{t('mobile.settings.projectsGroup')}</h2>
+            {settingsActions.onRefreshProjects ? (
+              <button
+                type="button"
+                className="m-bot-action-pill"
+                disabled={snapshot.busy || !isConnected}
+                onClick={settingsActions.onRefreshProjects}
+              >
+                <RefreshCw size={14} aria-hidden="true" />
+                <span>{t('mobile.settings.refreshBtn')}</span>
+              </button>
+            ) : null}
+          </div>
+
+          {!isConnected ? (
+            <div className="m-bot-subpage__empty">{t('settings.projectsOfflineHint')}</div>
+          ) : projectsState?.status === 'loading' ? (
+            <div className="m-bot-subpage__empty">{t('settings.loading')}</div>
+          ) : projectsState?.status === 'error' ? (
+            <div className="m-settings-card">
+              <div className="m-settings-test-msg" data-ok="false">
+                {projectsState.message || t('settings.loadFailed')}
+              </div>
+            </div>
+          ) : activeProjects.length === 0 ? (
+            <div className="m-bot-subpage__empty">{t('mobile.settings.projectsEmpty')}</div>
+          ) : (
+            <MobileMenuCard>
+              {activeProjects.map((proj) => (
+                <div key={proj.id} className="m-bot-cap-row" data-mobile-project-id={proj.id}>
+                  <div className="m-bot-cap-row__main">
+                    {editingProjectId === proj.id ? (
+                      <input
+                        type="text"
+                        className="m-matte-input"
+                        value={editingProjectName}
+                        disabled={projectBusy}
+                        placeholder={t('settings.projectsRenamePlaceholder')}
+                        aria-label={t('settings.projectsRenamePlaceholder')}
+                        data-testid="mobile-project-rename-input"
+                        onChange={(e) => {
+                          setEditingProjectName(e.currentTarget.value);
+                          setProjectError(null);
+                        }}
+                      />
+                    ) : (
+                      <span className="m-bot-cap-row__title">{proj.name}</span>
+                    )}
+                    <span className="m-bot-cap-row__desc">{proj.path}</span>
+                    {(proj.boardSlug || (proj.additionalFolders && proj.additionalFolders.length > 0)) ? (
+                      <div className="m-project-meta-badges">
+                        {proj.boardSlug ? (
+                          <span className="m-project-meta-pill">
+                            {t('settings.projectsBoardBadge', { slug: proj.boardSlug })}
+                          </span>
+                        ) : null}
+                        {proj.additionalFolders && proj.additionalFolders.length > 0 ? (
+                          <span className="m-project-meta-pill">
+                            {t('settings.projectsExtraFolders', { count: proj.additionalFolders.length })}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                  {editingProjectId === proj.id ? (
+                    <div className="m-bot-cap-row__right">
+                      <button
+                        type="button"
+                        className="m-bot-action-pill"
+                        disabled={projectBusy || !editingProjectName.trim()}
+                        aria-label={t('common.confirm')}
+                        data-testid="mobile-project-rename-confirm"
+                        onClick={() => void handleRenameProject(proj.id)}
+                      >
+                        <Check size={15} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className="m-bot-action-pill"
+                        disabled={projectBusy}
+                        aria-label={t('common.cancel')}
+                        onClick={() => {
+                          setEditingProjectId(null);
+                          setEditingProjectName('');
+                        }}
+                      >
+                        <X size={15} aria-hidden="true" />
+                      </button>
+                    </div>
+                  ) : confirmDeleteProjectId === proj.id ? (
+                    <div className="m-bot-cap-row__right">
+                      <button
+                        type="button"
+                        className="m-bot-action-pill m-bot-action-pill--danger"
+                        disabled={projectBusy}
+                        onClick={() => void handleDeleteProject(proj.id)}
+                      >
+                        {t('common.confirm')}
+                      </button>
+                      <button
+                        type="button"
+                        className="m-bot-action-pill"
+                        disabled={projectBusy}
+                        onClick={() => setConfirmDeleteProjectId(null)}
+                      >
+                        {t('common.cancel')}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="m-bot-cap-row__right">
+                      {onSetConversationOrgPrefs || settingsActions.onConversationOrgPrefsChange
+                        ? (() => {
+                            const projectVisible = !isProjectHidden(orgPrefs, proj.id);
+                            return (
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={projectVisible}
+                                data-state={projectVisible ? 'checked' : 'unchecked'}
+                                aria-label={t('settings.projectsShowInRailLabel', { name: proj.name })}
+                                data-mobile-project-visible={proj.id}
+                                className="m-toggle-switch"
+                                onClick={() => {
+                                  const nextPrefs = setProjectVisibility(orgPrefs, proj.id, !projectVisible);
+                                  updateOrgPrefs({ hiddenProjectIds: nextPrefs.hiddenProjectIds });
+                                }}
+                              >
+                                <span className="m-toggle-switch__thumb" />
+                              </button>
+                            );
+                          })()
+                        : null}
+                      {settingsActions.onUpdateProject ? (
+                        <button
+                          type="button"
+                          className="m-icon-btn"
+                          aria-label={t('mobile.settings.projectsRename')}
+                          disabled={projectBusy || !isConnected}
+                          data-mobile-project-rename={proj.id}
+                          onClick={() => {
+                            setConfirmDeleteProjectId(null);
+                            setEditingProjectId(proj.id);
+                            setEditingProjectName(proj.name);
+                          }}
+                        >
+                          <Pencil size={15} />
+                        </button>
+                      ) : null}
+                      {settingsActions.onDeleteProject ? (
+                        <button
+                          type="button"
+                          className="m-icon-btn"
+                          aria-label={t('mobile.settings.projectsDelete')}
+                          disabled={projectBusy || !isConnected}
+                          onClick={() => {
+                            setEditingProjectId(null);
+                            setConfirmDeleteProjectId(proj.id);
+                          }}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </MobileMenuCard>
+          )}
+          {confirmingProject ? (
+            <div role="alert" className="m-settings-delete-confirm" data-testid="mobile-project-delete-confirm">
+              {t('settings.projectsDeleteConfirm', { name: confirmingProject.name })}
+            </div>
+          ) : null}
+        </section>
+
+        {settingsActions.onCreateProject ? (
+          <section className="m-settings-group">
+            <h2 className="m-settings-group__title">{t('mobile.settings.projectsAddTitle')}</h2>
+            <form className="m-settings-card m-settings-card--form" onSubmit={(e) => void handleCreateProject(e)}>
+              <label className="m-settings-field">
+                <span className="m-settings-field__label">{t('mobile.settings.projectsName')}</span>
+                <input
+                  type="text"
+                  className="m-matte-input"
+                  value={projectNameDraft}
+                  disabled={projectBusy || !isConnected}
+                  placeholder={t('settings.projectsNamePlaceholder')}
+                  onChange={(e) => {
+                    setProjectNameDraft(e.target.value);
+                    setProjectError(null);
+                  }}
+                />
+              </label>
+              <label className="m-settings-field">
+                <span className="m-settings-field__label">{t('mobile.settings.projectsPath')}</span>
+                <input
+                  type="text"
+                  className="m-matte-input"
+                  value={projectPathDraft}
+                  disabled={projectBusy || !isConnected}
+                  placeholder={t('settings.projectsPathPlaceholder')}
+                  onChange={(e) => {
+                    setProjectPathDraft(e.target.value);
+                    setProjectError(null);
+                  }}
+                />
+              </label>
+              <ProjectDirectoryPicker
+                variant="mobile"
+                value={projectPathDraft}
+                disabled={projectBusy}
+                isConnected={isConnected}
+                onBrowse={settingsActions.onBrowseProjectDirectory}
+                onCreateDirectory={settingsActions.onCreateProjectDirectory}
+                onRenameDirectory={settingsActions.onRenameProjectDirectory}
+                onSelectPath={(selectedPath, folderName) => {
+                  setProjectPathDraft(selectedPath);
+                  setProjectError(null);
+                  if (!projectNameDraft.trim() && folderName) {
+                    setProjectNameDraft(folderName);
+                  }
+                }}
+                onPathRenamed={(oldPath, newPath) => {
+                  setProjectPathDraft((prev) => remapPathPrefix(prev, oldPath, newPath));
+                }}
+              />
+              {projectError ? (
+                <div className="m-settings-test-msg" data-ok="false">
+                  {projectError}
+                </div>
+              ) : null}
+              <button
+                type="submit"
+                className="m-primary-btn"
+                disabled={projectBusy || !isConnected}
+                data-testid="mobile-projects-add-submit"
+              >
+                {projectBusy ? t('settings.projectsCreating') : t('mobile.settings.projectsAddBtn')}
+              </button>
+            </form>
+          </section>
+        ) : null}
+      </div>
+    );
+  };
 
   const renderGatewaySubpage = (): React.ReactElement => (
     <section className="m-settings-group">
@@ -589,6 +995,8 @@ export function MobileSettingsPage({
     switch (subpage) {
       case 'appearance':
         return renderAppearanceSubpage();
+      case 'projects':
+        return renderProjectsSubpage();
       case 'gateway':
         return renderGatewaySubpage();
       case 'providers':

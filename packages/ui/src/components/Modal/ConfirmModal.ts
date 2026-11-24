@@ -26,6 +26,9 @@ export interface ConfirmModalProps {
   confirmLabel?: string;
   cancelLabel?: string;
   isDanger?: boolean;
+  inputPlaceholder?: string;
+  inputDefaultValue?: string;
+  inputLabel?: string;
 }
 
 export function renderConfirmModal(props?: ConfirmModalProps): string {
@@ -35,6 +38,13 @@ export function renderConfirmModal(props?: ConfirmModalProps): string {
   const safeMessage = escapeHtml(props.message || '');
   const confirmText = escapeHtml(props.confirmLabel || (props.isDanger ? t('ctx.delete') : t('common.confirm')));
   const cancelText = escapeHtml(props.cancelLabel || t('common.cancel'));
+  const hasInput =
+    props.inputPlaceholder !== undefined ||
+    props.inputDefaultValue !== undefined ||
+    props.inputLabel !== undefined;
+  const safeInputDefault = escapeHtml(props.inputDefaultValue ?? '');
+  const safeInputPlaceholder = escapeHtml(props.inputPlaceholder ?? '');
+  const safeInputLabel = escapeHtml(props.inputLabel ?? props.title ?? t('common.confirm'));
 
   return `
     <div id="flux-confirm-modal-overlay" role="presentation" style="
@@ -91,9 +101,23 @@ export function renderConfirmModal(props?: ConfirmModalProps): string {
         </div>
 
         <!-- Body Message -->
-        <div id="flux-confirm-modal-desc" style="padding: 12px 24px 20px; font-size: var(--fs-body); line-height: 1.6; color: var(--secondary-foreground); word-break: break-word;">
+        <div id="flux-confirm-modal-desc" style="padding: 12px 24px ${hasInput ? '12px' : '20px'}; font-size: var(--fs-body); line-height: 1.6; color: var(--secondary-foreground); word-break: break-word;">
           ${safeMessage}
         </div>
+        ${
+          hasInput
+            ? `<div style="padding: 0 24px 20px;">
+          <input
+            id="flux-confirm-modal-input"
+            class="flux-confirm-input"
+            type="text"
+            value="${safeInputDefault}"
+            placeholder="${safeInputPlaceholder}"
+            aria-label="${safeInputLabel}"
+          />
+        </div>`
+            : ''
+        }
 
         <!-- Footer Actions (Flat Tinted confirmation matching Button.tsx) -->
         <div style="

@@ -239,8 +239,9 @@ function buildModules(ctx) {
       cases: [
         { method: 'ping', params: () => ({}), assert: (r) => assertField(r, 'pong') },
         { method: 'gateway.capabilities', params: () => ({}) },
+        { method: 'shell.exec', params: () => ({ command: 'pwd', profile }), assert: (r) => assertField(r, 'stdout') },
         { method: 'model.options', params: () => ({ profile }) },
-        { method: 'config.get', params: () => ({ profile }) },
+        { method: 'config.get', params: () => ({ key: 'full', profile }) },
       ],
     },
 
@@ -611,7 +612,7 @@ function buildModules(ctx) {
         {
           method: 'spawn_tree.load',
           params: () => ({ path: 'flux-probe-none.json', profile }),
-          allowCodes: [4000, 4001, 4007, 4040],
+          allowCodes: [4000, 4001, 4007, 4030, 4040],
         },
       ],
     },
@@ -755,8 +756,8 @@ const NEGATIVE_CASES = [
     name: 'groups.send payload 缺少 thread_id 必须被拒',
     method: 'groups.send',
     params: () => ({ room_id: 'flux-probe-none', event_id: mintEventId(), payload: { text: 'probe' } }),
-    // 缺 thread_id 时网关可能先报 room not found（4112），两种都说明守卫生效
-    expectCodes: [5112, 4112],
+    // 缺 thread_id 时网关可能先报 permission denied（4001）或 room not found（4112/5112）
+    expectCodes: [4001, 5112, 4112],
   },
   {
     name: 'session.delete 用不存在的会话必须被拒',

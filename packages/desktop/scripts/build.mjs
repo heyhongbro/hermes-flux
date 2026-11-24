@@ -642,7 +642,7 @@ async function buildAll() {
   });
 
   // Batch 6 终极收官服务：项目树、群聊研讨室、Profile 管理、设置中心、认知星图与状态栏集成服务
-  for (const serviceName of ['projectOperationService', 'groupOperationService', 'profileManagementService', 'settingsDataService', 'learningService', 'sessionStatusService', 'statusIntegration']) {
+  for (const serviceName of ['projectOperationService', 'projectDirectoryActions', 'groupOperationService', 'profileManagementService', 'settingsDataService', 'learningService', 'sessionStatusService', 'statusIntegration', 'conversationOrgCoordinator']) {
     await esbuild.build({
       entryPoints: [path.join(rootDir, `src/renderer/services/${serviceName}.ts`)],
       outfile: path.join(rootDir, `dist/renderer/services/${serviceName}.mjs`),

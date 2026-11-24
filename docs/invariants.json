@@ -400,6 +400,14 @@
       "failure": ".exe 等二进制文件被当作文本渲染成乱码，或超大文件直接撑爆前端 DOM 表格"
     },
     {
+      "id": "INV-FS-06",
+      "topic": "项目目录 picker 单段命名清洗、POSIX shell 安全引用与锁定根目录不可重命名守卫",
+      "source": "packages/core/src/fs/directoryPickerService.ts",
+      "symbol": "validateDirectoryName",
+      "test": "packages/core/__tests__/formal/file-tree-formal.test.mjs",
+      "failure": "目录创建或重命名遭 `..`/控制字符/`.env` 注入越界，或误改 `/`/locked_root 破坏工作区"
+    },
+    {
       "id": "INV-MSG-01",
       "topic": "用户消息附件清单与多模态分片往返解析无损收敛且去重",
       "source": "packages/core/src/session/messageAttachments.ts",
@@ -470,6 +478,62 @@
       "symbol": "applyListSyncError",
       "test": "packages/core/__tests__/formal/subagentStatusInvariants.test.mjs",
       "failure": "subagent.list 单次超时或报错后把状态栏已有的运行中/历史子 Agent 列表整页抹白"
+    },
+    {
+      "id": "INV-ORG-01",
+      "topic": "Bot 终身主工位（Forever Chat）物理免疫（hidden/isForeverChat 永不归档、永不移入容器）",
+      "source": "packages/core/src/organization/reducer.ts",
+      "symbol": "resolveEntityContainer#forever-chat-immunity",
+      "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
+      "failure": "Bot 终身主工位被错误标记完成或拖入项目/自定义文件夹，破坏主工位物理隔离"
+    },
+    {
+      "id": "INV-ORG-02",
+      "topic": "单归属容器优先级裁决收敛（__none__ 哨兵阻断 cwd 自动匹配，显式归属优先于路径匹配）",
+      "source": "packages/core/src/organization/reducer.ts",
+      "symbol": "resolveEntityContainer#precedence",
+      "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
+      "failure": "用户显式移回未分类后刷新又被 cwd 重新吸回项目，或跨自定义文件夹发生多归属分裂"
+    },
+    {
+      "id": "INV-ORG-03",
+      "topic": "项目路径最长前缀匹配与严格目录边界防溢出（排除已归档项目）",
+      "source": "packages/core/src/organization/pathMatch.ts",
+      "symbol": "matchProjectByCwd#longest-prefix",
+      "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
+      "failure": "/work/app-v2 误匹配 /work/app、父项目抢占子项目或已归档项目继续吸纳新会话"
+    },
+    {
+      "id": "INV-ORG-04",
+      "topic": "删除自定义文件夹非破坏性守恒（仅清除目标文件夹映射，100% 保留实体与他目录归属）",
+      "source": "packages/core/src/organization/reducer.ts",
+      "symbol": "deleteFolderInMeta#non-destructive",
+      "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
+      "failure": "删除自定义文件夹导致内部普通会话或群聊被误删，或残留悬空指向"
+    },
+    {
+      "id": "INV-ORG-05",
+      "topic": "群聊完成态往返收敛与强幂等",
+      "source": "packages/core/src/organization/reducer.ts",
+      "symbol": "setRoomDoneInMeta#round-trip",
+      "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
+      "failure": "标记群聊已完成再恢复进行中后误清他群状态，或重复点击写入不一致"
+    },
+    {
+      "id": "INV-ORG-06",
+      "topic": "ui_meta 三路 CAS 合并双端并发保序且零悬空引用",
+      "source": "packages/core/src/organization/reducer.ts",
+      "symbol": "mergeFoldersMetaForCas#disjoint-preserve",
+      "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
+      "failure": "多端并发新建文件夹或移动会话时 CAS 重试互相覆盖，或产生指向已删目录的幽灵键"
+    },
+    {
+      "id": "INV-ORG-07",
+      "topic": "僵尸归属键清理完备性与二次清理强幂等",
+      "source": "packages/core/src/organization/reducer.ts",
+      "symbol": "pruneStaleOrgKeys#idempotent",
+      "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
+      "failure": "已删会话或已解散群聊长期残留幽灵映射，或垃圾回收误删有效/未加载项"
     }
   ]
 }

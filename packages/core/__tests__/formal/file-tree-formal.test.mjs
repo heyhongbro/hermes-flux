@@ -17,6 +17,9 @@ import {
   mergeDirectoryChildren,
   filterFileTree,
   evaluateFilePreviewGuard,
+  validateDirectoryName,
+  posixQuoteShellArg,
+  isProtectedRootDirectory,
   MAX_PREVIEW_FILE_BYTES,
   MAX_PREVIEW_IMAGE_BYTES,
 } from '../../dist/index.js';
@@ -247,6 +250,65 @@ test('Formal Invariant Verifier: Workspace File Tree Pure Model', async (t) => {
           } else {
             assert.equal(res.status, 'ok');
           }
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+
+  await t.test('INV-FS-06: directoryPickerService 目录名校验、POSIX shell 引用与根目录保护', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(
+          fc.constant(''),
+          fc.constant('   '),
+          fc.constant('.'),
+          fc.constant('..'),
+          fc.constant('.env'),
+          fc.constant('.env.local'),
+          fc.stringMatching(/^[a-zA-Z0-9 _.-]{1,12}$/),
+          fc.tuple(segmentArb, fc.constantFrom('/', '\\', ':', '*', '?', '<', '>', '|', '\n', '\0'), segmentArb)
+            .map(([a, bad, b]) => `${a}${bad}${b}`),
+        ),
+        (raw) => {
+          const check = validateDirectoryName(raw);
+          const trimmed = raw.trim();
+          const hasInvalid = /[<>:"|?*\0\r\n/\\]/.test(trimmed) || /[\x00-\x1f]/.test(trimmed);
+          const lower = trimmed.toLowerCase();
+          const isSecret = lower === '.env' || (lower.startsWith('.env.') && lower !== '.env.example');
+          if (!trimmed || trimmed === '.' || trimmed === '..' || hasInvalid || isSecret) {
+            assert.equal(check.ok, false, `非法目录名 "${raw}" 必须被拒绝`);
+          } else {
+            assert.equal(check.ok, true);
+            if (check.ok) {
+              assert.equal(check.name, trimmed);
+              const quoted = posixQuoteShellArg(`/opt/data/workspace/${check.name}`);
+              assert.equal(quoted.startsWith("'"), true);
+              assert.equal(quoted.endsWith("'"), true);
+            }
+          }
+        },
+      ),
+      { numRuns: 500 },
+    );
+
+    fc.assert(
+      fc.property(
+        fc.constantFrom('/', 'C:/', 'C:\\', '/etc', '/etc/ssh', '/root', '/opt', '/usr', 'C:/Windows', 'C:/Windows/System32'),
+        (protectedPath) => {
+          assert.equal(isProtectedRootDirectory(protectedPath), true);
+        },
+      ),
+      { numRuns: 100 },
+    );
+
+    fc.assert(
+      fc.property(
+        fc.array(segmentArb, { minLength: 1, maxLength: 3 }),
+        (segs) => {
+          const lockedRoot = `/opt/data/${segs[0]}`;
+          assert.equal(isProtectedRootDirectory(lockedRoot, lockedRoot), true);
+          assert.equal(isProtectedRootDirectory(`/opt/data/user_ws/${segs.join('/')}`, '/opt/data'), false);
         },
       ),
       { numRuns: 200 },

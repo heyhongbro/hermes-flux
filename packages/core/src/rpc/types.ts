@@ -178,6 +178,8 @@ export interface AgentProfile {
    * 该字段必须原样透传，任何层都不得裁剪或重命名其内部键。
    */
   uiMeta?: ProfileUiMeta;
+  /** 网关逐键乐观锁修订号（来自 profiles.list 的 ui_meta_revisions） */
+  uiMetaRevisions?: Record<string, number>;
 }
 
 /** profile.ui_meta 的已知子结构（保留未知键，网关可能扩展） */
@@ -185,6 +187,8 @@ export interface ProfileUiMeta {
   'hermes-bots-groups'?: {
     rooms?: Record<string, HermesBotsGroupRoom>;
   };
+  'hermes-flux-folders'?: unknown;
+  'hermes-flux-done-rooms'?: unknown;
   [key: string]: unknown;
 }
 
@@ -841,16 +845,22 @@ export interface ProjectSummary {
   gitRepoRoot?: string;
   activeBranch?: string;
   isActive: boolean;
+  archived?: boolean;
+  boardSlug?: string;
+  icon?: string;
+  color?: string;
   createdAt: number;
   updatedAt: number;
 }
 
 export interface ProjectDetail extends ProjectSummary {
   description?: string;
-  icon?: string;
-  color?: string;
   board_slug?: string;
   associatedSessionIds?: string[];
+}
+
+export interface ProjectsListParams {
+  profile?: string;
 }
 
 export interface ProjectsListResult {
@@ -859,9 +869,14 @@ export interface ProjectsListResult {
     primary_path?: string;
     folders?: Array<{ path: string }>;
     is_active?: boolean;
+    archived?: boolean;
+    board_slug?: string | null;
+    icon?: string | null;
+    color?: string | null;
     created_at?: number;
     updated_at?: number;
   }>;
+  active_id?: string | null;
 }
 
 export interface ProjectsGetParams {
@@ -886,6 +901,7 @@ export interface ProjectsGetResult {
  * 【防范的历史坑】曾传 `path`，契约里没有这个字段（4000）。
  */
 export interface ProjectsCreateParams {
+  profile?: string;
   name: string;
   folders: string[];
   primary_path: string;
@@ -940,6 +956,7 @@ export interface ProjectsUpdateResult {
 }
 
 export interface ProjectsDeleteParams {
+  profile?: string;
   id?: string;
   project_id?: string;
 }

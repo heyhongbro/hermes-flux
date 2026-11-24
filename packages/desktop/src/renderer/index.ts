@@ -59,6 +59,7 @@ import { createProjectOperationService } from './services/projectOperationServic
 import { createGroupOperationService } from './services/groupOperationService.js';
 import { createProfileManagementService } from './services/profileManagementService.js';
 import { createSettingsDataService } from './services/settingsDataService.js';
+import { createConversationOrgCoordinator } from './services/conversationOrgCoordinator.js';
 import {
   HermesGatewayClient, TokenCoalescer, readSessionHandles,
   defaultSessionHandleRegistry, createLogger, setLogLevel, addLogSink,
@@ -87,13 +88,8 @@ import type { HermesDesktopBridge } from '../preload/index.js';
 
 const cacheService = new CacheService(new DesktopCacheStore(), { sessionCap: 500, messageCap: 2000 });
 
-function persistMessagesToCache(ref: CacheChannelRef, messages: MessageViewModel[], fenceMax: number): void {
-  bridgePersistMessagesToCache(ref, messages, fenceMax, cacheService);
-}
-
-function persistTurnToCache(sessionId: string, botName: string | undefined | null, messages: MessageViewModel[]): void {
-  bridgePersistTurnToCache(sessionId, botName, messages, cacheService, isGroupConversationActive(sessionId), state.profileName || 'default');
-}
+function persistMessagesToCache(ref: CacheChannelRef, messages: MessageViewModel[], fenceMax: number): void { bridgePersistMessagesToCache(ref, messages, fenceMax, cacheService); }
+function persistTurnToCache(sessionId: string, botName: string | undefined | null, messages: MessageViewModel[]): void { bridgePersistTurnToCache(sessionId, botName, messages, cacheService, isGroupConversationActive(sessionId), state.profileName || 'default'); }
 
 async function restoreCacheToState(): Promise<void> {
   try {
@@ -106,17 +102,9 @@ async function restoreCacheToState(): Promise<void> {
         if (v && typeof v === 'string') profileAvatarCache.set(k.toLowerCase(), v);
       }
     }
-    if (state.sessions.length === 0) {
-      const cachedSessions = indexRows.filter((row) => row.kind === 'session');
-      if (cachedSessions.length > 0) { state.sessions = cachedSessions.map(toNormalizedSession); touched = true; }
-    }
-    if (state.groupRooms.length === 0) {
-      const cachedGroups = indexRows.filter((row) => row.kind === 'group');
-      if (cachedGroups.length > 0) { state.groupRooms = cachedGroups.map(toLeftRailGroupRoom); touched = true; }
-    }
-    if (agents.length > 0 && state.profiles.length === 0) {
-      state.profiles = agents.map(toAgentProfile); touched = true;
-    }
+    if (state.sessions.length === 0) { const rows = indexRows.filter((row) => row.kind === 'session'); if (rows.length > 0) { state.sessions = rows.map(toNormalizedSession); touched = true; } }
+    if (state.groupRooms.length === 0) { const rows = indexRows.filter((row) => row.kind === 'group'); if (rows.length > 0) { state.groupRooms = rows.map(toLeftRailGroupRoom); touched = true; } }
+    if (agents.length > 0 && state.profiles.length === 0) { state.profiles = agents.map(toAgentProfile); touched = true; }
     if (touched) {
       logApp.info('cold start cache snapshot restored', {
         sessions: state.sessions.length, groups: state.groupRooms.length,
@@ -133,15 +121,9 @@ async function restoreCacheToState(): Promise<void> {
   }
 }
 
-function persistSessionsToCache(sessions: NormalizedSession[]): void {
-  bridgePersistSessionsToCache(sessions, cacheService, state.profileName || 'default', defaultIndexWriteQueue);
-}
-function persistGroupsToCache(rooms: LeftRailGroupRoom[]): void {
-  bridgePersistGroupsToCache(rooms, cacheService, defaultIndexWriteQueue);
-}
-function persistAgentsToCache(profiles: AgentProfile[]): void {
-  bridgePersistAgentsToCache(profiles, cacheService);
-}
+function persistSessionsToCache(sessions: NormalizedSession[]): void { bridgePersistSessionsToCache(sessions, cacheService, state.profileName || 'default', defaultIndexWriteQueue); }
+function persistGroupsToCache(rooms: LeftRailGroupRoom[]): void { bridgePersistGroupsToCache(rooms, cacheService, defaultIndexWriteQueue); }
+function persistAgentsToCache(profiles: AgentProfile[]): void { bridgePersistAgentsToCache(profiles, cacheService); }
 
 declare global {
   interface Window {
@@ -171,17 +153,8 @@ const desktopApi: HermesDesktopBridge | undefined =
   typeof window !== 'undefined' ? window.hermesDesktop : undefined;
 
 const bootLog = createLogger('boot');
-addLogSink((entry) => {
-  if (entry.level === 'error') {
-    console.error(`[Flux ${entry.scope}]`, entry.message, entry.data ?? '');
-  } else if (entry.level === 'warn') {
-    console.warn(`[Flux ${entry.scope}]`, entry.message, entry.data ?? '');
-  } else if (entry.level === 'debug' || entry.level === 'trace') {
-    console.debug(`[Flux ${entry.scope}]`, entry.message, entry.data ?? '');
-  } else {
-    console.log(`[Flux ${entry.scope}]`, entry.message, entry.data ?? '');
-  }
-});
+const LOG_SINKS = { error: console.error, warn: console.warn, debug: console.debug, trace: console.debug, info: console.log } as const;
+addLogSink((entry) => LOG_SINKS[entry.level](`[Flux ${entry.scope}]`, entry.message, entry.data ?? ''));
 
 const LOG_LEVEL_STORAGE_KEY = 'hermes_flux_log_level';
 
@@ -305,19 +278,12 @@ const activeRunningGroupRoomIds = new Set<string>(), activeRunningSessionIds = n
 const activityTransitionTracker = new ActivityTransitionTracker({ windowMs: 850 });
 let activityTransitionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-function clearTransitionRefreshTimer(): void {
-  if (activityTransitionRefreshTimer !== null) { clearTimeout(activityTransitionRefreshTimer); activityTransitionRefreshTimer = null; }
-}
-
+function clearTransitionRefreshTimer(): void { if (activityTransitionRefreshTimer !== null) { clearTimeout(activityTransitionRefreshTimer); activityTransitionRefreshTimer = null; } }
 function scheduleTransitionRefresh(): void {
   clearTransitionRefreshTimer();
   const delayMs = activityTransitionTracker.nextExpiryDelayMs(Date.now());
   if (delayMs === null) return;
-  activityTransitionRefreshTimer = setTimeout(() => {
-    activityTransitionRefreshTimer = null;
-    scheduleTransitionRefresh();
-    render();
-  }, delayMs);
+  activityTransitionRefreshTimer = setTimeout(() => { activityTransitionRefreshTimer = null; scheduleTransitionRefresh(); render(); }, delayMs);
 }
 
 function completeEntityTurn(domain: ActivityDomain, running: Set<string>, unread: Set<string>, entityId: string, isFocused: boolean): void {
@@ -495,6 +461,13 @@ const projectOperationService = createProjectOperationService({
 
 const syncProfileLastMessages = () => projectOperationService.syncProfileLastMessages();
 const fetchProjects = () => projectOperationService.fetchProjects();
+const conversationOrgCoordinator = createConversationOrgCoordinator({
+  getState: () => state, getGatewayClient: () => gatewayClient, render: () => render(), t, showToast, restoreComposerFocus: () => restoreComposerFocus(), describeRpcError,
+  setSessionArchived: (id, archived, profile) => sessionOperationService.setSessionArchived(id, archived, profile),
+  isForeverChatSession: (sid, p) => (p ? botForeverChatCache.get(p) === sid : Array.from(botForeverChatCache.values()).includes(sid)),
+  fetchArchivedSessions: (opts) => sessionOperationService.fetchArchivedSessions(opts),
+  openNewChatInContainer: (kind, cid) => { cancelColdStartFocus(); void fetchProjects(); state.selectedNewTaskContainerId = cid; state.newTaskModalTab = kind === 'group' ? 'group' : 'solo'; state.isNewTaskModalOpen = true; render(); },
+});
 
 const groupOperationService = createGroupOperationService({
   getState: () => state, getGatewayClient: () => gatewayClient, render: () => render(),
@@ -543,6 +516,7 @@ const profileManagementService = createProfileManagementService({
   nextLoadMessagesGeneration: () => ++activeLoadMessagesGeneration, getCurrentLoadMessagesGeneration: () => activeLoadMessagesGeneration,
   logSession, setPendingScrollToBottom: (p) => renderCoordinator.setPendingScrollToBottom(p),
   captureStreamAnchor: () => captureStreamAnchor(),
+  onProfilesFetched: (list) => conversationOrgCoordinator.hydrateFromProfiles(list),
 });
 
 const openBotChat = (p: string) => profileManagementService.openBotChat(p);
@@ -777,7 +751,8 @@ sessionOperationService = createSessionOperationService({
   logSessionWarn: (m, meta) => logSession.warn(m, meta), logSessionDebug: (m, meta) => logSession.debug(m, meta),
   onSessionActivated: (sid, bot) => statusIntegration.onSessionActivated(sid, bot),
   onLiveSessionReady: (sid, lid, info, bot) => statusIntegration.onLiveSessionReady(sid, lid, info, bot),
-  onSessionDeleted: (sid) => statusIntegration.onSessionDeleted(sid),
+  onSessionCreatedInContainer: (p, sid, cid) => conversationOrgCoordinator.assignNewEntityContainer('session', sid, { profile: p, containerId: cid }),
+  onSessionDeleted: (sid, p) => { statusIntegration.onSessionDeleted(sid); conversationOrgCoordinator.pruneDeletedEntity('session', sid, p); },
 });
 
 async function fetchSessions(): Promise<void> {
@@ -861,7 +836,7 @@ async function ensureLiveSessionId(): Promise<string> {
   return '';
 }
 
-const createNewSession = (o?: { profile?: string; projectId?: string; title?: string }) => sessionOperationService.createNewSession(o);
+const createNewSession = (o?: { profile?: string; projectId?: string; containerId?: string; title?: string }) => sessionOperationService.createNewSession(o);
 const deleteSession = (id: string) => sessionOperationService.deleteSession(id);
 const renameSession = (id: string, title: string) => sessionOperationService.renameSession(id, title);
 const copySessionId = (id: string) => sessionOperationService.copySessionId(id); const pinSession = (id: string) => sessionOperationService.pinSession(id);
@@ -899,7 +874,7 @@ const turnExecutionService = createTurnExecutionService({
   clearToolPatchQueue: () => toolPatchQueue.clear(), stopRunningToolTimers: () => stopRunningToolTimers(), runSlashCommand: (cmd) => inputDockController.runSlashCommand(cmd),
   enqueueDraft: () => inputDockController.enqueueDraft(), handleQueueAction: (action, id) => inputDockController.handleQueueAction(action, id),
   setMessageWindowUserExpanded: (val) => messageWindowManager.setMessageWindowUserExpanded(val), ensureMessageWindow: (total) => ensureMessageWindow(total),
-  render: () => render(), t, logStream,
+  render: () => render(), t, logStream, onBeforeSendEntity: (k, id, p) => conversationOrgCoordinator.autoReopenIfDone(k, id, p),
 });
 
 const groupPollerManager = turnExecutionService.getGroupPollerManager();
@@ -945,6 +920,7 @@ const gatewayEventDispatcher = createGatewayEventDispatcher({
   render: () => render(), t,
   onStatusConnected: () => { void statusIntegration.onConnected(); },
   onStatusDisconnected: () => statusIntegration.onDisconnected(),
+  onReadyEnsureDoneSessions: () => { if (state.orgPrefs.showDoneSection && state.orgContainerCollapsed.done === false && !state.doneSessionsLoaded && !state.doneLoading) void conversationOrgCoordinator.ensureDoneSessionsLoaded(); },
   onStatusTurnAction: (a, fn) => statusIntegration.onGatewayTurnAction(a, fn),
 });
 
@@ -1017,6 +993,7 @@ async function disbandGroupRoom(roomId: string): Promise<void> {
   settleTurnTermination({ runningSessionIds: activeRunningSessionIds, runningBotNames: activeRunningBotNames, runningGroupRoomIds: activeRunningGroupRoomIds, groupRoomId: roomId });
   unreadGroupRoomIds.delete(roomId);
   activityTransitionTracker.clear('group', roomId);
+  conversationOrgCoordinator.pruneDeletedEntity('group', roomId);
   await fetchGroupRooms();
   if (state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId) {
     state.activeGroupSpeaker = null;
@@ -1036,7 +1013,14 @@ const modalInteractionController = createModalInteractionController({
   openBotSettings: (profile) => openBotSettings(profile), openGroupRoom: (roomId) => openGroupRoom(roomId),
   createGroupRoom: async (title, members) => (gatewayClient ? groupRoomStore.createRoom(title, members, gatewayClient) : null),
   disbandGroupRoom: (roomId) => disbandGroupRoom(roomId), fetchGroupRooms: () => fetchGroupRooms(),
-  routeSend: (text) => routeSend(text), sendGroupMessage: (roomId, text) => sendGroupMessage(roomId, text), t: (key, params) => t(key, params),
+  routeSend: (text) => routeSend(text), sendGroupMessage: (roomId, text) => sendGroupMessage(roomId, text),
+  requestMarkDone: (k, id, title, p) => conversationOrgCoordinator.requestMarkDone(k, id, title, p),
+  restoreDone: (k, id, p) => conversationOrgCoordinator.restoreDone(k, id, p), moveEntityToFolder: (k, id, c, p) => conversationOrgCoordinator.moveEntityToFolder(k, id, c, p),
+  promptCreateFolder: (m) => conversationOrgCoordinator.promptCreateFolder(m), promptRenameFolder: (fid, n) => conversationOrgCoordinator.promptRenameFolder(fid, n),
+  confirmDeleteFolder: (fid, n) => conversationOrgCoordinator.confirmDeleteFolder(fid, n),
+  openNewChatInContainer: (k, c) => { cancelColdStartFocus(); void fetchProjects(); state.selectedNewTaskProjectId = undefined; state.selectedNewTaskContainerId = c; state.newTaskModalTab = k === 'group' ? 'group' : 'solo'; state.isNewTaskModalOpen = true; render(); },
+  onGroupCreatedInContainer: (rid, opts) => conversationOrgCoordinator.assignNewEntityContainer('group', rid, opts),
+  t: (key, params) => t(key, params),
 });
 
 const closeConfirmModal = (action: 'ok' | 'cancel') => modalInteractionController.closeConfirmModal(action);
@@ -1097,6 +1081,9 @@ const leftRailController = createLeftRailController({
   activeRunningSessionIds, unreadSessionIds, getActiveStreamingStoredSessionId: () => activeStreamingStoredSessionId,
   activeRunningGroupRoomIds, unreadGroupRoomIds, activeRunningBotNames, unreadBotNames,
   resolveAgentAvatar: (name) => resolveAgentAvatar(name), activityTransitionTracker,
+  onToggleContainer: (cid) => conversationOrgCoordinator.toggleContainer(cid), onRetryDoneSection: () => { void conversationOrgCoordinator.ensureDoneSessionsLoaded(true); }, onRequestMarkDone: (k, id, title, p) => conversationOrgCoordinator.requestMarkDone(k, id, title, p),
+  onRestoreDone: (k, id, p) => { void conversationOrgCoordinator.restoreDone(k, id, p); }, onSearchQueryChanged: (q) => conversationOrgCoordinator.onSearchQueryChanged(q),
+  getMoveEntityContext: (k, id, p) => conversationOrgCoordinator.getMoveEntityContext(k, id, p),
 });
 
 const createLeftRailActions = (): LeftRailActions => {
@@ -1183,8 +1170,7 @@ function ensureAgentPresenceHost(layout: 'stage' | 'dock'): HTMLElement | null {
     presenceMountHandle = null;
     agentPresenceHost?.remove();
     agentPresenceHost = null;
-    let pendingPresenceSnapshot: AgentPresenceSnapshot | null = null;
-    pendingPresenceSnapshot = null;
+    let pendingPresenceSnapshot: AgentPresenceSnapshot | null = null; pendingPresenceSnapshot = null;
     lastAgentPresenceFingerprint = '';
     ensurePresenceTicker('idle');
     presenceController.resetPresenceHost();
@@ -1284,6 +1270,8 @@ const settingsDataService = createSettingsDataService({
   },
   profileAvatarCache, persistAvatarCache: () => persistAvatarCache(),
   persistAgentsToCache: (profiles) => persistAgentsToCache(profiles),
+  fetchProjects: () => fetchProjects(), createProject: (p) => projectOperationService.createProject(p),
+  updateProject: (id, patch) => projectOperationService.updateProject(id, patch), deleteProject: (id) => projectOperationService.deleteProject(id), onOrgPrefsChange: (p) => conversationOrgCoordinator.setOrgPrefs(p),
 });
 
 const scopedProfileName = () => settingsDataService.scopedProfileName();
@@ -1315,7 +1303,7 @@ const learningService = createLearningService({
 });
 const mobileShellCoordinator = createMobileShellCoordinator({
   getState: renderCoordinator.getState, render, leftRailController, resolveAgentAvatar,
-  selectSession, openBotChat, openGroupRoom, createNewSession: async (opts) => { await createNewSession(opts); },
+  selectSession, openBotChat, openGroupRoom, createNewSession,
   renameSession: sessionOperationService.renameSession.bind(sessionOperationService),
   pinSession, archiveSession, deleteSession,
   createGroupRoom: groupOperationService.createGroupRoom, confirmGroupRename, disbandGroupRoom, fetchGroupRooms,
@@ -1328,6 +1316,11 @@ const mobileShellCoordinator = createMobileShellCoordinator({
   editLearningNode: learningService.editLearningNode, deleteLearningNode: learningService.deleteLearningNode,
   getSettingsSnapshot, createSettingsActions, ensureSettingsSectionData,
   copyText: safeCopyText, syncReactMessageList, syncAgentPresenceHost, syncAgentPresence,
+  onToggleContainer: (cid) => conversationOrgCoordinator.toggleContainer(cid), onRetryDoneSection: () => { void conversationOrgCoordinator.ensureDoneSessionsLoaded(true); }, onSearchQueryChanged: (q) => conversationOrgCoordinator.onSearchQueryChanged(q),
+  markDoneConfirmed: (k, id, p) => conversationOrgCoordinator.markDoneConfirmed(k, id, p), restoreDone: (k, id, p) => conversationOrgCoordinator.restoreDone(k, id, p),
+  moveEntityToFolder: (k, id, c, p) => conversationOrgCoordinator.moveEntityToFolder(k, id, c, p), createFolder: (n, m) => conversationOrgCoordinator.createFolder(n, m),
+  renameFolder: (fid, n) => conversationOrgCoordinator.renameFolder(fid, n), deleteFolder: (fid) => conversationOrgCoordinator.deleteFolder(fid),
+  assignNewEntityContainer: (k, id, o) => conversationOrgCoordinator.assignNewEntityContainer(k, id, o), setOrgPrefs: (p) => conversationOrgCoordinator.setOrgPrefs(p),
 });
 renderCoordinator.setMobileShellCoordinator(mobileShellCoordinator);
 if (typeof window !== 'undefined') {
@@ -1478,7 +1471,7 @@ async function init(): Promise<void> {
     const now = Date.now();
     if (now - lastFocusRefreshAt < 5000) return;
     lastFocusRefreshAt = now;
-    if (gatewayClient && !state.isStreaming) void refreshProfilesFromServer();
+    if (gatewayClient && !state.isStreaming) { void refreshProfilesFromServer(); conversationOrgCoordinator.refreshOnFocusIfStale(); }
   });
 
   const syncPageHiddenAttr = (): void => {
@@ -1490,7 +1483,7 @@ async function init(): Promise<void> {
   document.addEventListener('visibilitychange', () => {
     document.documentElement.dataset.appHidden = String(document.visibilityState === 'hidden');
     syncPageHiddenAttr();
-    if (document.visibilityState === 'visible') void refreshProfilesFromServer();
+    if (document.visibilityState === 'visible') { void refreshProfilesFromServer(); conversationOrgCoordinator.refreshOnFocusIfStale(); }
   });
 }
 

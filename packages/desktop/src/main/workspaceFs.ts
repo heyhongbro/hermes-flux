@@ -52,8 +52,12 @@ function isSystemSensitiveRoot(resolved: string): boolean {
   if (unixForbidden.some((prefix) => unixLike === prefix || unixLike.startsWith(`${prefix}/`))) {
     return true;
   }
-  const winForbidden = ['c:/windows', 'c:/program files'];
+  const winForbidden = ['c:/windows', 'c:/program files', 'c:/program files (x86)'];
   return winForbidden.some((prefix) => lower === prefix || lower.startsWith(`${prefix}/`));
+}
+
+function hasEnvSecretAncestor(targetPath: string): boolean {
+  return toPosixPath(targetPath).split('/').filter(Boolean).some(isEnvSecretSegment);
 }
 
 /**
@@ -191,5 +195,141 @@ export function resolveSafeLocalSourceFile(
   } catch (err) {
     console.warn('[workspaceFs] resolve source file failed:', candidateFile, err);
     return null;
+  }
+}
+
+export type WorkspaceDirectoryMutationResult =
+  | { ok: true; path: string }
+  | { ok: false; error: string };
+
+const INVALID_FOLDER_SEGMENT_RE = /[<>:"|?*\0\r\n/\\]/;
+
+function validateWorkspaceFolderName(
+  rawName: string,
+): { ok: true; name: string } | { ok: false; error: string } {
+  const name = typeof rawName === 'string' ? rawName.trim() : '';
+  if (!name) return { ok: false, error: 'INVALID_DIR_NAME:empty' };
+  if (name === '.' || name === '..') return { ok: false, error: 'INVALID_DIR_NAME:reserved' };
+  if (INVALID_FOLDER_SEGMENT_RE.test(name) || /[\x00-\x1f]/.test(name)) {
+    return { ok: false, error: 'INVALID_DIR_NAME:invalid_chars' };
+  }
+  if (isEnvSecretSegment(name)) {
+    return { ok: false, error: 'INVALID_DIR_NAME:secret' };
+  }
+  return { ok: true, name };
+}
+
+/**
+ * 在安全工作区父目录下创建单个新子目录，禁止 `..` 越界、敏感根目录、符号链接逃逸与重名覆盖。
+ */
+export function createWorkspaceDirectory(
+  parentDir: string,
+  folderName: string,
+  options?: { cwd?: string },
+): WorkspaceDirectoryMutationResult {
+  if (typeof parentDir !== 'string' || !parentDir.trim()) {
+    return { ok: false, error: 'INVALID_PARENT_DIRECTORY' };
+  }
+  const safeParent = isSafeWorkspaceDirectory(parentDir, options?.cwd ?? process.cwd());
+  if (!safeParent) {
+    return { ok: false, error: 'INVALID_PARENT_DIRECTORY' };
+  }
+  const nameCheck = validateWorkspaceFolderName(folderName);
+  if (!nameCheck.ok) {
+    return nameCheck;
+  }
+
+  try {
+    if (!fs.existsSync(safeParent)) {
+      return { ok: false, error: 'PARENT_NOT_FOUND' };
+    }
+    const parentStat = fs.statSync(safeParent);
+    if (!parentStat.isDirectory()) {
+      return { ok: false, error: 'PARENT_NOT_A_DIRECTORY' };
+    }
+    const parentReal = fs.realpathSync(safeParent);
+    if (isSystemSensitiveRoot(parentReal)) {
+      return { ok: false, error: 'PROTECTED_ROOT_DIRECTORY' };
+    }
+    const pathApi = isWindowsDrivePath(parentReal) ? path.win32 : path;
+    if (hasEnvSecretAncestor(parentReal)) {
+      return { ok: false, error: 'PROTECTED_ROOT_DIRECTORY' };
+    }
+    const targetPath = pathApi.join(parentReal, nameCheck.name);
+    if (!isInsideParent(parentReal, targetPath, pathApi) || isSystemSensitiveRoot(targetPath)) {
+      return { ok: false, error: 'INVALID_PARENT_DIRECTORY' };
+    }
+    if (fs.existsSync(targetPath)) {
+      return { ok: false, error: 'TARGET_EXISTS' };
+    }
+    fs.mkdirSync(targetPath, { recursive: false });
+    const createdReal = fs.realpathSync(targetPath);
+    return { ok: true, path: toPosixPath(createdReal) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * 在同父目录下重命名安全工作区子目录，禁止跨目录搬迁、重名覆盖、敏感根目录与符号链接逃逸。
+ */
+export function renameWorkspaceDirectory(
+  dirPath: string,
+  newName: string,
+  options?: { cwd?: string },
+): WorkspaceDirectoryMutationResult {
+  if (typeof dirPath !== 'string' || !dirPath.trim()) {
+    return { ok: false, error: 'INVALID_DIRECTORY_PATH' };
+  }
+  const safeDir = isSafeWorkspaceDirectory(dirPath, options?.cwd ?? process.cwd());
+  if (!safeDir) {
+    return { ok: false, error: 'PROTECTED_ROOT_DIRECTORY' };
+  }
+  const nameCheck = validateWorkspaceFolderName(newName);
+  if (!nameCheck.ok) {
+    return nameCheck;
+  }
+
+  try {
+    if (!fs.existsSync(safeDir)) {
+      return { ok: false, error: 'DIRECTORY_NOT_FOUND' };
+    }
+    const lstat = fs.lstatSync(safeDir);
+    if (lstat.isSymbolicLink()) {
+      return { ok: false, error: 'SYMLINK_DIRECTORY_FORBIDDEN' };
+    }
+    if (!lstat.isDirectory()) {
+      return { ok: false, error: 'NOT_A_DIRECTORY' };
+    }
+    const realDir = fs.realpathSync(safeDir);
+    if (isSystemSensitiveRoot(realDir)) {
+      return { ok: false, error: 'PROTECTED_ROOT_DIRECTORY' };
+    }
+    const pathApi = isWindowsDrivePath(realDir) ? path.win32 : path;
+    const parentReal = pathApi.dirname(realDir);
+    if (!parentReal || parentReal === realDir || isSystemSensitiveRoot(parentReal)) {
+      return { ok: false, error: 'PROTECTED_ROOT_DIRECTORY' };
+    }
+    if (hasEnvSecretAncestor(realDir)) {
+      return { ok: false, error: 'PROTECTED_ROOT_DIRECTORY' };
+    }
+
+    const targetPath = pathApi.join(parentReal, nameCheck.name);
+    if (!isInsideParent(parentReal, targetPath, pathApi) || isSystemSensitiveRoot(targetPath)) {
+      return { ok: false, error: 'PROTECTED_ROOT_DIRECTORY' };
+    }
+    if (toPosixPath(targetPath) === toPosixPath(realDir)) {
+      return { ok: true, path: toPosixPath(realDir) };
+    }
+    const isWin = process.platform === 'win32' || isWindowsDrivePath(realDir);
+    const sameOnWindows = isWin && targetPath.toLowerCase() === realDir.toLowerCase();
+    if (!sameOnWindows && fs.existsSync(targetPath)) {
+      return { ok: false, error: 'TARGET_EXISTS' };
+    }
+    fs.renameSync(realDir, targetPath);
+    const renamedReal = fs.realpathSync(targetPath);
+    return { ok: true, path: toPosixPath(renamedReal) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

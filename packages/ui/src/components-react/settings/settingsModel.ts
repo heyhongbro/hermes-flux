@@ -24,6 +24,7 @@ import type { FontPreferences } from '../../tokens/fontPreferences.js';
 import type { ActivityIndicatorVariant } from '../../tokens/activityIndicator.js';
 import type { ConversationWidthMode } from '../../tokens/conversationWidth.js';
 import type { LeftRailLayoutMode } from '../../tokens/leftRailLayout.js';
+import type { ConversationOrgPrefs } from '../../tokens/conversationOrgPrefs.js';
 import type { SkinId } from '../../tokens/skins.js';
 import type {
   McpServerRow,
@@ -42,17 +43,34 @@ import type {
   McpTestResultView,
   SkillHubSearchResult,
   SkillInspectView,
+  BrowseProjectDirectoryResult,
+  ProjectDirectoryEntry,
+  ProjectDirectoryMutationResult,
+  ProjectDirectorySource,
 } from '@hermes-flux/core';
 
 export type { McpServerRow, SkillRow };
 export type { CustomEndpointRow, OauthProviderRow, ProviderView };
 export type { McpCatalogItem, McpServerAddRpcParams, McpTestResultView, SkillHubSearchResult, SkillInspectView };
+export type {
+  BrowseProjectDirectoryResult,
+  ProjectDirectoryEntry,
+  ProjectDirectoryMutationResult,
+  ProjectDirectorySource,
+};
 
 /** 设置中心的一级域。只允许真实存在的能力。 */
-export type SettingsSectionId = 'appearance' | 'providers' | 'agents' | 'extensions' | 'connection' | 'about';
+export type SettingsSectionId =
+  | 'appearance'
+  | 'projects'
+  | 'providers'
+  | 'agents'
+  | 'extensions'
+  | 'connection'
+  | 'about';
 
 /** 图标以名字登记，组件层再映射到具体图标组件，保持本文件零 React 依赖。 */
-export type SettingsIconName = 'palette' | 'key' | 'bot' | 'blocks' | 'plug' | 'info';
+export type SettingsIconName = 'palette' | 'folder' | 'key' | 'bot' | 'blocks' | 'plug' | 'info';
 
 export interface SettingsSectionDef {
   id: SettingsSectionId;
@@ -63,10 +81,11 @@ export interface SettingsSectionDef {
 
 /**
  * 设置中心导航树（唯一真值）。
- * 顺序即用户从"日常最常改"到"最少改"的心理距离：外观 → 模型 → 员工 → 扩展 → 连接 → 关于。
+ * 顺序即用户从"日常最常改"到"最少改"的心理距离：外观 → 项目 → 模型 → 员工 → 扩展 → 连接 → 关于。
  */
 export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = Object.freeze([
   { id: 'appearance', icon: 'palette', titleKey: 'settings.sectionAppearance', descKey: 'settings.sectionAppearanceDesc' },
+  { id: 'projects', icon: 'folder', titleKey: 'settings.sectionProjects', descKey: 'settings.sectionProjectsDesc' },
   { id: 'providers', icon: 'key', titleKey: 'settings.sectionProviders', descKey: 'settings.sectionProvidersDesc' },
   { id: 'agents', icon: 'bot', titleKey: 'settings.sectionAgents', descKey: 'settings.sectionAgentsDesc' },
   { id: 'extensions', icon: 'blocks', titleKey: 'settings.sectionExtensions', descKey: 'settings.sectionExtensionsDesc' },
@@ -122,8 +141,11 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = Object.fr
   { id: 'font-size', sectionId: 'appearance', labelKey: 'settings.textSize' },
   { id: 'conversation-width', sectionId: 'appearance', labelKey: 'settings.conversationWidth' },
   { id: 'left-rail-layout', sectionId: 'appearance', labelKey: 'settings.leftRailLayout' },
+  { id: 'show-done-section', sectionId: 'appearance', labelKey: 'settings.showDoneSection' },
+  { id: 'auto-reopen-on-send', sectionId: 'appearance', labelKey: 'settings.autoReopenOnSend' },
   { id: 'presence-layout', sectionId: 'appearance', labelKey: 'settings.presenceLayout' },
   { id: 'language', sectionId: 'appearance', labelKey: 'settings.languageLabel' },
+  { id: 'projects-list', sectionId: 'projects', labelKey: 'settings.sectionProjects' },
   { id: 'providers-list', sectionId: 'providers', labelKey: 'settings.sectionProviders' },
   { id: 'bot-id', sectionId: 'agents', labelKey: 'bot.idLabel' },
   { id: 'bot-name', sectionId: 'agents', labelKey: 'bot.nameLabel' },
@@ -265,6 +287,17 @@ export interface BotManagementView {
  *   上一版有"按 Bot / 按 Provider"两个视角 + 顶部头像条，用户要在两处对齐同一个概念，
  *   且"对哪些 Agent 生效"得自己点进去现算。现在 Agent 是行的字段，不需要切换。
  */
+export interface SettingsProjectRow {
+  id: string;
+  name: string;
+  path: string;
+  additionalFolders?: string[];
+  boardSlug?: string;
+  icon?: string;
+  color?: string;
+  archived?: boolean;
+}
+
 export interface SettingsSnapshot {
   isOpen: boolean;
   section: SettingsSectionId;
@@ -277,6 +310,10 @@ export interface SettingsSnapshot {
   conversationWidth: ConversationWidthMode;
   /** 左侧栏样式：dual-rail（经典双轨分栏）/ grouped（移动端风格单栏分组列表）。 */
   leftRailLayout: LeftRailLayoutMode;
+  /** 工作台会话组织偏好（位于外观/通用分组，不放在项目页）。 */
+  orgPrefs?: ConversationOrgPrefs;
+  /** 网关原生项目列表（已过滤 archived===true）。 */
+  projects?: SettingsLoadable<SettingsProjectRow[]>;
   profiles: SettingsLoadable<SettingsProfileRow[]>;
   mcp: SettingsLoadable<McpServerRow[]>;
   skills: SettingsLoadable<SkillRow[]>;
@@ -434,6 +471,33 @@ export interface SettingsActions {
   onConversationWidthChange: ConversationWidthChangeHandler;
   /** 切换左侧栏样式（dual-rail / grouped）；壳层负责持久化并同步顶栏与左轨视图。 */
   onLeftRailLayoutChange: (layout: LeftRailLayoutMode) => void;
+  /** 更新工作台显示「已完成」区 / 自动恢复进行中偏好。 */
+  onConversationOrgPrefsChange?: (patch: Partial<ConversationOrgPrefs>) => void;
+  /** 刷新网关原生项目列表。 */
+  onRefreshProjects?: () => void;
+  /** 创建网关原生项目（projects.create）。 */
+  onCreateProject?: (params: { name: string; path: string }) => Promise<SettingsActionResult>;
+  /** 更新网关原生项目（projects.update）。 */
+  onUpdateProject?: (
+    projectId: string,
+    patch: { name?: string; path?: string; boardSlug?: string },
+  ) => Promise<SettingsActionResult>;
+  /** 删除网关原生项目（projects.delete）。 */
+  onDeleteProject?: (projectId: string) => Promise<SettingsActionResult>;
+  /** 浏览工作区目录树（远端走网关 /api/files，本地回环可降级 PAL）。 */
+  onBrowseProjectDirectory?: (dirPath?: string) => Promise<BrowseProjectDirectoryResult>;
+  /** 在指定父目录下新建子目录。 */
+  onCreateProjectDirectory?: (
+    parentPath: string,
+    folderName: string,
+    options?: { source?: ProjectDirectorySource; lockedRoot?: string | null },
+  ) => Promise<ProjectDirectoryMutationResult>;
+  /** 重命名已有子目录。 */
+  onRenameProjectDirectory?: (
+    dirPath: string,
+    newName: string,
+    options?: { source?: ProjectDirectorySource; lockedRoot?: string | null },
+  ) => Promise<ProjectDirectoryMutationResult>;
   /**
    * 切换 Agent 状态指示器的位置。
    *

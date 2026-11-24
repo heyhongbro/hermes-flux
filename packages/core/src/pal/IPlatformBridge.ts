@@ -86,6 +86,8 @@ export interface IPlatformBridge {
   openExternal(url: string, content?: string): Promise<void>;
   openFileDialog?(): Promise<string[] | null>;
   listDirectory?(dirPath?: string): Promise<WorkspaceDirEntry[] | null>;
+  createDirectory?(parentDir: string, folderName: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+  renameDirectory?(dirPath: string, newName: string): Promise<{ ok: boolean; path?: string; error?: string }>;
   readFile?(filePath: string): Promise<string | null>;
   saveFile?(options: {
     fileName: string;

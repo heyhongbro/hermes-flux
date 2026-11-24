@@ -201,7 +201,26 @@ async function httpProxy(cookie, { baseUrl, path: p = '', method = 'GET', params
 
   const res = await fetch(fullUrl, fetchOptions);
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    let detail = res.statusText || '';
+    try {
+      const errText = await res.text();
+      if (errText) {
+        try {
+          const parsedErr = JSON.parse(errText);
+          const msg = parsedErr?.detail || parsedErr?.message || parsedErr?.error;
+          if (typeof msg === 'string' && msg.trim()) {
+            detail = msg.trim();
+          } else {
+            detail = errText.slice(0, 300);
+          }
+        } catch {
+          detail = errText.slice(0, 300);
+        }
+      }
+    } catch {
+      // ignore error body parse failures
+    }
+    throw new Error(detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status}`);
   }
   const contentType = (res.headers.get('content-type') || '').toLowerCase();
   if (contentType.includes('application/json')) {
@@ -256,7 +275,8 @@ function isWithinDir(baseDir, candidate) {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-function resolveInsideRoot(rawPath) {
+function resolveInsideRoot(rawPath, options = {}) {
+  const { followTargetSymlink = true } = options;
   const trimmed = typeof rawPath === 'string' ? rawPath.trim() : '';
   if (trimmed.includes('\0')) return null;
   const resolved = !trimmed
@@ -269,6 +289,14 @@ function resolveInsideRoot(rawPath) {
   if (relLex && isEnvSecretPath(relLex)) return null;
   try {
     if (fs.existsSync(resolved)) {
+      if (!followTargetSymlink) {
+        const lstat = fs.lstatSync(resolved);
+        const parentReal = fs.realpathSync(path.dirname(resolved));
+        if (!isWithinDir(ROOT_REAL, parentReal)) return null;
+        const relParent = path.relative(ROOT_REAL, parentReal);
+        if (relParent && isEnvSecretPath(relParent)) return null;
+        if (lstat.isSymbolicLink()) return resolved;
+      }
       const real = fs.realpathSync(resolved);
       if (!isWithinDir(ROOT_REAL, real)) return null;
       const relReal = path.relative(ROOT_REAL, real);
@@ -299,13 +327,17 @@ const IMAGE_MIME = {
   '.ico': 'image/x-icon',
 };
 
-let cachedListWorkspaceDirectory = null;
-async function getListWorkspaceDirectory() {
-  if (!cachedListWorkspaceDirectory) {
-    const mod = await import('../packages/desktop/dist/main/workspaceFs.mjs');
-    cachedListWorkspaceDirectory = mod.listWorkspaceDirectory;
+let cachedWorkspaceFsMod = null;
+async function getWorkspaceFsModule() {
+  if (!cachedWorkspaceFsMod) {
+    cachedWorkspaceFsMod = await import('../packages/desktop/dist/main/workspaceFs.mjs');
   }
-  return cachedListWorkspaceDirectory;
+  return cachedWorkspaceFsMod;
+}
+
+async function getListWorkspaceDirectory() {
+  const mod = await getWorkspaceFsModule();
+  return mod.listWorkspaceDirectory;
 }
 
 /**
@@ -425,6 +457,53 @@ async function start() {
       } catch (err) {
         console.warn('[Browser Live FS] list-directory failed:', err);
         return sendJson(null);
+      }
+    }
+
+    if (url.pathname === '/__fs/create-directory') {
+      if (!isLoopbackOrigin(req)) return sendJson({ error: 'Forbidden origin' }, 403);
+      if (req.method !== 'POST') return sendJson({ error: 'Method not allowed' }, 405);
+      const body = await readBody(req);
+      const parentDir = body?.parentDir ? resolveInsideRoot(body.parentDir) : null;
+      if (!parentDir) return sendJson({ ok: false, error: 'PATH_OUTSIDE_ROOT' });
+      const folderName = typeof body?.folderName === 'string' ? body.folderName.trim() : '';
+      const candidateTarget = folderName ? resolveInsideRoot(path.join(parentDir, folderName)) : null;
+      if (!candidateTarget) return sendJson({ ok: false, error: 'PATH_OUTSIDE_ROOT' });
+      try {
+        const { createWorkspaceDirectory } = await getWorkspaceFsModule();
+        const res = createWorkspaceDirectory(parentDir, folderName, { cwd: ROOT });
+        if (res?.ok && res.path && !resolveInsideRoot(res.path)) {
+          return sendJson({ ok: false, error: 'PATH_OUTSIDE_ROOT' });
+        }
+        return sendJson(res);
+      } catch (err) {
+        console.warn('[Browser Live FS] create-directory failed:', err);
+        return sendJson({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    if (url.pathname === '/__fs/rename-directory') {
+      if (!isLoopbackOrigin(req)) return sendJson({ error: 'Forbidden origin' }, 403);
+      if (req.method !== 'POST') return sendJson({ error: 'Method not allowed' }, 405);
+      const body = await readBody(req);
+      const dirPath = body?.dirPath ? resolveInsideRoot(body.dirPath, { followTargetSymlink: false }) : null;
+      if (!dirPath) return sendJson({ ok: false, error: 'PATH_OUTSIDE_ROOT' });
+      if (path.resolve(dirPath) === path.resolve(ROOT_REAL)) {
+        return sendJson({ ok: false, error: 'PROTECTED_ROOT_DIRECTORY' });
+      }
+      const newName = typeof body?.newName === 'string' ? body.newName.trim() : '';
+      const candidateTarget = newName ? resolveInsideRoot(path.join(path.dirname(dirPath), newName)) : null;
+      if (!candidateTarget) return sendJson({ ok: false, error: 'PATH_OUTSIDE_ROOT' });
+      try {
+        const { renameWorkspaceDirectory } = await getWorkspaceFsModule();
+        const res = renameWorkspaceDirectory(dirPath, newName, { cwd: ROOT });
+        if (res?.ok && res.path && !resolveInsideRoot(res.path)) {
+          return sendJson({ ok: false, error: 'PATH_OUTSIDE_ROOT' });
+        }
+        return sendJson(res);
+      } catch (err) {
+        console.warn('[Browser Live FS] rename-directory failed:', err);
+        return sendJson({ ok: false, error: err instanceof Error ? err.message : String(err) });
       }
     }
 
@@ -609,6 +688,24 @@ async function start() {
               body: JSON.stringify({ dirPath }),
             });
             if (!r.ok) return null;
+            return await r.json();
+          },
+          createDirectory: async (parentDir, folderName) => {
+            const r = await fetch('/__fs/create-directory', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ parentDir, folderName }),
+            });
+            if (!r.ok) return { ok: false, error: 'HTTP ' + r.status };
+            return await r.json();
+          },
+          renameDirectory: async (dirPath, newName) => {
+            const r = await fetch('/__fs/rename-directory', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ dirPath, newName }),
+            });
+            if (!r.ok) return { ok: false, error: 'HTTP ' + r.status };
             return await r.json();
           },
           readFile: async (filePath) => {

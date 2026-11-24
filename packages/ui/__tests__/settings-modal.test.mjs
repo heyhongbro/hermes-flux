@@ -175,7 +175,7 @@ test('设置中心关闭时必须渲染空 DOM（不保留隐藏壳）', () => {
 test('导航只有真实能力域：不出现竞品分组名，也不出现任何占位域', () => {
   setLocale('zh-CN');
   const html = render();
-  assert.equal(SETTINGS_SECTIONS.length, 6);
+  assert.equal(SETTINGS_SECTIONS.length, 7);
   for (const section of SETTINGS_SECTIONS) {
     assert.ok(html.includes(`data-settings-section="${section.id}"`), `缺少导航项 ${section.id}`);
   }
@@ -1119,7 +1119,7 @@ test('设置域注册表：未知 section 回落到第一个域，检索按当�
 
   setLocale('zh-CN');
   const translate = (key) => t(key);
-  assert.equal(filterSettingsSections(SETTINGS_SECTIONS, '', translate).length, 6);
+  assert.equal(filterSettingsSections(SETTINGS_SECTIONS, '', translate).length, 7);
   assert.deepEqual(
     filterSettingsSections(SETTINGS_SECTIONS, '提供商', translate).map((section) => section.id),
     ['providers'],
@@ -3292,4 +3292,37 @@ test('Phase 2 桌面端纯哑光去框化与全局 4px 栅格锁定守卫', () =
     }),
   );
   assert.ok(btnTooltipHtml.includes('data-tooltip="关闭设置"') && btnTooltipHtml.includes('aria-label="关闭设置"'));
+});
+
+test('工作台与左轨展示归通用页，网关项目独立分组且互不串台', () => {
+  setLocale('zh-CN');
+  const appearanceHtml = render({
+    section: 'appearance',
+    orgPrefs: { showDoneSection: true, autoReopenOnSend: false },
+  });
+  assert.ok(appearanceHtml.includes('data-settings-anchor="show-done-section"'));
+  assert.ok(appearanceHtml.includes('data-settings-anchor="auto-reopen-on-send"'));
+  assert.ok(appearanceHtml.includes('工作台与左轨展示'));
+  assert.equal(appearanceHtml.includes('data-settings-anchor="projects-list"'), false);
+
+  const projectsHtml = render({
+    section: 'projects',
+    projects: {
+      status: 'ready',
+      data: [
+        { id: 'prj-active', name: 'ActiveRepo', path: '/work/active', archived: false },
+        { id: 'prj-arch', name: 'ArchivedRepo', path: '/work/arch', archived: true },
+      ],
+    },
+  });
+  assert.ok(projectsHtml.includes('data-settings-anchor="projects-list"'));
+  assert.ok(projectsHtml.includes('ActiveRepo'));
+  assert.equal(projectsHtml.includes('ArchivedRepo'), false, '项目列表应隐藏已归档项目');
+  assert.equal(projectsHtml.includes('data-settings-anchor="show-done-section"'), false, '工作台与左轨展示开关严禁放进项目设置');
+  assert.equal(projectsHtml.includes('data-settings-anchor="auto-reopen-on-send"'), false);
+
+  const anchorKeys = new Set(SETTINGS_SEARCH_ENTRIES.map((e) => e.id));
+  assert.equal(anchorKeys.has('show-done-section'), true);
+  assert.equal(anchorKeys.has('auto-reopen-on-send'), true);
+  assert.equal(anchorKeys.has('projects-list'), true);
 });

@@ -76,13 +76,46 @@ function compareCodePoint(a: string, b: string): number {
 }
 
 /**
- * 统一规范化工作区路径分隔符为 `/`，并清理末尾多余斜杠（保留根 `/` 与盘符根 `C:/`）。
+ * 统一规范化工作区路径分隔符为 `/`，消解 `.` / `..` 词法穿越段，并清理末尾多余斜杠（保留根 `/` 与盘符根 `C:/`）。
  */
 export function normalizeWorkspacePath(rawPath: string): string {
   const replaced = String(rawPath || '').trim().replace(/\\/g, '/').replace(/\/+/g, '/');
   if (!replaced) return '';
-  if (replaced === '/' || /^[A-Za-z]:\/$/.test(replaced)) return replaced;
-  return replaced.replace(/\/+$/, '');
+
+  const winDriveMatch = /^([A-Za-z]:)(?:\/(.*))?$/.exec(replaced);
+  if (winDriveMatch) {
+    const drive = `${winDriveMatch[1]}/`;
+    const rest = winDriveMatch[2] ?? '';
+    const stack: string[] = [];
+    for (const seg of rest.split('/')) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') {
+        if (stack.length > 0) stack.pop();
+        continue;
+      }
+      stack.push(seg);
+    }
+    return stack.length === 0 ? drive : `${drive}${stack.join('/')}`;
+  }
+
+  const isPosixRoot = replaced.startsWith('/');
+  const stack: string[] = [];
+  for (const seg of replaced.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') {
+      if (stack.length > 0 && stack[stack.length - 1] !== '..') {
+        stack.pop();
+      } else if (!isPosixRoot) {
+        stack.push('..');
+      }
+      continue;
+    }
+    stack.push(seg);
+  }
+  if (isPosixRoot) {
+    return stack.length === 0 ? '/' : `/${stack.join('/')}`;
+  }
+  return stack.length === 0 ? '.' : stack.join('/');
 }
 
 /**
@@ -181,6 +214,10 @@ export function buildTreeFromFlatPaths(
   for (const raw of rawPaths) {
     const trimmed = String(raw || '').trim();
     if (!trimmed) continue;
+    // 在路径段消解前先显式拦截含 '.' 或 '..' 的穿越输入（防止 '/ws/../escape.ts' 经词法折返伪装成普通外源路径）
+    if (trimmed.replace(/\\/g, '/').split('/').some((s) => s === '.' || s === '..')) {
+      continue;
+    }
     const isExplicitDir = trimmed.endsWith('/') || trimmed.endsWith('\\');
     const normItem = normalizeWorkspacePath(trimmed);
     if (!normItem || normItem === normRoot) continue;

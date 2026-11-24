@@ -30,6 +30,7 @@ import {
   resolveMobileSkinId,
   t,
   type ConversationToolVM,
+  type ConversationOrgPrefs,
   type LeftRailProfile,
   type MobileActionSheetState,
   type MobileAppearancePreference,
@@ -49,7 +50,7 @@ import {
   type SettingsSectionId,
   type SettingsSnapshot,
 } from '@hermes-flux/ui';
-import { extractPathBasename, formatFileSize, isImageExtension } from '@hermes-flux/core';
+import { extractPathBasename, formatFileSize, isImageExtension, normalizeOrgProfileName } from '@hermes-flux/core';
 import type { LeftRailController } from '../events/leftRailController.js';
 import { openBrowserAttachmentPicker } from '../events/inputAttachmentPicker.js';
 import { resolveActiveWorkspaceCwd, type AppState } from '../state/appState.js';
@@ -73,11 +74,26 @@ export interface MobileShellCoordinatorDeps {
   selectSession: (id: string, opts?: { botName?: string }) => Promise<void>;
   openBotChat: (profile: string) => Promise<void>;
   openGroupRoom: (roomId: string) => Promise<void>;
-  createNewSession: (opts?: { profile?: string; projectId?: string; title?: string }) => Promise<void>;
+  createNewSession: (opts?: { profile?: string; projectId?: string; containerId?: string; title?: string }) => Promise<string | null>;
   renameSession: (id: string, currentTitle: string, nextTitleOverride: string) => Promise<void>;
   pinSession: (id: string) => Promise<void>;
-  archiveSession: (id: string) => Promise<void>;
+  archiveSession: (id: string, explicitProfile?: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
+  onToggleContainer?: (containerId: string) => void;
+  onRetryDoneSection?: () => void;
+  onSearchQueryChanged?: (query: string) => void;
+  markDoneConfirmed?: (kind: 'session' | 'group', id: string, profile?: string) => Promise<boolean>;
+  restoreDone?: (kind: 'session' | 'group', id: string, profile?: string) => Promise<boolean>;
+  moveEntityToFolder?: (kind: 'session' | 'group', id: string, containerId: string | null, profile?: string) => Promise<boolean>;
+  createFolder?: (name: string, moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string } | null) => Promise<string | null>;
+  renameFolder?: (folderId: string, nextName: string) => Promise<boolean>;
+  deleteFolder?: (folderId: string) => Promise<boolean>;
+  assignNewEntityContainer?: (
+    kind: 'session' | 'group',
+    id: string,
+    opts: { projectId?: string; containerId?: string },
+  ) => Promise<void>;
+  setOrgPrefs?: (patch: Partial<ConversationOrgPrefs>) => void;
   createGroupRoom: (
     title: string,
     members: string[],
@@ -192,6 +208,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
   let newChatTargetBot = initialState.profileName || 'default';
   let newChatGroupMembers: string[] = [];
   let newChatGroupName = '';
+  let newChatProjectId: string | undefined = undefined;
   let settingsSubpage: MobileSettingsSubpage = null;
   let botSubpage: MobileBotSubpage = null;
   let inspectorTab: MobileInspectorTab = 'artifacts';
@@ -283,6 +300,15 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       profiles: allProfiles,
       groups: decoratedGroups,
       sessions: decoratedSessions,
+      projects: state.projects ?? [],
+      folders: state.orgFolders ?? [],
+      assignments: state.orgAssignments ?? {},
+      doneRoomsMap: state.orgDoneRooms ?? {},
+      containerCollapsed: state.orgContainerCollapsed ?? { done: true },
+      hiddenProjectIds: state.orgPrefs?.hiddenProjectIds ?? [],
+      showDoneSection: state.orgPrefs?.showDoneSection ?? true,
+      doneLoading: state.doneLoading,
+      doneError: state.doneError,
       profileName: state.profileName,
       searchQuery: state.sessionSearchQuery,
       collapsed,
@@ -324,6 +350,11 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       homeTab,
       allProfiles,
       groupAvatars: allProfiles,
+      projects: state.projects ?? [],
+      folders: state.orgFolders ?? [],
+      showDoneSection: state.orgPrefs?.showDoneSection ?? true,
+      doneLoading: state.doneLoading,
+      doneError: state.doneError,
       activePane,
       searchOpen,
       searchQuery: state.sessionSearchQuery,
@@ -333,6 +364,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       newChatTargetBot,
       newChatGroupMembers,
       newChatGroupName,
+      newChatProjectId,
       newChatStats: resolveNewChatStats(state),
       settingsOpen: state.isSettingsOpen,
       settingsSubpage,
@@ -436,6 +468,8 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
         deps.ensureSettingsSectionData('providers');
       } else if (subpage === 'extensions') {
         deps.ensureSettingsSectionData('extensions');
+      } else if (subpage === 'projects') {
+        deps.ensureSettingsSectionData('projects');
       } else {
         deps.ensureSettingsSectionData(state.settingsSection);
       }
@@ -461,6 +495,15 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       writeStorage(deps.storage, MOBILE_SECTIONS_STORAGE_KEY, JSON.stringify(collapsed));
       deps.render();
     },
+    onToggleContainer: (containerId) => {
+      deps.onToggleContainer?.(containerId);
+    },
+    onToggleDoneSection: () => {
+      deps.onToggleContainer?.('done');
+    },
+    onRetryDoneSection: () => {
+      deps.onRetryDoneSection?.();
+    },
     onOpenSearch: () => {
       searchOpen = true;
       deps.render();
@@ -472,6 +515,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     },
     onSearchChange: (query) => {
       deps.getState().sessionSearchQuery = query;
+      deps.onSearchQueryChanged?.(query);
       deps.render();
     },
     onOpenActionSheet: (sheet) => {
@@ -490,10 +534,19 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       } else if (sheet.kind === 'group') {
         activePane = 'stage';
         void deps.openGroupRoom(sheet.id);
-      } else {
+      } else if (sheet.kind !== 'folder') {
         activePane = 'stage';
-        const targetSess = deps.getState().sessions.find((s) => s.id === sheet.id);
-        void deps.selectSession(sheet.id, targetSess?.botName ? { botName: targetSess.botName } : undefined);
+        const curState = deps.getState();
+        const targetProfile = sheet.botName ? normalizeOrgProfileName(sheet.botName) : null;
+        const matchSess = (s: { id: string; botName?: string }) =>
+          s.id === sheet.id && (!targetProfile || normalizeOrgProfileName(s.botName) === targetProfile);
+        const targetSess =
+          curState.sessions.find(matchSess) ||
+          (curState.archivedSessions || []).find(matchSess) ||
+          curState.sessions.find((s) => s.id === sheet.id) ||
+          (curState.archivedSessions || []).find((s) => s.id === sheet.id);
+        const resolvedBot = sheet.botName || targetSess?.botName;
+        void deps.selectSession(sheet.id, resolvedBot ? { botName: resolvedBot } : undefined);
       }
       deps.render();
     },
@@ -514,8 +567,41 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     onActionArchive: (sheet) => {
       if (sheet.isProtected) return;
       if (sheet.kind === 'session') {
-        void deps.archiveSession(sheet.id);
+        void deps.archiveSession(sheet.id, sheet.botName);
       }
+    },
+    onActionMarkDone: (sheet) => {
+      if (sheet.isProtected || (sheet.kind !== 'session' && sheet.kind !== 'group')) return;
+      if (deps.markDoneConfirmed) {
+        void deps.markDoneConfirmed(sheet.kind, sheet.id, sheet.botName);
+      } else if (sheet.kind === 'session') {
+        void deps.archiveSession(sheet.id, sheet.botName);
+      }
+    },
+    onActionRestoreDone: (sheet) => {
+      if (sheet.isProtected || (sheet.kind !== 'session' && sheet.kind !== 'group')) return;
+      if (deps.restoreDone) {
+        void deps.restoreDone(sheet.kind, sheet.id, sheet.botName);
+      } else if (sheet.kind === 'session') {
+        void deps.archiveSession(sheet.id, sheet.botName);
+      }
+    },
+    onActionMoveToFolder: (sheet, containerId) => {
+      if (sheet.isProtected || (sheet.kind !== 'session' && sheet.kind !== 'group')) return;
+      void deps.moveEntityToFolder?.(sheet.kind, sheet.id, containerId, sheet.botName);
+    },
+    onActionCreateFolder: (name, moveTarget) => {
+      const target =
+        moveTarget && !moveTarget.isProtected && (moveTarget.kind === 'session' || moveTarget.kind === 'group')
+          ? { kind: moveTarget.kind, id: moveTarget.id, profile: moveTarget.botName }
+          : null;
+      void deps.createFolder?.(name, target);
+    },
+    onActionRenameFolder: (folderId, nextName) => {
+      void deps.renameFolder?.(folderId, nextName);
+    },
+    onActionDeleteFolder: (folderId) => {
+      void deps.deleteFolder?.(folderId);
     },
     onActionDelete: (sheet) => {
       // 三态物理保护：Bot 终身主工位严禁触发删除
@@ -551,6 +637,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       newChatTargetBot = state.profileName || state.profiles.find((p) => p.isDefault)?.name || 'default';
       newChatGroupMembers = [];
       newChatGroupName = '';
+      newChatProjectId = undefined;
       if (state.gatewayConnected) {
         deps.ensureSettingsSectionData('extensions');
       }
@@ -559,6 +646,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     onCloseNewChat: () => {
       newChatOpen = false;
       newChatStep = 'compose';
+      newChatProjectId = undefined;
       deps.render();
     },
     onSetNewChatStep: (step) => {
@@ -584,16 +672,22 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       newChatGroupName = name;
       deps.render();
     },
+    onSelectNewChatProject: (projectId) => {
+      newChatProjectId = projectId || undefined;
+      deps.render();
+    },
     onSubmitNewChatMessage: (text) => {
       const trimmed = text.trim();
       if (!trimmed && deps.getState().attachments.length === 0) return;
       const targetKind = newChatTargetKind;
       const targetBot = newChatTargetBot;
+      const targetProjectId = newChatProjectId;
       const members = [...newChatGroupMembers];
       const title = newChatGroupName.trim() || t('mobile.newChat.groupDefaultName');
 
       newChatOpen = false;
       newChatStep = 'compose';
+      newChatProjectId = undefined;
       activePane = 'stage';
       deps.render();
 
@@ -604,6 +698,9 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
             const roomId = created?.room?.room_id || created?.room_id;
             await deps.fetchGroupRooms();
             if (roomId) {
+              if (targetProjectId) {
+                await deps.assignNewEntityContainer?.('group', roomId, { projectId: targetProjectId });
+              }
               await deps.openGroupRoom(roomId);
               if (trimmed || deps.getState().attachments.length > 0) {
                 await deps.sendGroupMessage(roomId, trimmed);
@@ -611,7 +708,8 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
             }
             return;
           }
-          await deps.createNewSession({ profile: targetBot });
+          const createdSessionId = await deps.createNewSession({ profile: targetBot, projectId: targetProjectId });
+          if (!createdSessionId) return;
           await deps.routeSend(trimmed);
         } catch (err) {
           // gate-degrade: 新建会话或群聊异步创建/首句发送失败时记录告警，防止未捕获 Promise 拒绝
@@ -768,8 +866,13 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
         deps.ensureSettingsSectionData('providers');
       } else if (subpage === 'extensions') {
         deps.ensureSettingsSectionData('extensions');
+      } else if (subpage === 'projects') {
+        deps.ensureSettingsSectionData('projects');
       }
       deps.render();
+    },
+    onSetConversationOrgPrefs: (patch) => {
+      deps.setOrgPrefs?.(patch);
     },
     onSetAppearancePreference: (pref) => {
       appearancePref = pref;

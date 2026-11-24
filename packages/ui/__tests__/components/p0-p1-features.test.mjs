@@ -300,6 +300,8 @@ test('P0 & P1 Features Rigorous Suite - Multi-Quadrant & Mutation Verified', asy
     assert.ok(botMenu.includes('data-action="copy-id"'), 'Bot 菜单必须包含复制 ID');
     assert.ok(!botMenu.includes('data-action="clear-history"'), 'Bot 菜单严禁包含清空历史');
     assert.ok(!botMenu.includes('data-action="disband-group"'), 'Bot 菜单严禁包含解散群聊');
+    assert.ok(!botMenu.includes('data-action="mark-done"'), 'Bot 菜单严禁包含标记已完成');
+    assert.ok(!botMenu.includes('data-action="new-folder-and-move"'), 'Bot 菜单严禁包含移动到文件夹');
 
     // 8.2 Group 右键菜单
     const groupMenu = renderContextMenu({
@@ -308,10 +310,14 @@ test('P0 & P1 Features Rigorous Suite - Multi-Quadrant & Mutation Verified', asy
       targetType: 'group',
       targetId: 'room-alpha',
       targetName: '核心研讨群',
+      folders: [{ id: 'fld-1', name: '研究目录' }],
     });
     assert.ok(groupMenu.includes('data-action="group-rename"'), '群聊菜单必须包含重命名');
+    assert.ok(groupMenu.includes('data-action="mark-done"'), '群聊菜单必须包含标记已完成');
+    assert.ok(groupMenu.includes('data-action="move-folder:fld-1"'), '群聊菜单必须包含移动到文件夹');
+    assert.ok(groupMenu.includes('data-action="new-folder-and-move"'), '群聊菜单必须包含新建并移入文件夹');
     assert.ok(groupMenu.includes('data-action="disband-group"'), '群聊菜单必须包含解散群聊');
-    assert.ok(!groupMenu.includes('data-action="archive"'), '群聊菜单严禁包含会话归档');
+    assert.ok(!groupMenu.includes('data-action="archive"'), '群聊菜单严禁包含旧归档标识');
 
     // 8.3 Session 右键菜单
     const sessionMenu = renderContextMenu({
@@ -320,11 +326,14 @@ test('P0 & P1 Features Rigorous Suite - Multi-Quadrant & Mutation Verified', asy
       targetType: 'session',
       targetId: 'sess-999',
       targetName: '订单超时排查',
+      folders: [{ id: 'fld-1', name: '研究目录' }],
     });
     assert.ok(sessionMenu.includes('data-action="rename"'), '会话菜单必须包含重命名');
     assert.ok(sessionMenu.includes('data-action="pin"'), '会话菜单必须包含置顶');
     assert.ok(sessionMenu.includes('data-action="export"'), '会话菜单必须包含导出 Markdown');
-    assert.ok(sessionMenu.includes('data-action="archive"'), '会话菜单必须包含归档');
+    assert.ok(sessionMenu.includes('data-action="move-folder:fld-1"'), '会话菜单必须包含移动到文件夹');
+    assert.ok(sessionMenu.includes('data-action="new-folder-and-move"'), '会话菜单必须包含新建并移入文件夹');
+    assert.ok(sessionMenu.includes('data-action="mark-done"'), '会话菜单必须包含标记已完成（已完成=归档）');
     assert.ok(sessionMenu.includes('data-action="delete"'), '会话菜单必须包含删除');
     assert.ok(!sessionMenu.includes('data-action="bot-chat"'), '会话菜单严禁包含进入工位');
     assert.ok(sessionMenu.includes('role="menu"') && sessionMenu.includes('role="menuitem"'), '右键菜单必须声明 ARIA 菜单语义');

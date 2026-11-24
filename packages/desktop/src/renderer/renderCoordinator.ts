@@ -636,8 +636,10 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
         initialMode: state.newTaskModalTab === 'group' ? 'group' : 'solo',
         profiles: sourceProfiles,
         projects: state.projects ?? [],
+        folders: state.orgFolders ?? [],
         selectedProfile: state.profileName || 'default',
         selectedProjectId: state.selectedNewTaskProjectId,
+        selectedContainerId: state.selectedNewTaskContainerId,
         gatewayConnected: Boolean(state.gatewayConnected),
       };
     };

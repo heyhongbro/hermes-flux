@@ -9,7 +9,12 @@ import crypto from 'node:crypto';
 import { appendExternalLogRecord, getLogDir } from './logFile';
 import { resolveTitlebarMaximized, resolveWindowToggle } from './windowControl';
 import { extractCookieHeader } from './cookieHeader';
-import { listWorkspaceDirectory, resolveSafeLocalSourceFile } from './workspaceFs';
+import {
+  createWorkspaceDirectory,
+  listWorkspaceDirectory,
+  renameWorkspaceDirectory,
+  resolveSafeLocalSourceFile,
+} from './workspaceFs';
 import type { LogRecord } from '@hermes-flux/core';
 
 /**
@@ -711,8 +716,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   );
 
-  // Local Workspace Directory Listing for Right Tool Window File Tree
+  // Local Workspace Directory Listing & Management for File Tree / Project Picker
   ipcMain.handle('fs:list-directory', (_event, dirPath?: string) => {
     return listWorkspaceDirectory(dirPath, { cwd: process.cwd() });
+  });
+  ipcMain.handle('fs:create-directory', (_event, parentDir: string, folderName: string) => {
+    return createWorkspaceDirectory(parentDir, folderName, { cwd: process.cwd() });
+  });
+  ipcMain.handle('fs:rename-directory', (_event, dirPath: string, newName: string) => {
+    return renameWorkspaceDirectory(dirPath, newName, { cwd: process.cwd() });
   });
 }

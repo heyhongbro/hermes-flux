@@ -57,6 +57,7 @@ import {
   type I18nKey,
   type FontPreferences,
   type ActivityIndicatorVariant,
+  type ConversationOrgPrefs,
   type SkinId,
   applyConversationWidthMode,
   resolveConversationWidthMode,
@@ -74,6 +75,7 @@ import { createProviderAdminController, planDeleteTarget } from '../providerAdmi
 import { createSettingsController, resolveGatewayPassword } from '../settingsController.js';
 import { createBotManagementController, createBotWizardController } from '../botManagementController.js';
 import { loadProviderCatalog } from '../providerCatalog.js';
+import { createProjectDirectoryActions } from './projectDirectoryActions.js';
 
 export interface GatewayConnectionTestResult {
   ok: boolean;
@@ -111,6 +113,14 @@ export interface SettingsDataDeps {
   readonly profileAvatarCache: Map<string, string>;
   readonly persistAvatarCache: () => void;
   readonly persistAgentsToCache?: (profiles: AppState['profiles']) => void;
+  readonly fetchProjects?: () => Promise<void>;
+  readonly createProject?: (params: { name: string; path: string }) => Promise<{ ok: boolean; message?: string }>;
+  readonly updateProject?: (
+    projectId: string,
+    patch: { name?: string; path?: string; boardSlug?: string },
+  ) => Promise<{ ok: boolean; message?: string }>;
+  readonly deleteProject?: (projectId: string) => Promise<{ ok: boolean; message?: string }>;
+  readonly onOrgPrefsChange?: (patch: Partial<ConversationOrgPrefs>) => void;
 }
 
 export interface SettingsDataService {
@@ -662,6 +672,8 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
       activityVariant: deps.getActivityIndicatorVariant(),
       conversationWidth: state.conversationWidth,
       leftRailLayout: state.leftRailLayout,
+      orgPrefs: state.orgPrefs,
+      projects: state.settingsProjects,
       profiles: state.settingsProfiles,
       bots: botRoster(),
       botManagement: getBotManagementSnapshot(),
@@ -708,6 +720,10 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
    */
   function ensureSettingsSectionData(section: SettingsSectionId, force = false): void {
     const state = deps.getState();
+    if (section === 'projects') {
+      if (force || state.settingsProjects.status === 'idle') void deps.fetchProjects?.();
+      return;
+    }
     if (section === 'agents') {
       getBotManagementController().ensureLoaded(force);
       if (force || state.settingsProviderViews.status === 'idle') {
@@ -790,6 +806,17 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         applyLeftRailLayout(nextLayout);
         deps.render();
       },
+      onConversationOrgPrefsChange: (patch) => deps.onOrgPrefsChange?.(patch),
+      onRefreshProjects: () => { void deps.fetchProjects?.(); },
+      onCreateProject: deps.createProject ? (p) => deps.createProject!(p) : undefined,
+      onUpdateProject: deps.updateProject ? (id, patch) => deps.updateProject!(id, patch) : undefined,
+      onDeleteProject: deps.deleteProject ? (id) => deps.deleteProject!(id) : undefined,
+      ...createProjectDirectoryActions({
+        getState: deps.getState,
+        getGatewayClient: deps.getGatewayClient,
+        getDesktopApi: deps.getDesktopApi,
+        getEffectiveUrl: deps.getEffectiveUrl,
+      }),
       onRefreshProfiles: () => { void getBotManagementController().loadRoster(true); },
       onScopeProfileChange: (profile) => {
         state.settingsScopedProfile = profile;
