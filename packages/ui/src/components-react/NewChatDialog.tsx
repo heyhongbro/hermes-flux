@@ -23,7 +23,8 @@
  */
 
 import * as React from 'react';
-import { Check, ChevronLeft, ChevronRight, Users, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Folder, Users, X } from 'lucide-react';
+import { extractProjectIdFromContainer } from '@hermes-flux/core';
 import { t } from '../i18n/index.js';
 import { Button } from './primitives/Button.js';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from './primitives/Dialog.js';
@@ -35,6 +36,7 @@ import {
   buildAutoGroupTitle,
   buildNewChatSubmitPayload,
   createNewChatSubmitGate,
+  resolveActiveNewChatProjects,
   resolveValidProjectId,
   toggleGroupMember,
   type NewChatDialogActions,
@@ -49,13 +51,31 @@ export interface NewChatDialogProps {
 }
 
 function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.ReactElement {
-  const { initialMode, profiles, projects, selectedProjectId, gatewayConnected } = snapshot;
+  const {
+    initialMode,
+    profiles,
+    projects,
+    folders = [],
+    selectedProjectId,
+    selectedContainerId,
+    gatewayConnected,
+  } = snapshot;
+
+  const activeProjects = React.useMemo(() => resolveActiveNewChatProjects(projects), [projects]);
+  const initialProjectFromContainer = selectedContainerId
+    ? extractProjectIdFromContainer(selectedContainerId)
+    : null;
+  const initialCustomFolderId =
+    selectedContainerId && folders.some((f) => f.id === selectedContainerId)
+      ? selectedContainerId
+      : '';
 
   const [mode, setMode] = React.useState<NewChatMode>(initialMode);
   const [selectedMembers, setSelectedMembers] = React.useState<string[]>([]);
   const [projectId, setProjectId] = React.useState<string>(() =>
-    resolveValidProjectId(projects, selectedProjectId),
+    resolveValidProjectId(activeProjects, initialProjectFromContainer || selectedProjectId),
   );
+  const [containerId, setContainerId] = React.useState<string>(initialCustomFolderId);
   const [submitting, setSubmitting] = React.useState<boolean>(false);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
 
@@ -73,11 +93,11 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
   }, []);
 
   React.useEffect(() => {
-    if (!userPickedProjectRef.current && !projectId && projects.length > 0) {
-      const valid = resolveValidProjectId(projects, selectedProjectId);
+    if (!userPickedProjectRef.current && !projectId && activeProjects.length > 0) {
+      const valid = resolveValidProjectId(activeProjects, initialProjectFromContainer || selectedProjectId);
       if (valid) setProjectId(valid);
     }
-  }, [projects, selectedProjectId, projectId]);
+  }, [activeProjects, initialProjectFromContainer, selectedProjectId, projectId]);
 
   const displayProfiles: LeftRailProfile[] =
     profiles.length > 0
@@ -136,6 +156,7 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
       selectedMembers: [],
       title: '',
       projectId,
+      containerId: selectedContainerId ? containerId : undefined,
       firstMessage: '',
     });
     if (!outcome.ok) return;
@@ -149,24 +170,88 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
       selectedBot: selectedMembers[0] || 'default',
       selectedMembers,
       title: resolvedGroupName,
+      projectId,
+      containerId: selectedContainerId ? containerId : undefined,
       firstMessage: '',
     });
     if (!outcome.ok) return;
     await runSubmit(outcome.payload);
   };
 
-  const workspaceGroups =
-    projects.length > 0
+  const selectedProject = activeProjects.find((p) => p.id === projectId);
+  const selectedCustomFolder = folders.find((f) => f.id === containerId);
+  const projectGroups =
+    activeProjects.length > 0
       ? [
           {
             label: '',
             options: [
-              { value: '', label: t('modal.defaultWorkspace') },
-              ...projects.map((p) => ({ value: p.id, label: p.name })),
+              { value: '', label: t('newChat.projectDefault') },
+              ...activeProjects.map((p) => ({ value: p.id, label: p.name })),
             ],
           },
         ]
       : [];
+
+  const renderProjectSelector = (forGroup: boolean): React.ReactNode => {
+    if (activeProjects.length === 0 && !selectedCustomFolder) return null;
+    return (
+      <div className="flex flex-col gap-1 px-1">
+        {activeProjects.length > 0 ? (
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor={forGroup ? 'new-chat-group-project-select' : 'new-chat-project-select'}
+              className="shrink-0 text-caption font-medium text-muted-foreground"
+            >
+              {t('newChat.projectLabel')}
+            </label>
+            <div className="min-w-0 flex-1">
+              <Select
+                id={forGroup ? 'new-chat-group-project-select' : 'new-chat-project-select'}
+                size="sm"
+                disabled={submitting}
+                value={projectId}
+                groups={projectGroups}
+                placeholder={t('newChat.projectDefault')}
+                ariaLabel={t('newChat.projectLabel')}
+                contentClassName="w-menu-trigger"
+                onChange={(next) => {
+                  userPickedProjectRef.current = true;
+                  setProjectId(next);
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
+        {selectedProject ? (
+          <span className="truncate text-caption text-muted-foreground">
+            {forGroup
+              ? t('newChat.groupProjectDefaultNote', { name: selectedProject.name })
+              : t('newChat.projectBoundHint', { path: selectedProject.path || selectedProject.name })}
+          </span>
+        ) : null}
+        {selectedCustomFolder ? (
+          <div className="flex items-center justify-between gap-2 rounded-panel bg-input px-2 py-1 text-caption text-muted-foreground">
+            <span className="flex min-w-0 items-center gap-1 truncate">
+              <Folder size={12} aria-hidden="true" className="shrink-0" />
+              <span className="truncate">{t('newChat.folderBoundHint', { name: selectedCustomFolder.name })}</span>
+            </span>
+            <Tooltip content={t('ctx.removeFromFolder')} placement="top">
+              <button
+                type="button"
+                aria-label={t('ctx.removeFromFolder')}
+                disabled={submitting}
+                onClick={() => setContainerId('')}
+                className="relative flex size-7 shrink-0 items-center justify-center rounded-card text-muted-foreground transition-colors hover:bg-card-hover hover:text-foreground"
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+            </Tooltip>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <Dialog
@@ -225,24 +310,7 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
                 </div>
               ) : null}
 
-              {projects.length > 0 ? (
-                <div className="px-1">
-                  <Select
-                    id="new-chat-project-select"
-                    size="sm"
-                    disabled={submitting}
-                    value={projectId}
-                    groups={workspaceGroups}
-                    placeholder={t('modal.defaultWorkspace')}
-                    ariaLabel={t('modal.workspaceLabel')}
-                    contentClassName="w-menu-trigger"
-                    onChange={(next) => {
-                      userPickedProjectRef.current = true;
-                      setProjectId(next);
-                    }}
-                  />
-                </div>
-              ) : null}
+              {renderProjectSelector(false)}
 
               <div className="px-2 pt-1 text-caption font-medium text-muted-foreground">
                 {t('newChat.chooseAgent')}
@@ -366,6 +434,8 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
                     : t('newChat.selectedMembersCount', { count: String(selectedMembers.length) })}
                 </span>
               </div>
+
+              {renderProjectSelector(true)}
 
               <div
                 role="group"

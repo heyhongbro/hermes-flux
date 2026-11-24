@@ -5,15 +5,15 @@
 
 | 方法 | 入参（契约） | 出参（契约） | 调用点 | 真实探针 |
 | --- | --- | --- | --- | --- |
-| `projects.add_folder` | `profile` `id` `path` `label` `is_primary` | `project` | `packages/core/src/project/projectService.ts:246` | ✅ 0.22.5 |
-| `projects.create` | `profile` `name` `folders` `slug` `primary_path` `description` `icon` `color` `board_slug` `use` | `project` | `packages/core/src/project/projectService.ts:160` | ✅ 0.22.5 |
-| `projects.delete` | `profile` `id` | `projects` `active_id` | `packages/core/src/project/projectService.ts:202` | ✅ 0.22.5 |
-| `projects.get` | `profile` `id` | `project` | `packages/core/src/project/projectService.ts:110` | ✅ 0.22.5 |
-| `projects.list` | `profile` | `projects` `active_id` | `packages/core/src/project/projectService.ts:66`<br>`packages/desktop/src/renderer/services/projectOperationService.ts:94` | ✅ 0.22.5 |
-| `projects.remove_folder` | `profile` `id` `path` | `project` | `packages/core/src/project/projectService.ts:268` | ✅ 0.22.5 |
-| `projects.set_active` | `profile` `id` | `active_id` | `packages/core/src/project/projectService.ts:222` | ✅ 0.22.5 |
-| `projects.tree` | `profile` `preview_limit` `session_limit` | `projects` `active_id` `scoped_session_ids` | `packages/core/src/project/projectService.ts:285` | ✅ 0.22.5 |
-| `projects.update` | `profile` `id` `name` `description` `icon` `color` `board_slug` | `project` | `packages/core/src/project/projectService.ts:178` | ✅ 0.22.5 |
+| `projects.add_folder` | `profile` `id` `path` `label` `is_primary` | `project` | `packages/core/src/project/projectService.ts:272` | ✅ 0.22.5 |
+| `projects.create` | `profile` `name` `folders` `slug` `primary_path` `description` `icon` `color` `board_slug` `use` | `project` | `packages/core/src/project/projectService.ts:181` | ✅ 0.22.5 |
+| `projects.delete` | `profile` `id` | `projects` `active_id` | `packages/core/src/project/projectService.ts:228` | ✅ 0.22.5 |
+| `projects.get` | `profile` `id` | `project` | `packages/core/src/project/projectService.ts:122` | ✅ 0.22.5 |
+| `projects.list` | `profile` | `projects` `active_id` | `packages/core/src/project/projectService.ts:71`<br>`packages/desktop/src/renderer/services/projectOperationService.ts:111` | ✅ 0.22.5 |
+| `projects.remove_folder` | `profile` `id` `path` | `project` | `packages/core/src/project/projectService.ts:294` | ✅ 0.22.5 |
+| `projects.set_active` | `profile` `id` | `active_id` | `packages/core/src/project/projectService.ts:248` | ✅ 0.22.5 |
+| `projects.tree` | `profile` `preview_limit` `session_limit` | `projects` `active_id` `scoped_session_ids` | `packages/core/src/project/projectService.ts:311` | ✅ 0.22.5 |
+| `projects.update` | `profile` `id` `name` `description` `icon` `color` `board_slug` | `project` | `packages/core/src/project/projectService.ts:207` | ✅ 0.22.5 |
 
 ## 明细
 
@@ -23,7 +23,7 @@
 - 结果类型：`ProjectResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:246`
+  - `packages/core/src/project/projectService.ts:272`
 
 ### `projects.create`
 
@@ -31,7 +31,7 @@
 - 结果类型：`OptionalProjectResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:160`
+  - `packages/core/src/project/projectService.ts:181`
 
 ### `projects.delete`
 
@@ -39,7 +39,7 @@
 - 结果类型：`ProjectsPayload`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:202`
+  - `packages/core/src/project/projectService.ts:228`
 
 ### `projects.get`
 
@@ -47,7 +47,7 @@
 - 结果类型：`ProjectResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:110`
+  - `packages/core/src/project/projectService.ts:122`
 
 ### `projects.list`
 
@@ -55,8 +55,8 @@
 - 结果类型：`ProjectsPayload`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:66`
-  - `packages/desktop/src/renderer/services/projectOperationService.ts:94`
+  - `packages/core/src/project/projectService.ts:71`
+  - `packages/desktop/src/renderer/services/projectOperationService.ts:111`
 
 ### `projects.remove_folder`
 
@@ -64,7 +64,7 @@
 - 结果类型：`ProjectResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:268`
+  - `packages/core/src/project/projectService.ts:294`
 
 ### `projects.set_active`
 
@@ -72,7 +72,7 @@
 - 结果类型：`ActiveIdResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:222`
+  - `packages/core/src/project/projectService.ts:248`
 
 ### `projects.tree`
 
@@ -80,7 +80,7 @@
 - 结果类型：`ProjectsTreeResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:285`
+  - `packages/core/src/project/projectService.ts:311`
 
 ### `projects.update`
 
@@ -88,5 +88,5 @@
 - 结果类型：`ProjectResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/project/projectService.ts:178`
+  - `packages/core/src/project/projectService.ts:207`
 

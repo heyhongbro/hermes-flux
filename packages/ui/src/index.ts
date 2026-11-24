@@ -16,6 +16,7 @@ export {
   type LeftRailGroupRoom,
   type LeftRailProfile,
   type LeftRailActiveFocus,
+  type LeftRailFolder,
   type ActivityState as LeftRailActivityState,
   type ActivityTransition,
 } from './components-react/leftRailModel.js';
@@ -60,6 +61,7 @@ export {
 } from './tokens/activityIndicator.js';
 export * from './tokens/conversationWidth.js';
 export * from './tokens/leftRailLayout.js';
+export * from './tokens/conversationOrgPrefs.js';
 export * from './lib/safeStorage.js';
 export * from './components/InputDock/InputDock.js';
 export * from './components/InspectionPod/InspectionPod.js';

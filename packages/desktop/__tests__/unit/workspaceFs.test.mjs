@@ -11,6 +11,8 @@ import Module, { createRequire } from 'node:module';
 import {
   isSafeWorkspaceDirectory,
   listWorkspaceDirectory,
+  createWorkspaceDirectory,
+  renameWorkspaceDirectory,
   resolveSafeLocalSourceFile,
 } from '../../dist/main/workspaceFs.mjs';
 
@@ -506,6 +508,69 @@ test('resolveSafeLocalSourceFile 校验非 CWD 工作区文件直拷、.env* 与
     } finally {
       fs.realpathSync = origRealpath;
     }
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('createWorkspaceDirectory / renameWorkspaceDirectory 安全新建、重命名与越界/符号链接/重名守卫', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flux-dir-mut-'));
+  try {
+    const created = createWorkspaceDirectory(tmpRoot, 'alpha-repo', { cwd: tmpRoot });
+    assert.equal(created.ok, true);
+    assert.ok(fs.existsSync(path.join(tmpRoot, 'alpha-repo')));
+
+    // 重名创建必须拒绝
+    const dupCreate = createWorkspaceDirectory(tmpRoot, 'alpha-repo', { cwd: tmpRoot });
+    assert.deepEqual(dupCreate, { ok: false, error: 'TARGET_EXISTS' });
+
+    // 非法名称 / .env* / .. 必须拒绝
+    assert.deepEqual(createWorkspaceDirectory(tmpRoot, '..', { cwd: tmpRoot }), {
+      ok: false,
+      error: 'INVALID_DIR_NAME:reserved',
+    });
+    assert.deepEqual(createWorkspaceDirectory(tmpRoot, 'a/b', { cwd: tmpRoot }), {
+      ok: false,
+      error: 'INVALID_DIR_NAME:invalid_chars',
+    });
+    assert.deepEqual(createWorkspaceDirectory(tmpRoot, '.env.local', { cwd: tmpRoot }), {
+      ok: false,
+      error: 'INVALID_DIR_NAME:secret',
+    });
+
+    // 重命名成功与目标冲突
+    createWorkspaceDirectory(tmpRoot, 'beta-repo', { cwd: tmpRoot });
+    const renamed = renameWorkspaceDirectory(path.join(tmpRoot, 'alpha-repo'), 'alpha-v2', {
+      cwd: tmpRoot,
+    });
+    assert.equal(renamed.ok, true);
+    assert.equal(fs.existsSync(path.join(tmpRoot, 'alpha-v2')), true);
+    assert.equal(fs.existsSync(path.join(tmpRoot, 'alpha-repo')), false);
+
+    const renameConflict = renameWorkspaceDirectory(path.join(tmpRoot, 'alpha-v2'), 'beta-repo', {
+      cwd: tmpRoot,
+    });
+    assert.deepEqual(renameConflict, { ok: false, error: 'TARGET_EXISTS' });
+
+    // 敏感根目录及祖先包含 .env* 段均不可新建/重命名
+    assert.equal(
+      renameWorkspaceDirectory('C:/Windows/System32', 'evil', { cwd: tmpRoot }).ok,
+      false,
+    );
+    assert.equal(
+      renameWorkspaceDirectory('C:/Program Files (x86)/VendorApp', 'evil', { cwd: tmpRoot }).ok,
+      false,
+    );
+    const envDir = path.join(tmpRoot, '.env.production');
+    fs.mkdirSync(path.join(envDir, 'nested'), { recursive: true });
+    assert.deepEqual(createWorkspaceDirectory(path.join(envDir, 'nested'), 'hack', { cwd: tmpRoot }), {
+      ok: false,
+      error: 'PROTECTED_ROOT_DIRECTORY',
+    });
+    assert.deepEqual(renameWorkspaceDirectory(path.join(envDir, 'nested'), 'renamed', { cwd: tmpRoot }), {
+      ok: false,
+      error: 'PROTECTED_ROOT_DIRECTORY',
+    });
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }

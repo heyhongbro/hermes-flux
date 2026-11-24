@@ -20,6 +20,7 @@
 import {
   type SettingsSectionId,
   type SettingsLoadable,
+  type SettingsProjectRow,
   type McpServerRow as SettingsMcpRow,
   type SkillRow as SettingsSkillRow,
   type SettingsProfileRow,
@@ -29,6 +30,7 @@ import {
   type InspectorTab,
   type LeftRailGroupRoom,
   type LeftRailActiveFocus,
+  type LeftRailFolder,
   type LeftRailProfile,
   type LeftRailProject,
   type ContextMenuProps,
@@ -36,12 +38,16 @@ import {
   type SlashCommandOption,
   type MentionReferenceOption,
   type ComposerBadgeItem,
+  type ConversationOrgPrefs,
+  type OrgContainerCollapseState,
   type DataPhase,
   MessageViewModel,
   resolveSkinId,
   loadConversationWidthMode,
   loadLeftRailLayout,
   loadGroupedRailSections,
+  loadConversationOrgPrefs,
+  loadOrgContainerCollapseState,
 } from '@hermes-flux/ui';
 import type { ConversationWidthMode, LeftRailLayoutMode } from '@hermes-flux/ui';
 
@@ -93,6 +99,16 @@ export interface AppState {
   isNewTaskModalOpen: boolean;
   newTaskModalTab: 'solo' | 'group';
   selectedNewTaskProjectId?: string;
+  selectedNewTaskContainerId?: string;
+  orgPrefs: ConversationOrgPrefs;
+  orgContainerCollapsed: OrgContainerCollapseState;
+  orgFolders: LeftRailFolder[];
+  orgAssignments: Record<string, string>;
+  orgDoneRooms: Record<string, number>;
+  archivedSessions: NormalizedSession[];
+  doneSessionsLoaded: boolean;
+  doneLoading: boolean;
+  doneError: string;
   editingGroupRoomId?: string;
   modelMenuOpen: boolean;
   modelCascadeModel?: string;
@@ -104,7 +120,10 @@ export interface AppState {
     confirmLabel?: string;
     cancelLabel?: string;
     isDanger?: boolean;
-    onConfirm: () => void | Promise<void>;
+    inputPlaceholder?: string;
+    inputDefaultValue?: string;
+    inputLabel?: string;
+    onConfirm: (inputValue?: string) => void | Promise<void>;
     onCancel?: () => void;
   };
   dockNotice: string;
@@ -132,6 +151,7 @@ export interface AppState {
   presenceLayout: 'stage' | 'dock';
   conversationWidth: ConversationWidthMode;
   leftRailLayout: LeftRailLayoutMode;
+  settingsProjects: SettingsLoadable<SettingsProjectRow[]>;
   settingsProfiles: SettingsLoadable<SettingsProfileRow[]>;
   botManagementStatus: BotManagementStatus;
   botManagementActiveBotId: string;
@@ -291,6 +311,16 @@ export function createInitialState(params: InitialStateParams): AppState {
     isMoreSessionsExpanded: false,
     isNewTaskModalOpen: false,
     newTaskModalTab: 'solo',
+    selectedNewTaskContainerId: undefined,
+    orgPrefs: loadConversationOrgPrefs(),
+    orgContainerCollapsed: loadOrgContainerCollapseState(),
+    orgFolders: [],
+    orgAssignments: {},
+    orgDoneRooms: {},
+    archivedSessions: [],
+    doneSessionsLoaded: false,
+    doneLoading: false,
+    doneError: '',
     editingGroupRoomId: undefined,
     profileName: savedProfile,
     modelMenuOpen: false,
@@ -332,6 +362,7 @@ export function createInitialState(params: InitialStateParams): AppState {
     presenceLayout: readPresenceLayout(),
     conversationWidth: loadConversationWidthMode(),
     leftRailLayout: loadLeftRailLayout(),
+    settingsProjects: { status: 'idle' },
     settingsProfiles: { status: 'idle' },
     botManagementStatus: { status: 'uninitialized' },
     botManagementActiveBotId: '',

@@ -30,6 +30,7 @@ import {
   saveGroupedRailSections,
   buildGroupedLeftRailModel,
   buildLeftRailModel,
+  renderContextMenu,
   renderLeftRailHtml,
   ReactLeftRail,
   setLocale,
@@ -479,4 +480,112 @@ test('GroupedLeftRail 渲染契约：无独立 BOT 边栏、含新建会话按�
     renderToStaticMarkup(React.createElement(RowTime, { timestamp: Number.NaN, fallback: '刚才' }));
     renderToStaticMarkup(React.createElement(RowTime, { timestamp: Number.POSITIVE_INFINITY, fallback: '未知' }));
   }, 'RowTime 对 NaN / Infinity 异常时间戳不得抛出 RangeError');
+});
+
+test('桌面左轨扁平顶级组织、行内 hover 完成/恢复胶囊（Bot 免疫）与底部无计数已完成抽屉', () => {
+  setLocale('zh-CN');
+  const orgInput = {
+    layout: 'grouped',
+    activeSessionId: 's-default',
+    sessions: [
+      ...SESSIONS,
+      { id: 's-proj', title: '项目自动匹配会话', preview: 'cwd test', botName: 'default', cwd: '/work/flux/sub', timestamp: NOW - 5_000, activityState: 'read' },
+      { id: 's-fld', title: '自定义目录会话', preview: 'fld test', botName: 'default', timestamp: NOW - 15_000, activityState: 'read' },
+      { id: 's-archived-1', title: '已收工任务', preview: 'finished', botName: 'default', isArchived: true, timestamp: NOW - 50_000 },
+    ],
+    profileName: 'default',
+    profiles: PROFILES,
+    groups: [
+      { roomId: 'room-1', name: '进行中群聊', members: ['default', 'arch-wang'], updatedAt: NOW - 30_000, activityState: 'running' },
+      { roomId: 'room-done', name: '已完成群聊', members: ['default', 'arch-wang'], updatedAt: NOW - 80_000, activityState: 'read' },
+    ],
+    projects: [{ id: 'p-flux', name: 'FluxProject', path: '/work/flux', archived: false }],
+    folders: [{ id: 'fld-1', name: '重要收件箱', order: 0 }],
+    assignments: { 'session:default:s-fld': 'fld-1' },
+    doneRoomsMap: { 'room-done': NOW - 70_000 },
+    showDoneSection: true,
+    searchQuery: '',
+    collapsed: false,
+    onRequestMarkDone: () => {},
+    onRestoreDone: () => {},
+    onToggleContainer: () => {},
+  };
+
+  const html = renderLeftRailHtml(orgInput);
+  // 1. 新建会话旁边严禁渲染独立的新建文件夹按钮
+  assert.equal(html.includes('new-folder-btn'), false);
+  // 2. 扁平顶级结构：Bot -> Project -> Folder -> Groups -> Sessions -> Done 抽屉
+  const botIdx = html.indexOf('data-profile="default"');
+  const prjIdx = html.indexOf('data-container-id="prj:p-flux"');
+  const fldIdx = html.indexOf('data-container-id="fld-1"');
+  const doneIdx = html.indexOf('data-section="done"');
+  assert.ok(botIdx !== -1 && prjIdx !== -1 && fldIdx !== -1 && doneIdx !== -1);
+  assert.ok(botIdx < prjIdx && prjIdx < fldIdx && fldIdx < doneIdx);
+
+  // 3. 普通会话与群聊渲染 sibling hover 完成胶囊（图标 + 文案，min-h-7 且绝不嵌套在行 button 内），Bot 主工位严格免疫
+  const botButtonMatch = html.match(/<button[^>]*data-profile="default"[\s\S]*?<\/button>/);
+  assert.ok(botButtonMatch);
+  assert.equal(botButtonMatch[0].includes('data-row-hover-action='), false, 'Bot 行绝不可渲染完成/恢复胶囊');
+  const sessionButtonBlocks = html.match(/<button[^>]*class="[^"]*session-item[^"]*"[^>]*>[\s\S]*?<\/button>/g) || [];
+  assert.ok(sessionButtonBlocks.length > 0);
+  assert.equal(
+    sessionButtonBlocks.some((block) => block.includes('data-row-hover-action=')),
+    false,
+    '完成胶囊必须作为兄弟 button 渲染，严禁嵌套交互元素',
+  );
+  assert.match(html, /<button[^>]*data-row-hover-action="done"[^>]*class="[^"]*\bmin-h-7\b[^"]*"/);
+  assert.ok(html.includes('data-row-hover-action="restore"'));
+  const addFldBtnMatch = html.match(/<button[^>]*data-testid="rail-container-add-fld-1"[^>]*>/);
+  assert.ok(addFldBtnMatch);
+  assert.match(addFldBtnMatch[0], /\bafter:-inset-1\b/);
+  assert.match(addFldBtnMatch[0], /\brounded-card\b/);
+
+  // 4. 右键菜单：同时呈现活跃项目 (prj:) 与自定义文件夹，且允许移出当前归属（含项目归属解绑）
+  const prjGroupMenuHtml = renderContextMenu({
+    x: 0,
+    y: 0,
+    targetType: 'group',
+    targetId: 'g-proj',
+    targetName: '项目群聊',
+    currentContainerId: 'prj:p-flux',
+    projects: [{ id: 'p-flux', name: 'FluxProject' }],
+    folders: [{ id: 'fld-1', name: '紧急修复' }],
+  });
+  assert.ok(prjGroupMenuHtml.includes('data-action="move-folder:prj:p-flux"'), '会话/群聊右键菜单必须呈现活跃项目');
+  assert.ok(prjGroupMenuHtml.includes('ctx-item--active'), '当前归属项目项必须高亮勾选');
+  assert.ok(prjGroupMenuHtml.includes('move-folder:__unassign__'), '项目归属项也允许移出回到默认列表');
+  const fldSessionMenuHtml = renderContextMenu({
+    x: 0,
+    y: 0,
+    targetType: 'session',
+    targetId: 's-1',
+    targetName: '会话',
+    currentContainerId: 'fld-1',
+    projects: [{ id: 'p-flux', name: 'FluxProject' }],
+    folders: [{ id: 'fld-1', name: '紧急修复' }],
+  });
+  assert.ok(fldSessionMenuHtml.includes('move-folder:__unassign__'));
+  assert.ok(fldSessionMenuHtml.includes('move-folder:prj:p-flux'));
+  const botMenuHtml = renderContextMenu({
+    x: 0,
+    y: 0,
+    targetType: 'bot',
+    targetId: 'default',
+    targetName: 'Default',
+    projects: [{ id: 'p-flux', name: 'FluxProject' }],
+    folders: [{ id: 'fld-1', name: '紧急修复' }],
+  });
+  assert.equal(botMenuHtml.includes('new-folder'), false, 'Bot 右键菜单严禁出现新建文件夹');
+  assert.equal(botMenuHtml.includes('move-folder:'), false, 'Bot 右键菜单严禁出现移动到文件夹');
+
+  // 4. 底部已完成区默认折叠且禁止显示数字角标
+  assert.match(html, /data-section="done"[^>]*data-expanded="false"/);
+  assert.equal(/>已完成\s*\(\d+\)/.test(html), false, '已完成标题严禁附带计数数字');
+
+  // 5. 搜索命中时自动展开已完成区，关闭开关则彻底隐藏
+  const searchHtml = renderLeftRailHtml({ ...orgInput, searchQuery: '已收工' });
+  assert.match(searchHtml, /data-section="done"[^>]*data-expanded="true"/);
+
+  const hiddenDoneHtml = renderLeftRailHtml({ ...orgInput, showDoneSection: false });
+  assert.equal(hiddenDoneHtml.includes('data-section="done"'), false);
 });

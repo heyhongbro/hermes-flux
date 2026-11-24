@@ -24,17 +24,21 @@ import {
   buildGroupedLeftRailModel,
   resolveLeftRailLayout,
   type LeftRailLayoutMode,
+  type LeftRailFolder,
+  type LeftRailProject,
   type LeftRailSession,
   type LeftRailGroupRoom,
   type LeftRailProfile,
   type LeftRailActiveFocus,
   type LeftRailSnapshot,
+  type OrgContainerCollapseState,
   type ActivityTransition,
   type ActivityIndicatorVariant,
   type DataPhase,
 } from '@hermes-flux/ui';
 
 import {
+  normalizeOrgProfileName,
   resolveActivityState,
   type NormalizedSession,
   type AgentProfile,
@@ -50,6 +54,15 @@ export interface LeftRailSnapshotInputs {
   sessions: LeftRailSession[];
   groups: LeftRailGroupRoom[];
   profiles: LeftRailProfile[];
+  projects?: LeftRailProject[];
+  folders?: LeftRailFolder[];
+  assignments?: Readonly<Record<string, string>>;
+  doneRoomsMap?: Readonly<Record<string, number>>;
+  containerCollapsed?: OrgContainerCollapseState;
+  hiddenProjectIds?: readonly string[];
+  showDoneSection?: boolean;
+  doneLoading?: boolean;
+  doneError?: string;
   activeSessionId: string;
   activeFocus: LeftRailActiveFocus;
   profileName: string;
@@ -68,8 +81,18 @@ export interface LeftRailSnapshotInputs {
 
 export interface LeftRailSnapshotHost {
   readonly getSessions: () => readonly NormalizedSession[];
+  readonly getArchivedSessions?: () => readonly NormalizedSession[];
   readonly getGroupRooms: () => readonly LeftRailGroupRoom[];
   readonly getProfiles: () => readonly AgentProfile[];
+  readonly getProjects?: () => readonly LeftRailProject[];
+  readonly getFolders?: () => readonly LeftRailFolder[];
+  readonly getAssignments?: () => Readonly<Record<string, string>>;
+  readonly getDoneRoomsMap?: () => Readonly<Record<string, number>>;
+  readonly getContainerCollapsed?: () => OrgContainerCollapseState;
+  readonly getHiddenProjectIds?: () => readonly string[];
+  readonly getShowDoneSection?: () => boolean;
+  readonly getDoneLoading?: () => boolean;
+  readonly getDoneError?: () => string;
   readonly getActiveSessionId: () => string;
   readonly getActiveFocus: () => LeftRailActiveFocus;
   readonly getProfileName: () => string;
@@ -107,6 +130,12 @@ export function stableArray<T>(next: T[], previous: T[]): T[] {
     : next;
 }
 
+function sameShallowArray<T>(a?: readonly T[], b?: readonly T[]): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((item, idx) => item === b[idx]);
+}
+
 export function sameLeftRailInputs(
   prev: LeftRailSnapshotInputs,
   next: LeftRailSnapshotInputs
@@ -128,7 +157,16 @@ export function sameLeftRailInputs(
     prev.profilesPhase === next.profilesPhase &&
     prev.sessionsPhase === next.sessionsPhase &&
     prev.activityVariant === next.activityVariant &&
-    prev.editingGroupRoomId === next.editingGroupRoomId
+    prev.editingGroupRoomId === next.editingGroupRoomId &&
+    sameShallowArray(prev.projects, next.projects) &&
+    sameShallowArray(prev.folders, next.folders) &&
+    prev.assignments === next.assignments &&
+    prev.doneRoomsMap === next.doneRoomsMap &&
+    prev.containerCollapsed === next.containerCollapsed &&
+    sameShallowArray(prev.hiddenProjectIds, next.hiddenProjectIds) &&
+    prev.showDoneSection === next.showDoneSection &&
+    prev.doneLoading === next.doneLoading &&
+    prev.doneError === next.doneError
   );
 }
 
@@ -147,12 +185,29 @@ export class LeftRailSnapshotManager {
   constructor(private readonly host: LeftRailSnapshotHost) {}
 
   public decorateSessions(nowMs: number): LeftRailSession[] {
-    const rawSessions = this.host.getSessions();
+    const activeRaw = this.host.getSessions();
+    const archivedRaw = this.host.getArchivedSessions?.() ?? [];
+    const mergedRaw: NormalizedSession[] = [];
+    const seenKeys = new Set<string>();
+    for (const s of activeRaw) {
+      if (!s?.id) continue;
+      const key = `${normalizeOrgProfileName(s.botName)}::${s.id}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      mergedRaw.push(s);
+    }
+    for (const s of archivedRaw) {
+      if (!s?.id) continue;
+      const key = `${normalizeOrgProfileName(s.botName)}::${s.id}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      mergedRaw.push(s);
+    }
     const runningIds = this.host.getActiveRunningSessionIds();
     const unreadIds = this.host.getUnreadSessionIds();
     const streamingId = this.host.getActiveStreamingStoredSessionId();
 
-    const next = rawSessions.map((s) => {
+    const next = mergedRaw.map((s) => {
       const activityState = resolveActivityState(s.id, {
         runningIds,
         unreadIds,
@@ -170,6 +225,7 @@ export class LeftRailSnapshotManager {
         cached.value.time === s.time &&
         cached.value.timestamp === s.timestamp &&
         cached.value.isArchived === s.isArchived &&
+        cached.value.cwd === s.cwd &&
         cached.value.isPinned === s.pinned &&
         cached.value.botName === s.botName &&
         cached.value.botDisplayName === s.botDisplayName &&
@@ -298,6 +354,15 @@ export class LeftRailSnapshotManager {
       sessions,
       groups,
       profiles,
+      projects: this.host.getProjects ? [...(this.host.getProjects() ?? [])] : undefined,
+      folders: this.host.getFolders ? [...(this.host.getFolders() ?? [])] : undefined,
+      assignments: this.host.getAssignments?.(),
+      doneRoomsMap: this.host.getDoneRoomsMap?.(),
+      containerCollapsed: this.host.getContainerCollapsed?.(),
+      hiddenProjectIds: this.host.getHiddenProjectIds ? [...(this.host.getHiddenProjectIds() ?? [])] : undefined,
+      showDoneSection: this.host.getShowDoneSection?.(),
+      doneLoading: this.host.getDoneLoading?.(),
+      doneError: this.host.getDoneError?.(),
       activeSessionId: this.host.getActiveSessionId(),
       activeFocus: this.host.getActiveFocus(),
       profileName: this.host.getProfileName(),
@@ -332,6 +397,15 @@ export class LeftRailSnapshotManager {
             profileName: inputs.profileName,
             profiles,
             groups,
+            projects: inputs.projects,
+            folders: inputs.folders,
+            assignments: inputs.assignments,
+            doneRoomsMap: inputs.doneRoomsMap,
+            containerCollapsed: inputs.containerCollapsed,
+            hiddenProjectIds: inputs.hiddenProjectIds,
+            showDoneSection: inputs.showDoneSection,
+            doneLoading: inputs.doneLoading,
+            doneError: inputs.doneError,
             searchQuery: inputs.searchQuery,
             isBotsGroupExpanded,
             isGroupsGroupExpanded: inputs.isGroupsGroupExpanded,
@@ -351,6 +425,15 @@ export class LeftRailSnapshotManager {
         profileName: inputs.profileName,
         profiles,
         groups,
+        projects: inputs.projects,
+        folders: inputs.folders,
+        assignments: inputs.assignments,
+        doneRoomsMap: inputs.doneRoomsMap,
+        containerCollapsed: inputs.containerCollapsed,
+        hiddenProjectIds: inputs.hiddenProjectIds,
+        showDoneSection: inputs.showDoneSection,
+        doneLoading: inputs.doneLoading,
+        doneError: inputs.doneError,
         searchQuery: inputs.searchQuery,
         isSessionsGroupExpanded: inputs.isSessionsGroupExpanded,
         isGroupsGroupExpanded: inputs.isGroupsGroupExpanded,

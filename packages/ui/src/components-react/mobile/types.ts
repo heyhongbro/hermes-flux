@@ -9,9 +9,10 @@ import type {
   LearningLoadState,
 } from '@hermes-flux/core';
 import type { InputAttachmentItem } from '../../components/InputDock/InputDock.js';
-import type { LeftRailActiveFocus, LeftRailGroupRoom, LeftRailProfile } from '../leftRailModel.js';
+import type { LeftRailActiveFocus, LeftRailFolder, LeftRailGroupRoom, LeftRailProfile, LeftRailProject } from '../leftRailModel.js';
 import type { ConversationToolVM } from '../conversation/types.js';
 import type { SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
+import type { ConversationOrgPrefs } from '../../tokens/conversationOrgPrefs.js';
 import type { SkinId } from '../../tokens/skins.js';
 import type {
   MobileAppearancePreference,
@@ -54,11 +55,24 @@ export interface MobileSubagentSheetState {
   tools: ConversationToolVM[];
 }
 
+export type MobileActionSheetStep =
+  | 'menu'
+  | 'confirm-done'
+  | 'move-folder'
+  | 'new-folder'
+  | 'rename-folder'
+  | 'confirm-delete-folder';
+
 export interface MobileActionSheetState {
-  kind: MobileEntityKind;
+  kind: MobileEntityKind | 'folder';
   id: string;
   title: string;
+  botName?: string;
   isProtected?: boolean;
+  isDone?: boolean;
+  currentContainerId?: string | null;
+  hasCwdProjectMatch?: boolean;
+  step?: MobileActionSheetStep;
 }
 
 export interface MobileWorkspaceSnapshot {
@@ -76,6 +90,11 @@ export interface MobileWorkspaceSnapshot {
   homeTab: MobileHomeTab;
   allProfiles: LeftRailProfile[];
   groupAvatars: LeftRailProfile[];
+  projects?: LeftRailProject[];
+  folders?: LeftRailFolder[];
+  showDoneSection?: boolean;
+  doneLoading?: boolean;
+  doneError?: string;
   activePane: MobilePaneId;
   searchOpen: boolean;
   searchQuery: string;
@@ -85,6 +104,8 @@ export interface MobileWorkspaceSnapshot {
   newChatTargetBot: string;
   newChatGroupMembers: string[];
   newChatGroupName: string;
+  newChatProjectId?: string;
+  newChatContainerId?: string;
   newChatStats?: {
     pluginsCount: number;
     mcpCount: number;
@@ -144,15 +165,25 @@ export interface MobileWorkspaceActions {
   onSelectGroup: (roomId: string) => void;
   onSelectSession: (sessionId: string, botName?: string) => void;
   onToggleSection: (section: 'bots' | 'groups' | 'sessions') => void;
+  onToggleContainer?: (containerId: string) => void;
+  onToggleDoneSection?: () => void;
+  onRetryDoneSection?: () => void;
   onOpenSearch: () => void;
   onCloseSearch: () => void;
   onSearchChange: (query: string) => void;
   onOpenActionSheet: (sheet: MobileActionSheetState) => void;
   onCloseActionSheet: () => void;
+  onSetActionSheetStep?: (step: MobileActionSheetStep) => void;
   onActionOpen: (sheet: MobileActionSheetState) => void;
   onActionRename: (sheet: MobileActionSheetState, nextTitle: string) => void;
   onActionPin: (sheet: MobileActionSheetState) => void;
   onActionArchive: (sheet: MobileActionSheetState) => void;
+  onActionMarkDone?: (sheet: MobileActionSheetState) => void;
+  onActionRestoreDone?: (sheet: MobileActionSheetState) => void;
+  onActionMoveToFolder?: (sheet: MobileActionSheetState, containerId: string | null) => void;
+  onActionCreateFolder?: (name: string, moveTarget?: MobileActionSheetState | null) => void;
+  onActionRenameFolder?: (folderId: string, nextName: string) => void;
+  onActionDeleteFolder?: (folderId: string) => void;
   onActionDelete: (sheet: MobileActionSheetState) => void;
   onActionDisband: (sheet: MobileActionSheetState) => void;
 
@@ -162,6 +193,7 @@ export interface MobileWorkspaceActions {
   onSelectNewChatBot: (botName: string) => void;
   onSetNewChatGroupMembers: (members: string[]) => void;
   onSetNewChatGroupName: (name: string) => void;
+  onSelectNewChatProject?: (projectId?: string) => void;
   onSubmitNewChatMessage: (text: string) => void;
 
   onSendMessage: (text: string) => void;
@@ -194,6 +226,7 @@ export interface MobileWorkspaceActions {
   onCloseSettings: () => void;
   onSelectSettingsSubpage: (subpage: MobileSettingsSubpage) => void;
   onSetAppearancePreference: (pref: MobileAppearancePreference) => void;
+  onSetConversationOrgPrefs?: (patch: Partial<ConversationOrgPrefs>) => void;
   onRetryConnect?: () => void;
   settingsActions: SettingsActions;
 }

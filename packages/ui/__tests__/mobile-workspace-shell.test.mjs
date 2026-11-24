@@ -1604,20 +1604,27 @@ test('MobileWorkspaceShell 全三屏手势、返回键 10 级栈、新建/子代
     snapshot.searchOpen = false;
     snapshot.subagentSheet = null;
     const s2 = dShell2.mount(() => React.createElement(MobileWorkspaceShell, { snapshot, actions }));
-    // ActionSheet: 点击 打开 / 置顶 / 归档 / 删除（含 --danger 类）/ 重命名（空保存与有效保存）
-    const optBtns = findAll(
+    // ActionSheet: 点击 打开 / 置顶 / 标记已完成(含二次确认) / 删除（含 --danger 类）/ 重命名（空保存与有效保存）
+    const findSheetOpt = (actionName) =>
+      findAll(
+        s2.tree,
+        (n) =>
+          n.type === 'button' &&
+          n.props?.['data-sheet-action'] === actionName,
+      )[0];
+    findSheetOpt('open')?.props.onClick(); // 打开
+    findSheetOpt('pin')?.props.onClick(); // 置顶
+    findSheetOpt('mark-done')?.props.onClick(); // 打开二次确认步
+    s2.rerender();
+    findAll(
       s2.tree,
-      (n) =>
-        n.type === 'button' &&
-        typeof n.props?.className === 'string' &&
-        n.props.className.split(/\s+/).includes('m-sheet-option'),
-    );
-    optBtns[0]?.props.onClick(); // 打开
-    optBtns[2]?.props.onClick(); // 置顶
-    optBtns[3]?.props.onClick(); // 归档
-    optBtns[4]?.props.onClick(); // 删除会话 (session)
+      (n) => n.type === 'button' && n.props?.['data-testid'] === 'mobile-action-confirm-done-btn',
+    )[0]?.props.onClick();
+    assert.ok(log.some(([k]) => k === 'onActionArchive'));
+    s2.rerender();
+    findSheetOpt('delete')?.props.onClick(); // 删除会话 (session)
     assert.ok(log.some(([k]) => k === 'onActionDelete'));
-    optBtns[1]?.props.onClick(); // 进入重命名模式
+    findSheetOpt('rename')?.props.onClick(); // 进入重命名模式
     s2.rerender();
     const renameBoxEmpty = findAll(s2.tree, (n) => n.props?.className === 'm-action-sheet__rename')[0];
     findAll(renameBoxEmpty, (n) => n.props?.className === 'm-matte-input')[0]?.props.onChange({ target: { value: '   ' } });
@@ -4576,6 +4583,240 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
     shellView.unmount();
   } finally {
     globalThis.Element = prevEl;
+    globalThis.window = prevWin;
+  }
+});
+
+test('移动端会话组织：扁平顶层分类、零内联完成钮、长按双步确认与项目/设置隔离', () => {
+  setLocale('zh-CN');
+  const { snapshot, actions, log } = createSampleData();
+  const projects = [
+    { id: 'prj-live', name: 'LiveMobile', path: '/work/mobile', archived: false },
+    { id: 'prj-arch', name: 'OldMobile', path: '/work/old', archived: true },
+  ];
+  const folders = [{ id: 'fld-m1', name: '紧急修复', order: 0 }];
+  const orgHome = buildMobileHomeModel({
+    activeSessionId: 'sess-1',
+    profiles: snapshot.allProfiles,
+    groups: [{ roomId: 'room-1', name: '架构讨论群', members: ['default', 'arch'], updatedAt: NOW_MS - 500 }],
+    sessions: [
+      { id: 'sess-1', title: '调试任务', botName: 'arch', cwd: '/work/mobile/src', timestamp: NOW_MS - 1200 },
+      { id: 'sess-fld', title: '文件夹任务', botName: 'default', timestamp: NOW_MS - 1800 },
+      { id: 'sess-done-1', title: '已完结任务', botName: 'default', isArchived: true, timestamp: NOW_MS - 4000 },
+    ],
+    projects,
+    folders,
+    assignments: { 'session:default:sess-fld': 'fld-m1' },
+    profileName: 'default',
+    searchQuery: '',
+    collapsed: { ...DEFAULT_MOBILE_SECTIONS_COLLAPSED, done: true },
+    showDoneSection: true,
+    nowMs: NOW_MS,
+  });
+
+  // 1. 扁平首页分区无数字计数角标，行内严禁渲染完成/文件夹按钮
+  const homeHtml = renderToStaticMarkup(
+    React.createElement(MobileHomeScreen, {
+      homeTab: 'chats',
+      model: orgHome,
+      allProfiles: snapshot.allProfiles,
+      groupAvatars: snapshot.groupAvatars,
+      activeBotName: snapshot.activeBotName,
+      gatewayConnected: true,
+      gatewayConnecting: false,
+      searchOpen: false,
+      settingsSnapshot: snapshot.settingsSnapshot,
+      modelDetails: snapshot.modelDetails,
+      onSelectHomeTab: () => {},
+      onSelectBotSubpage: () => {},
+      onOpenSettings: () => {},
+      onOpenSettingsGateway: () => {},
+      onOpenSearch: () => {},
+      onCloseSearch: () => {},
+      onSearchChange: () => {},
+      onOpenNewChat: () => {},
+      onToggleSection: () => {},
+      onToggleContainer: () => {},
+      onToggleDoneSection: () => {},
+      onSelectBot: () => {},
+      onSelectGroup: () => {},
+      onSelectSession: () => {},
+      onOpenActionSheet: () => {},
+      settingsActions: actions.settingsActions,
+    }),
+  );
+  assert.ok(homeHtml.includes('LiveMobile'));
+  assert.ok(homeHtml.includes('紧急修复'));
+  assert.equal(homeHtml.includes('OldMobile'), false, '已归档项目不可展示在首页');
+  assert.equal(homeHtml.includes('data-row-hover-action='), false, '移动端行内严禁渲染桌面 hover 完成钮');
+  assert.equal(/>已完成\s*\(\d+\)/.test(homeHtml), false, '移动端已完成区严禁数字角标');
+
+  // 2. 新建对话 Sheet：居中项目胶囊仅在存在活跃项目时展示且默认为「默认」
+  const sheetCommonProps = {
+    open: true,
+    step: 'compose',
+    targetKind: 'bot',
+    targetBot: 'default',
+    allProfiles: snapshot.allProfiles,
+    groupMembers: [],
+    groupName: '',
+    stats: snapshot.newChatStats,
+    gatewayConnected: true,
+    selectedModel: snapshot.selectedModel,
+    availableModels: snapshot.availableModels,
+    modelDetails: snapshot.modelDetails,
+    attachments: [],
+    selectedProjectId: '',
+    onClose: () => {},
+    onSetStep: () => {},
+    onSelectBot: () => {},
+    onSetGroupMembers: () => {},
+    onSetGroupName: () => {},
+    onSelectProject: () => {},
+    onSubmitFirstMessage: () => {},
+    onSelectModel: () => {},
+    onOpenAttachmentPicker: () => {},
+    onRemoveAttachment: () => {},
+  };
+  const noProjSheet = renderToStaticMarkup(
+    React.createElement(MobileNewChatSheet, {
+      ...sheetCommonProps,
+      projects: [{ id: 'prj-arch', name: 'OldMobile', path: '/work/old', archived: true }],
+    }),
+  );
+  assert.equal(noProjSheet.includes('m-newchat__project-chip'), false, '无活跃项目时隐藏项目胶囊');
+
+  const withProjSheet = renderToStaticMarkup(
+    React.createElement(MobileNewChatSheet, {
+      ...sheetCommonProps,
+      projects,
+    }),
+  );
+  assert.ok(withProjSheet.includes('m-newchat__project-chip'));
+  assert.ok(withProjSheet.includes('默认'));
+
+  // 3. MobileSettingsPage：工作台展示开关位于通用设置页，项目管理位于独立 projects 子页
+  const mobileSettingsSnapshot = {
+    ...snapshot.settingsSnapshot,
+    orgPrefs: { showDoneSection: true, autoReopenOnSend: false },
+    projects: { status: 'ready', data: projects },
+  };
+  const mobileSettingsActions = {
+    ...actions.settingsActions,
+    onCreateProject: async () => ({ ok: true }),
+    onDeleteProject: async () => ({ ok: true }),
+    onRefreshProjects: () => {},
+  };
+  const settingsMenuHtml = renderToStaticMarkup(
+    React.createElement(MobileSettingsPage, {
+      open: true,
+      subpage: null,
+      appearancePref: 'dark',
+      snapshot: mobileSettingsSnapshot,
+      onClose: () => {},
+      onSelectSubpage: () => {},
+      onSetAppearancePreference: () => {},
+      onSetConversationOrgPrefs: () => {},
+      settingsActions: mobileSettingsActions,
+    }),
+  );
+  assert.ok(settingsMenuHtml.includes(t('mobile.settings.rowProjects')));
+  assert.equal(settingsMenuHtml.includes('LiveMobile'), false, '主设置菜单不直接堆叠项目条目');
+
+  const settingsMainHtml = renderToStaticMarkup(
+    React.createElement(MobileSettingsPage, {
+      open: true,
+      subpage: 'appearance',
+      appearancePref: 'dark',
+      snapshot: mobileSettingsSnapshot,
+      onClose: () => {},
+      onSelectSubpage: () => {},
+      onSetAppearancePreference: () => {},
+      onSetConversationOrgPrefs: () => {},
+      settingsActions: mobileSettingsActions,
+    }),
+  );
+  assert.ok(settingsMainHtml.includes(t('mobile.settings.orgGroup')));
+  assert.ok(settingsMainHtml.includes(t('mobile.settings.showDoneSection')));
+  assert.ok(settingsMainHtml.includes(t('mobile.settings.autoReopenOnSend')));
+  assert.equal(settingsMainHtml.includes('LiveMobile'), false, '外观/通用页不混合网关项目列表');
+
+  const settingsProjHtml = renderToStaticMarkup(
+    React.createElement(MobileSettingsPage, {
+      open: true,
+      subpage: 'projects',
+      appearancePref: 'dark',
+      snapshot: mobileSettingsSnapshot,
+      onClose: () => {},
+      onSelectSubpage: () => {},
+      onSetAppearancePreference: () => {},
+      onSetConversationOrgPrefs: () => {},
+      settingsActions: mobileSettingsActions,
+    }),
+  );
+  assert.ok(settingsProjHtml.includes('LiveMobile'));
+  assert.equal(settingsProjHtml.includes('OldMobile'), false);
+  assert.equal(settingsProjHtml.includes(t('mobile.settings.showDoneSection')), false, '项目子页严禁包含工作台展示开关');
+
+  // 4. 长按 Action Sheet：完成二次确认、移动到文件夹与 Bot 物理免疫
+  const dSheet = createReactHookDriver();
+  const markDoneLog = [];
+  const moveLog = [];
+  const deleteFolderLog = [];
+  let sheetSnapshot = {
+    ...snapshot,
+    folders,
+    actionSheet: { kind: 'session', id: 'sess-1', title: '调试任务', isDone: false },
+  };
+  const sheetActions = {
+    ...actions,
+    onActionMarkDone: (sh) => markDoneLog.push(sh.id),
+    onActionMoveToFolder: (sh, cid) => moveLog.push([sh.id, cid]),
+    onActionDeleteFolder: (fid) => deleteFolderLog.push(fid),
+  };
+  const prevWin = globalThis.window;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  try {
+    const view = dSheet.mount(() => React.createElement(MobileWorkspaceShell, { snapshot: sheetSnapshot, actions: sheetActions }));
+    const markBtn = findAll(view.tree, (n) => n.props?.['data-sheet-action'] === 'mark-done')[0];
+    assert.ok(markBtn, '会话长按菜单必须含「标记已完成」');
+    markBtn.props.onClick();
+    view.rerender();
+    assert.equal(markDoneLog.length, 0, '未点击二次确认前绝不可直接标记完成');
+    const confirmBtn = findAll(view.tree, (n) => n.props?.['data-testid'] === 'mobile-action-confirm-done-btn')[0];
+    assert.ok(confirmBtn, '必须进入内联二次确认步骤');
+    confirmBtn.props.onClick();
+    view.rerender();
+    assert.deepEqual(markDoneLog, ['sess-1']);
+
+    sheetSnapshot = { ...sheetSnapshot, actionSheet: null };
+    view.rerender();
+    sheetSnapshot = { ...sheetSnapshot, actionSheet: { kind: 'session', id: 'sess-1', title: '调试任务', isDone: false } };
+    view.rerender();
+    findAll(view.tree, (n) => n.props?.['data-sheet-action'] === 'move-folder')[0].props.onClick();
+    view.rerender();
+    findAll(view.tree, (n) => n.props?.['data-folder-target'] === 'fld-m1')[0].props.onClick();
+    assert.deepEqual(moveLog, [['sess-1', 'fld-m1']]);
+
+    sheetSnapshot = { ...sheetSnapshot, actionSheet: null };
+    view.rerender();
+    sheetSnapshot = { ...sheetSnapshot, actionSheet: { kind: 'folder', id: 'fld-m1', title: '紧急修复' } };
+    view.rerender();
+    findAll(view.tree, (n) => n.props?.['data-sheet-action'] === 'delete-folder')[0].props.onClick();
+    view.rerender();
+    findAll(view.tree, (n) => n.props?.['data-testid'] === 'mobile-action-confirm-delete-folder-btn')[0].props.onClick();
+    assert.deepEqual(deleteFolderLog, ['fld-m1']);
+
+    sheetSnapshot = { ...sheetSnapshot, actionSheet: null };
+    view.rerender();
+    sheetSnapshot = { ...sheetSnapshot, actionSheet: { kind: 'bot', id: 'default', title: '默认中枢', isProtected: true } };
+    view.rerender();
+    assert.equal(findAll(view.tree, (n) => n.props?.['data-sheet-action'] === 'mark-done').length, 0);
+    assert.equal(findAll(view.tree, (n) => n.props?.['data-sheet-action'] === 'move-folder').length, 0);
+    assert.deepEqual(markDoneLog, ['sess-1'], 'Bot 主工位受保护，不得触发 markDone');
+    assert.deepEqual(moveLog, [['sess-1', 'fld-m1']], 'Bot 主工位受保护，不得触发 moveToFolder');
+    view.unmount();
+  } finally {
     globalThis.window = prevWin;
   }
 });

@@ -95,7 +95,10 @@ function createHarness(overrides = {}) {
     selectSession: async (id, opts) => calls.push(['selectSession', id, opts]),
     openBotChat: async (p) => calls.push(['openBotChat', p]),
     openGroupRoom: async (id) => calls.push(['openGroupRoom', id]),
-    createNewSession: async (opts) => calls.push(['createNewSession', opts]),
+    createNewSession: async (opts) => {
+      calls.push(['createNewSession', opts]);
+      return 'sess-created';
+    },
     renameSession: async (id, cur, next) => calls.push(['renameSession', id, cur, next]),
     pinSession: async (id) => calls.push(['pinSession', id]),
     archiveSession: async (id) => calls.push(['archiveSession', id]),
@@ -944,4 +947,80 @@ test('mobileShellCoordinator: onActionDisband 回退 home 屏与异常处理', a
   acts.onActionDisband({ kind: 'group', id: 'grp-error', title: '异常群聊' });
   await new Promise((r) => setTimeout(r, 10));
   assert.ok(h.state.dockNotice.includes('网关拒绝解散'), '解散失败必须向用户暴露 dockNotice');
+
+  // 3. 新建会话返回 null 时绝不可误调用 routeSend 串台发送
+  const abortedRoutes = [];
+  const hNullCreate = createHarness({
+    createNewSession: async () => null,
+    routeSend: async (txt) => abortedRoutes.push(txt),
+  });
+  const nullActs = hNullCreate.coordinator.getActions();
+  nullActs.onOpenNewChat();
+  nullActs.onSelectNewChatBot('default');
+  nullActs.onSubmitNewChatMessage('不得串台发送的消息');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(abortedRoutes, [], 'createNewSession 失败返回 null 时绝不可触发 routeSend');
+
+  // 4. 长按菜单打开同 ID 跨 Profile 会话与已完成归档会话必须透传准确 botName
+  const openCalls = [];
+  const hDupOpen = createHarness({
+    state: {
+      sessions: [
+        { id: 's-dup', title: 'Default Dup', botName: 'default', isArchived: false },
+        { id: 's-dup', title: 'Arch Dup', botName: 'arch', isArchived: false },
+      ],
+      archivedSessions: [
+        { id: 's-arch-only', title: 'Done Session', botName: 'arch', isArchived: true },
+      ],
+    },
+    selectSession: async (id, opts) => {
+      openCalls.push([id, opts]);
+    },
+  });
+  const dupActs = hDupOpen.coordinator.getActions();
+  dupActs.onActionOpen({ kind: 'session', id: 's-dup', title: 'Arch Dup', botName: 'arch' });
+  dupActs.onActionOpen({ kind: 'session', id: 's-arch-only', title: 'Done Session' });
+  assert.deepEqual(openCalls, [
+    ['s-dup', { botName: 'arch' }],
+    ['s-arch-only', { botName: 'arch' }],
+  ]);
+
+  // 5. state.orgPrefs.hiddenProjectIds 传播至 homeModel.projectSections：仅隐藏项目文件夹及内含会话，保留项目外会话
+  const hProjVis = createHarness({
+    state: {
+      orgPrefs: { showDoneSection: true, autoReopenOnSend: true, hiddenProjectIds: ['p-hide'] },
+      orgFolders: [{ id: 'fld-keep', name: '保留文件夹', order: 0 }],
+      orgAssignments: {
+        'session:default:s-outside-none': '__none__',
+        'session:default:s-outside-folder': 'fld-keep',
+      },
+      projects: [
+        { id: 'p-hide', name: 'HiddenRepo', path: '/opt/work/hidden', archived: false },
+        { id: 'p-show', name: 'ShownRepo', path: '/opt/work/shown', archived: false },
+      ],
+      sessions: [
+        { id: 's-inside-hidden', title: 'Hidden Folder Session', botName: 'default', cwd: '/opt/work/hidden/sub', projectId: 'p-hide', isArchived: false },
+        { id: 's-outside-none', title: 'Detached From Folder', botName: 'default', cwd: '/opt/work/hidden/sub', projectId: 'p-hide', isArchived: false },
+        { id: 's-outside-folder', title: 'In Custom Folder', botName: 'default', cwd: '/opt/work/hidden', projectId: 'p-hide', isArchived: false },
+        { id: 's-visible', title: 'Visible Project Session', botName: 'default', cwd: '/opt/work/shown', projectId: 'p-show', isArchived: false },
+      ],
+    },
+  });
+  const visSnap = hProjVis.coordinator.buildSnapshot();
+  assert.deepEqual(
+    visSnap.homeModel.projectSections.map((s) => s.id),
+    ['p-show'],
+    'hiddenProjectIds 内的项目文件夹必须从 homeModel.projectSections 隐藏',
+  );
+  assert.deepEqual(
+    visSnap.homeModel.sessionsSection.items.map((r) => r.id),
+    ['s-outside-none'],
+    '关联项目但显式处于 __none__ 的会话不受项目隐藏影响，应在会话区正常显示',
+  );
+  assert.deepEqual(
+    visSnap.homeModel.folderSections.find((f) => f.id === 'fld-keep')?.items.map((r) => r.id),
+    ['s-outside-folder'],
+    '关联项目但处于自定义文件夹的会话应正常显示在自定义文件夹中',
+  );
 });

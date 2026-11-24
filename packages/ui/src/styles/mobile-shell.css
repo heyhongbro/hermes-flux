@@ -2635,7 +2635,9 @@ html[data-page-hidden="true"] .m-trace-dot {
 .m-bot-action-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  min-width: 44px;
   min-height: 44px;
   padding: 0 12px;
   border: 1px solid var(--border-subtle);
@@ -2745,7 +2747,7 @@ html[data-page-hidden="true"] .m-trace-dot {
 .m-shell [role="switch"]::after {
   content: '';
   position: absolute;
-  inset: -12px -4px;
+  inset: -14px -6px;
 }
 
 .m-settings-page [role="dialog"],
@@ -2755,11 +2757,22 @@ html[data-page-hidden="true"] .m-trace-dot {
 }
 
 .m-settings-embedded-panel button:not([role="switch"]):not(.m-settings-chip-btn):not(.m-menu-row),
+.m-dir-picker--mobile button:not([role="switch"]),
 .m-settings-page [role="dialog"] button:not([role="switch"]),
 .m-bot-subpage [role="dialog"] button:not([role="switch"]) {
   height: auto;
   min-height: 44px;
   min-width: 44px;
+}
+
+.m-settings-embedded-panel input:not([type="checkbox"]):not([type="radio"]),
+.m-dir-picker--mobile input:not([type="checkbox"]):not([type="radio"]) {
+  height: auto;
+  min-height: 44px;
+}
+
+.m-done-banner {
+  margin: 6px 14px;
 }
 
 /* 浅色皮肤（jade-white / ayu-light）强调文字/图标对比度加固（>= 4.5:1 WCAG AA） */
@@ -2776,6 +2789,120 @@ html[data-page-hidden="true"] .m-trace-dot {
 [data-appearance="light"] .m-target-dropdown__group-btn,
 [data-appearance="light"] .m-sheet-option__check {
   color: color-mix(in oklab, var(--primary) 48%, var(--foreground));
+}
+
+/* ---------------- 会话组织、已完成区与新建项目选择器 ---------------- */
+.m-section__folder-icon {
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+.m-section--done {
+  margin-top: 8px;
+}
+
+.m-action-sheet__confirm-desc {
+  margin: 0;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--secondary-foreground);
+}
+
+.m-newchat__project-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 44px;
+  min-height: 32px;
+  padding: 0 12px;
+  margin-top: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--card);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-aux);
+  cursor: pointer;
+}
+
+.m-newchat__project-chip::after {
+  content: '';
+  position: absolute;
+  inset: -6px -8px;
+}
+
+.m-newchat__project-chip span {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-bot-action-pill--danger {
+  color: var(--destructive);
+}
+
+.m-toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--card-active);
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.m-toggle-switch[data-state="checked"] {
+  background: var(--foreground);
+  border-color: var(--foreground);
+}
+
+.m-toggle-switch__thumb {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  background: var(--muted-foreground);
+  transform: translateX(0);
+  transition: transform 0.16s ease, background-color 0.16s ease;
+}
+
+.m-toggle-switch[data-state="checked"] .m-toggle-switch__thumb {
+  background: var(--background);
+  transform: translateX(16px);
+}
+
+.m-settings-delete-confirm {
+  padding: 8px 12px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--destructive);
+  background: var(--card);
+  color: var(--destructive);
+  font-size: var(--fs-caption);
+  line-height: 1.45;
+}
+
+.m-project-meta-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.m-project-meta-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: var(--fs-caption);
+  font-family: var(--font-mono);
 }
 
 /* ---------------- 移动端连接与重连状态胶囊 ---------------- */

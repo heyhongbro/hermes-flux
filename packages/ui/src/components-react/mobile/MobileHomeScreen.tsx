@@ -18,13 +18,19 @@
 
 import * as React from 'react';
 import type { GatewayConnectionPhase } from '@hermes-flux/core';
-import { ChevronRight, MessageSquare, Plus, Search, Settings } from 'lucide-react';
+import { ChevronRight, Folder, FolderGit2, MessageSquare, Plus, Search, Settings } from 'lucide-react';
 import { t } from '../../i18n/index.js';
 import { renderBotAvatar, renderGroupCollageAvatar } from '../../utils/botAvatar.js';
 import { ActivityIndicator } from '../primitives/ActivityIndicator.js';
 import type { LeftRailProfile } from '../leftRailModel.js';
 import type { SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
-import type { MobileBotSubpage, MobileHomeModel, MobileHomeTab } from './mobileShellModel.js';
+import type {
+  MobileBotSubpage,
+  MobileHomeContainerEntryVM,
+  MobileHomeModel,
+  MobileHomeTab,
+  MobileOrgContainerSectionVM,
+} from './mobileShellModel.js';
 import { MobileEntityRow } from './MobileEntityRow.js';
 import { MobileBotHubScreen } from './MobileBotHubScreen.js';
 import type { MobileActionSheetState, MobileModelOption } from './types.js';
@@ -50,12 +56,101 @@ export interface MobileHomeScreenProps {
   onSearchChange: (value: string) => void;
   onOpenNewChat: () => void;
   onToggleSection: (section: 'bots' | 'groups' | 'sessions') => void;
+  onToggleContainer?: (containerId: string) => void;
+  onToggleDoneSection?: () => void;
+  onRetryDoneSection?: () => void;
   onSelectBot: (botName: string) => void;
   onSelectGroup: (roomId: string) => void;
   onSelectSession: (sessionId: string, botName?: string) => void;
   onOpenActionSheet: (sheet: MobileActionSheetState) => void;
   onHapticSelection?: () => void;
   settingsActions: SettingsActions;
+}
+
+const FOLDER_LONG_PRESS_MS = 480;
+const FOLDER_MOVE_CANCEL_PX = 8;
+
+/** 支持短按折叠、长按或右键打开操作菜单的移动端容器标题栏。 */
+function MobileContainerHeader({
+  bucket,
+  onToggle,
+  onLongPress,
+}: {
+  bucket: MobileOrgContainerSectionVM;
+  onToggle: () => void;
+  onLongPress?: () => void;
+}): React.ReactElement {
+  const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startPosRef = React.useRef<{ x: number; y: number } | null>(null);
+  const longPressedRef = React.useRef(false);
+
+  const clearTimer = (): void => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  React.useEffect(() => clearTimer, []);
+
+  return (
+    <button
+      type="button"
+      className="m-section__header"
+      aria-expanded={bucket.effectiveExpanded}
+      onClick={() => {
+        if (longPressedRef.current) {
+          longPressedRef.current = false;
+          return;
+        }
+        onToggle();
+      }}
+      onContextMenu={
+        onLongPress
+          ? (event) => {
+              event.preventDefault();
+              onLongPress();
+            }
+          : undefined
+      }
+      onPointerDown={
+        onLongPress
+          ? (event) => {
+              if (event.button !== 0 && event.pointerType === 'mouse') return;
+              longPressedRef.current = false;
+              startPosRef.current = { x: event.clientX, y: event.clientY };
+              clearTimer();
+              timerRef.current = setTimeout(() => {
+                longPressedRef.current = true;
+                onLongPress();
+              }, FOLDER_LONG_PRESS_MS);
+            }
+          : undefined
+      }
+      onPointerMove={
+        onLongPress
+          ? (event) => {
+              if (!startPosRef.current || timerRef.current === null) return;
+              const dx = event.clientX - startPosRef.current.x;
+              const dy = event.clientY - startPosRef.current.y;
+              if (Math.hypot(dx, dy) > FOLDER_MOVE_CANCEL_PX) {
+                clearTimer();
+              }
+            }
+          : undefined
+      }
+      onPointerUp={clearTimer}
+      onPointerCancel={clearTimer}
+    >
+      <ChevronRight size={14} className="m-section__chevron" aria-hidden="true" />
+      {bucket.kind === 'project' ? (
+        <FolderGit2 size={14} className="m-section__folder-icon" aria-hidden="true" />
+      ) : (
+        <Folder size={14} className="m-section__folder-icon" aria-hidden="true" />
+      )}
+      <span className="m-section__title">{bucket.name}</span>
+    </button>
+  );
 }
 
 /** 4 点棱形排列的 Bot Hub 图标（对齐参考图左上角分段开关形态） */
@@ -91,6 +186,9 @@ export function MobileHomeScreen({
   onSearchChange,
   onOpenNewChat,
   onToggleSection,
+  onToggleContainer,
+  onToggleDoneSection,
+  onRetryDoneSection,
   onSelectBot,
   onSelectGroup,
   onSelectSession,
@@ -106,7 +204,79 @@ export function MobileHomeScreen({
     }
   }, [searchOpen]);
 
-  const { botsSection, groupsSection, sessionsSection } = model;
+  const {
+    botsSection,
+    projectSections = [],
+    folderSections = [],
+    groupsSection,
+    sessionsSection,
+    doneSection,
+  } = model;
+  const showDone = model.showDoneSection ?? false;
+
+  const renderOrgRow = (row: MobileHomeContainerEntryVM, keyPrefix: string): React.ReactElement => {
+    if (row.kind === 'group') {
+      return (
+        <MobileEntityRow
+          key={`${keyPrefix}-group-${row.id}`}
+          kind="group"
+          entityId={row.id}
+          title={row.title}
+          subtitle={row.subtitle || t('mobile.home.groupMembersCount', { count: row.members.length })}
+          timeText={row.timeText}
+          avatarHtml={renderGroupCollageAvatar(row.members, groupAvatars, 40)}
+          isActive={row.isActive}
+          activityState={row.activityState}
+          activityTransition={row.activityTransition}
+          activityTransitionToken={row.activityTransitionToken}
+          onSelect={() => onSelectGroup(row.id)}
+          onLongPress={() =>
+            onOpenActionSheet({
+              kind: 'group',
+              id: row.id,
+              title: row.title,
+              isDone: row.isDone,
+              currentContainerId: row.containerId ?? null,
+            })
+          }
+        />
+      );
+    }
+    return (
+      <MobileEntityRow
+        key={`${keyPrefix}-session-${row.ownerBotName || 'default'}-${row.id}`}
+        kind="session"
+        entityId={row.id}
+        title={row.title}
+        subtitle={row.subtitle}
+        timeText={row.timeText}
+        avatarHtml={renderBotAvatar(
+          row.ownerBotName,
+          row.ownerBotDisplayName,
+          row.ownerAvatarUrl,
+          40,
+          'circle',
+        )}
+        isActive={row.isActive}
+        isPinned={row.isPinned}
+        activityState={row.activityState}
+        activityTransition={row.activityTransition}
+        activityTransitionToken={row.activityTransitionToken}
+        onSelect={() => onSelectSession(row.id, row.ownerBotName)}
+        onLongPress={() =>
+          onOpenActionSheet({
+            kind: 'session',
+            id: row.id,
+            title: row.title,
+            botName: row.ownerBotName,
+            isDone: row.isDone,
+            currentContainerId: row.containerId ?? null,
+            hasCwdProjectMatch: row.hasCwdProjectMatch,
+          })
+        }
+      />
+    );
+  };
 
   return (
     <section className="m-pane m-home" aria-label={t('mobile.section.sessions')}>
@@ -292,56 +462,77 @@ export function MobileHomeScreen({
           </div>
         </div>
 
-        {/* 2. 群聊分区 */}
-        <div className="m-section" data-section="groups" data-expanded={groupsSection.effectiveExpanded ? 'true' : 'false'}>
-          <button
-            type="button"
-            className="m-section__header"
-            aria-expanded={groupsSection.effectiveExpanded}
-            onClick={() => onToggleSection('groups')}
+        {/* 2. 扁平顶级项目与自定义文件夹 */}
+        {[...projectSections, ...folderSections].map((bucket) => (
+          <div
+            key={bucket.containerId}
+            className="m-section"
+            data-section={bucket.kind}
+            data-container-id={bucket.containerId}
+            data-expanded={bucket.effectiveExpanded ? 'true' : 'false'}
           >
-            <ChevronRight size={14} className="m-section__chevron" aria-hidden="true" />
-            <span className="m-section__title">{t(groupsSection.titleKey)}</span>
-            <span className="m-section__tail">
-              {groupsSection.headerStatus ? (
-                <ActivityIndicator
-                  state="running"
-                  placement="inline"
-                  entityKind="group"
-                  variant="prolate-lattice"
-                />
-              ) : null}
-            </span>
-          </button>
-
-          <div className="m-section__body" data-expanded={groupsSection.effectiveExpanded ? 'true' : 'false'}>
-            <div className="m-section__body-inner">
-              {groupsSection.items.length === 0 ? (
-                !model.isSearching ? <div className="m-section__empty">{t('mobile.home.emptyGroups')}</div> : null
-              ) : (
-                groupsSection.items.map((row) => (
-                  <MobileEntityRow
-                    key={`group-${row.id}`}
-                    kind="group"
-                    entityId={row.id}
-                    title={row.title}
-                    subtitle={row.subtitle || t('mobile.home.groupMembersCount', { count: row.members.length })}
-                    timeText={row.timeText}
-                    avatarHtml={renderGroupCollageAvatar(row.members, groupAvatars, 40)}
-                    isActive={row.isActive}
-                    activityState={row.activityState}
-                    activityTransition={row.activityTransition}
-                    activityTransitionToken={row.activityTransitionToken}
-                    onSelect={() => onSelectGroup(row.id)}
-                    onLongPress={() => onOpenActionSheet({ kind: 'group', id: row.id, title: row.title })}
-                  />
-                ))
-              )}
+            <MobileContainerHeader
+              bucket={bucket}
+              onToggle={() => onToggleContainer?.(bucket.containerId)}
+              onLongPress={
+                bucket.kind === 'folder'
+                  ? () => onOpenActionSheet({ kind: 'folder', id: bucket.id, title: bucket.name })
+                  : undefined
+              }
+            />
+            <div className="m-section__body" data-expanded={bucket.effectiveExpanded ? 'true' : 'false'}>
+              <div className="m-section__body-inner">
+                {bucket.items.length === 0 ? (
+                  bucket.kind === 'folder' && !model.isSearching ? (
+                    <div className="m-section__empty">{t('mobile.home.folderEmpty')}</div>
+                  ) : null
+                ) : (
+                  bucket.items.map((row) => renderOrgRow(row, bucket.containerId))
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        ))}
 
-        {/* 3. 普通会话分区（大标题不显示状态动画，头像继承归属 Bot 头像） */}
+        {/* 3. 未归类群聊分区（群聊全部被项目/文件夹收纳时隐藏空态噪声） */}
+        {(groupsSection.items.length > 0 ||
+          ![...projectSections, ...folderSections].some((b) =>
+            b.items.some((entry) => entry.kind === 'group'),
+          )) && (
+          <div className="m-section" data-section="groups" data-expanded={groupsSection.effectiveExpanded ? 'true' : 'false'}>
+            <button
+              type="button"
+              className="m-section__header"
+              aria-expanded={groupsSection.effectiveExpanded}
+              onClick={() => onToggleSection('groups')}
+            >
+              <ChevronRight size={14} className="m-section__chevron" aria-hidden="true" />
+              <span className="m-section__title">{t(groupsSection.titleKey)}</span>
+              <span className="m-section__tail">
+                {groupsSection.headerStatus ? (
+                  <ActivityIndicator
+                    state="running"
+                    placement="inline"
+                    entityKind="group"
+                    variant="prolate-lattice"
+                  />
+                ) : null}
+              </span>
+            </button>
+
+            <div className="m-section__body" data-expanded={groupsSection.effectiveExpanded ? 'true' : 'false'}>
+              <div className="m-section__body-inner">
+                {groupsSection.items.length === 0 ? (
+                  !model.isSearching ? <div className="m-section__empty">{t('mobile.home.emptyGroups')}</div> : null
+                ) : (
+                  groupsSection.items.map((row) => renderOrgRow(row, 'unassigned'))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 4. 未归类普通会话分区（大标题不显示状态动画，头像继承归属 Bot 头像） */}
         <div className="m-section" data-section="sessions" data-expanded={sessionsSection.effectiveExpanded ? 'true' : 'false'}>
           <button
             type="button"
@@ -356,36 +547,63 @@ export function MobileHomeScreen({
           <div className="m-section__body" data-expanded={sessionsSection.effectiveExpanded ? 'true' : 'false'}>
             <div className="m-section__body-inner">
               {sessionsSection.items.length === 0 ? (
-                !model.isSearching ? <div className="m-section__empty">{t('mobile.home.emptySessions')}</div> : null
+                !model.isSearching && projectSections.length === 0 && folderSections.length === 0 ? (
+                  <div className="m-section__empty">{t('mobile.home.emptySessions')}</div>
+                ) : null
               ) : (
-                sessionsSection.items.map((row) => (
-                  <MobileEntityRow
-                    key={`session-${row.id}`}
-                    kind="session"
-                    entityId={row.id}
-                    title={row.title}
-                    subtitle={row.subtitle}
-                    timeText={row.timeText}
-                    avatarHtml={renderBotAvatar(
-                      row.ownerBotName,
-                      row.ownerBotDisplayName,
-                      row.ownerAvatarUrl,
-                      40,
-                      'circle',
-                    )}
-                    isActive={row.isActive}
-                    isPinned={row.isPinned}
-                    activityState={row.activityState}
-                    activityTransition={row.activityTransition}
-                    activityTransitionToken={row.activityTransitionToken}
-                    onSelect={() => onSelectSession(row.id, row.ownerBotName)}
-                    onLongPress={() => onOpenActionSheet({ kind: 'session', id: row.id, title: row.title })}
-                  />
-                ))
+                sessionsSection.items.map((row) => renderOrgRow(row, 'unassigned'))
               )}
             </div>
           </div>
         </div>
+
+        {/* 5. 可滚动末尾「已完成」归档折叠区（默认折叠、标题无数字、行无内联按钮） */}
+        {showDone && doneSection ? (
+          <div
+            className="m-section m-section--done"
+            data-section="done"
+            data-expanded={doneSection.effectiveExpanded ? 'true' : 'false'}
+          >
+            <button
+              type="button"
+              className="m-section__header"
+              data-testid="mobile-done-toggle"
+              aria-expanded={doneSection.effectiveExpanded}
+              onClick={() => (onToggleDoneSection ?? (() => onToggleContainer?.('done')))()}
+            >
+              <ChevronRight size={14} className="m-section__chevron" aria-hidden="true" />
+              <span className="m-section__title">{t(doneSection.titleKey)}</span>
+            </button>
+
+            <div className="m-section__body" data-expanded={doneSection.effectiveExpanded ? 'true' : 'false'}>
+              <div className="m-section__body-inner">
+                {doneSection.loading ? (
+                  <div className="m-section__empty">{t('rail.doneLoading')}</div>
+                ) : doneSection.error ? (
+                  <div className="m-bot-banner m-bot-banner--error m-done-banner" role="alert">
+                    <span className="m-bot-banner__text">{doneSection.error}</span>
+                    {onRetryDoneSection ? (
+                      <button
+                        type="button"
+                        className="m-secondary-btn"
+                        data-testid="mobile-done-retry"
+                        onClick={onRetryDoneSection}
+                      >
+                        {t('rail.doneRetry')}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : doneSection.items.length === 0 ? (
+                  !model.isSearching ? (
+                    <div className="m-section__empty">{t('mobile.home.doneEmpty')}</div>
+                  ) : null
+                ) : (
+                  doneSection.items.map((row) => renderOrgRow(row, 'done'))
+                )}
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {model.isSearching && !model.hasAnyResult ? (
           <div className="m-home__search-empty">{t('mobile.home.emptySearch')}</div>

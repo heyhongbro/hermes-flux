@@ -58,6 +58,7 @@ import {
   type I18nKey,
   type FontPreferences,
   type ActivityIndicatorVariant,
+  type ConversationOrgPrefs,
   type SkinId,
   applyConversationWidthMode,
   resolveConversationWidthMode,
@@ -69,12 +70,18 @@ import {
   setLocale,
   messageKeyForVerdict,
 } from '@hermes-flux/ui';
-import { reportStorageFailure, writeGatewayDraft } from './settingsStorageHelpers.js';
+import {
+  applyGatewayDraftToState,
+  reportStorageFailure,
+  resolveBotRoster,
+  resolveProfileAvatarFromState,
+} from './settingsStorageHelpers.js';
 import { createProviderAdminRest } from '../providerAdminRest.js';
 import { createProviderAdminController, planDeleteTarget } from '../providerAdminController.js';
 import { createSettingsController, resolveGatewayPassword } from '../settingsController.js';
 import { createBotManagementController, createBotWizardController } from '../botManagementController.js';
 import { loadProviderCatalog } from '../providerCatalog.js';
+import { createProjectDirectoryActions } from './projectDirectoryActions.js';
 import type { LearningService } from './learningService.js';
 
 export interface GatewayConnectionTestResult {
@@ -113,6 +120,14 @@ export interface SettingsDataDeps {
   readonly profileAvatarCache: Map<string, string>;
   readonly persistAvatarCache: () => void;
   readonly persistAgentsToCache?: (profiles: AppState['profiles']) => void;
+  readonly fetchProjects?: () => Promise<void>;
+  readonly createProject?: (params: { name: string; path: string }) => Promise<{ ok: boolean; message?: string }>;
+  readonly updateProject?: (
+    projectId: string,
+    patch: { name?: string; path?: string; boardSlug?: string },
+  ) => Promise<{ ok: boolean; message?: string }>;
+  readonly deleteProject?: (projectId: string) => Promise<{ ok: boolean; message?: string }>;
+  readonly onOrgPrefsChange?: (patch: Partial<ConversationOrgPrefs>) => void;
   readonly learningService?: LearningService;
 }
 
@@ -171,43 +186,15 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     { signature: string; promise: Promise<BindingFlightResult> }
   >();
 
-  function resolveProfileAvatar(botId: string): string | undefined {
-    if (!botId) return undefined;
-    const state = deps.getState();
-    const settingsRow =
-      state.settingsProfiles.status === 'ready'
-        ? state.settingsProfiles.data.find((item) => item.name === botId)
-        : undefined;
-    if (settingsRow?.avatar) return settingsRow.avatar;
-    const profileRow = state.profiles.find((item) => item.name === botId);
-    if (profileRow?.avatar) return profileRow.avatar;
-    const cachedById = deps.profileAvatarCache.get(botId.toLowerCase());
-    if (cachedById) return cachedById;
-    const displayName = settingsRow?.displayName || profileRow?.displayName;
-    if (displayName) {
-      const cachedByName = deps.profileAvatarCache.get(displayName.toLowerCase());
-      if (cachedByName) return cachedByName;
-    }
-    return undefined;
-  }
+  const resolveProfileAvatar = (botId: string): string | undefined =>
+    resolveProfileAvatarFromState(deps.getState(), deps.profileAvatarCache, botId);
 
-  function scopedProfileName(): string {
+  const scopedProfileName = (): string => {
     const state = deps.getState();
     return state.settingsScopedProfile || state.profileName || 'default';
-  }
+  };
 
-  function botRoster(): Array<{ profile: string; displayName: string; avatar?: string }> {
-    const state = deps.getState();
-    if (state.profiles.length === 0) {
-      const name = state.profileName || 'default';
-      return [{ profile: name, displayName: name }];
-    }
-    return state.profiles.map((profile) => ({
-      profile: profile.name,
-      displayName: profile.displayName || profile.name,
-      avatar: profile.avatar,
-    }));
-  }
+  const botRoster = () => resolveBotRoster(deps.getState());
 
   function subscriptionProfileName(): string {
     const state = deps.getState();
@@ -682,6 +669,8 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
       activityVariant: deps.getActivityIndicatorVariant(),
       conversationWidth: state.conversationWidth,
       leftRailLayout: state.leftRailLayout,
+      orgPrefs: state.orgPrefs,
+      projects: state.settingsProjects,
       profiles: state.settingsProfiles,
       bots: botRoster(),
       botManagement: getBotManagementSnapshot(),
@@ -730,6 +719,10 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
    */
   function ensureSettingsSectionData(section: SettingsSectionId, force = false): void {
     const state = deps.getState();
+    if (section === 'projects') {
+      if (force || state.settingsProjects.status === 'idle') void deps.fetchProjects?.();
+      return;
+    }
     if (section === 'agents') {
       getBotManagementController().ensureLoaded(force);
       if (force || state.settingsProviderViews.status === 'idle') {
@@ -745,15 +738,10 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     }
   }
 
-  function applyGatewayDraft(draft: GatewayDraft): void {
+  const applyGatewayDraft = (draft: GatewayDraft): void => {
     const state = deps.getState();
-    state.gatewayUrl = draft.url.trim();
-    state.username = draft.username;
-    state.password = resolveGatewayPassword(draft.password, state.password);
-    state.profileName = draft.profileName.trim() || 'default';
-    // 内存态已更新：落盘失败不得中断后续 runBusy / connect（P-032）。
-    writeGatewayDraft(deps, state);
-  }
+    applyGatewayDraftToState(deps, state, draft, resolveGatewayPassword(draft.password, state.password));
+  };
 
   function createSettingsActions(): SettingsActions {
     const state = deps.getState();
@@ -812,6 +800,17 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         applyLeftRailLayout(nextLayout);
         deps.render();
       },
+      onConversationOrgPrefsChange: (patch) => deps.onOrgPrefsChange?.(patch),
+      onRefreshProjects: () => { void deps.fetchProjects?.(); },
+      onCreateProject: deps.createProject ? (p) => deps.createProject!(p) : undefined,
+      onUpdateProject: deps.updateProject ? (id, patch) => deps.updateProject!(id, patch) : undefined,
+      onDeleteProject: deps.deleteProject ? (id) => deps.deleteProject!(id) : undefined,
+      ...createProjectDirectoryActions({
+        getState: deps.getState,
+        getGatewayClient: deps.getGatewayClient,
+        getDesktopApi: deps.getDesktopApi,
+        getEffectiveUrl: deps.getEffectiveUrl,
+      }),
       onRefreshProfiles: () => { void getBotManagementController().loadRoster(true); },
       onScopeProfileChange: (profile) => {
         state.settingsScopedProfile = profile;

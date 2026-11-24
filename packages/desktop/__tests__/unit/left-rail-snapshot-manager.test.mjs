@@ -22,6 +22,7 @@ function createMockLeftRailHost(overrides = {}) {
   let sessions = overrides.sessions ?? [
     { id: 's1', title: '会话 1', preview: '内容 1', time: '12:00', timestamp: 1000 },
   ];
+  let archivedSessions = overrides.archivedSessions ?? [];
   let groupRooms = overrides.groupRooms ?? [
     { roomId: 'g1', name: '研讨室 1', members: ['bot-a', 'bot-b'], lastMessage: '你好' },
   ];
@@ -34,6 +35,10 @@ function createMockLeftRailHost(overrides = {}) {
   let searchQuery = overrides.searchQuery ?? '';
   let layout = overrides.layout ?? 'dual-rail';
   let botsExpanded = overrides.isBotsGroupExpanded ?? true;
+  let projects = overrides.projects ?? [];
+  let folders = overrides.folders ?? [];
+  let assignments = overrides.assignments ?? {};
+  let hiddenProjectIds = overrides.hiddenProjectIds ?? [];
 
   const runningSessions = new Set(overrides.runningSessions ?? []);
   const unreadSessions = new Set(overrides.unreadSessions ?? []);
@@ -44,8 +49,13 @@ function createMockLeftRailHost(overrides = {}) {
 
   const host = {
     getSessions: () => sessions,
+    getArchivedSessions: () => archivedSessions,
     getGroupRooms: () => groupRooms,
     getProfiles: () => profiles,
+    getProjects: () => projects,
+    getFolders: () => folders,
+    getAssignments: () => assignments,
+    getHiddenProjectIds: () => hiddenProjectIds,
     getActiveSessionId: () => activeSessionId,
     getActiveFocus: () => activeFocus,
     getProfileName: () => profileName,
@@ -74,6 +84,7 @@ function createMockLeftRailHost(overrides = {}) {
     _setActiveFocus: (f) => { activeFocus = f; },
     _setLayout: (next) => { layout = next; },
     _setBotsExpanded: (next) => { botsExpanded = next; },
+    _setHiddenProjectIds: (next) => { hiddenProjectIds = next; },
   };
 
   return host;
@@ -145,5 +156,120 @@ test('LeftRailSnapshotManager 领域单测', async (t) => {
     assert.notEqual(collapsedSnap, groupedSnap, '折叠 BOT 分组必须推进新快照');
     assert.equal(collapsedSnap.groupedModel.botsSection.isCollapsed, true);
     assert.equal(collapsedSnap.groupedModel.botsSection.effectiveExpanded, false);
+  });
+
+  await t.test('5. decorateSessions 跨 Profile 同 ID 会话隔离 (P-004)', () => {
+    const host = createMockLeftRailHost({
+      sessions: [
+        { id: 's-dup', title: 'Default 任务', botName: 'default', time: '12:00', timestamp: 200 },
+        { id: 's-dup', title: 'Arch 任务', botName: 'arch', time: '11:00', timestamp: 100 },
+      ],
+      archivedSessions: [
+        { id: 's-dup', title: 'Ops 已归档', botName: 'ops', time: '10:00', timestamp: 50, isArchived: true },
+        { id: 's-dup', title: 'Arch 重复过期', botName: 'arch', time: '09:00', timestamp: 40, isArchived: true },
+      ],
+    });
+    const manager = new LeftRailSnapshotManager(host);
+    const decor = manager.decorateSessions(1000);
+    assert.equal(decor.length, 3, '不同 Profile 下相同 ID 必须全部保留，仅同 Profile 重复项去重');
+    assert.deepEqual(
+      decor.map((d) => `${d.botName}:${d.title}`),
+      ['default:Default 任务', 'arch:Arch 任务', 'ops:Ops 已归档'],
+    );
+  });
+
+  await t.test('6. hiddenProjectIds 驱动快照失效、内容相等复用，以及双轨/分组模型项目显示切换', () => {
+    const host = createMockLeftRailHost({
+      projects: [
+        { id: 'p1', name: '项目 Alpha', path: '/repo/alpha', archived: false },
+        { id: 'p2', name: '项目 Beta', path: '/repo/beta', archived: false },
+      ],
+      folders: [{ id: 'f1', name: '自建目录', order: 0 }],
+      sessions: [
+        { id: 's-p1-in', title: 'P1 目录内', botName: 'default', cwd: '/repo/alpha', projectId: 'p1', timestamp: 500 },
+        { id: 's-p1-detached', title: 'P1 移出到全局', botName: 'default', cwd: '/repo/alpha', projectId: 'p1', timestamp: 480 },
+        { id: 's-p1-custom', title: 'P1 移到自建目录', botName: 'default', cwd: '/repo/alpha', projectId: 'p1', timestamp: 460 },
+        { id: 's-p2-in', title: 'P2 目录内', botName: 'default', cwd: '/repo/beta', projectId: 'p2', timestamp: 440 },
+      ],
+      groupRooms: [],
+      assignments: {
+        'session:default:s-p1-detached': '__none__',
+        'session:default:s-p1-custom': 'f1',
+      },
+      hiddenProjectIds: ['p1'],
+      layout: 'dual-rail',
+    });
+    const manager = new LeftRailSnapshotManager(host);
+
+    const hiddenDual1 = manager.getSnapshot();
+    assert.deepEqual(hiddenDual1.model.projectContainers.map((c) => c.id), ['p2']);
+    assert.deepEqual(hiddenDual1.model.unassignedSessions.map((s) => s.id), ['s-p1-detached']);
+    assert.deepEqual(
+      hiddenDual1.model.folderContainers[0].items.map((i) => i.session.id),
+      ['s-p1-custom'],
+    );
+
+    // 传入值相同但新引用的 ['p1']，sameLeftRailInputs 必须命中缓存并返回前序快照
+    host._setHiddenProjectIds(['p1']);
+    const hiddenDual2 = manager.getSnapshot();
+    assert.equal(hiddenDual2, hiddenDual1, 'hiddenProjectIds 内容一致时不得使左轨快照失效');
+    const baseProject = { id: 'p1', name: '项目 Alpha', path: '/repo/alpha', archived: false };
+    const baseFolder = { id: 'f1', name: '自建目录', order: 0 };
+    const baseInputs = {
+      sessions: [],
+      groups: [],
+      profiles: [],
+      activeSessionId: '',
+      activeFocus: { type: 'bot', botName: 'default' },
+      profileName: 'default',
+      searchQuery: '',
+      layout: 'dual-rail',
+      isBotsGroupExpanded: true,
+      isSessionsGroupExpanded: true,
+      isGroupsGroupExpanded: true,
+      error: '',
+      collapsed: false,
+      profilesPhase: 'ready',
+      sessionsPhase: 'ready',
+      activityVariant: 'subtle',
+      editingGroupRoomId: undefined,
+      projects: [baseProject],
+      folders: [baseFolder],
+      assignments: {},
+      doneRoomsMap: undefined,
+      containerCollapsed: undefined,
+      hiddenProjectIds: ['p1'],
+      showDoneSection: true,
+      doneLoading: false,
+      doneError: '',
+    };
+    assert.equal(
+      sameLeftRailInputs(baseInputs, {
+        ...baseInputs,
+        projects: [baseProject],
+        folders: [baseFolder],
+        hiddenProjectIds: ['p1'],
+      }),
+      true,
+    );
+    assert.equal(sameLeftRailInputs(baseInputs, { ...baseInputs, hiddenProjectIds: [] }), false);
+
+    // grouped 布局同样隐藏 p1 项目分组，但保留项目外关联会话
+    host._setLayout('grouped');
+    const hiddenGrouped = manager.getSnapshot();
+    assert.notEqual(hiddenGrouped, hiddenDual1);
+    assert.deepEqual(hiddenGrouped.groupedModel.projectSections.map((s) => s.id), ['p2']);
+    assert.deepEqual(hiddenGrouped.groupedModel.sessionsSection.items.map((s) => s.id), ['s-p1-detached']);
+
+    // 取消隐藏 p1 后，dual-rail 与 grouped 都恢复显示 p1 项目目录及其内部会话
+    host._setHiddenProjectIds([]);
+    const restoredGrouped = manager.getSnapshot();
+    assert.notEqual(restoredGrouped, hiddenGrouped, 'hiddenProjectIds 变更必须使左轨快照失效');
+    assert.deepEqual(restoredGrouped.groupedModel.projectSections.map((s) => s.id), ['p1', 'p2']);
+
+    host._setLayout('dual-rail');
+    const restoredDual = manager.getSnapshot();
+    assert.deepEqual(restoredDual.model.projectContainers.map((c) => c.id), ['p1', 'p2']);
+    assert.deepEqual(restoredDual.model.projectContainers[0].items.map((i) => i.session.id), ['s-p1-in']);
   });
 });

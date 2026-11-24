@@ -64,6 +64,7 @@ export interface ProfileManagementDeps {
   readonly botForeverChatCache?: Map<string, string>;
   readonly nextLoadMessagesGeneration: () => number;
   readonly getCurrentLoadMessagesGeneration: () => number;
+  readonly onProfilesFetched?: (profiles: AgentProfile[]) => void;
   readonly logSession?: Pick<FluxLogger, 'debug'> | GuardedRunLogger;
   readonly setPendingScrollToBottom?: (pending: boolean) => void;
   captureStreamAnchor?: ProfileAnchorCapturer;
@@ -122,6 +123,9 @@ export function createProfileManagementService(deps: ProfileManagementDeps): Pro
           if (cached) p.avatar = cached;
         }
       }
+
+      // 无论展示字段是否变化，先向会话组织协同器同步 ui_meta（文件夹 / 已完成群聊）
+      deps.onProfilesFetched?.(list);
 
       // 定时/聚焦刷新：关键展示字段完全一致时直接返回，不产生 render、资产拉取与预取。
       if (options.refresh && !profilesDiffer(state.profiles, list)) return;

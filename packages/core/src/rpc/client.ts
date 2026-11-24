@@ -924,6 +924,60 @@ export class HermesGatewayClient {
   }
 
   /**
+   * 独立拉取已归档（已完成）会话列表（与活跃列表查询解耦，避免争抢 REST limit=100 配额）。
+   *
+   * 【设计意图 (Why)】
+   *   WS `session.list` 无归档过滤入参且不返回 `archived` 标记；
+   *   仅 REST `/api/sessions` 支持查询归档记录。拆分独立查询确保活跃主列表不被历史归档挤占。
+   * 【防范的历史坑 (Pitfall)】
+   *   网关 Pydantic 对 `archived` 查询参数严格校验为 `'exclude' | 'only' | 'include'` 三选一，
+   *   且不识别 `include_archived`；曾传 `archived: 'true'` 导致真机实测稳定报错 `HTTP 400: Bad Request`。
+   * 【约束与规则 (Rules)】
+   *   - 必须传 `archived: 'only'` 精准拉取已归档会话；
+   *   - REST 不可用（WS-only 模式）时显式返回 `{ ok: false, error }`，严禁静默伪装为空列表（Failure Is Not Empty）。
+   */
+  public async listArchivedSessions(profile = 'default', limit = 50): Promise<SessionListOutcome> {
+    if (!this.restFallbackHandler) {
+      return {
+        sessions: [],
+        ok: false,
+        error: 'WS-only 模式暂不支持拉取历史归档会话',
+      };
+    }
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit) || 50));
+    try {
+      const restResult = await this.restFallbackHandler('/api/sessions', {
+        method: 'GET',
+        params: { profile, limit: safeLimit, archived: 'only' },
+      });
+      if (typeof restResult === 'string') {
+        return { sessions: [], ok: false, error: '网关返回非 JSON 已归档会话响应' };
+      }
+      if (restResult && typeof restResult === 'object' && !Array.isArray(restResult)) {
+        const record = restResult as Record<string, unknown>;
+        if (record.ok === false || typeof record.detail === 'string' || typeof record.error === 'string') {
+          const msg =
+            (typeof record.detail === 'string' && record.detail.trim()) ||
+            (typeof record.error === 'string' && record.error.trim()) ||
+            '网关拒绝返回已归档会话列表';
+          return { sessions: [], ok: false, error: msg };
+        }
+        if (!Array.isArray(record.sessions) && !Array.isArray(record.data)) {
+          return { sessions: [], ok: false, error: '网关未返回合法的已归档会话列表' };
+        }
+      } else if (!Array.isArray(restResult)) {
+        return { sessions: [], ok: false, error: '网关未返回合法的已归档会话列表' };
+      }
+      const sessions = normalizeSessionsResult(restResult).map((s) => ({ ...s, isArchived: true }));
+      return { sessions, ok: true };
+    } catch (err) {
+      const errorMsg = describeError(err);
+      log.warn('REST /api/sessions archived query failed:', errorMsg);
+      return { sessions: [], ok: false, error: errorMsg };
+    }
+  }
+
+  /**
    * Resilient session messages pagination via official high-speed REST channel.
    * 
    * 【设计意图 (Why)】

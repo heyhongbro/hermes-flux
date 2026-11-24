@@ -18,9 +18,11 @@ export interface LeftRailSession {
   time?: string;
   timestamp?: number;
   isArchived?: boolean;
+  isDone?: boolean;
   isPinned?: boolean;
   hidden?: boolean;
   isSubagent?: boolean;
+  cwd?: string;
   botName?: string;
   botDisplayName?: string;
   botAvatar?: string;
@@ -36,6 +38,7 @@ export interface LeftRailGroupRoom {
   lastMessage?: string;
   updatedAt?: number;
   createdAt?: number;
+  isDone?: boolean;
   activityState?: ActivityState;
   activityTransition?: ActivityTransition;
   activityTransitionToken?: number;
@@ -45,6 +48,18 @@ export interface LeftRailProject {
   id: string;
   name: string;
   path?: string;
+  additionalFolders?: string[];
+  boardSlug?: string;
+  icon?: string;
+  color?: string;
+  archived?: boolean;
+}
+
+export interface LeftRailFolder {
+  id: string;
+  name: string;
+  color?: 'primary' | 'success' | 'warning' | 'destructive';
+  order?: number;
 }
 
 export interface LeftRailProfile {

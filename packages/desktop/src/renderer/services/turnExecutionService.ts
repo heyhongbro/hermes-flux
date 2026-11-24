@@ -158,6 +158,7 @@ export interface TurnExecutionDeps {
     error?: (msg: string, meta?: Record<string, unknown>) => void;
   };
   watchdogIdleTimeoutMs?: TurnWatchdogTimeoutMs;
+  readonly onBeforeSendEntity?: (kind: 'session' | 'group', id: string, profile?: string) => void;
 }
 
 export type TurnExecutionWatchdogFeeder = () => void;
@@ -447,6 +448,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     if (!client) return;
 
     const state = deps.getState();
+    deps.onBeforeSendEntity?.('group', roomId);
     const currentAttachments = [...state.attachments];
     state.attachments = [];
     const trimmed = text.trim();
@@ -640,6 +642,9 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
     if (!state.activeSessionId) {
       await deps.createNewSession();
+    }
+    if (state.activeFocus.type === 'session' && state.activeSessionId) {
+      deps.onBeforeSendEntity?.('session', state.activeSessionId, state.profileName || undefined);
     }
 
     const liveId = await deps.ensureLiveSessionId();

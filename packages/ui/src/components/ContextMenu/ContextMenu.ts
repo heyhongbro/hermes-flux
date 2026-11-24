@@ -17,33 +17,57 @@
  */
 
 import { t } from '../../i18n/index.js';
+import { escapeHtml } from '../../utils/html.js';
+
+export interface ContextMenuFolderOption {
+  id: string;
+  name: string;
+}
 
 export interface ContextMenuProps {
   x: number;
   y: number;
-  targetType: 'session' | 'bot' | 'group';
+  targetType: 'session' | 'bot' | 'group' | 'folder' | 'rail';
   targetId: string;
   targetName: string;
   sessionId?: string;
   sessionTitle?: string;
+  sessionProfile?: string;
+  isDone?: boolean;
+  currentContainerId?: string | null;
+  hasCwdProjectMatch?: boolean;
+  projects?: ReadonlyArray<ContextMenuFolderOption>;
+  folders?: ReadonlyArray<ContextMenuFolderOption>;
 }
 
 interface ContextMenuItemSpec {
-  action: string;
+  action?: string;
   label: string;
-  iconSvg: string;
+  iconSvg?: string;
   danger?: boolean;
   dividerAfter?: boolean;
+  isActive?: boolean;
+  isSectionLabel?: boolean;
 }
 
-/** 渲染单个右键菜单项与可选底部分隔线，保证 role="menuitem" 与 4px 栅格统一样式。 */
+/** 渲染单个右键菜单项或分组小标题与分隔线，保证 role="menuitem" 与 4px 栅格统一样式。 */
 function renderContextMenuItem(item: ContextMenuItemSpec): string {
-  const cls = item.danger ? 'ctx-item ctx-danger-item' : 'ctx-item';
+  if (item.isSectionLabel) {
+    return `<div class="ctx-section-label">${escapeHtml(item.label)}</div>`;
+  }
+  const cls = item.danger
+    ? 'ctx-item ctx-danger-item'
+    : item.isActive
+      ? 'ctx-item ctx-item--active'
+      : 'ctx-item';
   const divider = item.dividerAfter ? '<div class="ctx-divider" role="separator"></div>' : '';
+  const safeAction = escapeHtml(item.action || '');
+  const activeMark = item.isActive ? '<span class="ctx-item-check" aria-hidden="true">✓</span>' : '';
   return `
-      <button type="button" role="menuitem" class="${cls}" data-action="${item.action}">
-        ${item.iconSvg}
-        <span>${item.label}</span>
+      <button type="button" role="menuitem" class="${cls}" data-action="${safeAction}">
+        ${item.iconSvg || ''}
+        <span class="ctx-item-label">${escapeHtml(item.label)}</span>
+        ${activeMark}
       </button>
       ${divider}`;
 }
@@ -74,8 +98,72 @@ const ICON_EXPORT =
 const ICON_ARCHIVE =
   '<svg class="ctx-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
 
+const ICON_CHECK =
+  '<svg class="ctx-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+const ICON_RESTORE =
+  '<svg class="ctx-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>';
+const ICON_FOLDER =
+  '<svg class="ctx-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
+const ICON_FOLDER_PLUS =
+  '<svg class="ctx-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
+const ICON_PROJECT =
+  '<svg class="ctx-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="2"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M14 13h3"/><path d="M7 13h3"/></svg>';
+const ICON_PLUS =
+  '<svg class="ctx-item-icon ctx-item-icon--accent" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>';
+
+function buildFolderMenuItems(ctx: ContextMenuProps): ContextMenuItemSpec[] {
+  const projects = ctx.projects || [];
+  const folders = ctx.folders || [];
+  const items: ContextMenuItemSpec[] = [
+    { isSectionLabel: true, label: t('ctx.moveToFolder') },
+    ...projects.map((proj) => {
+      const containerId = proj.id.startsWith('prj:') ? proj.id : `prj:${proj.id}`;
+      return {
+        action: `move-folder:${containerId}`,
+        label: proj.name,
+        iconSvg: ICON_PROJECT,
+        isActive: ctx.currentContainerId === containerId,
+      };
+    }),
+    ...folders.map((folder) => ({
+      action: `move-folder:${folder.id}`,
+      label: folder.name,
+      iconSvg: ICON_FOLDER,
+      isActive: ctx.currentContainerId === folder.id,
+    })),
+  ];
+  if (ctx.currentContainerId) {
+    items.push({
+      action: 'move-folder:__unassign__',
+      label: t('ctx.removeFromFolder'),
+      iconSvg: ICON_RESTORE,
+    });
+  }
+  items.push({
+    action: 'new-folder-and-move',
+    label: t('ctx.newFolder'),
+    iconSvg: ICON_FOLDER_PLUS,
+    dividerAfter: true,
+  });
+  return items;
+}
+
 export function renderContextMenu(ctx?: ContextMenuProps): string {
   if (!ctx) return '';
+
+  if (ctx.targetType === 'rail') {
+    return renderContextMenuShell(ctx, [
+      { action: 'new-folder', label: t('ctx.newFolder'), iconSvg: ICON_FOLDER_PLUS },
+    ]);
+  }
+
+  if (ctx.targetType === 'folder') {
+    return renderContextMenuShell(ctx, [
+      { action: 'folder-new-chat', label: t('rail.newChatInContainer', { name: ctx.targetName }), iconSvg: ICON_PLUS },
+      { action: 'folder-rename', label: t('ctx.renameFolder'), iconSvg: ICON_EDIT, dividerAfter: true },
+      { action: 'folder-delete', label: t('ctx.deleteFolder'), iconSvg: ICON_TRASH, danger: true },
+    ]);
+  }
 
   if (ctx.targetType === 'bot') {
     return renderContextMenuShell(ctx, [
@@ -85,10 +173,16 @@ export function renderContextMenu(ctx?: ContextMenuProps): string {
     ]);
   }
 
+  const folderItems = buildFolderMenuItems(ctx);
+
   if (ctx.targetType === 'group') {
     return renderContextMenuShell(ctx, [
       { action: 'group-rename', label: t('ctx.rename'), iconSvg: ICON_EDIT },
       { action: 'copy-id', label: t('ctx.copyId'), iconSvg: ICON_COPY, dividerAfter: true },
+      ...folderItems,
+      ctx.isDone
+        ? { action: 'restore-active', label: t('rail.restoreAction'), iconSvg: ICON_RESTORE }
+        : { action: 'mark-done', label: t('rail.markDoneAction'), iconSvg: ICON_CHECK },
       { action: 'disband-group', label: t('ctx.disbandGroup'), iconSvg: ICON_TRASH, danger: true },
     ]);
   }
@@ -98,7 +192,10 @@ export function renderContextMenu(ctx?: ContextMenuProps): string {
     { action: 'copy-id', label: t('ctx.copySessionId'), iconSvg: ICON_COPY },
     { action: 'pin', label: t('ctx.pin'), iconSvg: ICON_PIN },
     { action: 'export', label: t('ctx.export'), iconSvg: ICON_EXPORT, dividerAfter: true },
-    { action: 'archive', label: t('ctx.archive'), iconSvg: ICON_ARCHIVE },
+    ...folderItems,
+    ctx.isDone
+      ? { action: 'restore-active', label: t('rail.restoreAction'), iconSvg: ICON_RESTORE }
+      : { action: 'mark-done', label: t('rail.markDoneAction'), iconSvg: ICON_CHECK },
     { action: 'delete', label: t('ctx.delete'), iconSvg: ICON_TRASH, danger: true },
   ]);
 }

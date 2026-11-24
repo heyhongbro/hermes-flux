@@ -174,6 +174,42 @@ test('LeftRailController: grouped 模式下 onToggleBots 持久化分组展开�
       writes,
       [['hermes_flux_grouped_rail_sections', JSON.stringify({ bots: false, groups: true, sessions: true })]],
     );
+
+    // 4. 右键会话/群聊菜单透传活跃 projects + folders；Bot 菜单不携带 folders/projects；新建弹窗重置 selectedNewTaskProjectId；重试 Done 回调透传
+    let retriedDone = 0;
+    state.projects = [
+      { id: 'prj-live', name: 'LiveRepo', path: '/opt/data/live', archived: false },
+      { id: 'prj-arch', name: 'OldRepo', path: '/opt/data/old', archived: true },
+    ];
+    state.orgFolders = [{ id: 'fld-1', name: '紧急', order: 0 }];
+    state.selectedNewTaskProjectId = 'prj-live';
+    const menuCtrl = createLeftRailController({
+      ...deps,
+      onRetryDoneSection: () => {
+        retriedDone += 1;
+      },
+    });
+    const menuActions = menuCtrl.createLeftRailActions();
+    menuActions.onOpenSessionMenu('sess-1', '会话', 100, 120, 'default');
+    assert.equal(state.sessionContextMenu?.targetType, 'session');
+    assert.deepEqual(state.sessionContextMenu?.projects, [{ id: 'prj-live', name: 'LiveRepo' }]);
+    assert.deepEqual(state.sessionContextMenu?.folders, [{ id: 'fld-1', name: '紧急' }]);
+
+    menuActions.onOpenGroupMenu('room-1', '讨论组', 50, 60);
+    assert.equal(state.sessionContextMenu?.targetType, 'group');
+    assert.deepEqual(state.sessionContextMenu?.projects, [{ id: 'prj-live', name: 'LiveRepo' }]);
+
+    menuActions.onOpenBotMenu('default', 20, 30);
+    assert.equal(state.sessionContextMenu?.targetType, 'bot');
+    assert.equal(state.sessionContextMenu?.projects, undefined);
+    assert.equal(state.sessionContextMenu?.folders, undefined);
+
+    menuActions.onNewChat('session');
+    assert.equal(state.selectedNewTaskProjectId, undefined);
+    assert.equal(state.selectedNewTaskContainerId, undefined);
+
+    menuActions.onRetryDoneSection?.();
+    assert.equal(retriedDone, 1);
   } finally {
     if (hadStorage) globalThis.localStorage = savedStorage;
     else delete globalThis.localStorage;

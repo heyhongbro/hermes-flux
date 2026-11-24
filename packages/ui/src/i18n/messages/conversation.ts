@@ -139,6 +139,11 @@ export const zhConversation = {
   'conversation.promptNavigator.emptyPreview': '空内容',
   'conversation.promptNavigator.querying': '正在查询数据',
   'conversation.attachmentPreview': '预览图片 {name}',
+  'newChat.projectLabel': '项目',
+  'newChat.projectDefault': '默认',
+  'newChat.projectBoundHint': '新会话将绑定工作目录 {path}',
+  'newChat.folderBoundHint': '创建后自动放入文件夹「{name}」',
+  'newChat.groupProjectDefaultNote': '仅创建后自动放入「{name}」；群聊成员各自保持默认工作目录',
 };
 
 export const enConversation = {
@@ -272,4 +277,9 @@ export const enConversation = {
   'conversation.promptNavigator.emptyPreview': 'Empty message',
   'conversation.promptNavigator.querying': 'Querying data',
   'conversation.attachmentPreview': 'Preview image {name}',
+  'newChat.projectLabel': 'Project',
+  'newChat.projectDefault': 'Default',
+  'newChat.projectBoundHint': 'Session will bind working directory {path}',
+  'newChat.folderBoundHint': 'Will be placed into folder "{name}"',
+  'newChat.groupProjectDefaultNote': 'Places the room into "{name}"; group members keep their own workspace roots',
 };

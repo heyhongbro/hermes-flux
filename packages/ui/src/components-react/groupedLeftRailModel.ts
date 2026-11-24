@@ -20,19 +20,24 @@
  */
 
 import { formatLeftRailTime, isSessionFocused } from './leftRailModel.js';
+import type { OrgContainerCollapseState } from '../tokens/conversationOrgPrefs.js';
 import type {
   DataPhase,
   LeftRailActiveFocus,
+  LeftRailFolder,
   LeftRailGroupRoom,
   LeftRailProfile,
+  LeftRailProject,
   LeftRailSession,
 } from './leftRailModel.js';
 import {
   buildMobileHomeModel,
   type MobileBotRowVM,
+  type MobileDoneSectionVM,
   type MobileGroupRowVM,
   type MobileHomeModel,
   type MobileHomeSectionVM,
+  type MobileOrgContainerSectionVM,
   type MobileSessionRowVM,
 } from './mobile/mobileShellModel.js';
 
@@ -43,6 +48,16 @@ export interface GroupedLeftRailModelInput {
   profileName: string;
   profiles: readonly LeftRailProfile[];
   groups: readonly LeftRailGroupRoom[];
+  projects?: readonly LeftRailProject[];
+  folders?: readonly LeftRailFolder[];
+  assignments?: Readonly<Record<string, string>>;
+  doneRoomIds?: readonly string[];
+  doneRoomsMap?: Readonly<Record<string, number>>;
+  containerCollapsed?: OrgContainerCollapseState;
+  hiddenProjectIds?: readonly string[];
+  showDoneSection?: boolean;
+  doneLoading?: boolean;
+  doneError?: string;
   searchQuery: string;
   isBotsGroupExpanded?: boolean;
   isGroupsGroupExpanded?: boolean;
@@ -69,9 +84,13 @@ export interface GroupedLeftRailModel {
   searchQuery: string;
   isSearching: boolean;
   botsSection: MobileHomeSectionVM<MobileBotRowVM>;
+  projectSections: MobileOrgContainerSectionVM[];
+  folderSections: MobileOrgContainerSectionVM[];
   groupsSection: MobileHomeSectionVM<MobileGroupRowVM>;
   sessionsSection: MobileHomeSectionVM<MobileSessionRowVM>;
   archivedSessions: GroupedArchivedSessionVM[];
+  doneSection: MobileDoneSectionVM;
+  showDoneSection: boolean;
   profilesPhase: DataPhase;
   sessionsPhase: DataPhase;
   hasAnyResult: boolean;
@@ -93,6 +112,16 @@ export function buildGroupedLeftRailModel(input: GroupedLeftRailModelInput): Gro
     profiles: input.profiles,
     groups: input.groups,
     sessions: input.sessions,
+    projects: input.projects,
+    folders: input.folders,
+    assignments: input.assignments,
+    doneRoomIds: input.doneRoomIds,
+    doneRoomsMap: input.doneRoomsMap,
+    containerCollapsed: input.containerCollapsed,
+    hiddenProjectIds: input.hiddenProjectIds,
+    showDoneSection: input.showDoneSection,
+    doneLoading: input.doneLoading,
+    doneError: input.doneError,
     profileName: input.profileName,
     searchQuery: input.searchQuery,
     collapsed: {
@@ -150,9 +179,13 @@ export function buildGroupedLeftRailModel(input: GroupedLeftRailModelInput): Gro
     searchQuery: home.searchQuery,
     isSearching: home.isSearching,
     botsSection: { ...home.botsSection, titleKey: 'rail.sectionBots' },
+    projectSections: home.projectSections,
+    folderSections: home.folderSections,
     groupsSection: { ...home.groupsSection, titleKey: 'rail.sectionGroups' },
     sessionsSection: { ...home.sessionsSection, titleKey: 'rail.sectionSessions' },
     archivedSessions,
+    doneSection: { ...home.doneSection, titleKey: 'rail.done' },
+    showDoneSection: home.showDoneSection,
     profilesPhase: home.profilesPhase,
     sessionsPhase: home.sessionsPhase,
     hasAnyResult: home.hasAnyResult,

@@ -23,6 +23,7 @@ import type {
   ProjectSummary,
   ProjectDetail,
   ProjectTreeNode,
+  ProjectsListParams,
   ProjectsListResult,
   ProjectsGetParams,
   ProjectsGetResult,
@@ -56,14 +57,20 @@ export class ProjectService {
   private projectCache = new Map<string, ProjectSummary>();
 
   /**
-   * 拉取所有项目工程列表
+   * 拉取所有项目工程列表（默认显式锚定 default Profile，完整透传 archived / boardSlug / icon / color）
    */
-  public async listProjects(bridge: IRpcCaller, forceRefresh = false): Promise<ProjectSummary[]> {
+  public async listProjects(
+    bridge: IRpcCaller,
+    forceRefresh = false,
+    profile = 'default'
+  ): Promise<ProjectSummary[]> {
     if (!forceRefresh && this.projectCache.size > 0) {
       return Array.from(this.projectCache.values());
     }
 
-    const res = await bridge.request<ProjectsListResult>('projects.list');
+    const res = await bridge.request<ProjectsListResult, ProjectsListParams>('projects.list', {
+      profile,
+    });
     const rawList = Array.isArray(res?.projects) ? res.projects : null;
 
     if (!rawList) {
@@ -76,6 +83,7 @@ export class ProjectService {
     for (const raw of rawList) {
       const projectId = raw.projectId || raw.id || '';
       const primaryPath = raw.primaryPath || raw.primary_path || '';
+      const boardSlugRaw = raw.boardSlug ?? raw.board_slug;
       const summary: ProjectSummary = {
         projectId,
         name: raw.name || '',
@@ -87,12 +95,16 @@ export class ProjectService {
           ? raw.folders.map(f => f.path)
           : [],
         isActive: Boolean(raw.isActive || raw.is_active),
+        archived: Boolean(raw.archived),
+        ...(typeof boardSlugRaw === 'string' && boardSlugRaw ? { boardSlug: boardSlugRaw } : {}),
+        ...(typeof raw.icon === 'string' && raw.icon ? { icon: raw.icon } : {}),
+        ...(typeof raw.color === 'string' && raw.color ? { color: raw.color } : {}),
         createdAt: raw.createdAt || raw.created_at || Date.now(),
         updatedAt: raw.updatedAt || raw.updated_at || Date.now(),
       };
 
       this.projectCache.set(projectId, summary);
-      if (summary.isActive) {
+      if (summary.isActive && !summary.archived) {
         this.activeProjectId = projectId;
       }
       normalized.push(summary);
@@ -116,6 +128,7 @@ export class ProjectService {
       throw new Error(`未找到指定项目: ${projectId}`);
     }
 
+    const boardSlugRaw = raw.boardSlug ?? raw.board_slug;
     const detail: ProjectDetail = {
       projectId: raw.projectId || raw.id || projectId,
       name: raw.name || '',
@@ -128,6 +141,12 @@ export class ProjectService {
         : [],
       description: raw.description,
       isActive: Boolean(raw.isActive || raw.is_active),
+      archived: Boolean(raw.archived),
+      ...(typeof boardSlugRaw === 'string' && boardSlugRaw
+        ? { boardSlug: boardSlugRaw, board_slug: boardSlugRaw }
+        : {}),
+      ...(typeof raw.icon === 'string' && raw.icon ? { icon: raw.icon } : {}),
+      ...(typeof raw.color === 'string' && raw.color ? { color: raw.color } : {}),
       createdAt: raw.createdAt || raw.created_at || Date.now(),
       updatedAt: raw.updatedAt || raw.updated_at || Date.now(),
     };
@@ -140,28 +159,30 @@ export class ProjectService {
    */
   public async createProject(
     params: CreateProjectInput,
-    bridge: IRpcCaller
+    bridge: IRpcCaller,
+    profile = 'default'
   ): Promise<ProjectsCreateResult> {
     const rawPath = params.path || params.primary_path || (params.folders && params.folders[0]);
     if (!params.name || !rawPath) {
       throw new Error('Project name and root path are mandatory');
     }
 
-    // 线上契约只接受 folders / primary_path；`path` 是本地便捷入参，必须在此展开
+    // 线上契约只接受 folders / primary_path；`path` 是本地便捷入参，且未定义的可选字段必须剔除避免严格校验报错
     const payload: ProjectsCreateParams = {
+      profile,
       name: params.name,
       folders: params.folders || [rawPath],
       primary_path: params.primary_path || rawPath,
-      description: params.description,
-      slug: params.slug,
-      use: params.use,
+      ...(params.description !== undefined ? { description: params.description } : {}),
+      ...(params.slug !== undefined ? { slug: params.slug } : {}),
+      ...(params.use !== undefined ? { use: params.use } : {}),
     };
 
     const res = await bridge.request<ProjectsCreateResult, ProjectsCreateParams>(
       'projects.create',
       payload
     );
-    await this.listProjects(bridge, true);
+    await this.listProjects(bridge, true, profile);
     return res;
   }
 
@@ -175,16 +196,17 @@ export class ProjectService {
     bridge: IRpcCaller
   ): Promise<boolean> {
     if (!projectId) throw new Error('Project ID is mandatory for updateProject');
+    const payload: ProjectsUpdateParams = {
+      id: projectId,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(patch.icon !== undefined ? { icon: patch.icon } : {}),
+      ...(patch.color !== undefined ? { color: patch.color } : {}),
+      ...(patch.board_slug !== undefined ? { board_slug: patch.board_slug } : {}),
+    };
     const res = await bridge.request<ProjectsUpdateResult, ProjectsUpdateParams>(
       'projects.update',
-      {
-        id: projectId,
-        name: patch.name,
-        description: patch.description,
-        icon: patch.icon,
-        color: patch.color,
-        board_slug: patch.board_slug,
-      }
+      payload
     );
     const isSuccess = Boolean(res?.success || res?.project);
     if (isSuccess) {
@@ -195,13 +217,17 @@ export class ProjectService {
 
   /**
    * 删除项目
-   * 官方 Gateway 参数契约：{ id }
+   * 官方 Gateway 参数契约：{ profile?, id }
    */
-  public async deleteProject(projectId: string, bridge: IRpcCaller): Promise<boolean> {
+  public async deleteProject(
+    projectId: string,
+    bridge: IRpcCaller,
+    profile = 'default'
+  ): Promise<boolean> {
     if (!projectId) throw new Error('Project ID is mandatory for deleteProject');
     const res = await bridge.request<ProjectsDeleteResult, ProjectsDeleteParams>(
       'projects.delete',
-      { id: projectId }
+      { id: projectId, profile }
     );
     const isSuccess = Boolean(res?.success || res);
     if (isSuccess) {

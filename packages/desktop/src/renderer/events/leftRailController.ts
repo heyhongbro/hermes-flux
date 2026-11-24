@@ -17,14 +17,22 @@
  *   - 保持判别联合与不可变数据流更新。
  */
 
-import type { HermesGatewayClient, GroupRoomStore, ActivityTransitionTracker } from '@hermes-flux/core';
+import type {
+  HermesGatewayClient,
+  GroupRoomStore,
+  ActivityTransitionTracker,
+  NormalizedSession,
+} from '@hermes-flux/core';
 import {
   saveGroupedRailSections,
   type LeftRailActions,
+  type LeftRailFolder,
+  type LeftRailProject,
   type LeftRailSnapshot,
   type LeftRailSession,
   type LeftRailGroupRoom,
   type LeftRailProfile,
+  type OrgContainerCollapseState,
   type ActivityIndicatorVariant,
   type t,
 } from '@hermes-flux/ui';
@@ -56,6 +64,16 @@ export interface LeftRailControllerDeps {
   unreadBotNames: ReadonlySet<string>;
   resolveAgentAvatar: (name?: string) => string;
   activityTransitionTracker: ActivityTransitionTracker;
+  onToggleContainer?: (containerId: string) => void;
+  onRetryDoneSection?: () => void;
+  onRequestMarkDone?: (entityKind: 'session' | 'group', id: string, title: string, profile?: string) => void;
+  onRestoreDone?: (entityKind: 'session' | 'group', id: string, profile?: string) => void;
+  onSearchQueryChanged?: (query: string) => void;
+  getMoveEntityContext?: (entityKind: 'session' | 'group', id: string, profile?: string) => {
+    isDone: boolean;
+    currentContainerId: string | null;
+    hasCwdProjectMatch: boolean;
+  };
 }
 
 export class LeftRailController {
@@ -66,8 +84,18 @@ export class LeftRailController {
     this.deps = deps;
     this.snapshotManager = new LeftRailSnapshotManager({
       getSessions: () => deps.getState().sessions,
+      getArchivedSessions: () => deps.getState().archivedSessions ?? [],
       getGroupRooms: () => deps.getState().groupRooms,
       getProfiles: () => deps.getState().profiles,
+      getProjects: () => deps.getState().projects ?? [],
+      getFolders: () => deps.getState().orgFolders ?? [],
+      getAssignments: () => deps.getState().orgAssignments ?? {},
+      getDoneRoomsMap: () => deps.getState().orgDoneRooms ?? {},
+      getContainerCollapsed: () => deps.getState().orgContainerCollapsed ?? { done: true },
+      getHiddenProjectIds: () => deps.getState().orgPrefs?.hiddenProjectIds ?? [],
+      getShowDoneSection: () => deps.getState().orgPrefs?.showDoneSection ?? true,
+      getDoneLoading: () => Boolean(deps.getState().doneLoading),
+      getDoneError: () => deps.getState().doneError ?? '',
       getActiveSessionId: () => deps.getState().activeSessionId,
       getActiveFocus: () => deps.getState().activeFocus,
       getProfileName: () => deps.getState().profileName,
@@ -118,8 +146,21 @@ export class LeftRailController {
         deps.cancelColdStartFocus();
         void deps.openGroupRoom(roomId);
       },
-      onOpenSessionMenu: (sessionId: string, title: string, x: number, y: number) => {
-        state.sessionContextMenu = { x, y, targetType: 'session', targetId: sessionId, targetName: title, sessionId, sessionTitle: title };
+      onOpenSessionMenu: (sessionId: string, title: string, x: number, y: number, profile?: string) => {
+        const entityCtx = deps.getMoveEntityContext?.('session', sessionId, profile);
+        state.sessionContextMenu = {
+          x,
+          y,
+          targetType: 'session',
+          targetId: sessionId,
+          targetName: title,
+          sessionId,
+          sessionTitle: title,
+          sessionProfile: profile,
+          ...entityCtx,
+          projects: state.projects.filter((p) => !p.archived).map((p) => ({ id: p.id, name: p.name })),
+          folders: state.orgFolders.map((f) => ({ id: f.id, name: f.name })),
+        };
         deps.render();
       },
       onOpenBotMenu: (profileName: string, x: number, y: number) => {
@@ -127,19 +168,64 @@ export class LeftRailController {
         deps.render();
       },
       onOpenGroupMenu: (roomId: string, name: string, x: number, y: number) => {
-        state.sessionContextMenu = { x, y, targetType: 'group', targetId: roomId, targetName: name };
+        const entityCtx = deps.getMoveEntityContext?.('group', roomId);
+        state.sessionContextMenu = {
+          x,
+          y,
+          targetType: 'group',
+          targetId: roomId,
+          targetName: name,
+          ...entityCtx,
+          projects: state.projects.filter((p) => !p.archived).map((p) => ({ id: p.id, name: p.name })),
+          folders: state.orgFolders.map((f) => ({ id: f.id, name: f.name })),
+        };
+        deps.render();
+      },
+      onOpenFolderMenu: (folderId: string, name: string, x: number, y: number) => {
+        state.sessionContextMenu = { x, y, targetType: 'folder', targetId: folderId, targetName: name };
+        deps.render();
+      },
+      onOpenRailMenu: (x: number, y: number) => {
+        state.sessionContextMenu = { x, y, targetType: 'rail', targetId: 'rail', targetName: 'rail' };
         deps.render();
       },
       onSearchChange: (value: string) => {
         state.sessionSearchQuery = value;
+        deps.onSearchQueryChanged?.(value);
         deps.render();
       },
       onNewChat: (kind: 'session' | 'group') => {
         deps.cancelColdStartFocus();
         void deps.fetchProjects();
+        state.selectedNewTaskContainerId = undefined;
+        state.selectedNewTaskProjectId = undefined;
         state.newTaskModalTab = kind === 'group' ? 'group' : 'solo';
         state.isNewTaskModalOpen = true;
         deps.render();
+      },
+      onNewChatInContainer: (kind: 'session' | 'group', containerId: string) => {
+        deps.cancelColdStartFocus();
+        void deps.fetchProjects();
+        state.selectedNewTaskProjectId = undefined;
+        state.selectedNewTaskContainerId = containerId;
+        state.newTaskModalTab = kind === 'group' ? 'group' : 'solo';
+        state.isNewTaskModalOpen = true;
+        deps.render();
+      },
+      onToggleContainer: (containerId: string) => {
+        deps.onToggleContainer?.(containerId);
+      },
+      onToggleDoneSection: () => {
+        deps.onToggleContainer?.('done');
+      },
+      onRetryDoneSection: () => {
+        deps.onRetryDoneSection?.();
+      },
+      onRequestMarkDone: (entityKind: 'session' | 'group', id: string, title: string, profile?: string) => {
+        deps.onRequestMarkDone?.(entityKind, id, title, profile);
+      },
+      onRestoreDone: (entityKind: 'session' | 'group', id: string, profile?: string) => {
+        deps.onRestoreDone?.(entityKind, id, profile);
       },
       onToggleBots: () => {
         state.isBotsGroupExpanded = !state.isBotsGroupExpanded;

@@ -12,10 +12,11 @@
  */
 
 import * as React from 'react';
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Folder, Users, X } from 'lucide-react';
 import { t } from '../../i18n/index.js';
 import { renderBotAvatar, renderGroupCollageAvatar } from '../../utils/botAvatar.js';
-import type { LeftRailProfile } from '../leftRailModel.js';
+import type { LeftRailProfile, LeftRailProject } from '../leftRailModel.js';
+import { resolveActiveNewChatProjects } from '../newChatModel.js';
 import type { InputAttachmentItem } from '../../components/InputDock/InputDock.js';
 import type { MobileNewChatStep } from './mobileShellModel.js';
 import type { MobileModelOption } from './types.js';
@@ -29,6 +30,8 @@ export interface MobileNewChatSheetProps {
   groupMembers: string[];
   groupName: string;
   allProfiles: LeftRailProfile[];
+  projects?: LeftRailProject[];
+  selectedProjectId?: string;
   stats?: {
     pluginsCount: number;
     mcpCount: number;
@@ -45,6 +48,7 @@ export interface MobileNewChatSheetProps {
   onSelectBot: (botName: string) => void;
   onSetGroupMembers: (members: string[]) => void;
   onSetGroupName: (name: string) => void;
+  onSelectProject?: (projectId?: string) => void;
   onSubmitFirstMessage: (text: string) => void;
   onSelectModel: (model: string, provider?: string) => void;
   onRefreshModels?: () => void;
@@ -53,6 +57,8 @@ export interface MobileNewChatSheetProps {
   forceModelPickerOpen?: boolean;
   onModelPickerOpenChange?: (open: boolean) => void;
   externalModelPicker?: boolean;
+  forceProjectPickerOpen?: boolean;
+  onProjectPickerOpenChange?: (open: boolean) => void;
 }
 
 export function MobileNewChatSheet({
@@ -63,6 +69,8 @@ export function MobileNewChatSheet({
   groupMembers,
   groupName,
   allProfiles,
+  projects = [],
+  selectedProjectId,
   stats,
   gatewayConnected,
   selectedModel,
@@ -75,6 +83,7 @@ export function MobileNewChatSheet({
   onSelectBot,
   onSetGroupMembers,
   onSetGroupName,
+  onSelectProject,
   onSubmitFirstMessage,
   onSelectModel,
   onRefreshModels,
@@ -83,16 +92,34 @@ export function MobileNewChatSheet({
   forceModelPickerOpen,
   onModelPickerOpenChange,
   externalModelPicker,
+  forceProjectPickerOpen,
+  onProjectPickerOpenChange,
 }: MobileNewChatSheetProps): React.ReactElement | null {
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [localProjectPickerOpen, setLocalProjectPickerOpen] = React.useState(false);
+
+  const projectPickerControlled = typeof forceProjectPickerOpen === 'boolean';
+  const isProjectPickerOpen = projectPickerControlled
+    ? Boolean(forceProjectPickerOpen)
+    : localProjectPickerOpen;
+  const setProjectPickerOpen = (next: boolean): void => {
+    if (!projectPickerControlled) {
+      setLocalProjectPickerOpen(next);
+    }
+    onProjectPickerOpenChange?.(next);
+  };
 
   React.useEffect(() => {
     if (!open) {
       setPickerOpen(false);
+      setLocalProjectPickerOpen(false);
     }
   }, [open]);
 
   if (!open) return null;
+
+  const activeProjects = resolveActiveNewChatProjects(projects);
+  const selectedProject = activeProjects.find((p) => p.id === selectedProjectId);
 
   const activeProfile =
     allProfiles.find((p) => p.name.toLowerCase() === targetBot.toLowerCase()) ||
@@ -240,7 +267,90 @@ export function MobileNewChatSheet({
                   })}
                 </div>
               ) : null}
+              {activeProjects.length > 0 ? (
+                <button
+                  type="button"
+                  className="m-newchat__project-chip"
+                  data-testid="mobile-newchat-project-chip"
+                  aria-label={t('mobile.newChat.projectLabel')}
+                  aria-expanded={isProjectPickerOpen}
+                  onClick={() => {
+                    setPickerOpen(false);
+                    setProjectPickerOpen(!isProjectPickerOpen);
+                  }}
+                >
+                  <Folder size={13} aria-hidden="true" />
+                  <span>
+                    {selectedProject ? selectedProject.name : t('mobile.newChat.projectChipDefault')}
+                  </span>
+                  <ChevronDown size={13} aria-hidden="true" />
+                </button>
+              ) : null}
             </div>
+
+            {isProjectPickerOpen && activeProjects.length > 0 ? (
+              <div
+                className="m-sheet-backdrop"
+                role="dialog"
+                aria-modal="true"
+                aria-label={t('mobile.newChat.projectPickerTitle')}
+                onClick={() => setProjectPickerOpen(false)}
+              >
+                <div className="m-bottom-sheet m-no-swipe" onClick={(e) => e.stopPropagation()}>
+                  <div className="m-sheet-handle" aria-hidden="true" />
+                  <div className="m-sheet-header">
+                    <span className="m-sheet-title">{t('mobile.newChat.projectPickerTitle')}</span>
+                    <button
+                      type="button"
+                      className="m-icon-btn"
+                      aria-label={t('mobile.common.close')}
+                      onClick={() => setProjectPickerOpen(false)}
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                  <div className="m-sheet-list">
+                    <button
+                      type="button"
+                      className="m-sheet-option"
+                      data-active={!selectedProject ? 'true' : 'false'}
+                      data-newchat-project-opt=""
+                      onClick={() => {
+                        onSelectProject?.(undefined);
+                        setProjectPickerOpen(false);
+                      }}
+                    >
+                      <Folder size={16} aria-hidden="true" />
+                      <span className="m-sheet-option__title">{t('mobile.newChat.projectChipDefault')}</span>
+                      {!selectedProject ? <Check size={16} className="m-sheet-option__check" /> : null}
+                    </button>
+                    {activeProjects.map((proj) => {
+                      const picked = proj.id === selectedProject?.id;
+                      return (
+                        <button
+                          key={proj.id}
+                          type="button"
+                          className="m-sheet-option"
+                          data-active={picked ? 'true' : 'false'}
+                          data-newchat-project-opt={proj.id}
+                          onClick={() => {
+                            onSelectProject?.(proj.id);
+                            setProjectPickerOpen(false);
+                          }}
+                        >
+                          <Folder size={16} aria-hidden="true" />
+                          <span className="m-sheet-option__main">
+                            <span className="m-sheet-option__title">{proj.name}</span>
+                            {proj.path ? <span className="m-sheet-option__meta">{proj.path}</span> : null}
+                          </span>
+                          {picked ? <Check size={16} className="m-sheet-option__check" /> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             <div className="m-newchat__composer-wrap">
               <MobileMorphingComposer

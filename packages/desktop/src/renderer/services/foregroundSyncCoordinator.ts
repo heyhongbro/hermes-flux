@@ -47,6 +47,8 @@ export interface ForegroundSyncDeps {
   prefetchSlashCatalog: () => Promise<void>;
   fetchModelOptions: () => Promise<void>;
   fetchProjects: () => Promise<void>;
+  onReadyEnsureDoneSessions?: () => void;
+  refreshConversationOrgIfStale?: () => void;
   refreshActiveSession: (opts?: { forceRefreshAfterReconnect?: boolean }) => Promise<void>;
   refreshGroupRoomLog: (roomId: string) => Promise<unknown>;
   ensureGroupPollerRunning?: (roomId: string) => void;
@@ -132,7 +134,9 @@ export function createForegroundSyncCoordinator(deps: ForegroundSyncDeps): Foreg
     const listsTask = Promise.allSettled([
       deps.fetchProfiles().then(() =>
         Promise.allSettled([
-          deps.fetchSessions(),
+          deps.fetchSessions().then(() => {
+            deps.onReadyEnsureDoneSessions?.();
+          }),
           deps.fetchGroupRooms(),
           deps.prefetchSlashCatalog(),
         ]),
@@ -140,6 +144,7 @@ export function createForegroundSyncCoordinator(deps: ForegroundSyncDeps): Foreg
       deps.fetchModelOptions(),
       deps.fetchProjects(),
     ]);
+    deps.refreshConversationOrgIfStale?.();
 
     let conversationTask: Promise<unknown> = Promise.resolve();
     if (state.activeFocus.type === 'group' && state.activeFocus.roomId) {

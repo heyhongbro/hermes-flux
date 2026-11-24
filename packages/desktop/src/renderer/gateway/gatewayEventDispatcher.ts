@@ -126,6 +126,7 @@ export interface GatewayEventDispatcherDeps {
   readonly onResumeAliveSync?: () => Promise<void> | void;
   readonly onStatusConnected?: () => void;
   readonly onStatusDisconnected?: () => void;
+  readonly onReadyEnsureDoneSessions?: () => void;
   readonly onStatusTurnAction?: (
     action: TurnAction,
     toStoredSessionId: (id?: string | null) => string | null,
@@ -580,6 +581,20 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     });
     if (actions.length > 0) applyTurnActions(actions);
 
+    if (params && typeof params === 'object') {
+      const evtName =
+        'event' in params && typeof params.event === 'string'
+          ? params.event
+          : 'type' in params && typeof params.type === 'string'
+            ? params.type
+            : 'kind' in params && typeof params.kind === 'string'
+              ? params.kind
+              : '';
+      if (evtName === 'projects.changed') {
+        void deps.fetchProjects();
+      }
+    }
+
     handleInspectorEvent(params);
   }
 
@@ -675,7 +690,9 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
       }
       Promise.allSettled([
         deps.fetchProfiles().then(() => Promise.allSettled([
-          deps.fetchSessions(),
+          deps.fetchSessions().then(() => {
+            deps.onReadyEnsureDoneSessions?.();
+          }),
           deps.fetchGroupRooms(),
           deps.prefetchSlashCatalog(),
         ])),
@@ -921,6 +938,14 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     state.gatewayLatencyMs = 0;
     state.messagesPhase = 'ready';
     state.sessions = [];
+    state.archivedSessions = [];
+    state.doneSessionsLoaded = false;
+    state.doneLoading = false;
+    state.doneError = '';
+    state.orgFolders = [];
+    state.orgAssignments = {};
+    state.orgDoneRooms = {};
+    state.settingsProjects = { status: 'idle' };
     state.messages = [];
     state.rollbackArmed = null;
     state.activeSessionId = '';

@@ -234,8 +234,9 @@ test('SessionOperationService - 核心生命周期与状态切换测试', async 
 
     await service.archiveSession('sess-next');
     assert.equal(rpcCalls.some((c) => c.method === 'session.archive'), true, '必须调用 session.archive');
-    const target = state.sessions.find((s) => s.id === 'sess-next');
-    assert.equal(target?.isArchived, true, 'isArchived 状态必须乐观翻转');
+    const archivedTarget = (state.archivedSessions || []).find((s) => s.id === 'sess-next');
+    assert.equal(archivedTarget?.isArchived, true, 'isArchived 状态必须转入 archivedSessions');
+    assert.equal(state.sessions.some((s) => s.id === 'sess-next'), false, '已归档会话应从活跃列表移出');
   });
 
   await t.test('6. switchModel / switchReasoning: 群聊视口严格拦截向单聊发 config.set', async () => {
@@ -621,4 +622,133 @@ test('createNewSession 返回新会话 ID / 失败返回 null；selectSession �
   await okSvc.selectSession('sess-other-bot', { botName: 'arch-wang' });
   assert.equal(ok.state.profileName, 'arch-wang', '跨 Bot 切换会话必须同步 state.profileName');
   assert.deepEqual(loadCalls, [{ sid: 'sess-other-bot', bot: 'arch-wang' }]);
+});
+
+test('跨 Profile 同 ID 归档隔离、恢复及 fetchArchivedSessions 部分 Profile 失败保护', async () => {
+  // 1. default::s-dup 与 arch::s-dup 独立归档/恢复互不误伤
+  const rpcLog = [];
+  const { deps, state } = createMockDeps({
+    state: {
+      profileName: 'default',
+      profiles: [
+        { name: 'default', displayName: 'Default' },
+        { name: 'arch', displayName: 'Arch' },
+      ],
+      sessions: [
+        { id: 's-dup', title: 'Default Dup', botName: 'default', isArchived: false, timestamp: 200 },
+        { id: 's-dup', title: 'Arch Dup', botName: 'arch', isArchived: false, timestamp: 100 },
+      ],
+      archivedSessions: [],
+    },
+    gatewayClient: {
+      call: async (method, params) => {
+        rpcLog.push({ method, params });
+        return { ok: true };
+      },
+      fetchSessionMessages: async () => ({ status: 'success', messages: [] }),
+    },
+  });
+  const svc = createSessionOperationService(deps);
+  const archivedOk = await svc.setSessionArchived('s-dup', true, 'arch');
+  assert.equal(archivedOk, true);
+  assert.equal(rpcLog.at(-1).params.profile, 'arch');
+  assert.deepEqual(
+    state.sessions.map((s) => `${s.botName}:${s.id}`),
+    ['default:s-dup'],
+    '归档 arch::s-dup 绝不能误删 default::s-dup',
+  );
+  assert.deepEqual(
+    state.archivedSessions.map((s) => `${s.botName}:${s.id}`),
+    ['arch:s-dup'],
+  );
+
+  // 2. fetchArchivedSessions 当 arch 失败而 default 成功时，保留 arch 既有归档且 doneSessionsLoaded 必须为 false，同时隔离同 ID 跨 Profile 活跃滤除
+  const partialHarness = createMockDeps({
+    state: {
+      profileName: 'default',
+      profiles: [
+        { name: 'default', displayName: 'Default' },
+        { name: 'arch', displayName: 'Arch' },
+      ],
+      sessions: [
+        { id: 's-dup', title: 'Default Active', botName: 'default', isArchived: false, timestamp: 300 },
+      ],
+      archivedSessions: [
+        { id: 's-arch-cached', title: 'Arch Cached Done', botName: 'arch', isArchived: true, timestamp: 150 },
+        { id: 's-dup', title: 'Arch Archived Dup', botName: 'arch', isArchived: true, timestamp: 120 },
+      ],
+      doneSessionsLoaded: false,
+    },
+    gatewayClient: {
+      call: async () => ({}),
+      fetchSessionMessages: async () => ({ status: 'success', messages: [] }),
+      listSessions: async (prof) => {
+        if (prof === 'default') {
+          return {
+            ok: true,
+            sessions: [{ id: 's-dup', title: 'Default Active', botName: 'default', timestamp: 300, isArchived: false }],
+          };
+        }
+        return { ok: true, sessions: [] };
+      },
+      listArchivedSessions: async (prof) => {
+        if (prof === 'arch') return { ok: false, error: 'arch gateway timeout' };
+        return {
+          ok: true,
+          sessions: [
+            { id: 's-dup', title: 'Default Stale Archived', botName: 'default', isArchived: true, timestamp: 50 },
+            { id: 's-def-done', title: 'Default Done', botName: 'default', isArchived: true, timestamp: 220 },
+          ],
+        };
+      },
+    },
+  });
+  const partialSvcInstance = createSessionOperationService(partialHarness.deps);
+  await partialSvcInstance.fetchArchivedSessions({ force: true });
+  assert.equal(partialHarness.state.doneSessionsLoaded, false, '部分 Profile 失败时 doneSessionsLoaded 绝不可为 true');
+  assert.ok(partialHarness.state.doneError.includes('arch gateway timeout'));
+  assert.deepEqual(
+    partialHarness.state.archivedSessions.map((s) => `${s.botName}:${s.id}`),
+    ['default:s-def-done', 'arch:s-arch-cached', 'arch:s-dup'],
+    '失败 Profile 的已缓存归档必须保留，且仅过滤同 Profile 活跃 default:s-dup 而保留 arch:s-dup',
+  );
+
+  // 3. fetchSessions 返回 default:s-dup 活跃态时，仅清理同 Profile 归档副本而不误伤 arch:s-dup
+  await partialSvcInstance.fetchSessions({ force: true });
+  assert.equal(
+    partialHarness.state.sessions.some((s) => s.botName === 'default' && s.id === 's-dup'),
+    true,
+  );
+  assert.equal(
+    partialHarness.state.archivedSessions.some((s) => s.botName === 'arch' && s.id === 's-dup'),
+    true,
+    'fetchSessions 按复合键清理 archivedSessions 时不得误删异 Profile 同 ID 归档',
+  );
+
+  // 4. activeSessionId 同 ID 跨 Profile 直接切换（default::s-dup -> arch::s-dup）不得被早退短路
+  const crossLoadCalls = [];
+  const crossHarness = createMockDeps({
+    state: {
+      activeSessionId: 's-dup',
+      activeLiveSessionId: 'live-default-dup',
+      profileName: 'default',
+      profiles: [
+        { name: 'default', displayName: 'Default' },
+        { name: 'arch', displayName: 'Arch' },
+      ],
+      sessions: [
+        { id: 's-dup', title: 'Default Dup', botName: 'default', isArchived: false },
+      ],
+      archivedSessions: [
+        { id: 's-dup', title: 'Arch Dup Done', botName: 'arch', isArchived: true },
+      ],
+      messages: [{ id: 'm-old', role: 'assistant', content: 'from default' }],
+    },
+    loadMessages: async (sid, bot) => {
+      crossLoadCalls.push({ sid, bot });
+    },
+  });
+  await createSessionOperationService(crossHarness.deps).selectSession('s-dup', { botName: 'arch' });
+  assert.equal(crossHarness.state.profileName, 'arch', '跨 Profile 同 ID 切换必须刷新 state.profileName');
+  assert.deepEqual(crossLoadCalls, [{ sid: 's-dup', bot: 'arch' }]);
 });

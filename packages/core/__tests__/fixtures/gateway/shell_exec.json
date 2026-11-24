@@ -1,0 +1,10 @@
+{
+  "method": "shell.exec",
+  "recordedAt": "2026-11-24T12:02:25.647Z",
+  "gatewayVersion": "0.23.2",
+  "result": {
+    "stdout": "<path>",
+    "stderr": "",
+    "code": 0
+  }
+}

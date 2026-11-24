@@ -18,6 +18,7 @@
  */
 
 import * as React from 'react';
+import { Check, RotateCcw } from 'lucide-react';
 import { t } from '../i18n/index.js';
 import { renderBotAvatar, renderGroupCollageAvatar } from '../utils/botAvatar.js';
 import { Button } from './primitives/Button.js';
@@ -107,6 +108,13 @@ export function RowTime({
   );
 }
 
+export interface RailRowHoverAction {
+  label: string;
+  ariaLabel: string;
+  icon: 'done' | 'restore';
+  onAction: () => void;
+}
+
 export interface RailEntityRowProps {
   className?: string;
   active: boolean;
@@ -126,6 +134,7 @@ export interface RailEntityRowProps {
   loading?: boolean;
   /** 骨架行的 data-skeleton 标记（仅 loading 时输出），供探针区分会话行与主工位卡。 */
   skeletonSlot?: string;
+  hoverAction?: RailRowHoverAction;
   onClick?: () => void;
   onContextMenu?: (event: React.MouseEvent) => void;
   dataAttributes?: Record<string, string>;
@@ -153,16 +162,17 @@ export function RailEntityRow({
   titleAttr,
   loading = false,
   skeletonSlot = 'session',
+  hoverAction,
   onClick,
   onContextMenu,
   dataAttributes,
 }: RailEntityRowProps): React.ReactElement {
-  return (
+  const mainButton = (
     <button
       type="button"
       disabled={loading}
       aria-busy={loading}
-      className={`${className} group relative flex w-full items-center gap-2 rounded-card px-2 py-1.5 text-left transition-colors duration-150 ${
+      className={`${className} ${hoverAction && !loading ? '' : 'group '}relative flex w-full items-center gap-2 rounded-card px-2 py-1.5 text-left transition-colors duration-150 ${
         compact ? 'min-h-8' : 'min-h-12'
       } ${
         loading
@@ -174,7 +184,9 @@ export function RailEntityRow({
       title={titleAttr}
       onClick={loading ? undefined : onClick}
       onContextMenu={loading ? undefined : onContextMenu}
-      {...(loading ? { 'data-skeleton': skeletonSlot } : dataAttributes)}
+      {...(loading
+        ? { 'data-skeleton': skeletonSlot }
+        : { 'data-entity-row': entityKind || 'entity', ...(dataAttributes || {}) })}
     >
       {avatar && <span aria-hidden="true" className="shrink-0 flex items-center justify-center">{avatar}</span>}
       {loading ? (
@@ -196,7 +208,13 @@ export function RailEntityRow({
                 entityKind={entityKind}
                 variant={activityVariant}
               />
-              <RowTime timestamp={timestamp} fallback={timeFallback} />
+              {hoverAction ? (
+                <span className="group-hover:invisible group-focus-within:invisible">
+                  <RowTime timestamp={timestamp} fallback={timeFallback} />
+                </span>
+              ) : (
+                <RowTime timestamp={timestamp} fallback={timeFallback} />
+              )}
             </span>
           </span>
           {!compact && subtitle && (
@@ -205,6 +223,37 @@ export function RailEntityRow({
         </span>
       )}
     </button>
+  );
+
+  if (loading || !hoverAction) {
+    return mainButton;
+  }
+
+  return (
+    <div className="group relative flex w-full items-center" data-entity-row={entityKind || 'entity'}>
+      {mainButton}
+      <button
+        type="button"
+        data-row-hover-action={hoverAction.icon}
+        aria-label={hoverAction.ariaLabel}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        onClick={(event) => {
+          event.stopPropagation();
+          hoverAction.onAction();
+        }}
+        className="flux-row-hover-action absolute right-2 top-1/2 z-10 hidden min-h-7 shrink-0 -translate-y-1/2 cursor-pointer items-center gap-1 rounded-full border border-border-subtle bg-secondary px-2 py-1 text-micro font-medium text-secondary-foreground transition-colors hover:bg-card-active hover:text-foreground group-hover:inline-flex group-focus-within:inline-flex focus-visible:inline-flex focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {hoverAction.icon === 'done' ? (
+          <Check size={11} strokeWidth={2.2} aria-hidden="true" />
+        ) : (
+          <RotateCcw size={11} strokeWidth={2.2} aria-hidden="true" />
+        )}
+        <span>{hoverAction.label}</span>
+      </button>
+    </div>
   );
 }
 

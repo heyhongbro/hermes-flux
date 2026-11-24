@@ -37,6 +37,19 @@ export function normalizeAgentProfile(item: unknown): AgentProfile {
   const uiMeta =
     obj.ui_meta && typeof obj.ui_meta === 'object' ? (obj.ui_meta as ProfileUiMeta) : undefined;
 
+  let uiMetaRevisions: Record<string, number> | undefined;
+  if (obj.ui_meta_revisions && typeof obj.ui_meta_revisions === 'object' && !Array.isArray(obj.ui_meta_revisions)) {
+    const revEntries: Record<string, number> = {};
+    let hasRev = false;
+    for (const [k, v] of Object.entries(obj.ui_meta_revisions as Record<string, unknown>)) {
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        revEntries[k] = v;
+        hasRev = true;
+      }
+    }
+    if (hasRev) uiMetaRevisions = revEntries;
+  }
+
   const name = String(obj.name || obj.id || 'default');
   const defaultDisplayName = name === 'default' ? 'Hermes' : name;
   const metaBots =
@@ -75,6 +88,7 @@ export function normalizeAgentProfile(item: unknown): AgentProfile {
       (name === 'default' && metaBots?.is_default !== false),
     hasAvatar: obj.has_avatar === true,
     uiMeta,
+    ...(uiMetaRevisions ? { uiMetaRevisions } : {}),
     last_session: lastSession,
   };
 }

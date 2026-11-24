@@ -16,7 +16,7 @@
  *   - 所有输出均可序列化、纯函数无副作用。
  */
 
-import type { LeftRailProfile } from './leftRailModel.js';
+import type { LeftRailFolder, LeftRailProfile } from '../components/LeftRail/types.js';
 
 export type NewChatMode = 'solo' | 'group';
 
@@ -24,6 +24,7 @@ export interface NewChatProjectOption {
   id: string;
   name: string;
   path?: string;
+  archived?: boolean;
 }
 
 export interface NewChatDialogSnapshot {
@@ -31,8 +32,10 @@ export interface NewChatDialogSnapshot {
   initialMode: NewChatMode;
   profiles: LeftRailProfile[];
   projects: NewChatProjectOption[];
+  folders?: LeftRailFolder[];
   selectedProfile: string;
   selectedProjectId?: string;
+  selectedContainerId?: string;
   gatewayConnected: boolean;
 }
 
@@ -42,7 +45,15 @@ export interface NewChatSubmitPayload {
   members: string[];
   title: string;
   projectId?: string;
+  containerId?: string;
   firstMessage: string;
+}
+
+/** 过滤网关已归档项目，仅保留活跃项目供新建对话选择器消费。 */
+export function resolveActiveNewChatProjects(
+  projects: readonly NewChatProjectOption[],
+): NewChatProjectOption[] {
+  return (projects || []).filter((p) => Boolean(p && p.id && !p.archived));
 }
 
 export interface NewChatSubmitResult {
@@ -99,6 +110,7 @@ export interface NewChatDraftInput {
   selectedMembers: readonly string[];
   title?: string;
   projectId?: string;
+  containerId?: string;
   firstMessage?: string;
 }
 
@@ -242,6 +254,8 @@ export function buildNewChatSubmitPayload(draft: NewChatDraftInput): NewChatBuil
   const title = (draft.title ?? '').trim();
   const firstMessage = (draft.firstMessage ?? '').trim();
   const projectId = (draft.projectId || '').trim() || undefined;
+  const hasExplicitContainer = 'containerId' in draft && draft.containerId !== undefined;
+  const containerId = (draft.containerId || '').trim();
   const agent = (draft.selectedBot || '').trim() || 'default';
 
   const seen = new Set<string>();
@@ -266,7 +280,8 @@ export function buildNewChatSubmitPayload(draft: NewChatDraftInput): NewChatBuil
       agent,
       members: draft.mode === 'group' ? uniqueMembers : [],
       title,
-      projectId: draft.mode === 'solo' ? projectId : undefined,
+      projectId,
+      ...(hasExplicitContainer ? { containerId } : {}),
       firstMessage,
     },
   };

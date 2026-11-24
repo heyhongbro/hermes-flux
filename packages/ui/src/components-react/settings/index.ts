@@ -1,4 +1,9 @@
 export { SettingsModal } from './SettingsModal.js';
+export {
+  ProjectDirectoryPicker,
+  remapPathPrefix,
+  type ProjectDirectoryPickerProps,
+} from './ProjectDirectoryPicker.js';
 export { BotManagerView } from './BotManagerView.js';
 export { McpAddDialog, type McpAddDialogProps } from './McpAddDialog.js';
 export { McpRemoveConfirmDialog, type McpRemoveConfirmDialogProps } from './McpRemoveConfirmDialog.js';
@@ -77,6 +82,7 @@ export {
   type SettingsSectionId,
   type SettingsSnapshot,
   type SettingsProfileRow,
+  type SettingsProjectRow,
   type SettingsBotRow,
   type BotExitTarget,
   type CustomEndpointRow,

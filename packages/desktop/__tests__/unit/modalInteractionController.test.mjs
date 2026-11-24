@@ -573,4 +573,116 @@ test('ModalInteractionController 领域行为测试', async (t) => {
     assert.equal(enterCtrl.handleGlobalEnter('btn-confirm-modal-ok'), true);
     assert.equal(enterCtx.getState().confirmModal, undefined);
   });
+
+  await t.test('10. 显式解绑自定义文件夹与哑光输入模态框交互回归', async () => {
+    // 1. solo/group 提交显式传 containerId: "" 时绝不可回落 state.selectedNewTaskContainerId
+    const groupAssigned = [];
+    const unbindSolo = createMockDeps({ isNewTaskModalOpen: true, selectedNewTaskContainerId: 'fld-1' });
+    const ctrl = createModalInteractionController({
+      ...unbindSolo.deps,
+      onGroupCreatedInContainer: async (rid, opts) => {
+        groupAssigned.push([rid, opts]);
+      },
+    });
+    const soloRes = await ctrl.submitTaskModal({
+      mode: 'solo',
+      agent: 'default',
+      containerId: '',
+    });
+    assert.deepEqual(soloRes, { ok: true });
+    assert.equal(unbindSolo.calls.newSession[0].containerId, undefined);
+    assert.equal(unbindSolo.getState().selectedNewTaskContainerId, undefined);
+
+    unbindSolo.deps.commitState({ isNewTaskModalOpen: true, selectedNewTaskContainerId: 'fld-1' });
+    const groupRes = await ctrl.submitTaskModal({
+      mode: 'group',
+      members: ['default', 'arch'],
+      projectId: '',
+      containerId: '',
+    });
+    assert.deepEqual(groupRes, { ok: true });
+    assert.equal(groupAssigned.length, 0, '解绑文件夹且未选项目时不得回落绑定到旧目录');
+
+    // 2. 哑光文本输入模态框渲染、聚焦、Enter 提交与输入值透传
+    const submittedValues = [];
+    let selectedCount = 0;
+    const promptState = createMockDeps({
+      confirmModal: {
+        title: '新建文件夹',
+        message: '请输入名称',
+        inputPlaceholder: '请输入名称',
+        inputDefaultValue: '初始值',
+        inputLabel: '文件夹名称',
+        onConfirm: (val) => {
+          submittedValues.push(val);
+        },
+        onCancel: () => {},
+      },
+    });
+    const promptCtrl = createModalInteractionController(promptState.deps);
+    const html = promptCtrl.renderConfirmModalHtml();
+    assert.ok(html.includes('id="flux-confirm-modal-input"'));
+    assert.ok(html.includes('value="初始值"'));
+
+    const mockInput = {
+      id: 'flux-confirm-modal-input',
+      value: '新目录名',
+      focus: () => {
+        promptDoc.activeElement = mockInput;
+      },
+      select: () => {
+        selectedCount += 1;
+      },
+      onkeydown: null,
+    };
+    const promptCard = {
+      contains: (el) => el === mockInput,
+      querySelectorAll: () => [mockInput],
+      onkeydown: null,
+    };
+    const promptDoc = {
+      activeElement: null,
+      getElementById: (id) =>
+        id === 'flux-confirm-modal-input'
+          ? mockInput
+          : id === 'flux-confirm-modal-card'
+            ? promptCard
+            : null,
+      querySelectorAll: () => [],
+    };
+    promptCtrl.bindDomEvents(promptDoc);
+    assert.equal(promptDoc.activeElement, mockInput, '带输入框的确认框打开时必须自动聚焦输入框');
+    assert.equal(selectedCount, 1);
+
+    let enterPrevented = false;
+    mockInput.onkeydown({
+      key: 'Enter',
+      isComposing: false,
+      keyCode: 13,
+      preventDefault: () => { enterPrevented = true; },
+      stopPropagation: () => {},
+    });
+    assert.equal(enterPrevented, true);
+    assert.deepEqual(submittedValues, ['新目录名']);
+    assert.equal(promptState.getState().confirmModal, undefined);
+
+    // 3. 右键菜单超出视口右下边缘时自动向内夹紧
+    const clampCtx = createMockDeps({});
+    const clampCtrl = createModalInteractionController(clampCtx.deps);
+    const clampMenuEl = {
+      style: { left: '950px', top: '760px' },
+      contains: () => false,
+      getBoundingClientRect: () => ({ width: 200, height: 180 }),
+      onkeydown: null,
+    };
+    const clampDoc = {
+      defaultView: { innerWidth: 1000, innerHeight: 800 },
+      activeElement: null,
+      getElementById: (id) => (id === 'session-context-menu' ? clampMenuEl : null),
+      querySelectorAll: () => [],
+    };
+    clampCtrl.bindDomEvents(clampDoc);
+    assert.equal(clampMenuEl.style.left, '792px');
+    assert.equal(clampMenuEl.style.top, '612px');
+  });
 });

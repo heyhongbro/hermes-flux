@@ -102,7 +102,7 @@ test('newChatModel 纯函数：默认 BOT、初始群成员、勾选去重、自
       selectedBot: 'default',
       selectedMembers: ['default', 'arch-wang', 'Default'],
       title: '  Default 助理 · 架构老王  ',
-      projectId: 'proj-should-be-omitted',
+      projectId: 'proj-group-1',
       firstMessage: '',
     }),
     {
@@ -112,7 +112,7 @@ test('newChatModel 纯函数：默认 BOT、初始群成员、勾选去重、自
         agent: 'default',
         members: ['default', 'arch-wang'],
         title: 'Default 助理 · 架构老王',
-        projectId: undefined,
+        projectId: 'proj-group-1',
         firstMessage: '',
       },
     },
@@ -341,4 +341,231 @@ test('newChatModel 交互纯函数：IME/Shift+Enter 防误触、项目有效性
   assert.equal(gate.isBusy(), true);
   assert.equal(gate.end(t2), true);
   assert.equal(gate.isBusy(), false);
+});
+
+test('NewChatDialog 1步项目选择：仅活跃项目可见、标签为「项目/默认」、无活跃项目自动隐藏', () => {
+  setLocale('zh-CN');
+  const onlyArchivedHtml = renderToStaticMarkup(
+    React.createElement(NewChatDialog, {
+      snapshot: {
+        isOpen: true,
+        initialMode: 'solo',
+        profiles: PROFILES,
+        projects: [{ id: 'arch-1', name: '已归档项目', path: '/old', archived: true }],
+        selectedProfile: 'default',
+        gatewayConnected: true,
+      },
+      actions: NOOP_ACTIONS,
+    }),
+  );
+  assert.equal(onlyArchivedHtml.includes('id="new-chat-project-select"'), false, '仅有 archived 项目时应隐藏项目下拉');
+
+  const mixedHtml = renderToStaticMarkup(
+    React.createElement(NewChatDialog, {
+      snapshot: {
+        isOpen: true,
+        initialMode: 'solo',
+        profiles: PROFILES,
+        projects: [
+          { id: 'p-live', name: 'FluxLive', path: '/work/flux', archived: false },
+          { id: 'p-arch', name: 'FluxOld', path: '/work/old', archived: true },
+        ],
+        selectedProfile: 'default',
+        gatewayConnected: true,
+      },
+      actions: NOOP_ACTIONS,
+    }),
+  );
+  assert.ok(mixedHtml.includes('id="new-chat-project-select"'));
+  assert.ok(mixedHtml.includes('项目'));
+  assert.ok(mixedHtml.includes('默认'));
+  assert.equal(mixedHtml.includes('FluxOld'), false, '已归档项目不得出现在新建选择器');
+  assert.equal(mixedHtml.includes('归属'), false);
+  assert.equal(mixedHtml.includes('走网关默认配置'), false);
+
+  const selectedProjHtml = renderToStaticMarkup(
+    React.createElement(NewChatDialog, {
+      snapshot: {
+        isOpen: true,
+        initialMode: 'solo',
+        profiles: PROFILES,
+        projects: [
+          { id: 'p-live', name: 'FluxLive', path: '/work/flux', archived: false },
+          { id: 'p-arch', name: 'FluxOld', path: '/work/old', archived: true },
+        ],
+        selectedProfile: 'default',
+        selectedProjectId: 'p-live',
+        gatewayConnected: true,
+      },
+      actions: NOOP_ACTIONS,
+    }),
+  );
+  assert.ok(selectedProjHtml.includes('FluxLive'));
+
+  const staleArchivedSelectionHtml = renderToStaticMarkup(
+    React.createElement(NewChatDialog, {
+      snapshot: {
+        isOpen: true,
+        initialMode: 'solo',
+        profiles: PROFILES,
+        projects: [
+          { id: 'p-live', name: 'FluxLive', path: '/work/flux', archived: false },
+          { id: 'p-arch', name: 'FluxOld', path: '/work/old', archived: true },
+        ],
+        selectedProfile: 'default',
+        selectedProjectId: 'p-arch',
+        gatewayConnected: true,
+      },
+      actions: NOOP_ACTIONS,
+    }),
+  );
+  assert.equal(staleArchivedSelectionHtml.includes('FluxOld'), false, '选中已归档项目必须自动回退为「默认」');
+  assert.ok(staleArchivedSelectionHtml.includes('默认'));
+
+  setLocale('en-US');
+  const enHtml = renderToStaticMarkup(
+    React.createElement(NewChatDialog, {
+      snapshot: {
+        isOpen: true,
+        initialMode: 'solo',
+        profiles: PROFILES,
+        projects: [{ id: 'p-live', name: 'FluxLive', path: '/work/flux' }],
+        selectedProfile: 'default',
+        gatewayConnected: true,
+      },
+      actions: NOOP_ACTIONS,
+    }),
+  );
+  assert.ok(enHtml.includes('Project'));
+  assert.ok(enHtml.includes('Default'));
+  setLocale('zh-CN');
+});
+
+test('NewChatDialog 清除自定义文件夹绑定：点击 X 后提交载荷显式传 containerId: "" 且不回退旧目录', async () => {
+  setLocale('zh-CN');
+  // 1. buildNewChatSubmitPayload 保留显式传入的空 containerId，省略未传键
+  const omittedOutcome = buildNewChatSubmitPayload({
+    mode: 'solo',
+    selectedBot: 'default',
+    selectedMembers: [],
+    projectId: '',
+  });
+  assert.equal(omittedOutcome.ok, true);
+  assert.equal('containerId' in omittedOutcome.payload, false);
+
+  const clearedOutcome = buildNewChatSubmitPayload({
+    mode: 'solo',
+    selectedBot: 'default',
+    selectedMembers: [],
+    projectId: '',
+    containerId: '',
+  });
+  assert.equal(clearedOutcome.ok, true);
+  assert.equal(clearedOutcome.payload.containerId, '', '显式清空时必须透传 containerId: ""');
+
+  // 2. 运行真实 NewChatDialog 状态机：点击「移出当前文件夹」X 后再选 Bot，onSubmit 收到 containerId: ""
+  const states = [];
+  const refs = [];
+  const memos = [];
+  let sIdx = 0;
+  let rIdx = 0;
+  let mIdx = 0;
+  const internals = React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+  const renderOnce = (elProps) => {
+    sIdx = 0;
+    rIdx = 0;
+    mIdx = 0;
+    const prevH = internals.H;
+    internals.H = {
+      useState(init) {
+        const idx = sIdx++;
+        if (idx >= states.length) states.push(typeof init === 'function' ? init() : init);
+        return [
+          states[idx],
+          (next) => {
+            states[idx] = typeof next === 'function' ? next(states[idx]) : next;
+          },
+        ];
+      },
+      useRef(init) {
+        const idx = rIdx++;
+        if (idx >= refs.length) refs.push({ current: init });
+        return refs[idx];
+      },
+      useMemo(factory, deps) {
+        const idx = mIdx++;
+        if (idx >= memos.length) memos.push({ val: factory(), deps });
+        else if (
+          !deps ||
+          !memos[idx].deps ||
+          deps.length !== memos[idx].deps.length ||
+          deps.some((d, i) => !Object.is(d, memos[idx].deps[i]))
+        ) {
+          memos[idx] = { val: factory(), deps };
+        }
+        return memos[idx].val;
+      },
+      useCallback(fn) {
+        return fn;
+      },
+      useEffect() {},
+      useLayoutEffect() {},
+    };
+    try {
+      let node = NewChatDialog(elProps);
+      if (node && typeof node.type === 'function') {
+        node = node.type(node.props);
+      }
+      return node;
+    } finally {
+      internals.H = prevH;
+    }
+  };
+  const collectElements = (node, pred, out = []) => {
+    if (!node || typeof node !== 'object') return out;
+    if (Array.isArray(node)) {
+      for (const child of node) collectElements(child, pred, out);
+      return out;
+    }
+    if (pred(node)) out.push(node);
+    if (node.props?.children) collectElements(node.props.children, pred, out);
+    return out;
+  };
+
+  const submitted = [];
+  const dialogProps = {
+    snapshot: {
+      isOpen: true,
+      initialMode: 'solo',
+      profiles: PROFILES,
+      projects: [],
+      folders: [{ id: 'fld-1', name: '紧急修复', order: 0 }],
+      selectedProfile: 'default',
+      selectedContainerId: 'fld-1',
+      gatewayConnected: true,
+    },
+    actions: {
+      onClose: () => {},
+      onModeChange: () => {},
+      onSubmit: async (payload) => {
+        submitted.push(payload);
+        return { ok: true };
+      },
+    },
+  };
+
+  let tree = renderOnce(dialogProps);
+  const clearBtn = collectElements(tree, (n) => n.props?.['aria-label'] === '移出当前文件夹')[0];
+  assert.ok(clearBtn, '必须渲染带移出文件夹无障碍标签的清除按钮');
+  assert.ok(String(clearBtn.props.className).includes('size-7'));
+  assert.ok(String(clearBtn.props.className).includes('rounded-card'));
+
+  clearBtn.props.onClick();
+  tree = renderOnce(dialogProps);
+  assert.equal(collectElements(tree, (n) => n.props?.['aria-label'] === '移出当前文件夹').length, 0);
+  const botBtn = collectElements(tree, (n) => n.props?.['data-new-chat-bot'] === 'default')[0];
+  assert.ok(botBtn);
+  await botBtn.props.onClick();
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].containerId, '', '解绑后提交必须显式携带 containerId: ""');
 });

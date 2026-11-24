@@ -36,9 +36,16 @@ export interface ProjectRawRecord {
   projectId?: string;
   name?: string;
   slug?: string;
+  board_slug?: string;
+  boardSlug?: string;
   primary_path?: string;
   primaryPath?: string;
   path?: string;
+  additional_folders?: string[];
+  additionalFolders?: string[];
+  icon?: string;
+  color?: string;
+  archived?: boolean;
 }
 
 export interface ProjectsListResponse {
@@ -58,6 +65,12 @@ export interface ProjectOperationDeps {
 
 export interface ProjectOperationService {
   fetchProjects(): Promise<void>;
+  createProject(params: { name: string; path: string }): Promise<{ ok: boolean; message?: string }>;
+  updateProject(
+    projectId: string,
+    patch: { name?: string; path?: string; boardSlug?: string },
+  ): Promise<{ ok: boolean; message?: string }>;
+  deleteProject(projectId: string): Promise<{ ok: boolean; message?: string }>;
   syncProfileLastMessages(): void;
   getProjectService(): ProjectService;
 }
@@ -82,6 +95,10 @@ export function createProjectOperationService(deps: ProjectOperationDeps): Proje
     const client = deps.getGatewayClient();
     if (!client) return;
     const state = deps.getState();
+    if (!state.settingsProjects || state.settingsProjects.status === 'idle') {
+      state.settingsProjects = { status: 'loading' };
+      deps.render();
+    }
     try {
       let authoritative = false;
       let summaries: ProjectSummary[] = [];
@@ -90,45 +107,145 @@ export function createProjectOperationService(deps: ProjectOperationDeps): Proje
         summaries = await projectService.listProjects(client, true);
         authoritative = true;
       } catch {
-        // 容错兜底：若 Service 解析失败，尝试无参 raw 契约解析
+        // 容错兜底：若 Service 解析失败，尝试无参 raw 契约解析；结构非法时仍抛错触发 Failure Is Not Empty
         const rawRes = await client.call<ProjectsListResponse>('projects.list', {});
-        authoritative = true;
         const rawList = Array.isArray(rawRes?.projects)
           ? rawRes.projects
           : Array.isArray(rawRes?.data)
           ? rawRes.data
-          : [];
-        summaries = rawList.map((p) => ({
-          projectId: String(p.id || p.projectId || ''),
-          name: String(p.name || p.id || 'Project'),
-          slug: String(p.slug || p.name || p.id || 'project'),
-          primaryPath: String(p.primary_path || p.primaryPath || p.path || ''),
-          additionalFolders: [],
-          isActive: false,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        }));
+          : null;
+        if (!rawList) {
+          throw new Error('Malformed projects.list response: expected projects array');
+        }
+        authoritative = true;
+        summaries = rawList.map((p) => {
+          const boardSlug = p.boardSlug ?? p.board_slug;
+          const additionalFolders = Array.isArray(p.additionalFolders)
+            ? p.additionalFolders
+            : Array.isArray(p.additional_folders)
+              ? p.additional_folders
+              : [];
+          return {
+            projectId: String(p.id || p.projectId || ''),
+            name: String(p.name || p.id || 'Project'),
+            slug: String(p.slug || p.name || p.id || 'project'),
+            primaryPath: String(p.primary_path || p.primaryPath || p.path || ''),
+            additionalFolders,
+            ...(typeof boardSlug === 'string' && boardSlug ? { boardSlug } : {}),
+            ...(typeof p.icon === 'string' && p.icon ? { icon: p.icon } : {}),
+            ...(typeof p.color === 'string' && p.color ? { color: p.color } : {}),
+            isActive: false,
+            archived: Boolean(p.archived),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+        });
       }
 
       if (authoritative) {
-        state.projects = summaries.map((s) => ({
-          id: s.projectId,
-          name: s.name,
-          path: s.primaryPath,
-        }));
+        const activeProjects = summaries
+          .filter((s) => !s.archived && Boolean(s.projectId))
+          .map((s) => ({
+            id: s.projectId,
+            name: s.name,
+            path: s.primaryPath,
+            ...(s.additionalFolders.length > 0 ? { additionalFolders: s.additionalFolders } : {}),
+            ...(s.boardSlug ? { boardSlug: s.boardSlug } : {}),
+            ...(s.icon ? { icon: s.icon } : {}),
+            ...(s.color ? { color: s.color } : {}),
+            archived: false,
+          }));
+        state.projects = activeProjects;
+        state.settingsProjects = {
+          status: 'ready',
+          data: activeProjects.map((p) => ({
+            id: p.id,
+            name: p.name,
+            path: p.path || '',
+            ...(p.additionalFolders ? { additionalFolders: p.additionalFolders } : {}),
+            ...(p.boardSlug ? { boardSlug: p.boardSlug } : {}),
+            ...(p.icon ? { icon: p.icon } : {}),
+            ...(p.color ? { color: p.color } : {}),
+            archived: false,
+          })),
+        };
       }
 
       deps.render();
     } catch (e) {
       // Failure Is Not Empty: 网络或网关故障时绝不可将 state.projects 抹杀为空数组伪装成没有项目
       console.warn('[Flux] fetchProjects failed:', e);
-      // 保留上一次已拉取到的项目列表或提示错误，严禁静默覆盖为权威空
+      if (state.settingsProjects?.status !== 'ready') {
+        state.settingsProjects = {
+          status: 'error',
+          message: e instanceof Error ? e.message : String(e),
+        };
+      }
       deps.render();
+    }
+  }
+
+  async function createProject(params: { name: string; path: string }): Promise<{ ok: boolean; message?: string }> {
+    const client = deps.getGatewayClient();
+    if (!client) {
+      return { ok: false, message: 'Gateway not connected' };
+    }
+    try {
+      await projectService.createProject(
+        { name: params.name.trim(), path: params.path.trim() },
+        client,
+        'default',
+      );
+      await fetchProjects();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async function updateProject(
+    projectId: string,
+    patch: { name?: string; path?: string; boardSlug?: string },
+  ): Promise<{ ok: boolean; message?: string }> {
+    const client = deps.getGatewayClient();
+    if (!client) {
+      return { ok: false, message: 'Gateway not connected' };
+    }
+    try {
+      await projectService.updateProject(
+        projectId,
+        {
+          ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
+          ...(patch.boardSlug !== undefined ? { board_slug: patch.boardSlug } : {}),
+        },
+        client,
+      );
+      await fetchProjects();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  async function deleteProject(projectId: string): Promise<{ ok: boolean; message?: string }> {
+    const client = deps.getGatewayClient();
+    if (!client) {
+      return { ok: false, message: 'Gateway not connected' };
+    }
+    try {
+      await projectService.deleteProject(projectId, client, 'default');
+      await fetchProjects();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
     }
   }
 
   return {
     fetchProjects,
+    createProject,
+    updateProject,
+    deleteProject,
     syncProfileLastMessages,
     getProjectService: () => projectService,
   };

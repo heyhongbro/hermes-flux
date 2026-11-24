@@ -31,6 +31,14 @@ export interface HermesDesktopBridge extends IPlatformBridge {
   proxyWebSocketUrl?: (wsUrl: string) => string;
   openFileDialog: () => Promise<string[] | null>;
   listDirectory: (dirPath?: string) => Promise<WorkspaceDirEntry[] | null>;
+  createDirectory: (
+    parentDir: string,
+    folderName: string,
+  ) => Promise<{ ok: boolean; path?: string; error?: string }>;
+  renameDirectory: (
+    dirPath: string,
+    newName: string,
+  ) => Promise<{ ok: boolean; path?: string; error?: string }>;
   readFile: (path: string) => Promise<string | null>;
   saveFile: (options: {
     fileName: string;
@@ -97,6 +105,10 @@ const bridge: HermesDesktopBridge = {
   openExternal: (url: string, content?: string) => ipcRenderer.invoke('shell:open-external', url, content),
   openFileDialog: () => ipcRenderer.invoke('dialog:open-file'),
   listDirectory: (dirPath?: string) => ipcRenderer.invoke('fs:list-directory', dirPath),
+  createDirectory: (parentDir: string, folderName: string) =>
+    ipcRenderer.invoke('fs:create-directory', parentDir, folderName),
+  renameDirectory: (dirPath: string, newName: string) =>
+    ipcRenderer.invoke('fs:rename-directory', dirPath, newName),
   readFile: (filePath: string) => ipcRenderer.invoke('fs:read-file', filePath),
   saveFile: (options) => ipcRenderer.invoke('fs:save-file', options),
   clipboardWrite: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),

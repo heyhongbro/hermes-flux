@@ -44,6 +44,7 @@ import {
   reconcileSessionList,
   preserveRunningActivity,
   SessionListGeneration,
+  normalizeOrgProfileName,
 } from '@hermes-flux/core';
 import { safeSetItem, type I18nKey, type MessageViewModel, type StorageWriteFailure } from '@hermes-flux/ui';
 import { planRollbackLeaveRestore } from '../rollbackTransaction.js';
@@ -67,6 +68,22 @@ export function describeRpcError(error: unknown): string {
 export function isExtraInputsError(error: unknown): boolean {
   const msg = describeRpcError(error);
   return msg.includes('Extra inputs');
+}
+
+function sessionCompositeKey(session: { id: string; botName?: string }): string {
+  return `${normalizeOrgProfileName(session.botName)}::${session.id}`;
+}
+
+function upsertSessionByCompositeKey(
+  list: NormalizedSession[],
+  session: NormalizedSession,
+): NormalizedSession[] {
+  const key = sessionCompositeKey(session);
+  const index = list.findIndex((item) => sessionCompositeKey(item) === key);
+  if (index === -1) return [session, ...list];
+  const next = list.slice();
+  next[index] = { ...next[index], ...session };
+  return next;
 }
 
 export type SessionAnchorCapturer = () => unknown;
@@ -130,7 +147,12 @@ export interface SessionOperationDeps {
     info?: Record<string, unknown> | null,
     profile?: string,
   ) => void;
-  readonly onSessionDeleted?: (storedSessionId: string) => void;
+  readonly onSessionCreatedInContainer?: (
+    profile: string,
+    storedSessionId: string,
+    containerId: string,
+  ) => Promise<void> | void;
+  readonly onSessionDeleted?: (storedSessionId: string, profile?: string) => void;
 
   // 可选 DOM/环境抽象（便于脱离 DOM 纯逻辑单测）
   readonly getPromptInputValue?: () => string;
@@ -176,7 +198,12 @@ export class SessionOperationService {
   }
 
   /** 创建新会话，成功返回持久化会话 ID，失败或未连接返回 null */
-  async createNewSession(options?: { profile?: string; projectId?: string; title?: string }): Promise<string | null> {
+  async createNewSession(options?: {
+    profile?: string;
+    projectId?: string;
+    containerId?: string;
+    title?: string;
+  }): Promise<string | null> {
     const gatewayClient = this.deps.getGatewayClient();
     const state = this.deps.getState();
 
@@ -189,10 +216,11 @@ export class SessionOperationService {
     const targetProfile = options?.profile || state.profileName || 'default';
     const targetTitle = options?.title || this.deps.t('chat.defaultTaskTitle');
     const targetProjectId = options?.projectId;
+    const targetContainerId = options?.containerId;
 
     let targetCwd: string | undefined;
     if (targetProjectId) {
-      const proj = state.projects.find((p) => p.id === targetProjectId);
+      const proj = state.projects.find((p) => p.id === targetProjectId && !p.archived);
       if (proj?.path) targetCwd = proj.path;
     }
 
@@ -203,20 +231,38 @@ export class SessionOperationService {
     }
 
     try {
+      // 【网关契约约束】session.create 不接受 project_id；选定项目时传 cwd + cwd_explicit:true，默认则两者省略
       const createPayload: Record<string, unknown> = {
         title: targetTitle,
         profile: targetProfile,
       };
-      if (targetProjectId) createPayload.project_id = targetProjectId;
-      if (targetCwd) createPayload.cwd = targetCwd;
+      if (targetCwd) {
+        createPayload.cwd = targetCwd;
+        createPayload.cwd_explicit = true;
+      }
 
       let res: Record<string, unknown> | null = null;
       try {
         res = await gatewayClient.call<Record<string, unknown>>('session.create', createPayload);
       } catch (firstErr) {
         if (isExtraInputsError(firstErr)) {
-          console.warn('[Flux] Gateway rejected extra params on session.create, retrying minimal');
-          res = await gatewayClient.call<Record<string, unknown>>('session.create', { title: targetTitle, profile: targetProfile });
+          console.warn('[Flux] Gateway rejected extra params on session.create, retrying compatible payload');
+          try {
+            res = await gatewayClient.call<Record<string, unknown>>('session.create', {
+              title: targetTitle,
+              profile: targetProfile,
+              ...(targetCwd ? { cwd: targetCwd } : {}),
+            });
+          } catch (secondErr) {
+            if (isExtraInputsError(secondErr)) {
+              res = await gatewayClient.call<Record<string, unknown>>('session.create', {
+                title: targetTitle,
+                profile: targetProfile,
+              });
+            } else {
+              throw secondErr;
+            }
+          }
         } else {
           throw firstErr;
         }
@@ -268,6 +314,9 @@ export class SessionOperationService {
           : null;
       this.deps.onSessionActivated?.(handles.storedId, targetProfile);
       this.deps.onLiveSessionReady?.(handles.storedId, handles.liveId, rawInfo, targetProfile);
+      if (targetContainerId) {
+        void this.deps.onSessionCreatedInContainer?.(targetProfile, handles.storedId, targetContainerId);
+      }
 
       this.deps.render();
 
@@ -296,7 +345,9 @@ export class SessionOperationService {
 
     this.deps.sessionListGeneration.invalidateForDelete();
 
-    const targetSession = state.sessions.find((s) => s.id === id);
+    const targetSession =
+      state.sessions.find((s) => s.id === id) ||
+      (state.archivedSessions || []).find((s) => s.id === id);
     const targetProfiles = new Set<string>();
     if (targetSession?.botName) targetProfiles.add(targetSession.botName);
     if (state.profileName) targetProfiles.add(state.profileName);
@@ -332,6 +383,7 @@ export class SessionOperationService {
       if (outcome.status === 'failed') throw new Error(`Delete failed for profiles: ${outcome.failedProfiles.join(', ')}`);
 
       state.sessions = state.sessions.filter((s) => !outcome.pruneIds.includes(s.id));
+      state.archivedSessions = (state.archivedSessions || []).filter((s) => !outcome.pruneIds.includes(s.id));
       state.pendingSessionIds = state.pendingSessionIds.filter((pid) => pid !== id);
       this.deps.sessionMessagesCache.delete(id);
       this.deps.forgetOlderCursorState(id);
@@ -340,7 +392,7 @@ export class SessionOperationService {
       this.deps.activeRunningSessionIds.delete(id);
       this.deps.activityTransitionTracker.clear('session', id);
       this.deps.sessionHandleRegistry.unregister(id);
-      this.deps.onSessionDeleted?.(id);
+      this.deps.onSessionDeleted?.(id, targetSession?.botName);
 
       // 持久化缓存清理：清空该会话在 IndexedDB 中的消息通道并持久化最新索引
       const deleteCacheRef: CacheChannelRef = {
@@ -378,6 +430,7 @@ export class SessionOperationService {
       const msg = describeRpcError(e);
       if (rpcErrorCode(e) === RpcErrorCode.SessionMissing) {
         state.sessions = state.sessions.filter((s) => s.id !== id);
+        state.archivedSessions = (state.archivedSessions || []).filter((s) => s.id !== id);
         state.pendingSessionIds = state.pendingSessionIds.filter((pid) => pid !== id);
         this.deps.sessionMessagesCache.delete(id);
         this.deps.forgetOlderCursorState(id);
@@ -386,7 +439,7 @@ export class SessionOperationService {
         this.deps.activeRunningSessionIds.delete(id);
         this.deps.activityTransitionTracker.clear('session', id);
         this.deps.sessionHandleRegistry.unregister(id);
-        this.deps.onSessionDeleted?.(id);
+        this.deps.onSessionDeleted?.(id, targetSession?.botName);
         if (this.deps.getActiveStreamingStoredSessionId() === id) {
           this.deps.resetActiveStreamingState();
         }
@@ -432,10 +485,16 @@ export class SessionOperationService {
         await gatewayClient.call('session.title', { session_id: id, title: trimmed });
       }
       state.sessions = state.sessions.map((s) => (s.id === id ? { ...s, title: trimmed } : s));
+      state.archivedSessions = (state.archivedSessions || []).map((s) =>
+        s.id === id ? { ...s, title: trimmed } : s,
+      );
       this.deps.render();
     } catch {
       // Optimistically update locally even if server returns error
       state.sessions = state.sessions.map((s) => (s.id === id ? { ...s, title: trimmed } : s));
+      state.archivedSessions = (state.archivedSessions || []).map((s) =>
+        s.id === id ? { ...s, title: trimmed } : s,
+      );
       this.deps.render();
     }
   }
@@ -500,20 +559,169 @@ export class SessionOperationService {
     }
   }
 
-  /** 归档或取消归档会话 */
-  async archiveSession(id: string): Promise<void> {
+  /** 显式设置会话「已完成（归档）/ 进行中（恢复）」；Bot 主工位免疫，RPC 失败绝不伪造本地状态 */
+  async setSessionArchived(id: string, archived: boolean, explicitProfile?: string): Promise<boolean> {
     const gatewayClient = this.deps.getGatewayClient();
     const state = this.deps.getState();
+    const normalizedExplicit = explicitProfile ? normalizeOrgProfileName(explicitProfile) : null;
+    const matchesTarget = (s: NormalizedSession): boolean =>
+      s.id === id && (!normalizedExplicit || normalizeOrgProfileName(s.botName) === normalizedExplicit);
+    const target =
+      state.sessions.find(matchesTarget) ||
+      (state.archivedSessions || []).find(matchesTarget);
+    if (!target || target.hidden) return false;
+    if (!gatewayClient) {
+      this.deps.showToast(this.deps.t('rail.orgSyncFailed', { detail: 'Gateway not connected' }));
+      return false;
+    }
+
+    const profile = target.botName || explicitProfile || 'default';
     try {
-      if (gatewayClient) {
-        await gatewayClient.call('session.archive', { session_id: id });
+      try {
+        await gatewayClient.call('session.archive', { session_id: id, archived, profile });
+      } catch (firstErr) {
+        if (isExtraInputsError(firstErr)) {
+          await gatewayClient.call('session.archive', { session_id: id, archived });
+        } else {
+          throw firstErr;
+        }
       }
     } catch (archiveErr) {
-      // gate-degrade: 归档为乐观更新，RPC 失败时仍按用户意图切换本地状态，但必须留下证据
-      console.warn('[Flux] session.archive failed, applying optimistic local toggle:', archiveErr);
+      this.deps.showToast(this.deps.t('rail.orgSyncFailed', { detail: describeRpcError(archiveErr) }));
+      this.deps.render();
+      return false;
     }
-    state.sessions = state.sessions.map((s) => (s.id === id ? { ...s, isArchived: !s.isArchived } : s));
-    state.dockNotice = 'Session archive status updated';
+
+    const targetKey = sessionCompositeKey({ id, botName: target.botName || explicitProfile });
+    const updated: NormalizedSession = { ...target, isArchived: archived };
+    if (archived) {
+      state.sessions = state.sessions.filter((s) => sessionCompositeKey(s) !== targetKey);
+      state.archivedSessions = upsertSessionByCompositeKey(state.archivedSessions || [], updated);
+    } else {
+      state.archivedSessions = (state.archivedSessions || []).filter((s) => sessionCompositeKey(s) !== targetKey);
+      state.sessions = upsertSessionByCompositeKey(state.sessions, updated);
+    }
+    this.deps.persistSessionsToCache(state.sessions);
+    this.deps.render();
+    return true;
+  }
+
+  /** 归档或恢复会话 */
+  async archiveSession(id: string, explicitProfile?: string): Promise<void> {
+    const state = this.deps.getState();
+    const normalizedExplicit = explicitProfile ? normalizeOrgProfileName(explicitProfile) : null;
+    const matchesTarget = (s: NormalizedSession): boolean =>
+      s.id === id && (!normalizedExplicit || normalizeOrgProfileName(s.botName) === normalizedExplicit);
+    const isCurrentlyArchived =
+      (state.archivedSessions || []).some(matchesTarget) ||
+      state.sessions.some((s) => matchesTarget(s) && Boolean(s.isArchived));
+    await this.setSessionArchived(id, !isCurrentlyArchived, explicitProfile);
+  }
+
+  /** 拉取跨 Profile 已归档（已完成）会话列表，独立保存在 archivedSessions 中避免与活跃列表重调互相冲刷 */
+  async fetchArchivedSessions(_options?: { force?: boolean }): Promise<void> {
+    const client = this.deps.getGatewayClient();
+    if (!client) return;
+    const state = this.deps.getState();
+
+    state.doneLoading = true;
+    state.doneError = '';
+    this.deps.render();
+
+    const targetProfiles = new Set<string>(['default']);
+    if (state.profileName) targetProfiles.add(state.profileName);
+    for (const p of state.profiles) {
+      if (p.name) targetProfiles.add(p.name);
+    }
+    const targetProfileList = Array.from(targetProfiles);
+    const profileMap = new Map<string, AgentProfile>();
+    for (const p of state.profiles) profileMap.set(p.name, p);
+
+    const results = await Promise.allSettled(
+      targetProfileList.map(async (profName) => {
+        const outcome = await client.listArchivedSessions(profName, 100);
+        if (!outcome.ok || !outcome.sessions) {
+          return { ok: false, profile: profName, error: outcome.error ?? 'unknown error', sessions: [] as NormalizedSession[] };
+        }
+        const prof = profileMap.get(profName);
+        const mapped = outcome.sessions.map((s) => {
+          const botName = s.botName || profName;
+          const matchingProfile = profileMap.get(botName) || prof;
+          const timeWithDate = (this.deps.formatSessionTime ? this.deps.formatSessionTime(s.timestamp) : '') || s.time;
+          const resolvedAvatar =
+            matchingProfile?.avatar ||
+            (this.deps.resolveAgentAvatar ? this.deps.resolveAgentAvatar(botName) || this.deps.resolveAgentAvatar(profName) : '') ||
+            '';
+          return {
+            ...s,
+            isArchived: true,
+            time: timeWithDate,
+            botName,
+            botDisplayName: matchingProfile?.displayName || botName,
+            botAvatar: resolvedAvatar,
+          };
+        });
+        return { ok: true, profile: profName, error: '', sessions: mapped };
+      }),
+    );
+
+    const settled = results.map((r, idx) =>
+      r.status === 'fulfilled'
+        ? r.value
+        : {
+            ok: false,
+            profile: targetProfileList[idx] ?? 'unknown',
+            error: String(r.reason),
+            sessions: [] as NormalizedSession[],
+          },
+    );
+    const allOk = settled.every((r) => r.ok);
+    const anyOk = settled.some((r) => r.ok);
+    const activeKeys = new Set(state.sessions.filter((s) => !s.isArchived).map((s) => sessionCompositeKey(s)));
+
+    if (anyOk) {
+      const succeededProfiles = new Set(
+        settled.filter((r) => r.ok).map((r) => normalizeOrgProfileName(r.profile)),
+      );
+      const deduped = new Map<string, NormalizedSession>();
+      if (!allOk) {
+        // 部分 Profile 失败时保留失败 Profile 既有缓存，且绝不标记 doneSessionsLoaded = true（防止误触发 pruneStale）
+        for (const prevItem of state.archivedSessions || []) {
+          if (prevItem.hidden || prevItem.isSubagent) continue;
+          const key = sessionCompositeKey(prevItem);
+          if (activeKeys.has(key)) continue;
+          if (!succeededProfiles.has(normalizeOrgProfileName(prevItem.botName))) {
+            deduped.set(key, prevItem);
+          }
+        }
+      }
+      for (const batch of settled) {
+        if (!batch.ok) continue;
+        for (const item of batch.sessions) {
+          const key = sessionCompositeKey(item);
+          if (item.hidden || item.isSubagent || activeKeys.has(key)) continue;
+          const prev = deduped.get(key);
+          if (!prev || (item.timestamp || 0) >= (prev.timestamp || 0)) {
+            deduped.set(key, item);
+          }
+        }
+      }
+      state.archivedSessions = Array.from(deduped.values()).sort(
+        (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
+      );
+      if (allOk) {
+        state.doneSessionsLoaded = true;
+        state.doneError = '';
+      } else {
+        state.doneSessionsLoaded = false;
+        state.doneError = settled.find((r) => !r.ok)?.error || this.deps.t('rail.errorSub');
+      }
+    } else {
+      state.doneSessionsLoaded = false;
+      state.doneError = settled.find((r) => !r.ok)?.error || this.deps.t('rail.errorSub');
+    }
+
+    state.doneLoading = false;
     this.deps.render();
   }
 
@@ -521,14 +729,26 @@ export class SessionOperationService {
   async selectSession(id: string, options?: { preserveFocus?: boolean; botName?: string }): Promise<void> {
     if (!id) return;
     const state = this.deps.getState();
-    if (state.activeSessionId === id && state.activeLiveSessionId && state.messages.length > 0) return;
+    const normalizedOptBot = options?.botName ? normalizeOrgProfileName(options.botName) : null;
+    const switchingProfile = Boolean(
+      normalizedOptBot && normalizedOptBot !== normalizeOrgProfileName(state.profileName),
+    );
+    if (
+      state.activeSessionId === id &&
+      !switchingProfile &&
+      state.activeLiveSessionId &&
+      state.messages.length > 0
+    ) {
+      return;
+    }
 
     // Preserve draft & message snapshot for outgoing session
     const currentInputVal = this.getInputValue();
-    if (state.activeSessionId && state.activeSessionId !== id) {
+    const isDifferentId = Boolean(state.activeSessionId && state.activeSessionId !== id);
+    if (isDifferentId || (state.activeSessionId && switchingProfile)) {
       this.deps.cancelSmoothScrollOnLeave?.();
       this.deps.captureStreamAnchor?.();
-      if (currentInputVal !== undefined) {
+      if (isDifferentId && currentInputVal !== undefined) {
         if (!isCorruptedSystemErrorDraft(currentInputVal)) {
           this.deps.sessionDrafts.set(state.activeSessionId, currentInputVal);
         } else {
@@ -544,7 +764,7 @@ export class SessionOperationService {
 
       if (state.rollbackArmed && state.rollbackArmed.sessionId === state.activeSessionId) {
         this.disarmRollbackOnLeave();
-      } else if (state.messages.length > 0) {
+      } else if (isDifferentId && state.messages.length > 0) {
         this.deps.sessionMessagesCache.set(state.activeSessionId, [...state.messages]);
       }
     }
@@ -567,7 +787,13 @@ export class SessionOperationService {
     // Sync isStreaming with the target session
     state.isStreaming = this.deps.getActiveStreamingStoredSessionId() === id;
 
-    const targetSession = state.sessions.find((s) => s.id === id);
+    const matchTarget = (s: NormalizedSession): boolean =>
+      s.id === id && (!normalizedOptBot || normalizeOrgProfileName(s.botName) === normalizedOptBot);
+    const targetSession =
+      state.sessions.find(matchTarget) ||
+      (state.archivedSessions || []).find(matchTarget) ||
+      state.sessions.find((s) => s.id === id) ||
+      (state.archivedSessions || []).find((s) => s.id === id);
     const targetBotName = options?.botName || targetSession?.botName;
     if (targetBotName && targetBotName !== state.profileName) {
       state.profileName = targetBotName;
@@ -579,7 +805,12 @@ export class SessionOperationService {
     await this.deps.loadMessages(id, targetBotName);
 
     // 【竞态守卫 (Rules)】等待历史期间用户可能已经切走：迟到的会话绝对不得把草稿与焦点写进新会话的输入框。
-    if (state.activeSessionId !== id) return;
+    if (
+      state.activeSessionId !== id ||
+      (normalizedOptBot && normalizeOrgProfileName(state.profileName) !== normalizedOptBot)
+    ) {
+      return;
+    }
 
     // 【流式切回工具补刷 (Why)】流式态的 ToolSection 渲染空壳把 DOM 所有权交给 toolPatchQueue；
     // 若用户切离后再切回仍在流式运行的会话，需要补排一次 toolPatch，把已存在的 toolCalls 刷进新挂载的空壳。
@@ -947,6 +1178,14 @@ export class SessionOperationService {
       profileName: state.profileName,
     });
     state.sessions = reconciled.sessions;
+    const liveActiveKeys = new Set(
+      reconciled.sessions.filter((s) => !s.isArchived).map((s) => sessionCompositeKey(s)),
+    );
+    if (liveActiveKeys.size > 0 && (state.archivedSessions || []).length > 0) {
+      state.archivedSessions = (state.archivedSessions || []).filter(
+        (s) => !liveActiveKeys.has(sessionCompositeKey(s)),
+      );
+    }
     state.pendingSessionIds = reconciled.pendingIds;
     state.sessionsPhase = 'ready';
     if (authoritative) this.deps.persistSessionsToCache(reconciled.sessions);

@@ -126,7 +126,7 @@ export function normalizeSessionsResult(payload: unknown): Array<{
         model,
         time: timeStr,
         preview: String(s.preview || ''),
-        isArchived: Boolean(s.archived || s.isArchived),
+        isArchived: Boolean(s.archived || s.is_archived || s.isArchived),
         timestamp: numTs,
         timeSource,
         hidden: Boolean(s.hidden || s.isHidden),

@@ -30,7 +30,18 @@ import { Input } from './primitives/Input.js';
 import { Skeleton } from './primitives/Skeleton.js';
 import { Tooltip } from './primitives/Tooltip.js';
 import { ActivityIndicator } from './primitives/ActivityIndicator.js';
-import { Avatar, CollageAvatar, RailEntityRow, RenameGroup } from './RailEntityRow.js';
+import {
+  Avatar,
+  CollageAvatar,
+  RailEntityRow,
+  RenameGroup,
+  type RailRowHoverAction,
+} from './RailEntityRow.js';
+import {
+  RailDoneFooterSection,
+  RailOrgContainerSection,
+  buildDoneHoverAction,
+} from './RailOrgContainers.js';
 import { toSnippet, type LeftRailProfile } from './leftRailModel.js';
 import type { LeftRailProps } from './LeftRail.js';
 import type { GroupedLeftRailModel } from './groupedLeftRailModel.js';
@@ -139,6 +150,7 @@ const GroupedBotRow = React.memo(function GroupedBotRow({
       onClick={onSelect}
       onContextMenu={(event) => {
         event.preventDefault();
+        event.stopPropagation();
         onMenu(event.clientX, event.clientY);
       }}
       dataAttributes={{
@@ -153,6 +165,8 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
   profiles,
   editing,
   activityVariant,
+  hoverAction,
+  className,
   onSelect,
   onMenu,
   onConfirmRename,
@@ -162,6 +176,8 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
   profiles: LeftRailProfile[];
   editing: boolean;
   activityVariant?: ActivityIndicatorVariant;
+  hoverAction?: RailRowHoverAction;
+  className?: string;
   onSelect: () => void;
   onMenu: (x: number, y: number) => void;
   onConfirmRename: (name: string) => void;
@@ -184,7 +200,7 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
   }
   return (
     <RailEntityRow
-      className="rail-group-item"
+      className={className ? `rail-group-item ${className}` : 'rail-group-item'}
       active={row.isActive}
       avatar={<CollageAvatar members={row.members} profiles={profiles} size={36} />}
       title={row.title}
@@ -196,9 +212,11 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
       activityTransitionToken={row.activityTransitionToken}
       entityKind="group"
       activityVariant={activityVariant}
+      hoverAction={hoverAction}
       onClick={onSelect}
       onContextMenu={(event) => {
         event.preventDefault();
+        event.stopPropagation();
         onMenu(event.clientX, event.clientY);
       }}
       dataAttributes={{
@@ -210,22 +228,28 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
   prev.row === next.row &&
   prev.profiles === next.profiles &&
   prev.editing === next.editing &&
-  prev.activityVariant === next.activityVariant);
+  prev.activityVariant === next.activityVariant &&
+  prev.hoverAction?.label === next.hoverAction?.label &&
+  prev.className === next.className);
 
 const GroupedSessionRow = React.memo(function GroupedSessionRow({
   row,
   activityVariant,
+  hoverAction,
+  className,
   onSelect,
   onMenu,
 }: {
   row: MobileSessionRowVM;
   activityVariant?: ActivityIndicatorVariant;
+  hoverAction?: RailRowHoverAction;
+  className?: string;
   onSelect: () => void;
   onMenu: (x: number, y: number) => void;
 }): React.ReactElement {
   return (
     <RailEntityRow
-      className="session-item"
+      className={className ? `session-item ${className}` : 'session-item'}
       active={row.isActive}
       avatar={
         <Avatar
@@ -247,9 +271,11 @@ const GroupedSessionRow = React.memo(function GroupedSessionRow({
       activityTransitionToken={row.activityTransitionToken}
       entityKind="session"
       activityVariant={activityVariant}
+      hoverAction={hoverAction}
       onClick={onSelect}
       onContextMenu={(event) => {
         event.preventDefault();
+        event.stopPropagation();
         onMenu(event.clientX, event.clientY);
       }}
       dataAttributes={{
@@ -259,18 +285,83 @@ const GroupedSessionRow = React.memo(function GroupedSessionRow({
       }}
     />
   );
-}, (prev, next) => prev.row === next.row && prev.activityVariant === next.activityVariant);
+}, (prev, next) =>
+  prev.row === next.row &&
+  prev.activityVariant === next.activityVariant &&
+  prev.hoverAction?.label === next.hoverAction?.label &&
+  prev.className === next.className);
 
 /**
  * 桌面端单栏分组左侧栏（BOT → 群聊 → 普通会话）。
  */
 export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement {
   const { groupedModel } = props;
-  const { botsSection, groupsSection, sessionsSection } = groupedModel;
+  const {
+    botsSection,
+    projectSections,
+    folderSections,
+    groupsSection,
+    sessionsSection,
+    doneSection,
+    showDoneSection,
+  } = groupedModel;
   const profilesLoading = groupedModel.profilesPhase === 'loading';
   const sessionsLoading = groupedModel.sessionsPhase === 'loading';
   const drawerPresence = useMotionPresence(!props.collapsed);
   const railWidth = props.collapsed ? '0px' : 'var(--rail-w-left, 264px)';
+
+  const renderMixedEntry = (
+    item: MobileGroupRowVM | MobileSessionRowVM,
+    isDoneRow: boolean,
+  ): React.ReactElement => {
+    const rowClass = isDoneRow ? 'opacity-75' : undefined;
+    if (item.kind === 'group') {
+      return (
+        <GroupedGroupRow
+          key={`${isDoneRow ? 'done-' : ''}group-${item.id}`}
+          row={item}
+          profiles={props.groupAvatars || []}
+          editing={props.editingGroupRoomId === item.id}
+          activityVariant={props.activityVariant}
+          className={rowClass}
+          hoverAction={buildDoneHoverAction({
+            isDone: isDoneRow,
+            title: item.title,
+            onRequestMarkDone: props.onRequestMarkDone
+              ? () => props.onRequestMarkDone?.('group', item.id, item.title)
+              : undefined,
+            onRestoreDone: props.onRestoreDone
+              ? () => props.onRestoreDone?.('group', item.id)
+              : undefined,
+          })}
+          onSelect={() => props.onSelectGroup(item.id)}
+          onMenu={(x, y) => props.onOpenGroupMenu(item.id, item.title, x, y)}
+          onConfirmRename={(name) => props.onConfirmGroupRename(item.id, name)}
+          onCancelRename={props.onCancelGroupRename}
+        />
+      );
+    }
+    return (
+      <GroupedSessionRow
+        key={`${isDoneRow ? 'done-' : ''}session-${item.ownerBotName || 'default'}-${item.id}`}
+        row={item}
+        activityVariant={props.activityVariant}
+        className={rowClass}
+        hoverAction={buildDoneHoverAction({
+          isDone: isDoneRow,
+          title: item.title,
+          onRequestMarkDone: props.onRequestMarkDone
+            ? () => props.onRequestMarkDone?.('session', item.id, item.title, item.ownerBotName)
+            : undefined,
+          onRestoreDone: props.onRestoreDone
+            ? () => props.onRestoreDone?.('session', item.id, item.ownerBotName)
+            : undefined,
+        })}
+        onSelect={() => props.onSelectSession(item.id, item.ownerBotName)}
+        onMenu={(x, y) => props.onOpenSessionMenu(item.id, item.title, x, y, item.ownerBotName)}
+      />
+    );
+  };
 
   return (
     <aside
@@ -340,6 +431,19 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
           <div
             id="session-list-container"
             className="session-scroll-area scrollbar-none min-h-0 flex-1 overflow-y-auto px-2 pb-3"
+            onContextMenu={(event) => {
+              if (!props.onOpenRailMenu) return;
+              if (
+                event.target instanceof Element &&
+                event.target.closest(
+                  '[data-section="bots"], [data-entity-row], [data-container-id], .rail-pinned-bot-row, .session-item, .rail-group-item, button, input',
+                )
+              ) {
+                return;
+              }
+              event.preventDefault();
+              props.onOpenRailMenu(event.clientX, event.clientY);
+            }}
           >
             {groupedModel.error ? (
               <div
@@ -392,39 +496,60 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
               )}
             </GroupedSection>
 
-            {/* 2. 群聊分组 */}
-            <GroupedSection
-              section="groups"
-              triggerId="rail-groups-accordion-trigger"
-              listId="rail-groups-nested-list"
-              title={t(groupsSection.titleKey)}
-              expanded={groupsSection.effectiveExpanded}
-              showRunningStatus={Boolean(groupsSection.headerStatus)}
-              activityVariant={props.activityVariant}
-              onToggle={props.onToggleGroups}
-            >
-              {groupsSection.items.length === 0 ? (
-                !groupedModel.isSearching ? (
-                  <div className="px-2 py-2 text-caption text-muted-foreground">{t('rail.groupsEmpty')}</div>
-                ) : null
-              ) : (
-                groupsSection.items.map((row) => (
-                  <GroupedGroupRow
-                    key={`group-${row.id}`}
-                    row={row}
-                    profiles={props.groupAvatars || []}
-                    editing={props.editingGroupRoomId === row.id}
-                    activityVariant={props.activityVariant}
-                    onSelect={() => props.onSelectGroup(row.id)}
-                    onMenu={(x, y) => props.onOpenGroupMenu(row.id, row.title, x, y)}
-                    onConfirmRename={(name) => props.onConfirmGroupRename(row.id, name)}
-                    onCancelRename={props.onCancelGroupRename}
-                  />
-                ))
-              )}
-            </GroupedSection>
+            {/* 2. 扁平顶级项目 + 自定义文件夹 */}
+            {[...projectSections, ...folderSections].map((bucket) => (
+              <RailOrgContainerSection
+                key={bucket.containerId}
+                kind={bucket.kind}
+                id={bucket.id}
+                containerId={bucket.containerId}
+                name={bucket.name}
+                color={bucket.color}
+                expanded={bucket.effectiveExpanded}
+                isSearching={groupedModel.isSearching}
+                isEmpty={bucket.items.length === 0}
+                onToggle={() => props.onToggleContainer?.(bucket.containerId)}
+                onNewChat={
+                  props.onNewChatInContainer
+                    ? () => props.onNewChatInContainer?.('session', bucket.containerId)
+                    : undefined
+                }
+                onOpenFolderMenu={
+                  bucket.kind === 'folder' && props.onOpenFolderMenu
+                    ? (x, y) => props.onOpenFolderMenu?.(bucket.id, bucket.name, x, y)
+                    : undefined
+                }
+              >
+                {bucket.items.map((item) => renderMixedEntry(item, false))}
+              </RailOrgContainerSection>
+            ))}
 
-            {/* 3. 普通会话分组（大标题严禁显示状态动画；行头像继承所属 Bot 头像） */}
+            {/* 3. 未归类群聊分组（群聊全部被项目/文件夹收纳时自动隐藏占位噪声） */}
+            {(groupsSection.items.length > 0 ||
+              ![...projectSections, ...folderSections].some((b) =>
+                b.items.some((entry) => entry.kind === 'group'),
+              )) && (
+              <GroupedSection
+                section="groups"
+                triggerId="rail-groups-accordion-trigger"
+                listId="rail-groups-nested-list"
+                title={t(groupsSection.titleKey)}
+                expanded={groupsSection.effectiveExpanded}
+                showRunningStatus={Boolean(groupsSection.headerStatus)}
+                activityVariant={props.activityVariant}
+                onToggle={props.onToggleGroups}
+              >
+                {groupsSection.items.length === 0 ? (
+                  !groupedModel.isSearching ? (
+                    <div className="px-2 py-2 text-caption text-muted-foreground">{t('rail.groupsEmpty')}</div>
+                  ) : null
+                ) : (
+                  groupsSection.items.map((row) => renderMixedEntry(row, false))
+                )}
+              </GroupedSection>
+            )}
+
+            {/* 4. 未归类普通会话分组（大标题严禁显示状态动画；行头像继承所属 Bot 头像） */}
             <GroupedSection
               section="sessions"
               triggerId="rail-sessions-accordion-trigger"
@@ -450,16 +575,8 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
                   ))}
                 </>
               ) : sessionsSection.items.length > 0 ? (
-                sessionsSection.items.map((row) => (
-                  <GroupedSessionRow
-                    key={`session-${row.id}`}
-                    row={row}
-                    activityVariant={props.activityVariant}
-                    onSelect={() => props.onSelectSession(row.id, row.ownerBotName)}
-                    onMenu={(x, y) => props.onOpenSessionMenu(row.id, row.title, x, y)}
-                  />
-                ))
-              ) : !groupedModel.isSearching ? (
+                sessionsSection.items.map((row) => renderMixedEntry(row, false))
+              ) : !groupedModel.isSearching && projectSections.length === 0 && folderSections.length === 0 ? (
                 <div className="flex flex-col items-center gap-1 px-2 py-4 text-center">
                   <span className="text-aux text-muted-foreground">
                     {groupedModel.error ? t('rail.errorTitle') : t('rail.emptyTitle')}
@@ -471,59 +588,25 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
               ) : null}
             </GroupedSection>
 
-            {groupedModel.isSearching &&
-            !groupedModel.hasAnyResult &&
-            groupedModel.archivedSessions.length === 0 ? (
+            {groupedModel.isSearching && !groupedModel.hasAnyResult ? (
               <div className="px-2 py-4 text-center text-caption text-muted-foreground">
                 {t('rail.emptySearch')}
               </div>
             ) : null}
-
-            {groupedModel.archivedSessions.length > 0 ? (
-              <section className="mt-2">
-                <div className="px-2 py-1 text-overline font-bold uppercase tracking-wide text-muted-foreground">
-                  {t('rail.archived')} ({groupedModel.archivedSessions.length})
-                </div>
-                <div className="flex flex-col gap-1 opacity-65">
-                  {groupedModel.archivedSessions.map((archived) => (
-                    <RailEntityRow
-                      key={`archived-${archived.id}`}
-                      className="session-item"
-                      active={archived.isActive}
-                      compact
-                      avatar={
-                        <Avatar
-                          profile={{
-                            name: archived.ownerBotName,
-                            displayName: archived.ownerBotDisplayName,
-                            avatar: archived.ownerAvatarUrl,
-                          }}
-                          size={24}
-                          shape="circle"
-                        />
-                      }
-                      title={archived.title}
-                      onClick={() => props.onSelectSession(archived.id, archived.ownerBotName)}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        props.onOpenSessionMenu(
-                          archived.id,
-                          archived.title,
-                          event.clientX,
-                          event.clientY,
-                        );
-                      }}
-                      dataAttributes={{
-                        'data-id': archived.id,
-                        'data-title': archived.title,
-                        'data-bot': archived.ownerBotName,
-                      }}
-                    />
-                  ))}
-                </div>
-              </section>
-            ) : null}
           </div>
+
+          {showDoneSection ? (
+            <RailDoneFooterSection
+              expanded={doneSection.effectiveExpanded}
+              loading={doneSection.loading}
+              error={doneSection.error}
+              isEmpty={doneSection.items.length === 0}
+              onToggle={props.onToggleDoneSection ?? (() => props.onToggleContainer?.('done'))}
+              onRetry={props.onRetryDoneSection}
+            >
+              {doneSection.items.map((item) => renderMixedEntry(item, true))}
+            </RailDoneFooterSection>
+          ) : null}
         </div>
       )}
 

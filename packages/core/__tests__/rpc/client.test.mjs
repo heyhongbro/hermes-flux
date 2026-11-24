@@ -343,4 +343,42 @@ test('HermesGatewayClient JSON-RPC 2.0 Unit Tests', async (t) => {
     assert.equal(frames[5].method, 'spawn_tree.load');
     assert.deepEqual(frames[5].params, { path: 'spawns/a.json', profile: 'p-1' });
   });
+
+  await t.test('listArchivedSessions 仅传合法 archived=only 且失败时显式返回 ok:false（不假冒空成功）', async () => {
+    const client = new HermesGatewayClient({ url: 'ws://127.0.0.1:9119/api/ws', timeoutMs: 1000 });
+    let capturedCall = null;
+    client.setRestFallbackHandler(async (path, opts) => {
+      capturedCall = { path, opts };
+      return {
+        sessions: [
+          { id: 'arch-1', title: 'Old Task', profile: 'default', archived: true, updated_at: 1000 },
+        ],
+      };
+    });
+
+    const okRes = await client.listArchivedSessions('default', 25);
+    assert.equal(capturedCall.path, '/api/sessions');
+    assert.deepEqual(capturedCall.opts.params, { profile: 'default', limit: 25, archived: 'only' });
+    assert.equal(okRes.ok, true);
+    assert.equal(okRes.sessions.length, 1);
+    assert.equal(okRes.sessions[0].isArchived, true);
+
+    client.setRestFallbackHandler(async () => {
+      throw new Error('HTTP 400: archived must be one of: exclude, only, include');
+    });
+    const errRes = await client.listArchivedSessions('default', 25);
+    assert.equal(errRes.ok, false);
+    assert.match(errRes.error || '', /HTTP 400/);
+    assert.deepEqual(errRes.sessions, []);
+
+    client.setRestFallbackHandler(async () => '<!doctype html><html><body>Login</body></html>');
+    const htmlRes = await client.listArchivedSessions('default', 25);
+    assert.equal(htmlRes.ok, false);
+    assert.deepEqual(htmlRes.sessions, []);
+
+    client.setRestFallbackHandler(async () => ({ ok: false, detail: 'invalid archived parameter' }));
+    const detailRes = await client.listArchivedSessions('default', 25);
+    assert.equal(detailRes.ok, false);
+    assert.match(detailRes.error || '', /invalid archived parameter/);
+  });
 });

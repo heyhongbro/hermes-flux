@@ -1,9 +1,14 @@
 ﻿import * as React from 'react';
-import { Blocks, Bot, Download, Info, KeyRound, Palette, Plug, Plus, RefreshCw, Search, Trash2, X, Zap } from 'lucide-react';
+import { Blocks, Bot, Check, Download, Folder, Info, KeyRound, Palette, Pencil, Plug, Plus, RefreshCw, Search, Trash2, X, Zap } from 'lucide-react';
 import { t } from '../../i18n/index.js';
 import type { I18nKey } from '../../i18n/index.js';
 import { SKINS, SKIN_ALIASES, type SkinId } from '../../tokens/skins.js';
 import { getUiFontSelectOptions, MONO_FONT_OPTIONS } from '../../tokens/fonts.js';
+import {
+  DEFAULT_CONVERSATION_ORG_PREFS,
+  isProjectHidden,
+  setProjectVisibility,
+} from '../../tokens/conversationOrgPrefs.js';
 import { ACTIVITY_INDICATOR_VARIANTS, type ActivityIndicatorVariant } from '../../tokens/activityIndicator.js';
 import { Button } from '../primitives/Button.js';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../primitives/Dialog.js';
@@ -11,6 +16,7 @@ import { Input } from '../primitives/Input.js';
 import { Select } from '../primitives/Select.js';
 import { Surface } from '../primitives/Surface.js';
 import { Badge } from '../primitives/Badge.js';
+import { Switch } from '../primitives/Switch.js';
 import { ActivityIndicator } from '../primitives/ActivityIndicator.js';
 import { Tooltip } from '../primitives/Tooltip.js';
 import { BrandSwiftMark } from '../../icons/BrandMark.js';
@@ -24,6 +30,7 @@ import { McpAddDialog } from './McpAddDialog.js';
 import { McpRemoveConfirmDialog } from './McpRemoveConfirmDialog.js';
 import { SkillDetailDialog } from './SkillDetailDialog.js';
 import { SkillInstallDialog } from './SkillInstallDialog.js';
+import { ProjectDirectoryPicker, remapPathPrefix } from './ProjectDirectoryPicker.js';
 import {
   SETTINGS_SECTIONS,
   SETTINGS_SEARCH_ENTRIES,
@@ -44,6 +51,7 @@ import { createJumpScheduler, type JumpScheduler } from './jumpScheduler.js';
 
 const ICONS: Record<SettingsIconName, React.ComponentType<{ size?: number; className?: string }>> = {
   palette: Palette,
+  folder: Folder,
   key: KeyRound,
   bot: Bot,
   blocks: Blocks,
@@ -287,6 +295,425 @@ function AppearancePanel({
           </SettingRow>
         </SettingInset>
       </SettingSection>
+
+      <SettingSection>
+        <SettingsSectionHeading title={t('settings.orgGroupTitle')} />
+        <SettingInset>
+          {(() => {
+            const orgPrefs = snapshot.orgPrefs ?? DEFAULT_CONVERSATION_ORG_PREFS;
+            return (
+              <>
+                <SettingRow
+                  label={t('settings.showDoneSection')}
+                  hint={t('settings.showDoneSectionDesc')}
+                  anchorId="show-done-section"
+                  onLabelActivate={() =>
+                    actions.onConversationOrgPrefsChange?.({
+                      showDoneSection: !orgPrefs.showDoneSection,
+                    })
+                  }
+                >
+                  <Switch
+                    checked={orgPrefs.showDoneSection}
+                    aria-label={t('settings.showDoneSection')}
+                    onCheckedChange={(checked) =>
+                      actions.onConversationOrgPrefsChange?.({ showDoneSection: checked })
+                    }
+                  />
+                </SettingRow>
+                <SettingRow
+                  label={t('settings.autoReopenOnSend')}
+                  hint={t('settings.autoReopenOnSendDesc')}
+                  anchorId="auto-reopen-on-send"
+                  onLabelActivate={() =>
+                    actions.onConversationOrgPrefsChange?.({
+                      autoReopenOnSend: !orgPrefs.autoReopenOnSend,
+                    })
+                  }
+                >
+                  <Switch
+                    checked={orgPrefs.autoReopenOnSend}
+                    aria-label={t('settings.autoReopenOnSend')}
+                    onCheckedChange={(checked) =>
+                      actions.onConversationOrgPrefsChange?.({ autoReopenOnSend: checked })
+                    }
+                  />
+                </SettingRow>
+              </>
+            );
+          })()}
+        </SettingInset>
+      </SettingSection>
+    </div>
+  );
+}
+
+export function ProjectsPanel({
+  snapshot,
+  actions,
+}: {
+  snapshot: SettingsSnapshot;
+  actions: SettingsActions;
+}): React.ReactElement {
+  const [nameDraft, setNameDraft] = React.useState('');
+  const [pathDraft, setPathDraft] = React.useState('');
+  const [creating, setCreating] = React.useState(false);
+  const [editingProjectId, setEditingProjectId] = React.useState<string | null>(null);
+  const [editingProjectName, setEditingProjectName] = React.useState('');
+  const [savingProjectId, setSavingProjectId] = React.useState<string | null>(null);
+  const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null);
+  const [formError, setFormError] = React.useState<string | null>(null);
+
+  const isConnected = snapshot.gateway.status === 'connected';
+  const projectsState = snapshot.projects ?? { status: 'ready' as const, data: [] };
+
+  const handleCreate = async (event: React.FormEvent): Promise<void> => {
+    event.preventDefault();
+    if (!actions.onCreateProject || creating || !isConnected) return;
+    const cleanName = nameDraft.trim();
+    const cleanPath = pathDraft.trim();
+    if (!cleanName || !cleanPath) {
+      setFormError(t('settings.projectsValidationEmpty'));
+      return;
+    }
+    setCreating(true);
+    setFormError(null);
+    try {
+      const result = await actions.onCreateProject({ name: cleanName, path: cleanPath });
+      if (result.ok) {
+        setNameDraft('');
+        setPathDraft('');
+      } else {
+        setFormError(result.message || t('settings.loadFailed'));
+      }
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleRename = async (projectId: string): Promise<void> => {
+    if (!actions.onUpdateProject || savingProjectId || !isConnected) return;
+    const cleanName = editingProjectName.trim();
+    if (!cleanName) {
+      setFormError(t('settings.projectsValidationEmpty'));
+      return;
+    }
+    setSavingProjectId(projectId);
+    setFormError(null);
+    try {
+      const result = await actions.onUpdateProject(projectId, { name: cleanName });
+      if (result.ok) {
+        setEditingProjectId(null);
+        setEditingProjectName('');
+      } else {
+        setFormError(result.message || t('settings.loadFailed'));
+      }
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingProjectId(null);
+    }
+  };
+
+  const handleDelete = async (projectId: string): Promise<void> => {
+    if (!actions.onDeleteProject || deletingId || !isConnected) return;
+    setDeletingId(projectId);
+    setFormError(null);
+    try {
+      const result = await actions.onDeleteProject(projectId);
+      if (result.ok) {
+        setConfirmDeleteId(null);
+      } else {
+        setFormError(result.message || t('settings.loadFailed'));
+      }
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-6">
+      <SettingSection anchorId="projects-list">
+        <SettingsSectionHeading
+          title={t('settings.sectionProjects')}
+          hint={t('settings.projectsEmptyDesc')}
+          action={
+            actions.onRefreshProjects ? (
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                disabled={snapshot.busy || !isConnected}
+                onClick={actions.onRefreshProjects}
+              >
+                <RefreshCw aria-hidden="true" size={12} />
+                {t('settings.refresh')}
+              </Button>
+            ) : null
+          }
+        />
+
+        {!isConnected ? (
+          <p className="text-caption text-muted-foreground">{t('settings.projectsOfflineHint')}</p>
+        ) : null}
+
+        {formError ? (
+          <div role="alert" className="rounded-panel border border-destructive bg-card px-3 py-2 text-caption text-destructive">
+            {formError}
+          </div>
+        ) : null}
+
+        <LoadBoundary
+          state={projectsState}
+          onRetry={() => actions.onRefreshProjects?.()}
+          emptyLabel={t('settings.projectsEmpty')}
+        >
+          {(rows) => {
+            const activeRows = rows.filter((row) => !row.archived);
+            if (activeRows.length === 0) {
+              return <p className="text-aux text-muted-foreground">{t('settings.projectsEmpty')}</p>;
+            }
+            return (
+              <Surface level="raised" padding="none" bordered={false} specular={false} className="flex flex-col overflow-hidden rounded-panel">
+                {activeRows.map((proj) => (
+                  <div
+                    key={proj.id}
+                    data-settings-project-id={proj.id}
+                    className="flex flex-col gap-2 border-b border-border-subtle px-3 py-2 last:border-b-0"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex min-w-0 flex-1 flex-col gap-1">
+                        {editingProjectId === proj.id ? (
+                          <Input
+                            size="sm"
+                            value={editingProjectName}
+                            disabled={savingProjectId === proj.id}
+                            placeholder={t('settings.projectsRenamePlaceholder')}
+                            aria-label={t('settings.projectsRenamePlaceholder')}
+                            data-testid="settings-project-rename-input"
+                            onChange={(e) => setEditingProjectName(e.currentTarget.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                void handleRename(proj.id);
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault();
+                                setEditingProjectId(null);
+                              }
+                            }}
+                          />
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate text-body font-medium text-foreground">{proj.name}</span>
+                            {proj.boardSlug ? (
+                              <Badge variant="outline">
+                                {t('settings.projectsBoardBadge', { slug: proj.boardSlug })}
+                              </Badge>
+                            ) : null}
+                            {proj.additionalFolders && proj.additionalFolders.length > 0 ? (
+                              <Badge variant="secondary">
+                                {t('settings.projectsExtraFolders', { count: proj.additionalFolders.length })}
+                              </Badge>
+                            ) : null}
+                          </div>
+                        )}
+                        <span className="truncate font-code text-caption text-muted-foreground">{proj.path}</span>
+                      </div>
+
+                      {editingProjectId === proj.id ? (
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            type="button"
+                            size="xs"
+                            disabled={!isConnected || savingProjectId === proj.id || !editingProjectName.trim()}
+                            data-testid="settings-project-rename-confirm"
+                            onClick={() => void handleRename(proj.id)}
+                          >
+                            <Check aria-hidden="true" className="size-3" />
+                            {t('common.confirm')}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="xs"
+                            disabled={savingProjectId === proj.id}
+                            onClick={() => setEditingProjectId(null)}
+                          >
+                            <X aria-hidden="true" className="size-3" />
+                            {t('common.cancel')}
+                          </Button>
+                        </div>
+                      ) : confirmDeleteId === proj.id ? (
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="xs"
+                            disabled={!isConnected || deletingId === proj.id}
+                            onClick={() => void handleDelete(proj.id)}
+                          >
+                            {t('common.confirm')}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="xs"
+                            disabled={deletingId === proj.id}
+                            onClick={() => setConfirmDeleteId(null)}
+                          >
+                            {t('common.cancel')}
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex shrink-0 items-center gap-1">
+                          {actions.onConversationOrgPrefsChange
+                            ? (() => {
+                                const orgPrefs = snapshot.orgPrefs ?? DEFAULT_CONVERSATION_ORG_PREFS;
+                                const projectVisible = !isProjectHidden(orgPrefs, proj.id);
+                                return (
+                                  <Tooltip content={t('settings.projectsShowInRailHint')} placement="top">
+                                    <span className="inline-flex items-center mr-1">
+                                      <Switch
+                                        checked={projectVisible}
+                                        aria-label={t('settings.projectsShowInRailLabel', { name: proj.name })}
+                                        data-settings-project-visible={proj.id}
+                                        onCheckedChange={(checked) => {
+                                          const nextPrefs = setProjectVisibility(orgPrefs, proj.id, checked);
+                                          actions.onConversationOrgPrefsChange?.({
+                                            hiddenProjectIds: nextPrefs.hiddenProjectIds,
+                                          });
+                                        }}
+                                      />
+                                    </span>
+                                  </Tooltip>
+                                );
+                              })()
+                            : null}
+                          {actions.onUpdateProject ? (
+                            <Tooltip content={t('settings.projectsRenameBtn')} placement="top">
+                              <span className="inline-flex">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-xs"
+                                  disabled={!isConnected || Boolean(deletingId) || Boolean(savingProjectId)}
+                                  aria-label={t('settings.projectsRenameBtn')}
+                                  data-settings-project-rename={proj.id}
+                                  onClick={() => {
+                                    setConfirmDeleteId(null);
+                                    setEditingProjectId(proj.id);
+                                    setEditingProjectName(proj.name);
+                                  }}
+                                >
+                                  <Pencil aria-hidden="true" className="size-3" />
+                                </Button>
+                              </span>
+                            </Tooltip>
+                          ) : null}
+                          {actions.onDeleteProject ? (
+                            <Tooltip content={t('settings.projectsDeleteBtn')} placement="top">
+                              <span className="inline-flex">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-xs"
+                                  disabled={!isConnected || Boolean(deletingId) || Boolean(savingProjectId)}
+                                  aria-label={t('settings.projectsDeleteBtn')}
+                                  onClick={() => {
+                                    setEditingProjectId(null);
+                                    setConfirmDeleteId(proj.id);
+                                  }}
+                                >
+                                  <Trash2 aria-hidden="true" className="size-3" />
+                                </Button>
+                              </span>
+                            </Tooltip>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+
+                    {confirmDeleteId === proj.id ? (
+                      <div
+                        role="alert"
+                        data-testid="settings-project-delete-confirm"
+                        className="rounded-card border border-destructive bg-card px-3 py-2 text-caption text-destructive"
+                      >
+                        {t('settings.projectsDeleteConfirm', { name: proj.name })}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </Surface>
+            );
+          }}
+        </LoadBoundary>
+      </SettingSection>
+
+      {actions.onCreateProject ? (
+        <SettingSection>
+          <SettingsSectionHeading title={t('settings.projectsCreateTitle')} />
+          <form onSubmit={(e) => void handleCreate(e)} className="flex flex-col gap-3">
+            <SettingTwoColumn>
+              <SettingField label={t('settings.projectsNameLabel')} htmlFor="settings-project-name">
+                <Input
+                  id="settings-project-name"
+                  size="sm"
+                  disabled={!isConnected || creating}
+                  value={nameDraft}
+                  placeholder={t('settings.projectsNamePlaceholder')}
+                  onChange={(e) => setNameDraft(e.currentTarget.value)}
+                />
+              </SettingField>
+              <SettingField label={t('settings.projectsPathLabel')} htmlFor="settings-project-path">
+                <Input
+                  id="settings-project-path"
+                  size="sm"
+                  disabled={!isConnected || creating}
+                  value={pathDraft}
+                  placeholder={t('settings.projectsPathPlaceholder')}
+                  onChange={(e) => setPathDraft(e.currentTarget.value)}
+                />
+              </SettingField>
+            </SettingTwoColumn>
+            <ProjectDirectoryPicker
+              variant="desktop"
+              value={pathDraft}
+              disabled={creating}
+              isConnected={isConnected}
+              onBrowse={actions.onBrowseProjectDirectory}
+              onCreateDirectory={actions.onCreateProjectDirectory}
+              onRenameDirectory={actions.onRenameProjectDirectory}
+              onSelectPath={(selectedPath, folderName) => {
+                setPathDraft(selectedPath);
+                setFormError(null);
+                if (!nameDraft.trim() && folderName) {
+                  setNameDraft(folderName);
+                }
+              }}
+              onPathRenamed={(oldPath, newPath) => {
+                setPathDraft((prev) => remapPathPrefix(prev, oldPath, newPath));
+              }}
+            />
+            <div className="flex justify-end">
+              <Button
+                type="submit"
+                size="sm"
+                disabled={!isConnected || creating || !nameDraft.trim() || !pathDraft.trim()}
+                data-testid="settings-project-add-btn"
+              >
+                <Plus aria-hidden="true" size={12} />
+                {creating ? t('settings.projectsCreating') : t('settings.projectsCreateBtn')}
+              </Button>
+            </div>
+          </form>
+        </SettingSection>
+      ) : null}
     </div>
   );
 }
@@ -713,6 +1140,8 @@ function renderPanel(
   switch (section) {
     case 'appearance':
       return <AppearancePanel snapshot={snapshot} actions={actions} />;
+    case 'projects':
+      return <ProjectsPanel snapshot={snapshot} actions={actions} />;
     case 'providers':
       return <ProvidersPanel snapshot={snapshot} actions={actions} />;
     case 'agents':

@@ -22,6 +22,12 @@
 
 import { SKINS, SKIN_ALIASES } from '../../tokens/skins.js';
 import type { I18nKey } from '../../i18n/index.js';
+import type { OrgContainerCollapseState } from '../../tokens/conversationOrgPrefs.js';
+import type { MobileActionSheetStep } from './types.js';
+import {
+  partitionRailOrgEntities,
+  type PartitionedContainerBucket,
+} from '../railOrgPartition.js';
 import {
   formatLeftRailTime,
   toSnippet,
@@ -29,8 +35,10 @@ import {
   type ActivityTransition,
   type DataPhase,
   type LeftRailActiveFocus,
+  type LeftRailFolder,
   type LeftRailGroupRoom,
   type LeftRailProfile,
+  type LeftRailProject,
   type LeftRailSession,
 } from '../leftRailModel.js';
 
@@ -41,7 +49,14 @@ export type MobileInspectorTab = 'artifacts' | 'diffs' | 'files' | 'memory';
 export type MobileAppearancePreference = 'dark' | 'light' | 'system';
 export type MobileSkinId = 'obsidian-gold' | 'jade-white';
 export type MobileNewChatStep = 'compose' | 'group-members';
-export type MobileSettingsSubpage = 'appearance' | 'gateway' | 'providers' | 'extensions' | 'about' | null;
+export type MobileSettingsSubpage =
+  | 'appearance'
+  | 'projects'
+  | 'gateway'
+  | 'providers'
+  | 'extensions'
+  | 'about'
+  | null;
 export type MobileBotSubpage = 'identity' | 'model' | 'soul' | 'skills' | 'toolsets' | 'mcp' | 'memory' | null;
 
 export interface ShellModeResolveInput {
@@ -115,6 +130,16 @@ export interface MobileHomeModelInput {
   profiles: readonly LeftRailProfile[];
   groups: readonly LeftRailGroupRoom[];
   sessions: readonly LeftRailSession[];
+  projects?: readonly LeftRailProject[];
+  folders?: readonly LeftRailFolder[];
+  assignments?: Readonly<Record<string, string>>;
+  doneRoomIds?: readonly string[];
+  doneRoomsMap?: Readonly<Record<string, number>>;
+  containerCollapsed?: OrgContainerCollapseState;
+  hiddenProjectIds?: readonly string[];
+  showDoneSection?: boolean;
+  doneLoading?: boolean;
+  doneError?: string;
   profileName: string;
   searchQuery: string;
   collapsed: MobileSectionCollapsedState;
@@ -149,6 +174,8 @@ export interface MobileGroupRowVM {
   members: string[];
   timeText: string;
   isActive: boolean;
+  isDone?: boolean;
+  containerId?: string | null;
   activityState: ActivityState;
   activityTransition: ActivityTransition;
   activityTransitionToken?: number;
@@ -167,12 +194,18 @@ export interface MobileSessionRowVM {
   timeText: string;
   isPinned: boolean;
   isActive: boolean;
+  isDone?: boolean;
+  containerId?: string | null;
+  hasCwdProjectMatch?: boolean;
   activityState: ActivityState;
   activityTransition: ActivityTransition;
   activityTransitionToken?: number;
   statusTextKey: I18nKey | null;
   session: LeftRailSession;
 }
+
+export type MobileHomeContainerEntryVM = MobileGroupRowVM | MobileSessionRowVM;
+export type MobileOrgContainerSectionVM = PartitionedContainerBucket<MobileHomeContainerEntryVM>;
 
 export interface MobileSectionHeaderStatus {
   state: 'running';
@@ -190,12 +223,27 @@ export interface MobileHomeSectionVM<TRow> {
   items: TRow[];
 }
 
+export interface MobileDoneSectionVM {
+  key: 'done';
+  titleKey: I18nKey;
+  showSection: boolean;
+  isCollapsed: boolean;
+  effectiveExpanded: boolean;
+  loading: boolean;
+  error: string;
+  items: MobileHomeContainerEntryVM[];
+}
+
 export interface MobileHomeModel {
   searchQuery: string;
   isSearching: boolean;
   botsSection: MobileHomeSectionVM<MobileBotRowVM>;
+  projectSections: MobileOrgContainerSectionVM[];
+  folderSections: MobileOrgContainerSectionVM[];
   groupsSection: MobileHomeSectionVM<MobileGroupRowVM>;
   sessionsSection: MobileHomeSectionVM<MobileSessionRowVM>;
+  doneSection: MobileDoneSectionVM;
+  showDoneSection: boolean;
   profilesPhase: DataPhase;
   sessionsPhase: DataPhase;
   hasAnyResult: boolean;
@@ -277,48 +325,47 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
       };
     });
 
-  // 2. 群聊研讨室行（全量群聊，按 updatedAt / createdAt 倒序）
-  const sortedGroups = [...input.groups].sort(
-    (a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0),
-  );
-
-  const groupRows: MobileGroupRowVM[] = sortedGroups
-    .filter((g) => matchesSearch(query, [g.name, g.lastMessage, ...(g.members || [])]))
-    .map((g) => {
+  // 2. 使用统一分桶引擎对项目、自定义文件夹、未分组群聊/普通会话及已完成项进行单归属归类
+  const partitioned = partitionRailOrgEntities<MobileSessionRowVM, MobileGroupRowVM>({
+    sessions: input.sessions,
+    groups: input.groups,
+    projects: input.projects,
+    folders: input.folders,
+    assignments: input.assignments,
+    doneRoomIds: input.doneRoomIds,
+    doneRoomsMap: input.doneRoomsMap,
+    containerCollapsed: input.containerCollapsed,
+    hiddenProjectIds: input.hiddenProjectIds,
+    searchQuery: input.searchQuery,
+    matchesGroupSearch: (g, q) => matchesSearch(q, [g.name, g.lastMessage, ...(g.members || [])]),
+    matchesSessionSearch: (s, q) => {
+      const owner = profileMap.get((s.botName || 'default').toLowerCase()) ?? defaultProfile;
+      return matchesSearch(q, [s.title, s.preview, s.botDisplayName, owner?.displayName, s.botName]);
+    },
+    mapGroup: (g, meta) => {
       const activityState: ActivityState = g.activityState ?? 'read';
       const isActive = currentFocus.type === 'group' && currentFocus.roomId === g.roomId;
-      const roomTs = g.updatedAt || g.createdAt;
+      const roomTs = g.updatedAt || g.createdAt || 0;
       return {
         kind: 'group',
         id: g.roomId,
         title: g.name,
         subtitle: toSnippet(g.lastMessage),
         members: g.members || [],
-        timeText: formatLeftRailTime(roomTs, nowDate),
+        timeText: formatLeftRailTime(roomTs || undefined, nowDate),
         isActive,
+        isDone: meta.isDone,
+        containerId: meta.containerId,
         activityState,
         activityTransition: g.activityTransition ?? 'none',
         activityTransitionToken: g.activityTransitionToken,
         statusTextKey: resolveRowStatusKey('group', activityState),
         group: g,
+        sortTimestamp: roomTs,
+        isPinnedSort: false,
       };
-    });
-
-  // 3. 普通会话行（全部未归档且非隐藏主工位/子代理的普通会话，置顶优先 + 时间倒序，继承归属 Bot 头像）
-  const sortedSessions = input.sessions
-    .filter((s) => !s.isArchived && !s.hidden && !s.isSubagent)
-    .sort((a, b) => {
-      const pinDiff = (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0);
-      if (pinDiff !== 0) return pinDiff;
-      return (b.timestamp || 0) - (a.timestamp || 0);
-    });
-
-  const sessionRows: MobileSessionRowVM[] = sortedSessions
-    .filter((s) => {
-      const owner = profileMap.get((s.botName || 'default').toLowerCase()) ?? defaultProfile;
-      return matchesSearch(query, [s.title, s.preview, s.botDisplayName, owner?.displayName, s.botName]);
-    })
-    .map((s) => {
+    },
+    mapSession: (s, meta) => {
       const ownerKey = (s.botName || 'default').toLowerCase();
       const owner = profileMap.get(ownerKey) ?? defaultProfile;
       const ownerBotName = owner?.name || s.botName || 'default';
@@ -337,16 +384,33 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
         timeText: s.time || formatLeftRailTime(s.timestamp, nowDate),
         isPinned: Boolean(s.isPinned),
         isActive,
+        isDone: meta.isDone,
+        containerId: meta.containerId,
+        hasCwdProjectMatch: meta.hasCwdProjectMatch,
         activityState,
         activityTransition: s.activityTransition ?? 'none',
         activityTransitionToken: s.activityTransitionToken,
         statusTextKey: resolveRowStatusKey('session', activityState),
         session: s,
+        sortTimestamp: s.timestamp || 0,
+        isPinnedSort: Boolean(s.isPinned),
       };
-    });
+    },
+  });
+
+  const groupRows = partitioned.unassignedGroups;
+  const sessionRows = partitioned.unassignedSessions;
+  const showDoneSection = input.showDoneSection !== false;
 
   const botsHasRunning = botRows.some((row) => row.activityState === 'running');
   const groupsHasRunning = groupRows.some((row) => row.activityState === 'running');
+  const hasContainerItemHits =
+    partitioned.projectContainers.some((c) => c.items.length > 0) ||
+    partitioned.folderContainers.some((c) => c.items.length > 0);
+  const hasVisibleEmptyContainers =
+    !isSearching &&
+    (partitioned.projectContainers.length > 0 || partitioned.folderContainers.length > 0);
+  const hasDoneHits = showDoneSection && partitioned.doneItems.length > 0;
 
   return {
     searchQuery: input.searchQuery || '',
@@ -362,6 +426,8 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
           : null,
       items: botRows,
     },
+    projectSections: partitioned.projectContainers,
+    folderSections: partitioned.folderContainers,
     groupsSection: {
       key: 'groups',
       titleKey: 'mobile.section.groups',
@@ -382,9 +448,26 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
       headerStatus: null,
       items: sessionRows,
     },
+    doneSection: {
+      key: 'done',
+      titleKey: 'mobile.home.sectionDone',
+      showSection: showDoneSection,
+      isCollapsed: partitioned.doneIsCollapsed,
+      effectiveExpanded: partitioned.doneEffectiveExpanded,
+      loading: Boolean(input.doneLoading),
+      error: (input.doneError || '').trim(),
+      items: partitioned.doneItems,
+    },
+    showDoneSection,
     profilesPhase: input.profilesPhase ?? 'ready',
     sessionsPhase: input.sessionsPhase ?? 'ready',
-    hasAnyResult: botRows.length + groupRows.length + sessionRows.length > 0,
+    hasAnyResult:
+      botRows.length > 0 ||
+      groupRows.length > 0 ||
+      sessionRows.length > 0 ||
+      hasContainerItemHits ||
+      hasVisibleEmptyContainers ||
+      hasDoneHits,
   };
 }
 
@@ -392,11 +475,13 @@ export interface MobileBackNavState {
   activePane: MobilePaneId;
   homeTab?: MobileHomeTab;
   hasActionSheet: boolean;
+  actionSheetStep?: MobileActionSheetStep;
   hasModelSheet: boolean;
   hasSubagentSheet: boolean;
   botWizardOpen?: boolean;
   newChatOpen: boolean;
   newChatStep: MobileNewChatStep;
+  newChatProjectPickerOpen?: boolean;
   searchOpen: boolean;
   settingsOpen: boolean;
   settingsSubpage: MobileSettingsSubpage;
@@ -405,10 +490,12 @@ export interface MobileBackNavState {
 }
 
 export type MobileBackAction =
+  | { handled: true; effect: 'actionSheetBackToMenu' }
   | { handled: true; effect: 'closeActionSheet' }
   | { handled: true; effect: 'closeModelSheet' }
   | { handled: true; effect: 'closeSubagentSheet' }
   | { handled: true; effect: 'closeBotWizard' }
+  | { handled: true; effect: 'closeNewChatProjectPicker' }
   | { handled: true; effect: 'newChatBackToCompose' }
   | { handled: true; effect: 'closeNewChatSheet' }
   | { handled: true; effect: 'closeSearch' }
@@ -421,14 +508,22 @@ export type MobileBackAction =
   | { handled: false; effect: 'minimizeApp' };
 
 /**
- * 移动端 10 级返回栈纯状态机：统一服务于 Android 硬件返回键与手势返回。
+ * 移动端多层返回栈纯状态机：统一服务于 Android 硬件返回键与手势返回。
  */
 export function reduceMobileBackAction(state: MobileBackNavState): MobileBackAction {
-  if (state.hasActionSheet) return { handled: true, effect: 'closeActionSheet' };
+  if (state.hasActionSheet) {
+    if (state.actionSheetStep && state.actionSheetStep !== 'menu') {
+      return { handled: true, effect: 'actionSheetBackToMenu' };
+    }
+    return { handled: true, effect: 'closeActionSheet' };
+  }
   if (state.hasModelSheet) return { handled: true, effect: 'closeModelSheet' };
   if (state.hasSubagentSheet) return { handled: true, effect: 'closeSubagentSheet' };
   if (state.botWizardOpen) return { handled: true, effect: 'closeBotWizard' };
   if (state.newChatOpen) {
+    if (state.newChatProjectPickerOpen) {
+      return { handled: true, effect: 'closeNewChatProjectPicker' };
+    }
     if (state.newChatStep === 'group-members') {
       return { handled: true, effect: 'newChatBackToCompose' };
     }
