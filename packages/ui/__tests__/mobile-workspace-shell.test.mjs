@@ -45,6 +45,13 @@ import {
   partitionMobileTools,
 } from '../dist/components-react/conversation/index.js';
 import { renderGroupCollageAvatar } from '../dist/utils/botAvatar.js';
+import {
+  CognitiveSkillList,
+  CognitiveStarMapCanvas,
+  CognitiveStarMapPanel,
+  ConstellationNodeDetailDialog,
+} from '../dist/components-react/learning/index.js';
+import { layoutFullConstellationGraph } from '@hermes-flux/core';
 
 const NOW_MS = Date.UTC(2026, 10, 21, 10, 0, 0);
 
@@ -125,10 +132,11 @@ function createReactHookDriver(options = {}) {
           : null;
 
     if (compFn) {
-      let slot = slots.get(key);
+      const scopedKey = node.key != null ? `${key}#k=${String(node.key)}` : key;
+      let slot = slots.get(scopedKey);
       if (!slot) {
         slot = { states: [], refs: [], memos: [], effects: [] };
-        slots.set(key, slot);
+        slots.set(scopedKey, slot);
       }
       let sIdx = 0;
       let rIdx = 0;
@@ -223,7 +231,7 @@ function createReactHookDriver(options = {}) {
         useInsertionEffect: scheduleEffect,
         useDebugValue() {},
         useId() {
-          return `id-${key}`;
+          return `id-${scopedKey}`;
         },
         useContext(ctx) {
           return ctx?._currentValue;
@@ -238,7 +246,7 @@ function createReactHookDriver(options = {}) {
       } finally {
         internals.H = prevH;
       }
-      return resolve(rendered, `${key}>${compFn.name || 'Fn'}`);
+      return resolve(rendered, `${scopedKey}>${compFn.name || 'Fn'}`);
     }
 
     if (attachRefs) {
@@ -3927,7 +3935,7 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
     learningState: { status: 'loading' },
     learningDetail: { status: 'idle' },
     onRefresh: () => constCalls.push(['refresh']),
-    onSelectNodeDetail: (id) => constCalls.push(['selectDetail', id]),
+    onSelectNodeDetail: (id, prof) => constCalls.push(['selectDetail', id, prof]),
     onSaveEdit: async (id, c) => {
       constCalls.push(['saveEdit', id, c]);
       return editResult;
@@ -3943,29 +3951,107 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
   const constView = dConst.mount(() => React.createElement(MobileConstellationPanel, panelProps));
   assert.ok(findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-loading')[0]);
 
-  panelProps = { ...panelProps, learningState: { status: 'error', message: '' } };
+  panelProps = { ...panelProps, targetProfile: 'arch', targetBotLabel: 'Architect', learningState: { status: 'error', profile: 'arch', message: '' } };
   constView.rerender();
   assert.ok(findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-error')[0]);
-  findAll(constView.tree, (n) => n.props?.className === 'm-secondary-btn')[0]?.props.onClick();
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-retry')[0]?.props.onClick();
+
+  // 跨 Bot 串台阻断守卫：targetProfile=arch 但 learningState 仍携带 default 图谱时，严禁渲染旧图谱并触发 onEnsureLoaded('arch')
+  const ensureCalls = [];
+  panelProps = {
+    ...panelProps,
+    targetProfile: 'arch',
+    learningState: { status: 'ready', profile: 'default', graph: { ...fullGraph, profile: 'default' } },
+    onEnsureLoaded: (prof) => ensureCalls.push(prof),
+  };
+  constView.rerender();
+  assert.ok(
+    findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-loading')[0],
+    'learningState.profile 与 targetProfile 不一致时必须立即阻断进入加载态',
+  );
+  assert.ok(ensureCalls.includes('arch'));
 
   panelProps = {
     ...panelProps,
-    learningState: { status: 'ready', graph: { nodes: [], edges: [], summary: [], totalSkills: 0, totalMemories: 0, axisStart: '', axisEnd: '' } },
+    targetProfile: 'arch',
+    onEnsureLoaded: undefined,
+    learningState: { status: 'ready', profile: 'arch', graph: { nodes: [], edges: [], summary: [], totalSkills: 0, totalMemories: 0, axisStart: '', axisEnd: '' } },
   };
   constView.rerender();
   assert.ok(findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-empty')[0]);
 
-  // Ready with >6 nodes (pager enabled), filters (including skill-only then empty-memory graph -> emptyFilter), node selection, detail edit & delete
-  panelProps = { ...panelProps, learningState: { status: 'ready', graph: fullGraph } };
+  // Ready with all 9 nodes (NO pagination), zoom controls, skill list & filters, node selection, detail edit & delete
+  const enrichedGraph = {
+    ...fullGraph,
+    profile: 'arch',
+    nodes: [
+      {
+        id: 'skill:git-ops',
+        kind: 'skill',
+        label: 'git-ops',
+        fullLabel: 'git-ops workflow',
+        preview: 'Git operations',
+        category: 'vcs',
+        date: '2026-11-08',
+        uses: 14,
+        meta: 'vcs · x14',
+        bucketIndex: 0,
+        skillName: 'git-ops',
+      },
+      {
+        id: 'skill:code-audit',
+        kind: 'skill',
+        label: 'code-audit',
+        fullLabel: 'code-audit workflow',
+        preview: 'Audit helper',
+        category: 'vcs',
+        date: '2026-11-09',
+        uses: 9,
+        meta: 'vcs · x9',
+        bucketIndex: 0,
+        skillName: 'code-audit',
+      },
+      ...fullGraph.nodes.slice(1),
+    ],
+    edges: [
+      { source: 'skill:git-ops', target: 'skill:code-audit', kind: 'skill-link' },
+      ...fullGraph.edges,
+    ],
+    totalSkills: 2,
+    totalSkillLinks: 1,
+  };
+  panelProps = { ...panelProps, learningState: { status: 'ready', profile: 'arch', graph: enrichedGraph } };
   constView.rerender();
   assert.ok(findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-panel')[0]);
+  // 完整地图渲染全部节点，无分页控件
+  assert.equal(findAll(constView.tree, (n) => n.props?.['aria-label'] === t('mobile.memory.nextPageAria')).length, 0);
+  assert.equal(findAll(constView.tree, (n) => n.props?.['aria-label'] === t('mobile.memory.prevPageAria')).length, 0);
+  for (const node of enrichedGraph.nodes) {
+    assert.ok(
+      findAll(constView.tree, (n) => n.props?.['data-testid'] === `mobile-constellation-node-${node.id}`)[0],
+      `完整星图应直接展示全部节点: ${node.id}`,
+    );
+  }
+  assert.ok(findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-skill-list')[0]);
+  assert.ok(findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-skill-item-skill:git-ops')[0]);
 
-  // 点节点、分页前后、筛选
+  // 缩放控制：放大 / 缩小 / 居中重置
+  const initialZoomText = findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-zoom-label')[0]?.props.children;
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-zoom-in')[0]?.props.onClick();
+  constView.rerender();
+  const zoomedInText = findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-zoom-label')[0]?.props.children;
+  assert.notEqual(zoomedInText, initialZoomText);
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-zoom-out')[0]?.props.onClick();
+  constView.rerender();
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-zoom-reset')[0]?.props.onClick();
+  constView.rerender();
+
+  // 星图选点 + 技能列表定位按钮 + 列表直达大详情弹窗
   findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-node-memory:m1')[0]?.props.onClick();
   constView.rerender();
-  findAll(constView.tree, (n) => n.props?.['aria-label'] === t('mobile.memory.nextPageAria'))[0]?.props.onClick();
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-skill-focus-skill:code-audit')[0]?.props.onClick();
   constView.rerender();
-  findAll(constView.tree, (n) => n.props?.['aria-label'] === t('mobile.memory.prevPageAria'))[0]?.props.onClick();
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-node-memory:m1')[0]?.props.onClick();
   constView.rerender();
 
   // 打开详情 -> loading -> error + retry -> ready -> edit(fail & ok) -> delete(cancel & fail & ok)
@@ -3974,15 +4060,16 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
   assert.ok(findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-detail')[0]);
 
   const activeStarId = constCalls.find(([k]) => k === 'selectDetail')[1];
-  panelProps = { ...panelProps, learningDetail: { status: 'loading', id: activeStarId } };
+  assert.equal(constCalls.find(([k]) => k === 'selectDetail')[2], 'arch');
+  panelProps = { ...panelProps, learningDetail: { status: 'loading', id: activeStarId, profile: 'arch' } };
   constView.rerender();
   assert.equal(findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-edit').length, 0);
-  panelProps = { ...panelProps, learningDetail: { status: 'error', id: activeStarId, message: 'detail err' } };
+  panelProps = { ...panelProps, learningDetail: { status: 'error', id: activeStarId, profile: 'arch', message: 'detail err' } };
   constView.rerender();
   assert.equal(findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-edit').length, 0);
-  findAll(constView.tree, (n) => n.props?.children === t('bot.retry'))[0]?.props.onClick();
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-detail-retry')[0]?.props.onClick();
 
-  panelProps = { ...panelProps, learningDetail: { status: 'ready', id: activeStarId, kind: 'memory', label: 'M1', content: 'Detail text' } };
+  panelProps = { ...panelProps, learningDetail: { status: 'ready', id: activeStarId, kind: 'memory', label: 'M1', content: 'Detail text', profile: 'arch' } };
   constView.rerender();
   findAll(constView.tree, (n) => n.props?.['aria-label'] === t('mobile.inspector.copyContent'))[0]?.props.onClick();
   findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-edit')[0]?.props.onClick();
@@ -4037,9 +4124,9 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
     ?.props.onClick?.();
   panelProps = {
     ...panelProps,
-    learningDetail: { status: 'ready', id: 'memory:m2', kind: 'memory', label: 'M2', content: 'Body 2' },
-    onSaveEdit: async (id, c) => {
-      constCalls.push(['saveEdit', id, c]);
+    learningDetail: { status: 'ready', id: 'memory:m2', kind: 'memory', label: 'M2', content: 'Body 2', profile: 'arch' },
+    onSaveEdit: async (id, c, prof) => {
+      constCalls.push(['saveEdit', id, c, prof]);
       return editResult;
     },
   };
@@ -4055,8 +4142,8 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
   editResult = { ok: true };
   panelProps = {
     ...panelProps,
-    onSaveEdit: async (id, c) => {
-      constCalls.push(['saveEdit', id, c]);
+    onSaveEdit: async (id, c, prof) => {
+      constCalls.push(['saveEdit', id, c, prof]);
       return editResult;
     },
   };
@@ -4068,22 +4155,12 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
   findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-delete')[0]?.props.onClick();
   constView.rerender();
   let releaseRealDel = null;
+  let deletedNodeId = '';
   panelProps = {
     ...panelProps,
     onDeleteNode: (id) =>
       new Promise((resolve) => {
-        panelProps = {
-          ...panelProps,
-          learningState: {
-            status: 'ready',
-            graph: {
-              ...fullGraph,
-              nodes: fullGraph.nodes.filter((n) => n.id !== id),
-            },
-          },
-          learningDetail: { status: 'idle' },
-        };
-        constView.rerender();
+        deletedNodeId = id;
         releaseRealDel = resolve;
       }),
   };
@@ -4094,6 +4171,20 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
     findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-detail-back')[0]?.props.disabled,
     true,
   );
+  // 真实 deleteLearningNode 在远端成功删除后先刷新去掉已删节点，再 resolve { ok: true }
+  panelProps = {
+    ...panelProps,
+    learningState: {
+      status: 'ready',
+      profile: 'arch',
+      graph: {
+        ...enrichedGraph,
+        nodes: enrichedGraph.nodes.filter((n) => n.id !== deletedNodeId),
+      },
+    },
+    learningDetail: { status: 'idle' },
+  };
+  constView.rerender();
   releaseRealDel({ ok: true });
   await realDelP;
   constView.rerender();
@@ -4106,8 +4197,8 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
   // Stale error onDeleteNode: switch node while in-flight -> resolving { ok: false, message: 'stale-fail' } must NOT pollute new node
   panelProps = {
     ...panelProps,
-    learningState: { status: 'ready', graph: fullGraph },
-    learningDetail: { status: 'ready', id: 'memory:m1', kind: 'memory', label: 'M1', content: 'Body 1' },
+    learningState: { status: 'ready', profile: 'arch', graph: enrichedGraph },
+    learningDetail: { status: 'ready', id: 'memory:m1', kind: 'memory', label: 'M1', content: 'Body 1', profile: 'arch' },
   };
   constView.rerender();
   findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-node-memory:m1')[0]?.props.onClick();
@@ -4128,9 +4219,8 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
   const staleDelFailP = findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-delete-confirm')[0]?.props.onClick();
   findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-detail-back')[0]?.props.onClick();
   constView.rerender();
-  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-node-skill:git-ops')[0]?.props.onClick();
-  constView.rerender();
-  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-open-detail')[0]?.props.onClick();
+  // 点击技能列表卡片直接打开对应技能的大号详情弹窗并点击关联技能跳转
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-skill-item-skill:git-ops')[0]?.props.onClick();
   constView.rerender();
   releaseStaleDelFail({ ok: false, message: 'stale-fail' });
   await staleDelFailP;
@@ -4140,11 +4230,13 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
     0,
     '切换节点后旧删除失败报错不得显示在新节点详情上',
   );
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-related-skill:code-audit')[0]?.props.onClick();
+  constView.rerender();
 
   panelProps = {
     ...panelProps,
-    onDeleteNode: async (id) => {
-      constCalls.push(['deleteNode', id]);
+    onDeleteNode: async (id, prof) => {
+      constCalls.push(['deleteNode', id, prof]);
       return deleteResult;
     },
   };
@@ -4178,15 +4270,217 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
   constView.rerender();
   findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-detail-back')[0]?.props.onClick();
   constView.rerender();
-  findAll(constView.tree, (n) => n.props?.className === 'm-settings-chip-btn')[2]?.props.onClick();
+  findAll(constView.tree, (n) => n.props?.['data-testid'] === 'mobile-constellation-filter-skill')[0]?.props.onClick();
   constView.rerender();
   panelProps = {
     ...panelProps,
-    learningState: { status: 'ready', graph: { nodes: makeNodes(3).slice(1), edges: [], summary: [], totalSkills: 0, totalMemories: 2, axisStart: '', axisEnd: '' } },
+    learningState: { status: 'ready', profile: 'arch', graph: { nodes: makeNodes(3).slice(1), edges: [], summary: [], totalSkills: 0, totalMemories: 2, axisStart: '', axisEnd: '' } },
   };
   constView.rerender();
   assert.ok(findAll(constView.tree, (n) => n.props?.children === t('mobile.memory.emptyFilter'))[0]);
   constView.unmount();
+
+  // 3b. CognitiveStarMapCanvas 手势(wheel/drag/5px防误触/右键忽略/pinch/双击/键盘)、CognitiveSkillList 搜索排序与切换清零、ConstellationNodeDetailDialog 并发 inspectSeq/profile隔离/raw视图
+  const origDoc = globalThis.document;
+  const origEl = globalThis.Element;
+  globalThis.Element = class FakeDomEl {
+    closest() {
+      return null;
+    }
+  };
+  globalThis.document = undefined;
+  try {
+    const sampleGraph = {
+      profile: 'arch',
+      source: 'rest-graph',
+      nodes: [
+        { id: 'skill:alpha-scan', kind: 'skill', label: 'alpha-scan', fullLabel: 'alpha-scan', preview: 'Scan alpha', category: 'sec', date: '2026-11-24', uses: 5, meta: 'sec · x5', bucketIndex: 0, skillName: 'alpha-scan' },
+        { id: 'skill:zebra-ops', kind: 'skill', label: 'zebra-ops', fullLabel: 'zebra-ops', preview: 'Ops zebra', category: 'ops', date: '2026-11-24', uses: 15, meta: 'ops · x15', bucketIndex: 0, skillName: 'zebra-ops' },
+        { id: 'skill:beta-link', kind: 'skill', label: 'beta-link', fullLabel: 'beta-link', preview: 'Link beta', category: 'sec', date: '2026-11-24', uses: 8, meta: 'sec · x8', bucketIndex: 0, skillName: 'beta-link' },
+      ],
+      edges: [
+        { source: 'skill:beta-link', target: 'skill:alpha-scan', kind: 'skill-link' },
+        { source: 'skill:beta-link', target: 'skill:zebra-ops', kind: 'skill-link' },
+      ],
+      summary: [],
+      totalSkills: 3,
+      totalMemories: 0,
+      totalSkillLinks: 2,
+      axisStart: '',
+      axisEnd: '',
+    };
+    const canvasLayout = layoutFullConstellationGraph(sampleGraph);
+    const canvasEvents = [];
+    const dCanvas = createReactHookDriver();
+    let canvasProps = {
+      layout: canvasLayout,
+      variant: 'mobile',
+      testIdPrefix: 'cvs-test',
+      selectedId: 'skill:zebra-ops',
+      fitTriggerKey: 'arch:all:3:2',
+      onSelectNode: (id) => canvasEvents.push(['select', id]),
+      onOpenNodeDetail: (id) => canvasEvents.push(['open', id]),
+    };
+    const cvsView = dCanvas.mount(() => React.createElement(CognitiveStarMapCanvas, canvasProps));
+    const stageEl = findAll(cvsView.tree, (n) => n.props?.['data-testid'] === 'cvs-test-stage')[0];
+    const readScale = () =>
+      Number.parseInt(
+        String(findAll(cvsView.tree, (n) => n.props?.['data-testid'] === 'cvs-test-zoom-label')[0]?.props.children),
+        10,
+      );
+    const s0 = readScale();
+    let prevented = false;
+    stageEl.props.onWheel({ deltaY: -120, clientX: 180, clientY: 160, preventDefault: () => { prevented = true; } });
+    cvsView.rerender();
+    assert.equal(prevented, true);
+    const sZoomIn = readScale();
+    assert.ok(sZoomIn > s0, '滚轮上滚必须放大画布');
+    stageEl.props.onWheel({ deltaY: 0, clientX: 180, clientY: 160, preventDefault: () => {} });
+    cvsView.rerender();
+    assert.equal(readScale(), sZoomIn);
+    stageEl.props.onWheel({ deltaY: 120, clientX: 180, clientY: 160, preventDefault: () => {} });
+    cvsView.rerender();
+
+    // 右键忽略；左键拖拽超过 5px 抑制随后单击；小于 5px 视为点击
+    stageEl.props.onPointerDown({ pointerType: 'mouse', button: 2, pointerId: 1, clientX: 10, clientY: 10, target: null });
+    stageEl.props.onPointerDown({ pointerType: 'mouse', button: 0, pointerId: 1, clientX: 10, clientY: 10, target: null });
+    stageEl.props.onPointerMove({ pointerId: 1, clientX: 40, clientY: 50, currentTarget: {} });
+    stageEl.props.onPointerUp({ pointerId: 1, clientX: 40, clientY: 50, currentTarget: {} });
+    cvsView.rerender();
+    const alphaNode = findAll(cvsView.tree, (n) => n.props?.['data-testid'] === 'cvs-test-node-skill:alpha-scan')[0];
+    alphaNode.props.onClick();
+    assert.equal(canvasEvents.length, 0, '超过 5px 拖拽收手后的顺带 click 必须被抑制');
+    await new Promise((r) => setTimeout(r, 10));
+    alphaNode.props.onClick();
+    alphaNode.props.onDoubleClick();
+    alphaNode.props.onKeyDown({ key: 'Enter', preventDefault: () => {} });
+    alphaNode.props.onKeyDown({ key: ' ', preventDefault: () => {} });
+    assert.deepEqual(canvasEvents, [
+      ['select', 'skill:alpha-scan'],
+      ['open', 'skill:alpha-scan'],
+      ['select', 'skill:alpha-scan'],
+      ['select', 'skill:alpha-scan'],
+    ]);
+
+    // 双指捏合缩放
+    stageEl.props.onPointerDown({ pointerType: 'touch', button: 0, pointerId: 11, clientX: 100, clientY: 100, target: null });
+    stageEl.props.onPointerDown({ pointerType: 'touch', button: 0, pointerId: 12, clientX: 150, clientY: 100, target: null });
+    stageEl.props.onPointerMove({ pointerId: 12, clientX: 220, clientY: 100, currentTarget: {} });
+    cvsView.rerender();
+    assert.ok(readScale() > 0);
+    stageEl.props.onPointerCancel({ pointerId: 11, currentTarget: {} });
+    stageEl.props.onPointerUp({ pointerId: 12, currentTarget: {} });
+    cvsView.unmount();
+
+    // SkillList 搜索 / 空结果 / 排序切换 (uses -> links -> name) / 切换 Bot 时重置搜索词
+    let starPanelProps = {
+      targetProfile: 'arch',
+      variant: 'mobile',
+      testIdPrefix: 'lst-test',
+      learningState: { status: 'ready', profile: 'arch', graph: sampleGraph },
+      learningDetail: { status: 'idle' },
+      onRefresh: () => {},
+      onSelectNodeDetail: () => {},
+    };
+    const dPanelList = createReactHookDriver();
+    const panelListView = dPanelList.mount(() => React.createElement(CognitiveStarMapPanel, starPanelProps));
+    const readSkillOrder = () =>
+      findAll(panelListView.tree, (n) => String(n.props?.['data-testid'] || '').startsWith('lst-test-skill-item-')).map(
+        (n) => n.props['data-testid'],
+      );
+    assert.deepEqual(readSkillOrder(), [
+      'lst-test-skill-item-skill:zebra-ops',
+      'lst-test-skill-item-skill:beta-link',
+      'lst-test-skill-item-skill:alpha-scan',
+    ]);
+    findAll(panelListView.tree, (n) => n.props?.['data-testid'] === 'lst-test-skill-sort-links')[0].props.onClick();
+    panelListView.rerender();
+    assert.equal(readSkillOrder()[0], 'lst-test-skill-item-skill:beta-link');
+    findAll(panelListView.tree, (n) => n.props?.['data-testid'] === 'lst-test-skill-sort-name')[0].props.onClick();
+    panelListView.rerender();
+    assert.equal(readSkillOrder()[0], 'lst-test-skill-item-skill:alpha-scan');
+
+    findAll(panelListView.tree, (n) => n.props?.['data-testid'] === 'lst-test-skill-search')[0].props.onChange({
+      target: { value: 'missing-skill-xyz' },
+    });
+    panelListView.rerender();
+    assert.ok(findAll(panelListView.tree, (n) => n.props?.children === t('mobile.memory.skillListEmpty'))[0]);
+
+    // 切换 Bot 后 key={normalizedProfile} 必须重置搜索关键词
+    starPanelProps = {
+      ...starPanelProps,
+      targetProfile: 'ops',
+      learningState: { status: 'ready', profile: 'ops', graph: { ...sampleGraph, profile: 'ops' } },
+    };
+    panelListView.rerender();
+    assert.equal(
+      findAll(panelListView.tree, (n) => n.props?.['data-testid'] === 'lst-test-skill-search')[0]?.props.value,
+      '',
+      '切换目标 Bot 后技能搜索词必须清空',
+    );
+    panelListView.unmount();
+
+    // ConstellationNodeDetailDialog: rendered/raw 切换、onInspectSkill merge + stale inspectSeqRef 丢弃、
+    // learningDetail.profile 串台拦截、移动端禁用 xs/sm 且声明 m-no-swipe + pan-x
+    let resolveSlowInspect = null;
+    let resolveFastInspect = null;
+    let inspectCalls = 0;
+    let dlgProps = {
+      open: true,
+      variant: 'mobile',
+      node: sampleGraph.nodes[0],
+      targetProfile: 'arch',
+      learningDetail: { status: 'ready', id: 'skill:alpha-scan', kind: 'skill', label: 'alpha-scan', content: '# Old Default', profile: 'default' },
+      relatedSkills: [{ id: 'skill:beta-link', label: 'beta-link', uses: 8 }],
+      testIdPrefix: 'dlg-test',
+      onClose: () => {},
+      onSelectRelatedNode: () => {},
+      onSelectNodeDetail: () => {},
+      onInspectSkill: () => {
+        inspectCalls += 1;
+        return new Promise((res) => {
+          if (inspectCalls === 1) resolveSlowInspect = res;
+          else resolveFastInspect = res;
+        });
+      },
+    };
+    const dDlg = createReactHookDriver();
+    const dlgView = dDlg.mount(() => React.createElement(ConstellationNodeDetailDialog, dlgProps));
+    // learningDetail.profile='default' 与 targetProfile='arch' 不匹配 -> 不得渲染 '# Old Default'
+    assert.equal(JSON.stringify(dlgView.tree).includes('# Old Default'), false, '跨 profile 详请必须拦截');
+    const dlgRoot = findAll(dlgView.tree, (n) => n.props?.['data-constellation-detail-dialog'] === 'true')[0];
+    assert.ok(dlgRoot);
+    assert.equal(dlgRoot.props['data-gesture-ignore'], 'pan-x');
+    assert.ok(String(dlgRoot.props.className).includes('m-no-swipe'));
+    const relBtn = findAll(dlgView.tree, (n) => n.props?.['data-testid'] === 'dlg-test-related-skill:beta-link')[0];
+    assert.notEqual(relBtn.props.size, 'xs', '移动端详情弹窗按钮严禁传入 xs 尺寸');
+
+    // 快速切到第二个 skill，旧 inspect 慢返回不得覆盖新 skill
+    dlgProps = { ...dlgProps, node: sampleGraph.nodes[1] };
+    dlgView.rerender();
+    resolveFastInspect({ ok: true, data: { name: 'zebra-ops', markdown: '---\nowner: ops\n---\n# Fresh Zebra' } });
+    await new Promise((r) => setTimeout(r, 0));
+    dlgView.rerender();
+    resolveSlowInspect({ ok: true, data: { name: 'alpha-scan', markdown: '# Stale Alpha' } });
+    await new Promise((r) => setTimeout(r, 0));
+    dlgView.rerender();
+    const bodySnap = JSON.stringify(dlgView.tree);
+    assert.ok(bodySnap.includes('Fresh Zebra') && bodySnap.includes('ops'), 'rendered 模式应呈现解析后的标题与 frontmatter 字段');
+    assert.equal(bodySnap.includes('Stale Alpha'), false, '旧 inspectSeqRef 响应不得覆盖新节点');
+
+    // 切换 rendered -> raw 视图
+    const segBtns = findAll(dlgView.tree, (n) => n.props?.['data-segmented-value'] === 'raw');
+    assert.ok(segBtns[0]);
+    segBtns[0].props.onClick();
+    dlgView.rerender();
+    const rawEl = findAll(dlgView.tree, (n) => n.props?.['data-skill-markdown-raw'] === 'true')[0];
+    assert.ok(rawEl);
+    assert.ok(JSON.stringify(rawEl).includes('# Fresh Zebra'), 'raw 模式应保留原始 Markdown 源码');
+    dlgView.unmount();
+  } finally {
+    globalThis.Element = origEl;
+    globalThis.document = origDoc;
+  }
 
   // TurnGroup.compare 覆盖 displayKind / displayMetadata / 全等返回 true 分支
   assert.equal(
@@ -4218,7 +4512,7 @@ test('MessageAttachments、Inspector 文件树、认知星图与 Inspector 滑�
       subpage: 'memory',
       settingsSnapshot: snapshot.settingsSnapshot,
       settingsActions: actions.settingsActions,
-      learningState: { status: 'ready', graph: fullGraph },
+      learningState: { status: 'ready', profile: 'default', graph: fullGraph },
       learningDetail: undefined,
       onRefreshLearning: () => {},
       onLoadLearningDetail: () => {},

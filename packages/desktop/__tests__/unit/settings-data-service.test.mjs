@@ -919,3 +919,125 @@ test('botWizard wiring：覆盖 getDefaultCloneFrom 三级回落、client 守卫
   h.actions.onCloseBotWizard();
   assert.equal(h.service.getBotManagementSnapshot().wizard.open, false);
 });
+
+test('settingsDataService 认知星图集成：openBotSettings requestedTab、快照透传与学习动作闭环', async () => {
+  const learnCalls = [];
+  const sampleLearningState = {
+    status: 'ready',
+    profile: 'arch',
+    graph: {
+      profile: 'arch',
+      nodes: [],
+      edges: [],
+      summary: [],
+      totalSkills: 0,
+      totalMemories: 0,
+      axisStart: '',
+      axisEnd: '',
+    },
+  };
+  const sampleLearningDetail = {
+    status: 'ready',
+    id: 'skill:deploy',
+    kind: 'skill',
+    label: 'deploy',
+    content: '# Deploy',
+    profile: 'arch',
+  };
+
+  const mockLearningService = {
+    loadLearningGraph: async (opts, explicitProfile) => {
+      learnCalls.push(['loadLearningGraph', opts, explicitProfile]);
+    },
+    loadLearningDetail: async (id, profile) => {
+      learnCalls.push(['loadLearningDetail', id, profile]);
+    },
+    editLearningNode: async (id, content, profile) => {
+      learnCalls.push(['editLearningNode', id, content, profile]);
+      return { ok: true };
+    },
+    deleteLearningNode: async (id, profile) => {
+      learnCalls.push(['deleteLearningNode', id, profile]);
+      return { ok: true };
+    },
+  };
+
+  const stateWithLearning = makeState({
+    isSettingsOpen: false,
+    learningState: sampleLearningState,
+    learningDetail: sampleLearningDetail,
+  });
+
+  // 1. 无 learningService 时动作返回安全未连接/失败且不抛错
+  const withoutLearning = makeHarness({ isSettingsOpen: false });
+  assert.deepEqual(await withoutLearning.actions.onEditLearningNode('skill:x', 'body', 'arch'), {
+    ok: false,
+    message: 'settings.notConnected',
+  });
+  assert.deepEqual(await withoutLearning.actions.onDeleteLearningNode('skill:x', 'arch'), {
+    ok: false,
+    message: 'settings.notConnected',
+  });
+
+  // 2. 注入 learningService 后的 openBotSettings(botId, { tab: 'constellation' })、快照与动作透传
+  const service = createSettingsDataService({
+    getState: () => stateWithLearning,
+    getGatewayClient: () => null,
+    getCurrentTicket: () => null,
+    getEffectiveUrl: (u) => u,
+    render: () => {},
+    t: (key) => key,
+    describeRpcError: (err) => String(err),
+    showToast: () => {},
+    bootLog: { warn: () => {} },
+    fetchModelOptions: async () => {},
+    fetchProfiles: async () => {},
+    testConnection: async () => ({ ok: true }),
+    connect: async () => {},
+    disconnect: () => {},
+    getFontPreferences: () => ({ uiFont: 'geist-sans', monoFont: 'jetbrains-mono', sizeScale: 'medium' }),
+    setFontPreferences: () => {},
+    applyFontPreferences: () => {},
+    getActivityIndicatorVariant: () => 'cloud',
+    setActivityIndicatorVariant: () => {},
+    saveActivityIndicatorVariant: () => {},
+    resolveActivityIndicatorVariant: () => 'cloud',
+    resolveSkinId: () => 'obsidian-gold',
+    writePresenceLayout: () => {},
+    onPresenceLayoutChanged: () => {},
+    profileAvatarCache: new Map(),
+    persistAvatarCache: () => {},
+    learningService: mockLearningService,
+  });
+
+  service.openBotSettings('arch', { tab: 'constellation' });
+  assert.equal(stateWithLearning.isSettingsOpen, true);
+  assert.equal(stateWithLearning.settingsSection, 'agents');
+  assert.equal(stateWithLearning.botManagementActiveBotId, 'arch');
+  assert.deepEqual(service.getBotManagementSnapshot().requestedTab, { tab: 'constellation', seq: 1 });
+  assert.deepEqual(learnCalls[0], ['loadLearningGraph', { profile: 'arch', force: false }, undefined]);
+
+  const snap = service.getSettingsSnapshot();
+  assert.deepEqual(snap.learningState, sampleLearningState);
+  assert.deepEqual(snap.learningDetail, sampleLearningDetail);
+
+  const actions = service.createSettingsActions();
+  actions.onLoadLearningGraph('arch', true);
+  actions.onLoadLearningDetail('skill:deploy', 'arch');
+  assert.deepEqual(await actions.onEditLearningNode('skill:deploy', 'updated', 'arch'), { ok: true });
+  assert.deepEqual(await actions.onDeleteLearningNode('skill:deploy', 'arch'), { ok: true });
+  assert.deepEqual(learnCalls[1], ['loadLearningGraph', { profile: 'arch', force: true }, undefined]);
+  assert.deepEqual(learnCalls[2], ['loadLearningDetail', 'skill:deploy', 'arch']);
+  assert.deepEqual(learnCalls[3], ['editLearningNode', 'skill:deploy', 'updated', 'arch']);
+  assert.deepEqual(learnCalls[4], ['deleteLearningNode', 'skill:deploy', 'arch']);
+
+  // 普通 openBotSettings（不带 tab）必须清空 requestedTab，防止复用旧入口页签
+  service.openBotSettings('default');
+  assert.equal(service.getBotManagementSnapshot().requestedTab, null);
+  // 关闭设置页也清空 requestedTab
+  service.openBotSettings('arch', { tab: 'constellation' });
+  assert.equal(service.getBotManagementSnapshot().requestedTab?.tab, 'constellation');
+  stateWithLearning.botDrafts = {};
+  actions.onClose();
+  assert.equal(service.getBotManagementSnapshot().requestedTab, null);
+});

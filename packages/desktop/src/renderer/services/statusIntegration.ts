@@ -45,6 +45,7 @@ export interface StatusIntegrationDeps {
   readonly render: () => void;
   readonly t: (key: I18nKey, params?: Record<string, string | number>) => string;
   readonly writeClipboardText?: (text: string) => Promise<void>;
+  readonly onOpenConstellation?: (profileName: string) => void;
 }
 
 export interface StatusIntegration {
@@ -105,6 +106,7 @@ export function createStatusIntegration(deps: StatusIntegrationDeps): StatusInte
     syncTitlebar: deps.syncTitlebar,
     openFilePreview: deps.openFilePreview,
     insertQuoteToComposer,
+    onOpenConstellation: deps.onOpenConstellation,
     writeClipboardText: deps.writeClipboardText,
     setTimedDockNotice: deps.setTimedDockNotice,
     render: deps.render,

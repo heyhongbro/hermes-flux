@@ -8,6 +8,7 @@ import {
   ContextBreakdownDrawer,
   ConversationMessageList,
   RightPodRoot,
+  SessionStatusPanel,
   StatusPanelGlyph,
   Titlebar,
   ToolBlocks,
@@ -523,6 +524,129 @@ test('InspectionPod innerOnly / back-from-files 与 status-pod.css / i18n 静态
   assert.ok(statusCss.includes('::-webkit-scrollbar-button'), '必须隐藏 scrollbar-button');
   assert.ok(statusCss.includes('@supports not selector(::-webkit-scrollbar)'), '必须声明非 Chromium 退让');
   assert.ok(statusCss.includes('min-height: 44px;'), '必须覆盖移动端 44px 触控热区');
+  assert.ok(/\.sp-env-action[\s\S]*?min-height:\s*44px/m.test(statusCss), 'status-pod.css 须在触控媒体查询为 .sp-env-action 提供 44px 热区');
   assert.equal(/--context-usage-/.test(statusCss), false, '禁止引用未入 skins.ts 的幽灵 --context-usage-* 变量');
   assert.ok(statusCss.includes('height: auto;'), 'status 模式卡片必须按内容自适应高度，不得强行撑满全屏');
+
+  // status-open-constellation-btn: 实际点击校验透传精确 subject.profileName 与缺省回落 'default'，群聊主体隐藏
+  const runStaticHooks = (fn) => {
+    const stateSlots = [];
+    let cursor = 0;
+    const internals = React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+    const prevH = internals.H;
+    internals.H = {
+      useState(init) {
+        const idx = cursor++;
+        if (!(idx in stateSlots)) stateSlots[idx] = typeof init === 'function' ? init() : init;
+        return [stateSlots[idx], () => {}];
+      },
+      useReducer(reducer, initialArg, init) {
+        const idx = cursor++;
+        if (!(idx in stateSlots)) stateSlots[idx] = init ? init(initialArg) : initialArg;
+        return [stateSlots[idx], () => {}];
+      },
+      useRef(init) {
+        const idx = cursor++;
+        if (!(idx in stateSlots)) stateSlots[idx] = { current: init };
+        return stateSlots[idx];
+      },
+      useMemo(factory) {
+        cursor++;
+        return factory();
+      },
+      useCallback(cb) {
+        cursor++;
+        return cb;
+      },
+      useEffect() {
+        cursor++;
+      },
+      useLayoutEffect() {
+        cursor++;
+      },
+      useInsertionEffect() {
+        cursor++;
+      },
+      useImperativeHandle() {},
+      useDebugValue() {},
+      useTransition() {
+        return [false, (cb) => cb()];
+      },
+      useDeferredValue(val) {
+        return val;
+      },
+      useId() {
+        return `id-${cursor++}`;
+      },
+      useContext(ctx) {
+        return ctx?._currentValue;
+      },
+      useSyncExternalStore(_sub, getSnap) {
+        return getSnap();
+      },
+      use(usable) {
+        return usable?._currentValue;
+      },
+    };
+    try {
+      return fn();
+    } finally {
+      internals.H = prevH;
+    }
+  };
+  const collectEls = (node, pred, out = []) => {
+    if (!node || typeof node !== 'object') return out;
+    if (Array.isArray(node)) {
+      node.forEach((n) => collectEls(n, pred, out));
+      return out;
+    }
+    if (pred(node)) out.push(node);
+    if (node.props?.children) collectEls(node.props.children, pred, out);
+    return out;
+  };
+
+  const openedConstellationProfiles = [];
+  const archTree = runStaticHooks(() =>
+    SessionStatusPanel({
+      snapshot: makeSnapshot(),
+      actions: {
+        ...NOOP_ACTIONS,
+        onOpenConstellation: (p) => openedConstellationProfiles.push(p),
+      },
+    }),
+  );
+  const archBtn = collectEls(archTree, (n) => n.props?.['data-testid'] === 'status-open-constellation-btn')[0];
+  assert.ok(archBtn, '非群聊智能体主体必须渲染 status-open-constellation-btn');
+  archBtn.props.onClick();
+
+  const fallbackTree = runStaticHooks(() =>
+    SessionStatusPanel({
+      snapshot: makeSnapshot({
+        subject: { kind: 'agent', name: 'Unnamed Bot', profileName: '' },
+      }),
+      actions: {
+        ...NOOP_ACTIONS,
+        onOpenConstellation: (p) => openedConstellationProfiles.push(p),
+      },
+    }),
+  );
+  const fallbackBtn = collectEls(fallbackTree, (n) => n.props?.['data-testid'] === 'status-open-constellation-btn')[0];
+  assert.ok(fallbackBtn);
+  fallbackBtn.props.onClick();
+  assert.deepEqual(openedConstellationProfiles, ['architect', 'default']);
+
+  const groupNoConstellationHtml = renderToStaticMarkup(
+    React.createElement(RightPodRoot, {
+      snapshot: makeSnapshot({
+        conversationMode: 'group_room',
+        subject: { kind: 'group', name: '架构讨论群', profileName: 'default', groupMembers: ['architect', 'reviewer'] },
+      }),
+      actions: {
+        ...NOOP_ACTIONS,
+        onOpenConstellation: (p) => openedConstellationProfiles.push(p),
+      },
+    }),
+  );
+  assert.equal(groupNoConstellationHtml.includes('status-open-constellation-btn'), false);
+  assert.equal(openedConstellationProfiles.length, 2);
 });

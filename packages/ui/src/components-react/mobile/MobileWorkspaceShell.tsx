@@ -332,6 +332,8 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             activeFilePath={snapshot.activeFilePath}
             workspaceRootName={snapshot.workspaceRootName}
             memories={snapshot.memories}
+            inspectorBotProfile={snapshot.inspectorBotProfile}
+            inspectorBotLabel={snapshot.inspectorBotLabel}
             learningState={snapshot.learningState}
             learningDetail={snapshot.learningDetail}
             groupMembers={snapshot.groupMembers}
@@ -345,10 +347,13 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             onFilterFileTree={actions.onFilterFileTree}
             onOpenWorkspaceFile={actions.onOpenWorkspaceFile}
             onDownloadInspectorFile={actions.onDownloadInspectorFile}
+            onEnsureLearning={actions.onEnsureLearning}
             onRefreshLearning={actions.onRefreshLearning}
             onLoadLearningDetail={actions.onLoadLearningDetail}
             onEditLearningNode={actions.onEditLearningNode}
             onDeleteLearningNode={actions.onDeleteLearningNode}
+            onInspectSkill={actions.settingsActions.onInspectSkill}
+            onNotify={actions.settingsActions.onNotify}
           />
         </div>
       </div>
@@ -422,6 +427,7 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
         onOpenGateway={() => actions.onOpenSettingsSubpage('gateway')}
         learningState={snapshot.learningState}
         learningDetail={snapshot.learningDetail}
+        onEnsureLearning={actions.onEnsureLearning}
         onRefreshLearning={actions.onRefreshLearning}
         onLoadLearningDetail={actions.onLoadLearningDetail}
         onEditLearningNode={actions.onEditLearningNode}

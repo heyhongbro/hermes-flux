@@ -94,6 +94,8 @@ export interface MobileWorkspaceSnapshot {
   activeSessionId: string;
   activeBotName: string;
   activeBotDisplayName: string;
+  inspectorBotProfile?: string;
+  inspectorBotLabel?: string;
   isStreaming: boolean;
   messagesCount: number;
   selectedModel: string;
@@ -177,10 +179,11 @@ export interface MobileWorkspaceActions {
   onFilterFileTree: (query: string) => void;
   onOpenWorkspaceFile: (filePath: string) => void;
   onDownloadInspectorFile: () => void;
-  onRefreshLearning: () => void;
-  onLoadLearningDetail: (id: string) => void;
-  onEditLearningNode?: (id: string, content: string) => Promise<{ ok: boolean; message?: string }>;
-  onDeleteLearningNode?: (id: string) => Promise<{ ok: boolean; message?: string }>;
+  onEnsureLearning?: (profile: string) => void;
+  onRefreshLearning: (profile?: string) => void;
+  onLoadLearningDetail: (id: string, profile?: string) => void;
+  onEditLearningNode?: (id: string, content: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;
+  onDeleteLearningNode?: (id: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;
   onHapticSelection?: () => void;
 
   onOpenSettings: () => void;

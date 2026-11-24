@@ -416,6 +416,14 @@
       "failure": "记忆节点标题残存半截 HTML 注释或全连通边爆表造成移动端星图堆叠不可点"
     },
     {
+      "id": "INV-LEARN-02",
+      "topic": "全量认知星图确定性无重叠布局（全节点无分页落图、绝对碰撞分离与技能关联统计有界一致）",
+      "source": "packages/core/src/learning/constellationLayout.ts",
+      "symbol": "layoutFullConstellationGraph",
+      "test": "packages/core/__tests__/formal/learning-constellation-formal.test.mjs",
+      "failure": "星图节点相互遮挡不可点、跨 Bot 刷新顺序偏移抖动、或技能列表计数与星图不一致"
+    },
+    {
       "id": "INV-SUBAGENT-01",
       "topic": "跨会话子代理列表代际围栏防串台（sessionGeneration 检查阻塞慢响应回写）",
       "source": "packages/core/src/subagent/subagentStore.ts",

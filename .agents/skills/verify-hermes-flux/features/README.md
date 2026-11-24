@@ -37,7 +37,8 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 - [Clean light theme](./clean-light-theme.md) covers Ayu Light / Warm Paper / Jade White publication typography, tone tokens, and sunken surfaces.
 - [Prompt navigator rail](./prompt-navigator-rail.md) covers the right-edge tick rail, hit-band width adaptation, and the floating 8-row prompt panel without an ordinal column.
 - [Activity indicator preference](./activity-indicator-preference.md) covers the six activity-indicator variants in Settings › Appearance: live previews, apply-and-persist, reduced-motion and hidden-page behavior.
-- [BOT config center](./bot-config-center.md) covers Settings › BOT: the 5-slot hero carousel, basic identity, provider-grouped model binding, SOUL.md drawer, capability matrix switches, unknown MCP status, and the draft/save guard.
+- [BOT config center](./bot-config-center.md) covers Settings › BOT: the 204px/64px roster rail, basic identity, provider-grouped model binding, SOUL.md studio editor, flat capability tabs, MCP/skills admin, cognitive star map tab, and the draft/save guard.
+- [Cognitive star map](./cognitive-star-map.md) covers per-bot isolated star maps, unpaginated zoom/pan canvas, invocation-sorted skill list, status-pod shortcut, and xl skill/memory detail modal across Desktop & Mobile.
 
 ## Feature File vs. Registered Runner ID Mapping (Naming Debt)
 
@@ -57,4 +58,5 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 | `prompt-navigator-rail.md` | `prompt-navigator-rail` | 无 | 名称一致（驱动真实 renderer，非 E2E harness） |
 | `activity-indicator-preference.md` | `activity-indicator-preference` | — | 名称一致（驱动真实 renderer，非 E2E harness） |
 | `bot-config-center.md` | `bot-config-center` | — | 名称一致（驱动真实 renderer，非 E2E harness） |
+| `cognitive-star-map.md` | `bot-config-center` | — | 复用 `bot-config-center` Step 5b 覆盖桌面端星图页签与 `xl` 详情弹窗离线 CDP 校验 |
 

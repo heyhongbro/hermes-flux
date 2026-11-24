@@ -2,8 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildConstellationGraph,
+  buildConstellationGraphFromRest,
+  buildConstellationGraphFromSkills,
   cleanLearningLabel,
+  computeConstellationNodeRadius,
+  extractConstellationSkillList,
   layoutConstellationWindow,
+  layoutFullConstellationGraph,
+  normalizeLearningProfile,
   parseLearningUses,
 } from '../../dist/index.js';
 
@@ -325,4 +331,145 @@ test('buildConstellationGraph 构建去重节点、语义边及星图布局窗�
   const emptyLayout = layoutConstellationWindow(emptyGraph);
   assert.equal(emptyLayout.activeNode, null);
   assert.deepEqual(emptyLayout.positionedNodes, []);
+});
+
+test('REST 多 Bot 星图归一、技能清单排序与全量无分页不重叠布局', () => {
+  assert.equal(normalizeLearningProfile(undefined), 'default');
+  assert.equal(normalizeLearningProfile('  '), 'default');
+  assert.equal(normalizeLearningProfile(' arch '), 'arch');
+
+  const restDirect = buildConstellationGraphFromRest(
+    {
+      profile: 'arch',
+      nodes: [
+        {
+          id: 'skill:deploy-flow',
+          kind: 'skill',
+          name: 'deploy-flow',
+          label: 'deploy-flow',
+          description: 'Deploy pipeline using docker-ops',
+          category: 'ops',
+          use_count: 18,
+          related_skills: ['docker-ops'],
+          tags: ['release'],
+        },
+        {
+          id: 'skill:docker-ops',
+          kind: 'skill',
+          label: 'docker-ops',
+          description: 'Container workflow',
+          category: 'ops',
+          call_count: 7,
+        },
+        {
+          id: 'skill:lint-guard',
+          kind: 'skill',
+          label: 'lint-guard',
+          description: 'Static checks',
+          category: 'qa',
+          uses: 24,
+        },
+        {
+          id: 'memory:arch:1',
+          kind: 'memory',
+          label: '<!-- observed: 2026-11-01 -->  Prefer canary via deploy-flow',
+          content: '<!-- observed: 2026-11-01 -->  Prefer canary via deploy-flow and docker-ops',
+          category: 'ops',
+          updated_at: '2026-11-01',
+        },
+      ],
+      edges: [
+        { from: 'skill:deploy-flow', to: 'skill:lint-guard', kind: 'skill_link', weight: 0.9 },
+      ],
+      axis: { start: '01 Nov', end: '24 Nov' },
+    },
+    'default',
+  );
+
+  assert.equal(restDirect.profile, 'arch');
+  assert.equal(restDirect.source, 'rest-graph');
+  assert.equal(restDirect.totalSkills, 3);
+  assert.equal(restDirect.totalMemories, 1);
+  assert.ok(restDirect.edges.some((e) => e.kind === 'skill-link' && e.source === 'skill:deploy-flow' && e.target === 'skill:docker-ops'));
+  assert.ok(restDirect.edges.some((e) => e.kind === 'skill-link' && e.source === 'skill:deploy-flow' && e.target === 'skill:lint-guard' && e.weight === 0.9));
+  assert.ok(restDirect.edges.some((e) => e.kind === 'mention' && e.source === 'memory:arch:1'));
+  assert.equal(restDirect.nodes.find((n) => n.id === 'memory:arch:1')?.label.includes('<!--'), false);
+
+  // { graph: ... } 包装与 { buckets } 兼容格式
+  const restBuckets = buildConstellationGraphFromRest(
+    {
+      data: {
+        count: 1,
+        buckets: [
+          {
+            index: 0,
+            label: '02 Nov',
+            date: '02 Nov 2026',
+            category: 'backend',
+            nodes: [
+              { id: 'skill:sql-tune', glyph: '●', label: 'sql-tune', fullLabel: 'sql-tune', meta: 'backend · x5', body: 'SQL tune', style: 'skill' },
+            ],
+          },
+        ],
+      },
+    },
+    'reviewer',
+  );
+  assert.equal(restBuckets.profile, 'reviewer');
+  assert.equal(restBuckets.source, 'rest-graph');
+  assert.equal(restBuckets.nodes[0]?.uses, 5);
+
+  assert.equal(buildConstellationGraphFromRest(null, 'ops').nodes.length, 0);
+
+  // 技能专属降级星图（绝不混入 memory）
+  const skillOnly = buildConstellationGraphFromSkills(
+    [
+      { id: 'git-sync', label: 'git-sync', description: 'Sync repo', category: 'vcs', uses: 4 },
+      { id: 'git-sync', label: 'dup' },
+      { id: 'pr-review', label: 'pr-review', description: 'Depends on git-sync', category: 'vcs', uses: 11 },
+    ],
+    'reviewer',
+  );
+  assert.equal(skillOnly.profile, 'reviewer');
+  assert.equal(skillOnly.source, 'profile-skills');
+  assert.equal(skillOnly.totalSkills, 2);
+  assert.equal(skillOnly.totalMemories, 0);
+  assert.ok(skillOnly.edges.some((e) => e.kind === 'skill-link'));
+
+  // 全量确定性非分页布局与碰撞分离
+  assert.ok(computeConstellationNodeRadius('skill', 20) > computeConstellationNodeRadius('memory', 2));
+  const fullA = layoutFullConstellationGraph(restDirect, { selectedId: 'skill:deploy-flow' });
+  const fullB = layoutFullConstellationGraph(restDirect, { selectedId: 'skill:deploy-flow' });
+  assert.deepEqual(fullA, fullB, '同输入布局必须严格确定');
+  assert.equal(fullA.nodes.length, 4, '全量星图严禁分页截断');
+  assert.equal(fullA.activeNode?.id, 'skill:deploy-flow');
+  for (let i = 0; i < fullA.nodes.length; i++) {
+    for (let j = i + 1; j < fullA.nodes.length; j++) {
+      const a = fullA.nodes[i];
+      const b = fullA.nodes[j];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      assert.ok(dist >= a.radius + b.radius + 36 - 0.1, `node overlap ${a.id} vs ${b.id}: ${dist}`);
+    }
+  }
+
+  const skillFilterLayout = layoutFullConstellationGraph(restDirect, { filter: 'skill' });
+  assert.equal(skillFilterLayout.nodes.length, 3);
+  assert.equal(skillFilterLayout.activeNode?.id, 'skill:lint-guard');
+
+  const emptyFull = layoutFullConstellationGraph(skillOnly, { filter: 'memory' });
+  assert.equal(emptyFull.activeNode, null);
+  assert.deepEqual(emptyFull.nodes, []);
+
+  // 技能清单排序：uses 降序 -> linkCount 降序 -> label 升序
+  const skillList = extractConstellationSkillList(restDirect);
+  assert.deepEqual(
+    skillList.map((s) => [s.skillName, s.uses]),
+    [
+      ['lint-guard', 24],
+      ['deploy-flow', 18],
+      ['docker-ops', 7],
+    ],
+  );
+  assert.ok(skillList[1].relatedSkillIds.includes('skill:docker-ops'));
+  assert.ok(skillList[1].relatedMemoryIds.includes('memory:arch:1'));
 });

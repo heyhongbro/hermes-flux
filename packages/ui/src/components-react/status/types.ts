@@ -55,4 +55,5 @@ export interface RightPodActions {
   onLoadBreakdown: () => void;
   onCopyText: (text: string) => Promise<boolean | void> | boolean | void;
   onQuoteToMain: (text: string) => void;
+  onOpenConstellation?: (profileName: string) => void;
 }

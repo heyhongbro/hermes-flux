@@ -11,7 +11,7 @@
 | `groups.log` | `profile` `room_id` `since_seq` `limit` `include_disbanded` | `events` `cursor` `latest_seq` `has_more` `authority` | `packages/core/src/group/groupService.ts:331` | ✅ 0.22.5 |
 | `groups.rename` | `profile` `room_id` `event_id` `name` | `room` | `packages/core/src/group/groupService.ts:420` | ✅ 0.22.5 |
 | `groups.send` | `profile` `room_id` `event_id` `payload` | `event` `client_event_id` `accepted` `driver_started` | `packages/core/src/group/groupService.ts:258` | ✅ 0.22.5 |
-| `groups.state` | `profile` `room_id` `include_disbanded` | `room` `driver_status` `context` | `packages/core/src/group/groupService.ts:156`<br>`packages/desktop/src/renderer/services/sessionStatusService.ts:315` | ✅ 0.22.5 |
+| `groups.state` | `profile` `room_id` `include_disbanded` | `room` `driver_status` `context` | `packages/core/src/group/groupService.ts:156`<br>`packages/desktop/src/renderer/services/sessionStatusService.ts:316` | ✅ 0.22.5 |
 
 ## 明细
 
@@ -70,5 +70,5 @@
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
   - `packages/core/src/group/groupService.ts:156`
-  - `packages/desktop/src/renderer/services/sessionStatusService.ts:315`
+  - `packages/desktop/src/renderer/services/sessionStatusService.ts:316`
 

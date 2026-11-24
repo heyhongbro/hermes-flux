@@ -22,7 +22,7 @@
 import type { BotCapabilityList, BotCapabilityRow, BotDraftState, BotManagementStatus } from '@hermes-flux/core';
 
 /** 详情工作台扁平一级菜单页签。 */
-export type BotDetailTab = 'basic' | 'soul' | 'toolsets' | 'skills' | 'mcp';
+export type BotDetailTab = 'basic' | 'soul' | 'toolsets' | 'skills' | 'mcp' | 'constellation';
 /** 能力矩阵分类。 */
 export type BotCapCategory = 'toolsets' | 'skills' | 'mcp';
 /** 能力矩阵状态筛选。 */
@@ -260,6 +260,8 @@ export function resolveAnchorNavigation(anchorId: string): {
       return { tab: 'skills' };
     case 'bot-mcp':
       return { tab: 'mcp' };
+    case 'bot-memory':
+      return { tab: 'constellation' };
     default:
       return { tab: 'basic' };
   }

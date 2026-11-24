@@ -48,6 +48,7 @@ import {
 } from '@hermes-flux/core';
 import {
   mountSettingsModal,
+  type BotDetailTab,
   type SettingsSectionId,
   type SettingsSnapshot,
   type SettingsActions,
@@ -74,6 +75,7 @@ import { createProviderAdminController, planDeleteTarget } from '../providerAdmi
 import { createSettingsController, resolveGatewayPassword } from '../settingsController.js';
 import { createBotManagementController, createBotWizardController } from '../botManagementController.js';
 import { loadProviderCatalog } from '../providerCatalog.js';
+import type { LearningService } from './learningService.js';
 
 export interface GatewayConnectionTestResult {
   ok: boolean;
@@ -111,6 +113,7 @@ export interface SettingsDataDeps {
   readonly profileAvatarCache: Map<string, string>;
   readonly persistAvatarCache: () => void;
   readonly persistAgentsToCache?: (profiles: AppState['profiles']) => void;
+  readonly learningService?: LearningService;
 }
 
 export interface SettingsDataService {
@@ -118,7 +121,7 @@ export interface SettingsDataService {
   subscriptionProfileName(): string;
   botRoster(): Array<{ profile: string; displayName: string; avatar?: string }>;
   reloadProviderCatalog(): Promise<void>;
-  openBotSettings(botId: string): void;
+  openBotSettings(botId: string, options?: { tab?: BotDetailTab }): void;
   getBotManagementSnapshot(): SettingsSnapshot['botManagement'];
   getSettingsSnapshot(): SettingsSnapshot;
   ensureSettingsSectionData(section: SettingsSectionId, force?: boolean): void;
@@ -151,6 +154,8 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
    */
   let botDirtyGuard: (() => boolean) | null = null;
   let pendingBotExit: BotExitTarget | null = null;
+  let botTabRequestSeq = 0;
+  let requestedBotTab: { tab: BotDetailTab; seq: number } | null = null;
 
   type BindingFlightResult = ToggleProviderAgentResult & {
     confirmRequired?: boolean;
@@ -567,6 +572,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     pendingBotExit = null;
     if (target.kind === 'close') {
       state.isSettingsOpen = false;
+      requestedBotTab = null;
     } else {
       state.settingsSection = target.section;
       ensureSettingsSectionData(target.section);
@@ -574,17 +580,29 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     deps.render();
   }
 
-  function openBotSettings(botId: string): void {
+  function openBotSettings(botId: string, options?: { tab?: BotDetailTab }): void {
     const state = deps.getState();
     // 显式打开某个 BOT 是一次新的入场：上一轮挂起的离场目标不得残留。
     pendingBotExit = null;
     state.isSettingsOpen = true;
     state.settingsSection = 'agents';
     state.botManagementActiveBotId = botId;
+    if (options?.tab) {
+      botTabRequestSeq += 1;
+      requestedBotTab = { tab: options.tab, seq: botTabRequestSeq };
+    } else {
+      requestedBotTab = null;
+    }
     const status = state.botManagementStatus.status;
     ensureSettingsSectionData('agents');
     if (status !== 'uninitialized' && status !== 'fetching_list') {
       getBotManagementController().selectBot(botId, { immediate: true });
+    }
+    if (options?.tab === 'constellation') {
+      void deps.learningService?.loadLearningGraph({
+        profile: botId || state.profileName || 'default',
+        force: false,
+      });
     }
     deps.render();
   }
@@ -645,6 +663,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
       confirmPending: state.botManagementConfirm,
       highlightBotId: undefined,
       isBusy: state.botManagementBusy,
+      requestedTab: requestedBotTab,
     };
   }
 
@@ -665,6 +684,8 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
       profiles: state.settingsProfiles,
       bots: botRoster(),
       botManagement: getBotManagementSnapshot(),
+      learningState: state.learningState,
+      learningDetail: state.learningDetail,
       scopedProfile: scopedProfileName(),
       providerViews: state.settingsProviderViews,
       providerFailures: state.settingsProviderFailures,
@@ -1397,6 +1418,20 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
           }),
         };
       },
+      onLoadLearningGraph: (profile, force) => {
+        void deps.learningService?.loadLearningGraph({ profile, force: Boolean(force) });
+      },
+      onLoadLearningDetail: (id, profile) => {
+        void deps.learningService?.loadLearningDetail(id, profile);
+      },
+      onEditLearningNode: (id, content, profile) =>
+        deps.learningService
+          ? deps.learningService.editLearningNode(id, content, profile)
+          : Promise.resolve({ ok: false, message: deps.t('settings.notConnected') }),
+      onDeleteLearningNode: (id, profile) =>
+        deps.learningService
+          ? deps.learningService.deleteLearningNode(id, profile)
+          : Promise.resolve({ ok: false, message: deps.t('settings.notConnected') }),
       onTestGateway: (draft) => {
         applyGatewayDraft(draft);
         void getSettingsController().runBusy(async () => {

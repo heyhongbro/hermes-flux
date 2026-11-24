@@ -1131,6 +1131,7 @@ const statusIntegration = createStatusIntegration({
   syncReactMessageList: (f) => renderCoordinator.syncReactMessageList(f), syncRightPod: () => renderCoordinator.syncRightPod(),
   syncTitlebar: () => renderCoordinator.syncTitlebar(), openFilePreview: (p) => handleOpenFilePreview(p),
   syncComposerHeight: (el) => inputDockController.syncComposerHeight(el), setTimedDockNotice: (m, d) => setTimedDockNotice(m, d),
+  onOpenConstellation: (profileName) => settingsDataService.openBotSettings(profileName, { tab: 'constellation' }),
   render: () => render(), t,
 });
 
@@ -1266,6 +1267,10 @@ const ensureGroupTurnClock = (r: string | null, isRunning: boolean) => presenceC
 const buildAgentPresenceSnapshot = (): AgentPresenceSnapshot => presenceController.getSnapshot();
 const getAgentPresenceSnapshot = (): AgentPresenceSnapshot => presenceController.getSnapshot();
 
+const learningService = createLearningService({
+  getState: () => state, render: () => render(), getGatewayClient: () => gatewayClient, getDesktopApi: () => desktopApi,
+  getCurrentTicket: () => currentTicket ?? null, getEffectiveUrl: (url) => getEffectiveUrl(url ?? state.gatewayUrl), t, describeRpcError,
+});
 const settingsDataService = createSettingsDataService({
   getState: () => state, getGatewayClient: () => gatewayClient, getDesktopApi: () => desktopApi,
   getCurrentTicket: () => currentTicket ?? null, getEffectiveUrl: (url) => getEffectiveUrl(url),
@@ -1278,14 +1283,9 @@ const settingsDataService = createSettingsDataService({
   getActivityIndicatorVariant: () => activityIndicatorVariant, setActivityIndicatorVariant: (v) => { activityIndicatorVariant = v; },
   saveActivityIndicatorVariant: (v) => saveActivityIndicatorVariant(v), resolveActivityIndicatorVariant: (v) => resolveActivityIndicatorVariant(v),
   resolveSkinId: (theme) => resolveSkinId(theme), writePresenceLayout: (layout) => writePresenceLayout(layout === 'dock' ? 'dock' : 'stage'),
-  onPresenceLayoutChanged: () => {
-    agentPresenceHost = null; lastAgentPresenceFingerprint = ''; presenceController.resetPresenceHost();
-    scrollEndController.syncHost();
-  },
-  profileAvatarCache, persistAvatarCache: () => persistAvatarCache(),
-  persistAgentsToCache: (profiles) => persistAgentsToCache(profiles),
+  onPresenceLayoutChanged: () => { agentPresenceHost = null; lastAgentPresenceFingerprint = ''; presenceController.resetPresenceHost(); scrollEndController.syncHost(); },
+  profileAvatarCache, persistAvatarCache: () => persistAvatarCache(), persistAgentsToCache: (profiles) => persistAgentsToCache(profiles), learningService,
 });
-
 const scopedProfileName = () => settingsDataService.scopedProfileName();
 const subscriptionProfileName = () => settingsDataService.subscriptionProfileName();
 const botRoster = () => settingsDataService.botRoster();
@@ -1296,23 +1296,14 @@ const getSettingsSnapshot = () => settingsDataService.getSettingsSnapshot();
 const ensureSettingsSectionData = (section: SettingsSectionId, force = false) => settingsDataService.ensureSettingsSectionData(section, force);
 const createSettingsActions = (): SettingsActions => settingsDataService.createSettingsActions();
 const syncReactSettings = () => settingsDataService.syncReactSettings();
-const syncLocale = () => {
-  setLocale(state.lang === 'en' ? 'en-US' : 'zh-CN');
-  scrollEndController.syncHost();
-};
+const syncLocale = () => { setLocale(state.lang === 'en' ? 'en-US' : 'zh-CN'); scrollEndController.syncHost(); };
 const mountReactShellComponents = () => renderCoordinator.mountReactShellComponents();
 const render = () => renderCoordinator.render();
 const fileViewerService = createFileViewerService({
-  getState: renderCoordinator.getState, render, getDesktopApi: () => desktopApi,
-  getGatewayClient: () => gatewayClient, safeCopyText, t,
-  onBackFromFiles: () => statusIntegration.onBackFromFiles(),
-  onInspectorStateChange: () => statusIntegration.onInspectorStateChange(),
+  getState: renderCoordinator.getState, render, getDesktopApi: () => desktopApi, getGatewayClient: () => gatewayClient, safeCopyText, t,
+  onBackFromFiles: () => statusIntegration.onBackFromFiles(), onInspectorStateChange: () => statusIntegration.onInspectorStateChange(),
 });
 const handleOpenFilePreview = fileViewerService.handleOpenFilePreview;
-const learningService = createLearningService({
-  getState: renderCoordinator.getState, render, getGatewayClient: () => gatewayClient,
-  t, describeRpcError,
-});
 const mobileShellCoordinator = createMobileShellCoordinator({
   getState: renderCoordinator.getState, render, leftRailController, resolveAgentAvatar,
   selectSession, openBotChat, openGroupRoom, createNewSession: async (opts) => { await createNewSession(opts); },

@@ -7,6 +7,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createLearningService } from '../../dist/renderer/services/learningService.mjs';
+import {
+  LearningRestError,
+  createLearningRest,
+  describeLearningRestError,
+  isLearningRestEndpointMissing,
+} from '../../dist/renderer/learningRest.mjs';
 
 function createDeferred() {
   let resolve;
@@ -379,4 +385,425 @@ test('createLearningService 全分支：图谱加载/防重入/代数丢弃/详�
   assert.equal(on.state.learningDetail.status, 'idle');
   // status 已是 idle 时再次删除节点仍安全成功
   assert.equal((await on.service.deleteLearningNode('skill:alpha')).ok, true);
+});
+
+test('learningRest 错误解析与 IPC 包装异常分类', () => {
+  assert.deepEqual(
+    describeLearningRestError(new Error("Error invoking remote method 'gateway:httpProxy': Error: HTTP 404: Not Found")),
+    { status: 404, message: 'Not Found' },
+  );
+  assert.equal(isLearningRestEndpointMissing(new LearningRestError(404, 'Not Found')), true);
+  assert.equal(isLearningRestEndpointMissing(new LearningRestError(405, 'Method Not Allowed')), true);
+  assert.equal(isLearningRestEndpointMissing(new LearningRestError(501, 'Not Implemented')), true);
+  assert.equal(isLearningRestEndpointMissing(new LearningRestError(401, 'Unauthorized')), false);
+  assert.equal(isLearningRestEndpointMissing(new LearningRestError(500, 'Server Error')), false);
+});
+
+test('createLearningService: 多 Bot Profile 物理隔离、缓存隔离、跨 Bot 乱序围栏与 REST 404 分级回退', async () => {
+  const calls = [];
+  const state = {
+    gatewayUrl: 'http://127.0.0.1:8789',
+    profileName: 'default',
+    profiles: [
+      { name: 'default', displayName: 'DEFAULT BOT', isDefault: true },
+      { name: 'arch', displayName: 'Architect Bot', isDefault: false },
+    ],
+    learningState: { status: 'idle' },
+    learningDetail: { status: 'idle' },
+  };
+  let client = {
+    call: async (method, params) => {
+      calls.push(['ws', method, params]);
+      if (method === 'learning.frames') {
+        return {
+          count: 1,
+          buckets: [{ index: 0, nodes: [{ id: 'skill:default-only', label: 'default-only', style: 'skill', body: 'Default skill' }] }],
+        };
+      }
+      if (method === 'profiles.describe') {
+        return {
+          name: params.profile,
+          skills: [
+            { name: 'arch-review', enabled: true, description: 'Architecture audit via git-diff' },
+            { name: 'git-diff', enabled: true, description: 'Inspect diffs' },
+          ],
+        };
+      }
+      if (method === 'skills.manage') {
+        return { ok: true, markdown: '# arch-review\nDetailed skill guide' };
+      }
+      if (method === 'command.dispatch') {
+        return { ok: true, output: 'Usage guide' };
+      }
+      if (method === 'learning.detail') {
+        return { ok: true, id: params.id, kind: 'skill', label: 'default-only', content: 'Default WS detail' };
+      }
+      if (method === 'learning.edit' || method === 'learning.delete') {
+        return { ok: true };
+      }
+      return {};
+    },
+  };
+
+  let proxyHandler = async ({ path, method, params, body }) => {
+    calls.push(['rest', method || 'GET', path, params, body]);
+    const prof = params?.profile || 'default';
+    if (path === '/api/learning/graph') {
+      return {
+        profile: prof,
+        nodes: [
+          {
+            id: `skill:${prof}-skill`,
+            kind: 'skill',
+            label: `${prof}-skill`,
+            description: `Exclusive to ${prof}`,
+            uses: prof === 'arch' ? 12 : 3,
+          },
+          {
+            id: `memory:${prof}:1`,
+            kind: 'memory',
+            label: `Memory for ${prof}`,
+            body: `Uses skill:${prof}-skill`,
+          },
+        ],
+        edges: [],
+      };
+    }
+    if (path === '/api/learning/node' && (method || 'GET') === 'GET') {
+      return { ok: true, node: { id: params.id, kind: 'skill', label: `${prof}:${params.id}`, content: `# Content for ${prof}` } };
+    }
+    if (path === '/api/learning/node' && (method === 'PUT' || method === 'DELETE')) {
+      return { ok: true };
+    }
+    throw new Error(`HTTP 404: unexpected ${path}`);
+  };
+
+  const service = createLearningService({
+    getState: () => state,
+    render: () => {},
+    getGatewayClient: () => client,
+    getDesktopApi: () => ({ httpProxy: (opts) => proxyHandler(opts) }),
+    getCurrentTicket: () => 't-1',
+    getEffectiveUrl: (u) => u,
+    t: (k) => k,
+    describeRpcError: (e) => (e instanceof Error ? e.message : String(e || '')),
+  });
+
+  // 1. 不同 Bot 加载各自 REST 图谱，绝不串台，且命中缓存
+  await service.loadLearningGraph({ profile: 'default' });
+  assert.equal(state.learningState.status, 'ready');
+  assert.equal(state.learningState.profile, 'default');
+  assert.equal(state.learningState.graph.nodes[0].id, 'skill:default-skill');
+
+  await service.loadLearningGraph({ profile: 'arch' });
+  assert.equal(state.learningState.status, 'ready');
+  assert.equal(state.learningState.profile, 'arch');
+  assert.equal(state.learningState.graph.profile, 'arch');
+  assert.equal(state.learningState.graph.nodes[0].id, 'skill:arch-skill');
+
+  // 非强制切回 default 命中缓存，不重发 REST
+  const beforeCacheCount = calls.length;
+  await service.loadLearningGraph({ profile: 'default' });
+  assert.equal(calls.length, beforeCacheCount);
+  assert.equal(state.learningState.profile, 'default');
+  assert.equal(state.learningState.graph.nodes[0].id, 'skill:default-skill');
+
+  // REST 节点详情、编辑与删除透传正确 profile
+  await service.loadLearningDetail('skill:arch-skill', 'arch');
+  assert.equal(state.learningDetail.status, 'ready');
+  assert.equal(state.learningDetail.profile, 'arch');
+  assert.equal(state.learningDetail.content, '# Content for arch');
+  assert.deepEqual(await service.editLearningNode('skill:arch-skill', 'Updated arch skill', 'arch'), { ok: true });
+  assert.ok(calls.some((c) => c[0] === 'rest' && c[1] === 'PUT' && c[3]?.profile === 'arch'));
+  assert.deepEqual(await service.deleteLearningNode('skill:arch-skill', 'arch'), { ok: true });
+  assert.ok(calls.some((c) => c[0] === 'rest' && c[1] === 'DELETE' && c[3]?.profile === 'arch'));
+
+  // 2. Client 实例变更后缓存自动清空
+  const nextClient = { call: client.call };
+  client = nextClient;
+  const beforeReconnectCalls = calls.length;
+  await service.loadLearningGraph({ profile: 'default' });
+  assert.ok(calls.length > beforeReconnectCalls, '新 gatewayClient 必须清空缓存重拉');
+
+  // 3. 跨 Bot 慢响应乱序抵达不得覆写新 Bot 状态
+  const slowDefault = createDeferred();
+  const fastArch = createDeferred();
+  proxyHandler = async ({ params }) =>
+    params?.profile === 'arch' ? fastArch.promise : slowDefault.promise;
+  const pDefault = service.loadLearningGraph({ profile: 'default', force: true });
+  const pArch = service.loadLearningGraph({ profile: 'arch', force: true });
+  fastArch.resolve({
+    profile: 'arch',
+    nodes: [{ id: 'skill:arch-fresh', kind: 'skill', label: 'arch-fresh', uses: 9 }],
+    edges: [],
+  });
+  await pArch;
+  slowDefault.resolve({
+    profile: 'default',
+    nodes: [{ id: 'skill:default-stale', kind: 'skill', label: 'default-stale', uses: 1 }],
+    edges: [],
+  });
+  await pDefault;
+  assert.equal(state.learningState.profile, 'arch');
+  assert.equal(state.learningState.graph.nodes[0].id, 'skill:arch-fresh');
+
+  // 4. 非 404 错误 (HTTP 500) 必须显式落入 error，严禁静默降级
+  proxyHandler = async () => {
+    throw new Error('HTTP 500: Internal gateway failure');
+  };
+  await service.loadLearningGraph({ profile: 'arch', force: true });
+  assert.equal(state.learningState.status, 'error');
+  assert.equal(state.learningState.profile, 'arch');
+  assert.match(state.learningState.message, /Internal gateway failure/);
+
+  // 5. REST 返回 404 时：
+  //    - non-default Bot 绝不调 learning.frames，改用 profiles.describe({ profile }) 构建专属技能图；
+  //    - non-default 写操作（edit/delete）显式拒绝，避免错写到 default Bot！
+  calls.length = 0;
+  proxyHandler = async () => {
+    throw new Error("Error invoking remote method 'gateway:httpProxy': Error: HTTP 404: Not Found");
+  };
+  await service.loadLearningGraph({ profile: 'arch', force: true });
+  assert.equal(state.learningState.status, 'ready');
+  assert.equal(state.learningState.profile, 'arch');
+  assert.equal(state.learningState.graph.source, 'profile-skills');
+  assert.ok(state.learningState.graph.nodes.some((n) => n.id === 'skill:arch-review'));
+  assert.equal(
+    calls.some((c) => c[0] === 'ws' && c[1] === 'learning.frames'),
+    false,
+    '非 default Bot 在 REST 404 时绝不能回退到无 profile 的 learning.frames',
+  );
+
+  // non-default REST 404 时查 skill 详情走 skills.manage(profile)，memory 详情报错，edit/delete 显式拒绝
+  await service.loadLearningDetail('skill:arch-review', 'arch');
+  assert.equal(state.learningDetail.status, 'ready');
+  assert.match(state.learningDetail.content, /Detailed skill guide/);
+  await service.loadLearningDetail('memory:arch:1', 'arch');
+  assert.equal(state.learningDetail.status, 'error');
+  const blockedEdit = await service.editLearningNode('skill:arch-review', 'new body', 'arch');
+  assert.equal(blockedEdit.ok, false);
+  assert.equal(blockedEdit.message, 'mobile.memory.profileWriteUnsupported');
+  const blockedDelete = await service.deleteLearningNode('skill:arch-review', 'arch');
+  assert.equal(blockedDelete.ok, false);
+  assert.equal(blockedDelete.message, 'mobile.memory.profileWriteUnsupported');
+
+  // default Bot REST 404 时安全回退 WS learning.*
+  await service.loadLearningGraph({ profile: 'default', force: true });
+  assert.equal(state.learningState.status, 'ready');
+  assert.equal(state.learningState.graph.nodes[0].id, 'skill:default-only');
+  assert.ok(calls.some((c) => c[0] === 'ws' && c[1] === 'learning.frames'));
+
+  // createLearningRest 独立构造与非对象容错
+  const rawRest = createLearningRest({
+    baseUrl: () => 'http://127.0.0.1:8789',
+    ticket: () => '',
+    proxy: async () => null,
+  });
+  assert.deepEqual(await rawRest.editNode('arch', 'id-1', 'c'), { ok: true });
+  assert.deepEqual(await rawRest.deleteNode('arch', 'id-1'), { ok: true });
+  assert.equal((await rawRest.fetchNodeDetail('arch', 'id-1')).ok, false);
+});
+
+test('learningRest 全分支解析与 learningService complete.slash / 串台阻断 / 降级读写全路径', async () => {
+  // 1. describeLearningRestError 非 HTTP / 非 Error 异常分支
+  assert.deepEqual(describeLearningRestError(new Error('socket hangup')), {
+    status: 0,
+    message: 'socket hangup',
+  });
+  assert.deepEqual(describeLearningRestError('raw network down'), {
+    status: 0,
+    message: 'raw network down',
+  });
+
+  // 2. createLearningRest 全 payload 形态归并与显式失败透传
+  let mockRestRes = null;
+  const rest = createLearningRest({
+    baseUrl: () => 'http://127.0.0.1:8789',
+    ticket: () => 'tk',
+    proxy: async () => {
+      if (mockRestRes instanceof Error) throw mockRestRes;
+      return mockRestRes;
+    },
+  });
+
+  mockRestRes = {
+    id: 'deploy-tool',
+    kind: 'learned-skill',
+    title: 'Deploy Tool',
+    markdown: '# Deploy Markdown',
+  };
+  assert.deepEqual(await rest.fetchNodeDetail('arch', 'deploy-tool'), {
+    ok: true,
+    id: 'deploy-tool',
+    kind: 'skill',
+    label: 'Deploy Tool',
+    content: '# Deploy Markdown',
+    message: undefined,
+  });
+
+  mockRestRes = {
+    node: {
+      id: 'mem-flat',
+      style: 'memory',
+      name: 'Mem Name',
+      full_label: 'Full memory label',
+    },
+  };
+  assert.deepEqual(await rest.fetchNodeDetail('arch', 'mem-flat'), {
+    ok: true,
+    id: 'mem-flat',
+    kind: 'memory',
+    label: 'Mem Name',
+    content: 'Full memory label',
+    message: undefined,
+  });
+
+  mockRestRes = { ok: false, detail: 'forbidden node' };
+  assert.equal((await rest.fetchNodeDetail('arch', 'x')).ok, false);
+  assert.equal((await rest.editNode('arch', 'x', 'b')).ok, false);
+  assert.equal((await rest.editNode('arch', 'x', 'b')).message, 'forbidden node');
+  assert.deepEqual(await rest.deleteNode('arch', 'x'), { ok: false, message: 'forbidden node' });
+
+  // 3. complete.slash 使用契约 CompletionItem { text, meta, kind } + filter kind === 'skill'
+  //    以及 fetchSkillDetailWsFallback (command.dispatch 单侧降级 / 双失败报错) 和 !rest 路径
+  const wsCalls = [];
+  let dispatchFail = false;
+  let inspectFail = true;
+  const stateNoRest = {
+    gatewayUrl: 'http://127.0.0.1:8789',
+    profileName: 'default',
+    profiles: [{ name: 'arch', displayName: 'Architect', isDefault: false }],
+    learningState: { status: 'idle' },
+    learningDetail: { status: 'idle' },
+  };
+  const wsClient = {
+    call: async (method, params) => {
+      wsCalls.push([method, params]);
+      if (method === 'profiles.describe') {
+        return {
+          name: params.profile,
+          skills: [
+            { name: 'arch-review', enabled: true },
+            { name: 'help', enabled: true },
+          ],
+        };
+      }
+      if (method === 'complete.slash') {
+        return {
+          items: [
+            { text: '/arch-review', meta: 'Contract slash skill desc', kind: 'skill' },
+            { text: '/help', meta: 'Built-in command must be ignored', kind: 'command' },
+          ],
+        };
+      }
+      if (method === 'skills.manage') {
+        if (inspectFail) throw new Error('inspect down');
+        return { ok: true, markdown: 'From inspect' };
+      }
+      if (method === 'command.dispatch') {
+        if (dispatchFail) throw new Error('dispatch down');
+        return { type: 'skill', message: '# Dispatch fallback body' };
+      }
+      if (method === 'learning.detail') {
+        return { ok: true, id: params.id, kind: 'memory', label: 'Def M', content: 'Default mem body' };
+      }
+      if (method === 'learning.edit' || method === 'learning.delete') {
+        return { ok: true };
+      }
+      return {};
+    },
+  };
+
+  const svcNoRest = createLearningService({
+    getState: () => stateNoRest,
+    render: () => {},
+    getGatewayClient: () => wsClient,
+    t: (k) => k,
+    describeRpcError: (e) => (e instanceof Error ? e.message : String(e || '')),
+  });
+
+  await svcNoRest.loadLearningGraph({ profile: 'arch', force: true });
+  assert.equal(stateNoRest.learningState.status, 'ready');
+  const slashSkill = stateNoRest.learningState.graph.nodes.find((n) => n.id === 'skill:arch-review');
+  const ignoredCmd = stateNoRest.learningState.graph.nodes.find((n) => n.id === 'skill:help');
+  assert.equal(slashSkill?.description, 'Contract slash skill desc', 'complete.slash 必须按 CompletionItem.text 匹配技能简介');
+  assert.equal(ignoredCmd?.description, undefined, 'kind=command 的 slash 项不得污染同名技能说明');
+
+  // 无 REST 时非 default 查 skill：skills.manage 失败但 command.dispatch 成功时平顺降级
+  await svcNoRest.loadLearningDetail('skill:arch-review', 'arch');
+  assert.equal(stateNoRest.learningDetail.status, 'ready');
+  assert.equal(stateNoRest.learningDetail.content, '# Dispatch fallback body');
+
+  // 双失败必须显式落入 error
+  dispatchFail = true;
+  await svcNoRest.loadLearningDetail('skill:arch-review', 'arch');
+  assert.equal(stateNoRest.learningDetail.status, 'error');
+  assert.match(stateNoRest.learningDetail.message, /inspect down/);
+
+  // 无 REST 时非 default 写操作拒绝
+  assert.equal((await svcNoRest.editLearningNode('skill:arch-review', 'x', 'arch')).message, 'mobile.memory.profileWriteUnsupported');
+  assert.equal((await svcNoRest.deleteLearningNode('skill:arch-review', 'arch')).message, 'mobile.memory.profileWriteUnsupported');
+
+  // 4. REST 显式返回错误 profile（疑似忽略 ?profile= 返回 default）必须拒绝缓存并报错
+  let restGraphResponse = {
+    profile: 'default',
+    nodes: [{ id: 'skill:default-leak', kind: 'skill', label: 'default-leak', uses: 99 }],
+    edges: [],
+  };
+  let restErrMode = null;
+  const stateWithRest = {
+    gatewayUrl: 'http://127.0.0.1:8789',
+    profileName: 'default',
+    profiles: [],
+    learningState: { status: 'idle' },
+    learningDetail: { status: 'idle' },
+  };
+  const svcWithRest = createLearningService({
+    getState: () => stateWithRest,
+    render: () => {},
+    getGatewayClient: () => wsClient,
+    getDesktopApi: () => ({
+      httpProxy: async ({ path }) => {
+        if (restErrMode === '404') throw new Error('HTTP 404: Missing');
+        if (restErrMode === '500') throw new Error('HTTP 500: Boom');
+        if (path === '/api/learning/graph') return restGraphResponse;
+        throw new Error('HTTP 500: Boom');
+      },
+    }),
+    t: (k) => k,
+    describeRpcError: (e) => (e instanceof Error ? e.message : String(e || '')),
+  });
+
+  await svcWithRest.loadLearningGraph({ profile: 'arch', force: true });
+  assert.equal(stateWithRest.learningState.status, 'error', 'REST 返回不匹配 profile 时必须拒绝并进入 error');
+  assert.match(stateWithRest.learningState.message, /Profile mismatch/);
+  restErrMode = null;
+  // 验证上一次失败没有污染 arch 缓存
+  restGraphResponse = {
+    profile: 'arch',
+    nodes: [{ id: 'skill:arch-ok', kind: 'skill', label: 'arch-ok', uses: 4 }],
+    edges: [],
+  };
+  await svcWithRest.loadLearningGraph({ profile: 'arch', force: false });
+  assert.equal(stateWithRest.learningState.status, 'ready');
+  assert.equal(stateWithRest.learningState.graph.nodes[0].id, 'skill:arch-ok');
+
+  // 5. REST 500 在详情/编辑/删除上报错，REST 404 在 default 上安全回退 WS learning.detail/edit/delete
+  restErrMode = '500';
+  await svcWithRest.loadLearningDetail('memory:m1', 'default');
+  assert.equal(stateWithRest.learningDetail.status, 'error');
+  assert.match(stateWithRest.learningDetail.message, /Boom/);
+  assert.match((await svcWithRest.editLearningNode('memory:m1', 'x', 'default')).message, /Boom/);
+  assert.match((await svcWithRest.deleteLearningNode('memory:m1', 'default')).message, /Boom/);
+
+  restErrMode = '404';
+  wsCalls.length = 0;
+  await svcWithRest.loadLearningDetail('memory:def-1', 'default');
+  assert.equal(stateWithRest.learningDetail.status, 'ready');
+  assert.equal(stateWithRest.learningDetail.content, 'Default mem body');
+  assert.equal((await svcWithRest.editLearningNode('memory:def-1', 'edit body', 'default')).ok, true);
+  assert.equal((await svcWithRest.deleteLearningNode('memory:def-1', 'default')).ok, true);
+  assert.ok(wsCalls.some(([m]) => m === 'learning.detail'));
+  assert.ok(wsCalls.some(([m]) => m === 'learning.edit'));
+  assert.ok(wsCalls.some(([m]) => m === 'learning.delete'));
 });
