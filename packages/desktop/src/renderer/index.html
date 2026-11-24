@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Hermes Flux — 极客美学工作台</title>
+  <link rel="icon" type="image/svg+xml" href="icons/brand/hermes-flux-icon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/brand/favicon-32.png">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="conversation.css">
   <link rel="stylesheet" href="status-pod.css">
@@ -12,7 +14,79 @@
 </head>
 <body>
   <div id="flux-app-root">
-    <!-- Dynamic app shell mounted by renderer/index.ts -->
+    <!-- 冷启动过渡屏：renderer/index.ts 挂载工作台后即刻原位替换 -->
+    <div class="flux-boot-splash" data-boot-splash="true" aria-busy="true" aria-label="Hermes Flux">
+      <span class="flux-brand-swift" data-brand-variant="mark" data-brand-motion="fly" style="width: 84px; height: 84px;" aria-hidden="true">
+        <span class="flux-brand-swift__rotor">
+          <svg class="flux-brand-swift__svg" viewBox="0 0 1000 1000" width="100%" height="100%" aria-hidden="true" focusable="false">
+            <defs>
+              <filter id="hf-boot-shadow" x="-25%" y="-25%" width="150%" height="150%">
+                <feDropShadow dx="4" dy="20" stdDeviation="18" flood-color="#1A2233" flood-opacity="0.17" />
+              </filter>
+              <linearGradient id="hf-boot-lowerWing" x1="292" y1="427" x2="512" y2="572" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#19347A" />
+                <stop offset="100%" stop-color="#10255E" />
+              </linearGradient>
+              <linearGradient id="hf-boot-tail" x1="270" y1="772" x2="484" y2="572" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#255CD1" />
+                <stop offset="100%" stop-color="#193F96" />
+              </linearGradient>
+              <linearGradient id="hf-boot-upperWingTop" x1="199" y1="217" x2="540" y2="430" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#FF6538" />
+                <stop offset="100%" stop-color="#EA4B20" />
+              </linearGradient>
+              <linearGradient id="hf-boot-upperWingBottom" x1="199" y1="217" x2="512" y2="456" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#E6461D" />
+                <stop offset="100%" stop-color="#CC3612" />
+              </linearGradient>
+              <linearGradient id="hf-boot-neckHead" x1="597" y1="449" x2="745" y2="450" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#F7AD2A" />
+                <stop offset="100%" stop-color="#FFD056" />
+              </linearGradient>
+              <linearGradient id="hf-boot-beak" x1="745" y1="406" x2="801" y2="435" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#12B0A2" />
+                <stop offset="100%" stop-color="#0A857C" />
+              </linearGradient>
+              <linearGradient id="hf-boot-chestUpper" x1="540" y1="338" x2="530" y2="620" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#FFC23D" />
+                <stop offset="100%" stop-color="#F5A623" />
+              </linearGradient>
+              <linearGradient id="hf-boot-chestLower" x1="455" y1="694" x2="661" y2="591" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#EB9414" />
+                <stop offset="100%" stop-color="#D97E0A" />
+              </linearGradient>
+            </defs>
+            <g filter="url(#hf-boot-shadow)">
+              <g transform="translate(-120, -116) scale(1.24)">
+                <g data-part="wing-lower" class="flux-brand-swift__part flux-brand-swift__wing-lower" style="transform-origin: 498px 514px">
+                  <polygon points="292,427 512,456 484,572" fill="url(#hf-boot-lowerWing)" />
+                </g>
+                <g data-part="tail" class="flux-brand-swift__part flux-brand-swift__tail" style="transform-origin: 470px 633px">
+                  <polygon points="484,572 455,694 270,772" fill="url(#hf-boot-tail)" />
+                </g>
+                <g data-part="wing-upper" class="flux-brand-swift__part flux-brand-swift__wing-upper" style="transform-origin: 512px 456px">
+                  <polygon points="199,217 540,338 512,456" fill="url(#hf-boot-upperWingTop)" />
+                  <polygon points="199,217 512,456 292,427" fill="url(#hf-boot-upperWingBottom)" />
+                </g>
+                <g data-part="head" class="flux-brand-swift__part flux-brand-swift__head">
+                  <polygon points="597,449 693,390 745,406 729,453 661,591" fill="url(#hf-boot-neckHead)" />
+                </g>
+                <g data-part="beak" class="flux-brand-swift__part flux-brand-swift__beak">
+                  <polygon points="745,406 801,425 729,453" fill="url(#hf-boot-beak)" />
+                </g>
+                <g data-part="body" class="flux-brand-swift__part flux-brand-swift__body">
+                  <polygon points="597,449 618,436 661,591" fill="#A65E00" fill-opacity="0.16" />
+                  <polygon points="540,338 661,591 493,535" fill="url(#hf-boot-chestUpper)" />
+                  <polygon points="493,535 661,591 455,694" fill="url(#hf-boot-chestLower)" />
+                </g>
+              </g>
+            </g>
+          </svg>
+        </span>
+        <span class="flux-brand-swift__shadow" aria-hidden="true"></span>
+      </span>
+      <span class="flux-boot-splash__wordmark">HERMES FLUX</span>
+    </div>
   </div>
   <script type="module" src="index.js"></script>
 </body>

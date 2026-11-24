@@ -6,19 +6,23 @@
 import { BrowserWindow, Menu, MenuItem, app } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveTitlebarMaximized } from './windowControl';
+import { resolveTitlebarMaximized, resolveWindowIconPath } from './windowControl';
 
 export function createMainWindow(): BrowserWindow {
   const isWin = process.platform === 'win32';
   const isMac = process.platform === 'darwin';
 
-  const iconPath = path.join(__dirname, '../build/icon.ico');
+  const resolvedWindowIcon = resolveWindowIconPath({
+    platform: process.platform,
+    buildDir: path.join(__dirname, '../build'),
+    fileExists: (p) => fs.existsSync(p),
+  });
   const win = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 960,
     minHeight: 600,
-    icon: isWin && fs.existsSync(iconPath) ? iconPath : undefined,
+    icon: resolvedWindowIcon,
     backgroundColor: '#090A0F',
     show: false,
     autoHideMenuBar: true,

@@ -16,6 +16,7 @@ import { ConversationSkeleton } from './ConversationSkeleton.js';
 import { TurnGroup, groupTurns } from './TurnGroup.js';
 import { selectVisibleMessages } from './visibility.js';
 import { collectTouchedFiles } from '../../lib/fileRefs.js';
+import { BrandSwiftMark } from '../../icons/BrandMark.js';
 
 export interface ConversationMessageListProps {
   snapshot: ConversationSnapshot;
@@ -137,6 +138,7 @@ export function ConversationMessageList({
     if (snapshot.messagesPhase === 'loading') return <ConversationSkeleton />;
     return (
       <div className="conv-state" data-conv-state="empty">
+        <BrandSwiftMark variant="badge" motion="glide" size={76} className="mb-2" decorative />
         <div className="conv-state__title">{snapshot.emptyTitle ?? t('conversation.emptyTitle')}</div>
         {snapshot.emptyHint ? <div className="conv-state__hint">{snapshot.emptyHint}</div> : null}
       </div>
