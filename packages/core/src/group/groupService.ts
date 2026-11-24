@@ -101,9 +101,13 @@ export class GroupRoomStore {
    * 兼容官方 Gateway 返回结构：{ rooms: [...] } 与客户端解包结构 { groups: [...] }
    */
   public async listRooms(bridge: IRpcCaller): Promise<GroupRoomSummary[]> {
-    const res = await bridge.request<GroupsListResult>('groups.list');
+    // 契约：include_disbanded 默认为 false，显式传参确保网关与客户端双层防御已解散群聊
+    const res = await bridge.request<GroupsListResult>('groups.list', { include_disbanded: false });
     const rawList = Array.isArray(res?.groups)
-      ? res.groups
+      ? res.groups.map((g) => ({
+          ...g,
+          isDisbanded: g.isDisbanded ?? Boolean((g as { disbanded_at?: number | null }).disbanded_at),
+        }))
       : Array.isArray(res?.rooms)
       ? res.rooms
           // 防御：网关可能返回非对象行（脱敏/占位/历史脏数据），
@@ -125,12 +129,16 @@ export class GroupRoomStore {
       throw new Error('网关返回了非法的 groups.list 响应数据结构');
     }
 
-    // 没有 room_id 的行无法寻址，直接丢弃并留痕（Failure Is Not Empty 的对偶：
-    // 丢弃必须有理由，不能悄悄产生不可用的实体）
+    // 没有 room_id 的行无法寻址；已解散（isDisbanded=true）的房间严禁混入可用列表（防止死灰复燃）
     const usable = rawList.filter((room) => {
-      if (room.roomId) return true;
-      console.warn('[GroupRoomStore] groups.list 返回了缺少 room_id 的房间行，已跳过');
-      return false;
+      if (!room.roomId) {
+        console.warn('[GroupRoomStore] groups.list 返回了缺少 room_id 的房间行，已跳过');
+        return false;
+      }
+      if (room.isDisbanded) {
+        return false;
+      }
+      return true;
     });
 
     this.rooms.clear();
@@ -395,6 +403,9 @@ export class GroupRoomStore {
       if (existing) {
         existing.isDisbanded = true;
       }
+      this.rooms.delete(roomId);
+      this.roomLogs.delete(roomId);
+      this.logListeners.delete(roomId);
     }
     return disbanded;
   }

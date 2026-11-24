@@ -814,3 +814,34 @@ test('MobileShellCoordinator 文件树、认知星图与触觉反馈新钩子全
     globalThis.document = prevDoc;
   }
 });
+
+test('mobileShellCoordinator: onActionDisband 回退 home 屏与异常处理', async () => {
+  const calls = [];
+  const h = createHarness({
+    openGroupRoom: async (id) => {
+      calls.push(['openGroupRoom', id]);
+      h.state.activeFocus = { type: 'group', roomId: id };
+    },
+    disbandGroupRoom: async (id) => {
+      calls.push(['disband', id]);
+      if (id === 'grp-error') throw new Error('网关拒绝解散');
+      // 模拟 index.ts 在 disbandGroupRoom 内部已先行重置 activeFocus
+      h.state.activeFocus = { type: 'session', sessionId: '' };
+    },
+  });
+
+  const acts = h.coordinator.getActions();
+  // 1. 处于 stage 且聚焦在 grp-1 时解散，必须成功切回 home
+  acts.onSelectGroup('grp-1');
+  assert.equal(h.coordinator.getActivePane(), 'stage');
+  assert.equal(h.state.activeFocus.type, 'group');
+
+  acts.onActionDisband({ kind: 'group', id: 'grp-1', title: '群聊1' });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(h.coordinator.getActivePane(), 'home', '聚焦中的群聊解散后必须平滑切回 home 屏');
+
+  // 2. 解散失败时记录可见 dockNotice
+  acts.onActionDisband({ kind: 'group', id: 'grp-error', title: '异常群聊' });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(h.state.dockNotice.includes('网关拒绝解散'), '解散失败必须向用户暴露 dockNotice');
+});

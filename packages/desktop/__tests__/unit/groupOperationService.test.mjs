@@ -126,6 +126,44 @@ test('groupOperationService: fetchGroupRooms retains existing rooms on failure (
   assert.equal(state.groupRooms[0].roomId, 'room-init');
 });
 
+test('groupOperationService: fetchGroupRooms filters out disbanded rooms', async () => {
+  const deps = createMockGroupDeps({
+    gatewayClient: {
+      call: async (method) => {
+        if (method === 'groups.list') {
+          return {
+            rooms: [
+              { room_id: 'room-active', name: 'Active Room', members: [{ profile: 'bot-a' }], updated_at: 2000 },
+              { room_id: 'room-disbanded', name: 'Dead Room', members: [{ profile: 'bot-a' }], updated_at: 2000, disbanded_at: 12345 },
+            ],
+          };
+        }
+        return null;
+      },
+      request: async (method) => {
+        if (method === 'groups.list') {
+          return {
+            rooms: [
+              { room_id: 'room-active', name: 'Active Room', members: [{ profile: 'bot-a' }], updated_at: 2000 },
+              { room_id: 'room-disbanded', name: 'Dead Room', members: [{ profile: 'bot-a' }], updated_at: 2000, disbanded_at: 12345 },
+            ],
+          };
+        }
+        return null;
+      },
+      listProfiles: async () => [{ name: 'bot-a' }],
+    },
+  });
+  const service = createGroupOperationService(deps);
+
+  await service.fetchGroupRooms();
+
+  const state = deps.getState();
+  assert.equal(state.groupRooms.length, 1);
+  assert.equal(state.groupRooms[0].roomId, 'room-active');
+  assert.equal(service.isHostedRoom('room-disbanded'), false);
+});
+
 test('groupOperationService: openGroupRoom disarms rollback, switches focus, loads logs, and syncs speaker', async () => {
   const enters = [];
   const deps = createMockGroupDeps({ beginSessionEnter: (id, options) => enters.push({ id, options }) });

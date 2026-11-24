@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ProfileService } from '../../dist/profile/profileService.js';
+import { defaultSessionHandleRegistry } from '../../dist/session/sessionRegistry.js';
 
 test('ProfileService - 专职 Bot 管理与 Forever Chat 终身主工位状态机', async (t) => {
   await t.test('1. listProfiles：获取专职 Bot 列表与内存缓存复用', async () => {
@@ -232,6 +233,39 @@ test('ProfileService - 专职 Bot 管理与 Forever Chat 终身主工位状态�
     assert.equal(createdPayload?.profile, 'fe-zhang');
     assert.equal(setHiddenPayload?.session_id, 'sess-new-forever-chat');
     assert.equal(setHiddenPayload?.hidden, true);
+  });
+
+  await t.test('6.1 getOrCreateForeverChat：网关返回双 ID 时必须采纳 stored_session_id 作为永久工位并登记实时句柄', async () => {
+    const service = new ProfileService();
+    let hiddenTargetSessionId = '';
+    let hiddenTargetProfile = '';
+    const mockBridge = {
+      async request(method, params) {
+        if (method === 'session.list') {
+          return { sessions: [] };
+        }
+        if (method === 'session.create') {
+          return { session_id: 'live-short-123', stored_session_id: '20261124_stored_long_456' };
+        }
+        if (method === 'session.set_hidden') {
+          hiddenTargetSessionId = params.session_id;
+          hiddenTargetProfile = params.profile;
+          return { success: true };
+        }
+        throw new Error(`Unexpected call: ${method}`);
+      },
+    };
+
+    try {
+      const chat = await service.getOrCreateForeverChat('new-bot-dual-id', mockBridge);
+      assert.equal(chat.sessionId, '20261124_stored_long_456', '必须采纳 stored_session_id 作为主工位 ID');
+      assert.equal(hiddenTargetSessionId, '20261124_stored_long_456', 'session.set_hidden 必须作用在 stored_session_id 上');
+      assert.equal(hiddenTargetProfile, 'new-bot-dual-id', 'session.set_hidden 必须传递 profile 确保多 Bot 隔离寻址');
+      assert.equal(defaultSessionHandleRegistry.getRegisteredLiveId('20261124_stored_long_456'), 'live-short-123', '必须在句柄表中登记实时通道 liveId');
+      assert.equal(chat.isForeverChat, true);
+    } finally {
+      defaultSessionHandleRegistry.clear();
+    }
   });
 
   await t.test('7. getOrCreateForeverChat：网络失败严禁伪装为空 (Failure Is Not Empty 显式抛出)', async () => {

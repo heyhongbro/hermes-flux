@@ -54,7 +54,7 @@ export interface ProfileManagementDeps {
   readonly cancelColdStartFocus: () => void;
   readonly fetchSessions: () => Promise<void>;
   readonly fetchModelOptions: (options?: { clearNotice?: boolean }) => Promise<void>;
-  readonly selectSession: (sessionId: string, options?: { preserveFocus?: boolean }) => Promise<void>;
+  readonly selectSession: (sessionId: string, options?: { preserveFocus?: boolean; botName?: string }) => Promise<void>;
   readonly openGroupRoom: (roomId: string) => Promise<void>;
   readonly restoreComposerFocus: () => void;
   readonly disarmRollbackOnLeave: () => void;
@@ -296,7 +296,7 @@ export function createProfileManagementService(deps: ProfileManagementDeps): Pro
       const alreadyMounted = state.activeSessionId === cachedSessionId
         && Boolean(state.activeLiveSessionId)
         && state.messages.length > 0;
-      void deps.selectSession(cachedSessionId, { preserveFocus: true });
+      void deps.selectSession(cachedSessionId, { preserveFocus: true, botName: botProfile });
       void deps.fetchModelOptions({ clearNotice: true });
       if (alreadyMounted) {
         if (wasBotFocused) deps.restoreComposerFocus();
@@ -336,7 +336,7 @@ export function createProfileManagementService(deps: ProfileManagementDeps): Pro
 
       if (state.activeFocus.type !== 'bot' || state.activeFocus.botName !== botProfile) return;
       state.activeFocus = { type: 'bot', botName: botProfile };
-      await deps.selectSession(foreverChat.sessionId, { preserveFocus: true });
+      await deps.selectSession(foreverChat.sessionId, { preserveFocus: true, botName: botProfile });
       if (state.activeFocus.type !== 'bot' || state.activeFocus.botName !== botProfile) return;
       state.activeFocus = { type: 'bot', botName: botProfile };
       deps.render();
@@ -357,7 +357,7 @@ export function createProfileManagementService(deps: ProfileManagementDeps): Pro
         const outgoingForeverId = botForeverChatCache.get(outgoingFocus.botName);
         if (outgoingForeverId) {
           state.activeFocus = { type: 'bot', botName: outgoingFocus.botName };
-          void deps.selectSession(outgoingForeverId, { preserveFocus: true });
+          void deps.selectSession(outgoingForeverId, { preserveFocus: true, botName: outgoingFocus.botName });
           deps.render();
         } else {
           state.messagesPhase = 'ready';
