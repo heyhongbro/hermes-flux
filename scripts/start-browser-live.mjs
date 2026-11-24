@@ -552,6 +552,8 @@ async function start() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Hermes Flux — 桌面壳浏览器直跑模式</title>
+  <link rel="icon" type="image/svg+xml" href="/icons/brand/hermes-flux-icon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/brand/favicon-32.png">
   <link rel="stylesheet" href="/packages/desktop/dist/renderer/styles.css?v=${t}">
   <link rel="stylesheet" href="/packages/desktop/dist/renderer/conversation.css?v=${t}">
   <link rel="stylesheet" href="/packages/desktop/dist/renderer/status-pod.css?v=${t}">
@@ -703,11 +705,16 @@ async function start() {
       return;
     }
     // 【规则】浏览器直跑模式的入口页面在 `/`，但真实桌面产物在 `packages/desktop/dist/renderer/`。
-    // 组件里 `<img src="icons/lobe/...">` 按文档基准解析时会请求 `/icons/lobe/...`，
-    // 必须映射到渲染产物目录，否则全部彩色厂商图标在浏览器直跑下 404 破图。
+    // 组件里 `<img src="icons/lobe/...">` 与 favicon `icons/brand/...` 按文档基准解析时会请求 `/icons/...`，
+    // 必须映射到渲染产物目录，否则彩色厂商图标与品牌 favicon 在浏览器直跑下 404 破图。
     let fullPath = reqPath ? resolveInsideRoot(reqPath) : null;
-    if ((!fullPath || !fs.existsSync(fullPath) || fs.statSync(fullPath).isDirectory()) && reqPath.startsWith('icons/lobe/')) {
-      const iconsBaseLex = path.resolve(ROOT_REAL, 'packages', 'desktop', 'dist', 'renderer', 'icons', 'lobe');
+    const iconSubdir = reqPath.startsWith('icons/lobe/')
+      ? 'lobe'
+      : reqPath.startsWith('icons/brand/')
+        ? 'brand'
+        : null;
+    if ((!fullPath || !fs.existsSync(fullPath) || fs.statSync(fullPath).isDirectory()) && iconSubdir) {
+      const iconsBaseLex = path.resolve(ROOT_REAL, 'packages', 'desktop', 'dist', 'renderer', 'icons', iconSubdir);
       const iconsBase = fs.existsSync(iconsBaseLex) ? fs.realpathSync(iconsBaseLex) : iconsBaseLex;
       const fallback = resolveInsideRoot(path.join('packages', 'desktop', 'dist', 'renderer', reqPath));
       if (fallback && isWithinDir(iconsBase, fallback)) {

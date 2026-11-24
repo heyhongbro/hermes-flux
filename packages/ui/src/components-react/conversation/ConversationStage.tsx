@@ -17,6 +17,7 @@ import { ConversationSkeleton } from './ConversationSkeleton.js';
 import { ConversationStream } from './ConversationStream.js';
 import { TurnGroup, groupTurns } from './TurnGroup.js';
 import { selectVisibleMessages } from './visibility.js';
+import { BrandSwiftMark } from '../../icons/BrandMark.js';
 
 export interface ConversationStageProps {
   snapshot: ConversationSnapshot;
@@ -27,9 +28,22 @@ export interface ConversationStageProps {
   dock?: React.ReactNode;
 }
 
-function StateBlock({ title, hint }: { title: string; hint?: string }): React.ReactElement {
+function StateBlock({
+  title,
+  hint,
+  brand = 'badge',
+}: {
+  title: string;
+  hint?: string;
+  brand?: 'badge' | 'fly';
+}): React.ReactElement {
   return (
     <div className="conv-state" data-conv-state="empty">
+      {brand === 'fly' ? (
+        <BrandSwiftMark variant="mark" motion="fly" size={64} className="mb-2" decorative />
+      ) : (
+        <BrandSwiftMark variant="badge" motion="glide" size={76} className="mb-2" decorative />
+      )}
       <div className="conv-state__title">{title}</div>
       {hint ? <div className="conv-state__hint">{hint}</div> : null}
     </div>
@@ -60,7 +74,7 @@ export function ConversationStage({
           // 已有消息（含流式中）时绝不覆盖，骨架只在真空窗里出现。
           <ConversationSkeleton />
         ) : snapshot.connection === 'connecting' ? (
-          <StateBlock title={t('conversation.connecting')} />
+          <StateBlock brand="fly" title={t('conversation.connecting')} />
         ) : turns.length === 0 ? (
           <StateBlock title={snapshot.emptyTitle ?? t('conversation.emptyTitle')} hint={snapshot.emptyHint} />
         ) : (
