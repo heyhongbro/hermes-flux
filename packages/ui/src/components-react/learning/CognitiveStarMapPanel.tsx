@@ -37,7 +37,7 @@ export interface CognitiveStarMapPanelProps {
   learningState: LearningLoadState;
   learningDetail: LearningDetailState;
   onEnsureLoaded?: (profile: string) => void;
-  onRefresh: (profile?: string) => void;
+  onRefresh: (profile: string) => void;
   onSelectNodeDetail: (id: string, profile?: string) => void;
   onSaveEdit?: (id: string, content: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;
   onDeleteNode?: (id: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;

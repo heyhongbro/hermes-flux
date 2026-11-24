@@ -3659,11 +3659,11 @@ test('桌面端 Bot 认知星图页签、跨 Bot 阻断、starMapViewport 数学
     const baseHookActions = {
       ...noopActions,
       onLoadLearningGraph: (p, force) => loadGraphLog.push([p, Boolean(force)]),
-      onLoadLearningDetail: () => {},
+      onLoadLearningDetail: (id, p) => loadGraphLog.push(['detail', id, p]),
     };
-    const cycle = (snapObj) => {
+    const cycle = (snapObj, actionsOverride = baseHookActions) => {
       effectQueue = [];
-      const tree = renderWithHooks(React.createElement(BotManagerView, { snapshot: snapObj, actions: baseHookActions }));
+      const tree = renderWithHooks(React.createElement(BotManagerView, { snapshot: snapObj, actions: actionsOverride }));
       for (const fn of effectQueue) fn();
       return tree;
     };
@@ -3678,21 +3678,106 @@ test('桌面端 Bot 认知星图页签、跨 Bot 阻断、starMapViewport 数学
     cycle(baseHookSnap);
     assert.deepEqual(loadGraphLog, [['arch', false]]);
 
-    // 传入 ready 图谱与点击技能行 -> 弹出桌面端大号详情窗
+    // 传入 ready 图谱，触发 refresh 与点击技能行 -> 弹出桌面端大号详情窗
     loadGraphLog.length = 0;
     const readyTree = cycle({
       ...baseHookSnap,
       learningState: { status: 'ready', profile: 'arch', graph: graphForArch },
     });
+    const refreshBtn = walkTree(readyTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-refresh')[0];
+    assert.ok(refreshBtn);
+    refreshBtn.props.onClick();
     const skillRowBtn = walkTree(readyTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-skill-item-skill:deploy-flow')[0];
     assert.ok(skillRowBtn);
     skillRowBtn.props.onClick();
+    assert.ok(loadGraphLog.some((e) => e[0] === 'arch' && e[1] === true));
+    assert.ok(loadGraphLog.some((e) => e[0] === 'detail' && e[1] === 'skill:deploy-flow' && e[2] === 'arch'));
     const detailOpenedTree = cycle({
       ...baseHookSnap,
       learningState: { status: 'ready', profile: 'arch', graph: graphForArch },
       learningDetail: { status: 'ready', id: 'skill:deploy-flow', kind: 'skill', label: 'deploy-flow', content: '# Deploy Flow', profile: 'arch' },
     });
     assert.ok(walkTree(detailOpenedTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-detail')[0]);
+
+    // 外部直达 requestedTab 触发切换 + onCopyText 透传 + activeId 为空不触发加载
+    let copiedPayload = '';
+    const jumpActions = {
+      ...baseHookActions,
+      onCopy: async (text) => {
+        copiedPayload = text;
+        return true;
+      },
+    };
+    const jumpedTree = cycle(
+      {
+        ...baseHookSnap,
+        botManagement: {
+          ...baseHookSnap.botManagement,
+          requestedTab: { tab: 'constellation', seq: 2 },
+        },
+        learningState: { status: 'ready', profile: 'arch', graph: graphForArch },
+        learningDetail: { status: 'ready', id: 'skill:deploy-flow', kind: 'skill', label: 'deploy-flow', content: '# Copied MD', profile: 'arch' },
+      },
+      jumpActions,
+    );
+    const copyBtn = walkTree(jumpedTree, (n) => n.props?.['aria-label'] === t('mobile.inspector.copyContent'))[0];
+    assert.ok(copyBtn);
+    copyBtn.props.onClick();
+    assert.equal(copiedPayload, '# Copied MD');
+
+    // 覆盖 BotManagerView 内 learningState/learningDetail ?? idle、identityTitle || activeId 与可选回调缺省分支
+    const omitIdleTree = cycle(
+      {
+        ...baseHookSnap,
+        botManagement: {
+          ...baseHookSnap.botManagement,
+          roster: [{ id: 'arch', displayName: '', model: '', isDefault: false, hasDraft: false }],
+          activeDetail: botDetail({ id: 'arch', displayName: '', isDefault: false }),
+          requestedTab: { tab: 'constellation', seq: 3 },
+        },
+        learningState: undefined,
+        learningDetail: undefined,
+      },
+      {
+        ...noopActions,
+        onLoadLearningGraph: undefined,
+        onLoadLearningDetail: undefined,
+      },
+    );
+    assert.ok(walkTree(omitIdleTree, (n) => n.props?.['data-bot-tabpanel'] === 'constellation')[0]);
+
+    const omitReadyTree = cycle(
+      {
+        ...baseHookSnap,
+        botManagement: {
+          ...baseHookSnap.botManagement,
+          requestedTab: { tab: 'constellation', seq: 4 },
+        },
+        learningState: { status: 'ready', profile: 'arch', graph: graphForArch },
+        learningDetail: undefined,
+      },
+      {
+        ...noopActions,
+        onLoadLearningGraph: undefined,
+        onLoadLearningDetail: undefined,
+      },
+    );
+    const omitRefreshBtn = walkTree(omitReadyTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-refresh')[0];
+    omitRefreshBtn?.props.onClick();
+    const omitSkillBtn = walkTree(omitReadyTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-skill-item-skill:deploy-flow')[0];
+    omitSkillBtn?.props.onClick();
+
+    loadGraphLog.length = 0;
+    cycle({
+      ...baseHookSnap,
+      botManagement: {
+        ...baseHookSnap.botManagement,
+        activeBotId: '',
+        roster: [],
+        activeDetail: undefined,
+      },
+    });
+    assert.equal(loadGraphLog.length, 0);
   } finally {
     globalThis.document = origDocument;
     globalThis.window = origWindow;

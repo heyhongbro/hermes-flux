@@ -76,8 +76,25 @@ export function computeConstellationNodeRadius(kind: ConstellationNode['kind'], 
 }
 
 function roundCoord(value: number): number {
-  if (!Number.isFinite(value)) return 0;
   return Number(value.toFixed(2));
+}
+
+/** 规范化两点坐标差并在接近零距时返回确定性单位向量，消除重叠分裂时的奇点除零。 */
+export function normalizeNonZeroDelta(
+  dx: number,
+  dy: number,
+  fallbackSeed: number,
+): { dx: number; dy: number; dist: number } {
+  const dist = Math.hypot(dx, dy);
+  if (dist >= 1e-4) {
+    return { dx, dy, dist };
+  }
+  const angle = fallbackSeed % (Math.PI * 2);
+  return {
+    dx: Math.cos(angle),
+    dy: Math.sin(angle),
+    dist: 1,
+  };
 }
 
 function isSkillToSkillEdge(edge: ConstellationEdge, nodeMap: ReadonlyMap<string, ConstellationNode>): boolean {
@@ -181,7 +198,7 @@ export function layoutFullConstellationGraph(
   // 1. 按类别聚集并做确定性初始排布
   const clusters = new Map<string, ConstellationNode[]>();
   for (const node of filteredNodes) {
-    const key = (node.category || node.kind).trim() || node.kind;
+    const key = node.category.trim() || node.kind;
     const group = clusters.get(key);
     if (group) group.push(node);
     else clusters.set(key, [node]);
@@ -238,9 +255,8 @@ export function layoutFullConstellationGraph(
 
   const edgePairs: Array<{ a: number; b: number; ideal: number; strength: number }> = [];
   for (const edge of visibleEdges) {
-    const a = indexById.get(edge.source);
-    const b = indexById.get(edge.target);
-    if (a === undefined || b === undefined || a === b) continue;
+    const a = indexById.get(edge.source)!;
+    const b = indexById.get(edge.target)!;
     edgePairs.push({
       a,
       b,
@@ -261,16 +277,11 @@ export function layoutFullConstellationGraph(
 
     for (let i = 0; i < count; i++) {
       for (let j = i + 1; j < count; j++) {
-        let dx = posX[j] - posX[i];
-        let dy = posY[j] - posY[i];
-        let distSq = dx * dx + dy * dy;
-        if (distSq < 1e-4) {
-          const fallbackAngle = (i * 1.618 + j * 2.718) % (Math.PI * 2);
-          dx = Math.cos(fallbackAngle);
-          dy = Math.sin(fallbackAngle);
-          distSq = 1;
-        }
-        const dist = Math.sqrt(distSq);
+        const { dx, dy, dist } = normalizeNonZeroDelta(
+          posX[j] - posX[i],
+          posY[j] - posY[i],
+          i * 1.618 + j * 2.718,
+        );
         const minSep = radii[i] + radii[j] + RELAX_TARGET_GAP_PX;
         if (dist < minSep) {
           const push = ((minSep - dist) / dist) * 0.42;
@@ -281,7 +292,7 @@ export function layoutFullConstellationGraph(
           dispX[j] += fx;
           dispY[j] += fy;
         } else if (dist < minSep * 1.9) {
-          const soft = 260 / Math.max(distSq, 100);
+          const soft = 260 / Math.max(dist * dist, 100);
           const fx = (dx / dist) * soft;
           const fy = (dy / dist) * soft;
           dispX[i] -= fx;
@@ -293,10 +304,11 @@ export function layoutFullConstellationGraph(
     }
 
     for (const pair of edgePairs) {
-      const dx = posX[pair.b] - posX[pair.a];
-      const dy = posY[pair.b] - posY[pair.a];
-      const dist = Math.hypot(dx, dy);
-      if (dist < 1e-4) continue;
+      const { dx, dy, dist } = normalizeNonZeroDelta(
+        posX[pair.b] - posX[pair.a],
+        posY[pair.b] - posY[pair.a],
+        pair.a * 1.3 + pair.b * 2.1,
+      );
       const pull = ((dist - pair.ideal) * pair.strength) / dist;
       const fx = dx * pull;
       const fy = dy * pull;
@@ -327,17 +339,12 @@ export function layoutFullConstellationGraph(
     let adjusted = false;
     for (let i = 0; i < count; i++) {
       for (let j = i + 1; j < count; j++) {
-        let dx = posX[j] - posX[i];
-        let dy = posY[j] - posY[i];
-        let dist = Math.hypot(dx, dy);
+        const rawDx = posX[j] - posX[i];
+        const rawDy = posY[j] - posY[i];
+        const rawDist = Math.hypot(rawDx, rawDy);
         const minDist = radii[i] + radii[j] + HARD_MIN_GAP_PX;
-        if (dist >= minDist) continue;
-        if (dist < 1e-4) {
-          const angle = (i * GOLDEN_ANGLE + j * 1.1) % (Math.PI * 2);
-          dx = Math.cos(angle);
-          dy = Math.sin(angle);
-          dist = 1;
-        }
+        if (rawDist >= minDist) continue;
+        const { dx, dy, dist } = normalizeNonZeroDelta(rawDx, rawDy, i * GOLDEN_ANGLE + j * 1.1);
         const delta = (minDist - dist) * 0.52;
         const nx = (dx / dist) * delta;
         const ny = (dy / dist) * delta;
@@ -358,8 +365,8 @@ export function layoutFullConstellationGraph(
     minLeft = Math.min(minLeft, posX[i] - radii[i]);
     minTop = Math.min(minTop, posY[i] - radii[i]);
   }
-  const shiftX = padding - (Number.isFinite(minLeft) ? minLeft : 0);
-  const shiftY = padding - (Number.isFinite(minTop) ? minTop : 0);
+  const shiftX = padding - minLeft;
+  const shiftY = padding - minTop;
 
   let maxRight = 0;
   let maxBottom = 0;
@@ -393,8 +400,7 @@ export function layoutFullConstellationGraph(
   const positionedNodes: FullPositionedNode[] = [];
   let selectedPositioned: FullPositionedNode | null = null;
   for (const node of filteredNodes) {
-    const pos = finalNodesById.get(node.id);
-    if (!pos) continue;
+    const pos = finalNodesById.get(node.id)!;
     if (pos.isSelected) selectedPositioned = pos;
     else positionedNodes.push(pos);
   }

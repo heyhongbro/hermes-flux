@@ -98,13 +98,13 @@ function normalizeNodeKind(raw: unknown, id: string): LearningNodeKind {
 export function createLearningRest(deps: LearningRestDeps): LearningRest {
   async function call(
     path: string,
-    options: { method?: string; params?: Record<string, string | number | boolean>; body?: unknown } = {},
+    options: { method: string; params?: Record<string, string | number | boolean>; body?: unknown },
   ): Promise<unknown> {
     try {
       return await deps.proxy({
         baseUrl: deps.baseUrl(),
         path,
-        method: options.method ?? 'GET',
+        method: options.method,
         ticket: deps.ticket(),
         params: options.params,
         body: options.body,

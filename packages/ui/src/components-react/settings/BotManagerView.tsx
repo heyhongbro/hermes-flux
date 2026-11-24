@@ -1300,18 +1300,18 @@ export function BotManagerView({
                   >
                     <CognitiveStarMapPanel
                       targetProfile={activeId}
-                      targetBotLabel={identityTitle || activeId}
+                      targetBotLabel={identityTitle}
                       variant="desktop"
                       testIdPrefix="desktop-constellation"
                       learningState={snapshot.learningState ?? { status: 'idle' }}
                       learningDetail={snapshot.learningDetail ?? { status: 'idle' }}
                       onEnsureLoaded={
-                        activeTab === 'constellation' && Boolean(activeId)
+                        activeTab === 'constellation'
                           ? (profile) => actions.onLoadLearningGraph?.(profile, false)
                           : undefined
                       }
-                      onRefresh={(profile) => actions.onLoadLearningGraph?.(profile || activeId, true)}
-                      onSelectNodeDetail={(id, profile) => actions.onLoadLearningDetail?.(id, profile || activeId)}
+                      onRefresh={(profile) => actions.onLoadLearningGraph?.(profile, true)}
+                      onSelectNodeDetail={(id, profile) => actions.onLoadLearningDetail?.(id, profile)}
                       onSaveEdit={actions.onEditLearningNode}
                       onDeleteNode={actions.onDeleteLearningNode}
                       onInspectSkill={actions.onInspectSkill}

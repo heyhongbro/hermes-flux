@@ -1037,6 +1037,10 @@ test('settingsDataService 认知星图集成：openBotSettings requestedTab、�
   // 关闭设置页也清空 requestedTab
   service.openBotSettings('arch', { tab: 'constellation' });
   assert.equal(service.getBotManagementSnapshot().requestedTab?.tab, 'constellation');
+  // botId 与 state.profileName 均为空时必须回落 'default'
+  stateWithLearning.profileName = '';
+  service.openBotSettings('', { tab: 'constellation' });
+  assert.deepEqual(learnCalls.at(-1), ['loadLearningGraph', { profile: 'default', force: false }, undefined]);
   stateWithLearning.botDrafts = {};
   actions.onClose();
   assert.equal(service.getBotManagementSnapshot().requestedTab, null);

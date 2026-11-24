@@ -161,6 +161,25 @@ function deriveSkillName(id: string, explicit?: string): string {
   return id.replace(/^skill:/i, '').trim() || id;
 }
 
+function createConstellationEdgeAdder(
+  edges: ConstellationEdge[],
+  degree: Map<string, number>,
+): (source: string, target: string, kind: ConstellationEdgeKind, edgeCap: number, weight?: number) => void {
+  const edgeKeys = new Set<string>();
+  return (source, target, kind, edgeCap, weight) => {
+    if (source === target) return;
+    const pairKey = source < target ? `${source}::${target}` : `${target}::${source}`;
+    if (edgeKeys.has(pairKey)) return;
+    const degA = degree.get(source) ?? 0;
+    const degB = degree.get(target) ?? 0;
+    if (degA >= edgeCap || degB >= edgeCap) return;
+    edgeKeys.add(pairKey);
+    degree.set(source, degA + 1);
+    degree.set(target, degB + 1);
+    edges.push(weight !== undefined ? { source, target, kind, weight } : { source, target, kind });
+  };
+}
+
 function addSkillCrossLinks(
   skills: readonly ConstellationNode[],
   tryAddEdge: (source: string, target: string, kind: ConstellationEdgeKind, cap: number) => void,
@@ -175,7 +194,7 @@ function addSkillCrossLinks(
       if (i === j) continue;
       const b = skills[j];
       const bId = b.id.toLowerCase();
-      const bSkillName = (b.skillName || '').toLowerCase();
+      const bSkillName = String(b.skillName).toLowerCase();
       const bLabel = b.label.toLowerCase();
       if (
         (bSkillName.length >= 3 && haystack.includes(bSkillName)) ||
@@ -198,7 +217,6 @@ function addSkillCrossLinks(
   }
   const hubs: ConstellationNode[] = [];
   for (const group of byCategory.values()) {
-    if (group.length === 0) continue;
     group.sort((a, b) => b.uses - a.uses || a.id.localeCompare(b.id));
     const hub = group[0];
     hubs.push(hub);
@@ -267,21 +285,8 @@ export function buildConstellationGraph(result: LearningFramesResult, profile?: 
   }
 
   const edges: ConstellationEdge[] = [];
-  const edgeKeys = new Set<string>();
   const degree = new Map<string, number>();
-
-  const tryAddEdge = (source: string, target: string, kind: ConstellationEdgeKind, edgeCap: number): void => {
-    if (source === target) return;
-    const pairKey = source < target ? `${source}::${target}` : `${target}::${source}`;
-    if (edgeKeys.has(pairKey)) return;
-    const degA = degree.get(source) ?? 0;
-    const degB = degree.get(target) ?? 0;
-    if (degA >= edgeCap || degB >= edgeCap) return;
-    edgeKeys.add(pairKey);
-    degree.set(source, degA + 1);
-    degree.set(target, degB + 1);
-    edges.push({ source, target, kind });
-  };
+  const tryAddEdge = createConstellationEdgeAdder(edges, degree);
 
   const skills = nodes.filter((n) => n.kind === 'skill');
   const memories = nodes.filter((n) => n.kind === 'memory');
@@ -291,7 +296,7 @@ export function buildConstellationGraph(result: LearningFramesResult, profile?: 
     const haystack = mem.fullLabel.toLowerCase();
     for (const sk of skills) {
       const skId = sk.id.toLowerCase();
-      const skName = (sk.skillName || '').toLowerCase();
+      const skName = String(sk.skillName).toLowerCase();
       const skLabel = sk.label.toLowerCase();
       if (
         haystack.includes(skId) ||
@@ -377,7 +382,7 @@ function classifyRestEdgeKind(
     return 'skill-link';
   }
   if (lower.includes('skill') && (lower.includes('link') || lower.includes('relat') || lower.includes('depend'))) {
-    return srcNode.kind === 'skill' && dstNode.kind === 'skill' ? 'skill-link' : 'mention';
+    return 'mention';
   }
   if (lower.includes('mention') || lower.includes('use') || lower.includes('ref')) {
     return 'mention';
@@ -391,8 +396,10 @@ function classifyRestEdgeKind(
   return 'same-category';
 }
 
-function parseBucketsPayloadAsFrames(inner: Record<string, unknown>): LearningFramesResult {
-  const rawBuckets = Array.isArray(inner.buckets) ? inner.buckets : [];
+function parseBucketsPayloadAsFrames(
+  inner: Record<string, unknown>,
+  rawBuckets: readonly unknown[],
+): LearningFramesResult {
   const buckets: LearningBucketRow[] = [];
   rawBuckets.forEach((rawBucket, bIdx) => {
     const b = asRecord(rawBucket);
@@ -474,7 +481,7 @@ export function buildConstellationGraphFromRest(payload: unknown, profile?: stri
   );
 
   if (Array.isArray(inner.buckets) && !Array.isArray(inner.nodes)) {
-    const framesGraph = buildConstellationGraph(parseBucketsPayloadAsFrames(inner), resolvedProfile);
+    const framesGraph = buildConstellationGraph(parseBucketsPayloadAsFrames(inner, inner.buckets), resolvedProfile);
     return { ...framesGraph, profile: resolvedProfile, source: 'rest-graph' };
   }
 
@@ -575,28 +582,8 @@ export function buildConstellationGraphFromRest(payload: unknown, profile?: stri
   }
 
   const edges: ConstellationEdge[] = [];
-  const edgeKeys = new Set<string>();
   const degree = new Map<string, number>();
-
-  const tryAddEdge = (
-    source: string,
-    target: string,
-    kind: ConstellationEdgeKind,
-    edgeCap: number,
-    weight?: number,
-  ): void => {
-    if (!source || !target || source === target) return;
-    if (!nodeMap.has(source) || !nodeMap.has(target)) return;
-    const pairKey = source < target ? `${source}::${target}` : `${target}::${source}`;
-    if (edgeKeys.has(pairKey)) return;
-    const degA = degree.get(source) ?? 0;
-    const degB = degree.get(target) ?? 0;
-    if (degA >= edgeCap || degB >= edgeCap) return;
-    edgeKeys.add(pairKey);
-    degree.set(source, degA + 1);
-    degree.set(target, degB + 1);
-    edges.push(weight !== undefined ? { source, target, kind, weight } : { source, target, kind });
-  };
+  const tryAddEdge = createConstellationEdgeAdder(edges, degree);
 
   // 1. 优先写入网关返回的结构化显式连线
   for (const rawEdge of rawEdges) {
@@ -640,7 +627,7 @@ export function buildConstellationGraphFromRest(payload: unknown, profile?: stri
     const haystack = mem.fullLabel.toLowerCase();
     for (const sk of skills) {
       const skId = sk.id.toLowerCase();
-      const skName = (sk.skillName || '').toLowerCase();
+      const skName = String(sk.skillName).toLowerCase();
       const skLabel = sk.label.toLowerCase();
       if (
         haystack.includes(skId) ||
@@ -718,20 +705,8 @@ export function buildConstellationGraphFromSkills(
   });
 
   const edges: ConstellationEdge[] = [];
-  const edgeKeys = new Set<string>();
   const degree = new Map<string, number>();
-  const tryAddEdge = (source: string, target: string, kind: ConstellationEdgeKind, cap: number): void => {
-    if (source === target) return;
-    const key = source < target ? `${source}::${target}` : `${target}::${source}`;
-    if (edgeKeys.has(key)) return;
-    const degA = degree.get(source) ?? 0;
-    const degB = degree.get(target) ?? 0;
-    if (degA >= cap || degB >= cap) return;
-    edgeKeys.add(key);
-    degree.set(source, degA + 1);
-    degree.set(target, degB + 1);
-    edges.push({ source, target, kind });
-  };
+  const tryAddEdge = createConstellationEdgeAdder(edges, degree);
 
   addSkillCrossLinks(nodes, tryAddEdge, degree, MAX_EDGES_PER_NODE);
 

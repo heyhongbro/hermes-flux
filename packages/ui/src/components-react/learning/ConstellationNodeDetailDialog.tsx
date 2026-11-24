@@ -212,9 +212,8 @@ export function ConstellationNodeDetailDialog({
     }
   };
 
-  const handleCopy = (): void => {
-    if (!onCopyText) return;
-    onCopyText(detailContent);
+  const handleCopy = (copyFn: (text: string) => void): void => {
+    copyFn(detailContent);
     onNotify?.(t('bot.copied'));
   };
 
@@ -281,7 +280,7 @@ export function ConstellationNodeDetailDialog({
               type="button"
               className="constellation-icon-btn"
               aria-label={t('mobile.inspector.copyContent')}
-              onClick={handleCopy}
+              onClick={() => handleCopy(onCopyText)}
             >
               <Copy size={16} aria-hidden="true" />
             </button>

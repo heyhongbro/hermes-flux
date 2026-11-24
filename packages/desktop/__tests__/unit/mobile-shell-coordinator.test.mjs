@@ -748,6 +748,10 @@ test('MobileShellCoordinator 文件树、认知星图与触觉反馈新钩子全
       loadLearningDetail: (id, prof) => extCalls.push(['loadLearningDetail', id, prof]),
       editLearningNode: async (id, c, prof) => ({ ok: true, id, c, prof }),
       deleteLearningNode: async (id, prof) => ({ ok: true, id, prof }),
+      createSettingsActions: () => ({
+        onClose() {},
+        onSelectBotSettle: (id) => extCalls.push(['baseSettle', id]),
+      }),
       state: {
         botManagementActiveBotId: 'reviewer',
         activeFocus: { type: 'session', sessionId: 's-1' },
@@ -852,6 +856,36 @@ test('MobileShellCoordinator 文件树、认知星图与触觉反馈新钩子全
       'memory:arch-2',
       'arch',
     ]);
+
+    // activeFocus / profileName 全部缺省时的回落 'default' 与 state.profileName / isDefault 回落及 onSelectBotSettle 可选链
+    state.activeFocus = { type: 'bot', botName: '' };
+    state.profileName = '';
+    acts.onEnsureLearning();
+    state.activeFocus = { type: 'session', sessionId: 'not-found' };
+    acts.onEnsureLearning();
+    state.botManagementActiveBotId = '';
+    state.profiles = [{ name: 'main-def', isDefault: true }];
+    acts.onSelectBotSubpage('memory');
+    assert.ok(extCalls.filter(([k]) => k === 'loadLearningGraph').some(([, arg]) => arg?.profile === 'main-def'));
+    state.profiles = [{ name: '', isDefault: true }];
+    state.profileName = 'profile-fallback';
+    acts.onSelectBotSubpage('memory');
+    state.profileName = '';
+    acts.onSelectBotSubpage('memory');
+    acts.settingsActions.onSelectBotSettle('solo-mem');
+    acts.onSelectBotSubpage('basic');
+    acts.settingsActions.onSelectBotSettle('solo');
+    assert.ok(extCalls.some(([k, v]) => k === 'baseSettle' && v === 'solo'));
+    assert.ok(extCalls.filter(([k]) => k === 'loadLearningGraph').some(([, arg]) => arg?.profile === 'profile-fallback'));
+
+    // baseSettingsActions 不含 onSelectBotSettle 且 deps 不含 loadLearningGraph 时的 ?. 可选调用分支
+    const hNoSettle = createHarness({
+      createSettingsActions: () => ({ onClose() {} }),
+      loadLearningGraph: undefined,
+    });
+    const noSettleActs = hNoSettle.coordinator.getActions();
+    noSettleActs.onSelectBotSubpage('memory');
+    noSettleActs.settingsActions.onSelectBotSettle('arch');
 
     // Haptic fallback to window.hermesMobile + injected triggerHapticSelection
     acts.onHapticSelection();
