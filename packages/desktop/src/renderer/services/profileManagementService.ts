@@ -269,7 +269,7 @@ export function createProfileManagementService(deps: ProfileManagementDeps): Pro
 
   async function openBotChat(botProfile: string): Promise<void> {
     const client = deps.getGatewayClient();
-    if (!botProfile || !client) return;
+    if (!botProfile) return;
     deps.cancelColdStartFocus();
 
     const state = deps.getState();
@@ -306,6 +306,26 @@ export function createProfileManagementService(deps: ProfileManagementDeps): Pro
         if (wasBotFocused) deps.restoreComposerFocus();
         deps.render();
       }
+      return;
+    }
+
+    // 离线容错：缓存未命中且网关离线时仍允许更新焦点并加载本地持久主工位，等重连后再补拉权威会话
+    if (!client) {
+      const localForever = state.sessions.find((s) => s.hidden && s.botName === botProfile);
+      if (localForever) {
+        void deps.selectSession(localForever.id, { preserveFocus: true, botName: botProfile });
+        return;
+      }
+      if (outgoingSessionId && state.messages.length > 0) {
+        deps.sessionMessagesCache.set(outgoingSessionId, [...state.messages]);
+      }
+      state.messages = [];
+      state.hasOlderMessages = false;
+      state.isLoadingOlder = false;
+      state.activeSessionId = '';
+      state.activeLiveSessionId = '';
+      state.messagesPhase = 'ready';
+      deps.render();
       return;
     }
 

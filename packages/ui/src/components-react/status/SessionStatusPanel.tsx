@@ -3,6 +3,7 @@
  */
 
 import * as React from 'react';
+import { Network } from 'lucide-react';
 import { isSyntheticSubagentId, type SubagentTaskState } from '@hermes-flux/core';
 import { t } from '../../i18n/index.js';
 import { renderBotAvatar, renderGroupCollageAvatar } from '../../utils/botAvatar.js';
@@ -114,6 +115,19 @@ export function SessionStatusPanel({ snapshot, actions }: SessionStatusPanelProp
           <span className="sp-env-label sp-env-strong" title={subjectName}>
             {subjectName}
           </span>
+          {!isGroupRoom && subject?.kind !== 'group' && actions.onOpenConstellation ? (
+            <button
+              type="button"
+              className="sp-env-action"
+              data-testid="status-open-constellation-btn"
+              title={t('statusPod.openConstellation')}
+              aria-label={t('statusPod.openConstellation')}
+              onClick={() => actions.onOpenConstellation?.(subject?.profileName || 'default')}
+            >
+              <Network size={12} aria-hidden="true" />
+              <span>{t('statusPod.openConstellation')}</span>
+            </button>
+          ) : null}
         </div>
 
         {scope?.cwd ? (

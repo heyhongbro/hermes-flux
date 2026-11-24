@@ -355,6 +355,7 @@ final class GatewayWsProxyServer {
         final Socket plain = new Socket();
         plain.connect(new InetSocketAddress(host, port), HANDSHAKE_TIMEOUT_MS);
         plain.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
+        plain.setKeepAlive(true);
         if (!isTls) {
             return plain;
         }

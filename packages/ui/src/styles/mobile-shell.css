@@ -2726,298 +2726,6 @@ html[data-page-hidden="true"] .m-trace-dot {
   gap: 8px;
 }
 
-/* ---------------- 认知星图 (Memory & Learning Constellation) ---------------- */
-.m-constellation-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.m-constellation-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border-radius: var(--radius-window);
-  border: 1px solid var(--border-subtle);
-  background: var(--card);
-  box-shadow: var(--shadow-card);
-}
-
-.m-constellation-card--state {
-  align-items: center;
-  justify-content: center;
-  padding: 24px 12px;
-  gap: 10px;
-  text-align: center;
-}
-
-.m-constellation__state-text {
-  margin: 0;
-  font-size: var(--fs-aux);
-  color: var(--muted-foreground);
-}
-
-.m-constellation__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.m-constellation__title-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.m-constellation__title-icon {
-  color: var(--foreground);
-  flex-shrink: 0;
-}
-
-.m-constellation__title {
-  font-size: var(--fs-section);
-  font-weight: 600;
-  color: var(--foreground);
-}
-
-.m-constellation__header-right {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.m-constellation__count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-aux);
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
-}
-
-.m-constellation__filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.m-constellation__stage {
-  position: relative;
-  width: 100%;
-  height: 348px;
-  border-radius: var(--radius-panel);
-  background-color: var(--background);
-  background-image: radial-gradient(circle, var(--border-subtle) 1px, transparent 1px);
-  background-size: 16px 16px;
-  overflow: hidden;
-  touch-action: pan-y;
-}
-
-.m-constellation__lines {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.m-constellation__edge {
-  stroke: var(--border);
-  stroke-width: 0.45;
-  stroke-dasharray: 1.5 1.5;
-}
-
-.m-constellation__edge[data-active="true"] {
-  stroke: var(--primary);
-  stroke-opacity: 0.55;
-  stroke-width: 0.65;
-  stroke-dasharray: none;
-}
-
-.m-constellation-node {
-  position: absolute;
-  transform: translate(-50%, -44%);
-  min-width: 44px;
-  min-height: 44px;
-  padding: 2px;
-  border: none;
-  background: transparent;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-}
-
-.m-constellation-node__circle {
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--border);
-  background: var(--card);
-  color: var(--foreground);
-  box-shadow: var(--shadow-card);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.16s ease;
-}
-
-.m-constellation-node[data-center="true"] .m-constellation-node__circle {
-  width: 42px;
-  height: 42px;
-  border: 2px solid var(--primary);
-  background: var(--card);
-  color: var(--primary);
-}
-
-.m-constellation-node:active .m-constellation-node__circle {
-  transform: scale(0.92);
-}
-
-.m-constellation-node__label {
-  max-width: 106px;
-  padding: 3px 7px;
-  border-radius: var(--radius-panel);
-  border: 1px solid var(--border-subtle);
-  background: color-mix(in oklab, var(--card) 92%, transparent);
-  color: var(--foreground);
-  font-size: var(--fs-caption);
-  line-height: 14px;
-  text-align: center;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-
-.m-constellation__pager {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
-.m-constellation__page-label {
-  font-family: var(--font-mono);
-  font-size: var(--fs-caption);
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
-}
-
-.m-constellation__preview {
-  width: 100%;
-  min-height: 52px;
-  padding: 10px 4px 4px;
-  border: none;
-  border-top: 1px solid var(--border-subtle);
-  background: transparent;
-  color: var(--foreground);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.m-constellation__preview-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.m-constellation__preview-title {
-  font-size: var(--fs-section);
-  font-weight: 500;
-  color: var(--foreground);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-
-.m-constellation__preview-meta,
-.m-constellation__preview-date {
-  font-size: var(--fs-caption);
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
-}
-
-.m-constellation__preview-chevron {
-  color: var(--muted-foreground);
-  flex-shrink: 0;
-}
-
-.m-constellation-detail__bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.m-constellation-detail__titles {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.m-constellation-detail__title {
-  font-size: var(--fs-section);
-  font-weight: 600;
-  color: var(--foreground);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.m-constellation-detail__meta {
-  font-size: var(--fs-caption);
-  color: var(--muted-foreground);
-}
-
-.m-constellation-detail__actions {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.m-constellation-detail__body {
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: var(--radius-panel);
-  background: var(--background);
-  border: 1px solid var(--border-subtle);
-  font-family: var(--font-sans);
-  font-size: var(--fs-body);
-  line-height: 1.55;
-  color: var(--foreground);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 360px;
-  overflow-y: auto;
-  touch-action: pan-y;
-}
-
-.m-constellation-detail__editor-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.m-constellation__footer-hint {
-  margin: 0;
-  padding: 0 6px;
-  font-size: var(--fs-aux);
-  color: var(--muted-foreground);
-  text-align: center;
-}
-
 .m-bot-wizard-modes {
   grid-template-columns: repeat(2, 1fr);
 }
@@ -3195,4 +2903,37 @@ html[data-page-hidden="true"] .m-trace-dot {
   color: var(--muted-foreground);
   font-size: var(--fs-caption);
   font-family: var(--font-mono);
+}
+
+/* ---------------- 移动端连接与重连状态胶囊 ---------------- */
+.m-stage__presence-scrim .m-stage__presence-host[data-replaced="true"] {
+  position: absolute;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.m-stage__presence-scrim .conn-pill--stage {
+  max-width: 100%;
+  box-shadow: var(--shadow-card);
+}
+
+.m-conn-floating-host {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 62px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 55;
+  pointer-events: none;
+  max-width: calc(100vw - 28px);
+}
+
+.m-shell .conn-pill__action::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max(100%, 44px);
+  height: max(100%, 44px);
 }

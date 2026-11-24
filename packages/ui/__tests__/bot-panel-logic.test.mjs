@@ -202,7 +202,7 @@ test('方案 1 垂直微轨、名单过滤、200+ 能力过滤、SOUL 行数与�
   assert.deepEqual(resolveAnchorNavigation('bot-model'), { tab: 'basic' });
   assert.deepEqual(resolveAnchorNavigation('bot-desc'), { tab: 'basic' });
   assert.deepEqual(resolveAnchorNavigation('bot-default'), { tab: 'basic' });
-  assert.deepEqual(resolveAnchorNavigation('bot-memory'), { tab: 'basic' });
+  assert.deepEqual(resolveAnchorNavigation('bot-memory'), { tab: 'constellation' });
   assert.deepEqual(resolveAnchorNavigation('bot-soul'), { tab: 'soul' });
   assert.deepEqual(resolveAnchorNavigation('bot-toolsets'), { tab: 'toolsets' });
   assert.deepEqual(resolveAnchorNavigation('bot-skills'), { tab: 'skills' });

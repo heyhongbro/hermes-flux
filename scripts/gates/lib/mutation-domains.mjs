@@ -160,4 +160,49 @@ export const MUTATION_DOMAINS = {
     buildCommand: 'npm run build:ui',
     minScore: 98,
   },
+  starMapViewport: {
+    title: '记忆地图视口缩放与拟合数学 (Star Map Viewport Math)',
+    mutate: ['packages/ui/src/components-react/learning/starMapViewport.ts'],
+    testFiles: ['packages/ui/__tests__/star-map-viewport.test.mjs'],
+    buildCommand: 'npm run build:ui',
+    // 实测 94 mutant / 93 killed / 1 equiv survived / 0 noCov = 98.94%（2026-11-24）。
+    // 唯一存活变异为 `padding >= 0` -> `padding > 0`（fallback 为 0 时行为等价）。
+    minScore: 95,
+  },
+  constellationLayout: {
+    title: '全量力导向星图无重叠布局 (Constellation Full Layout)',
+    // 范围聚焦在确定性契约函数：节点半径与奇点归一化 (64-106)、过滤/选中/关联索引 (124-205)、
+    // 原点归正/边界画幅/选中节点置顶及技能清单提取排序 (361-482)；
+    // L207-359 力导向连续弹簧阻尼/螺旋调参由 INV-LEARN-02 形式化性质测试守护。
+    // 实测 265 mutant / 219 killed / 1 timeout / 45 survived / 0 noCov = 83.02%（2026-11-24）。
+    mutate: [
+      'packages/core/src/learning/constellationLayout.ts:64-106',
+      'packages/core/src/learning/constellationLayout.ts:124-205',
+      'packages/core/src/learning/constellationLayout.ts:361-482',
+    ],
+    testFiles: ['packages/core/__tests__/learning/learning-constellation.test.mjs'],
+    buildCommand: 'npm run build:core',
+    minScore: 80,
+  },
+  learningConstellation: {
+    title: '多 Bot 记忆图谱构建与技能清单 (Learning Constellation Graph)',
+    // L115-725 覆盖清洗、调用次数解析、技能互连、WS/REST/ProfileSkills 隔离构图与边界容错（排除废弃兼容函数 L731-805）。
+    // 实测 942 mutant / 769 killed / 2 timeout / 171 survived / 0 noCov = 81.85%（2026-11-24）。
+    mutate: ['packages/core/src/learning/learningConstellation.ts:115-725'],
+    testFiles: ['packages/core/__tests__/learning/learning-constellation.test.mjs'],
+    buildCommand: 'npm run build:core',
+    minScore: 80,
+  },
+  learningService: {
+    title: '多 Bot 记忆隔离拉取与降级服务 (Learning Service & REST)',
+    // 实测 817 mutant / 654 killed / 12 timeout / 151 survived / 0 noCov = 81.52%（learningRest 91.96%, learningService 78.16%, 2026-11-24）。
+    mutate: [
+      'packages/desktop/src/renderer/learningRest.ts',
+      'packages/desktop/src/renderer/services/learningService.ts',
+    ],
+    testFiles: ['packages/desktop/__tests__/unit/learning-service.test.mjs'],
+    buildCommand:
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/learningRest.ts src/renderer/services/learningService.ts',
+    minScore: 80,
+  },
 };

@@ -32,7 +32,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { draftFromDetail, isBotDraftDirty } from '@hermes-flux/core';
+import { draftFromDetail, isBotDraftDirty, type GatewayConnectionPhase } from '@hermes-flux/core';
 import { t } from '../../i18n/index.js';
 import { renderBotAvatar } from '../../utils/botAvatar.js';
 import type { LeftRailProfile } from '../leftRailModel.js';
@@ -58,6 +58,7 @@ export interface MobileBotHubScreenProps {
   allProfiles: LeftRailProfile[];
   activeBotName: string;
   gatewayConnected: boolean;
+  connectionPhase?: GatewayConnectionPhase;
   settingsSnapshot: SettingsSnapshot;
   modelDetails: MobileModelOption[];
   onSelectBotSubpage: (subpage: Exclude<MobileBotSubpage, null>) => void;
@@ -98,6 +99,7 @@ export function MobileBotHubScreen({
   allProfiles,
   activeBotName,
   gatewayConnected,
+  connectionPhase,
   settingsSnapshot,
   modelDetails,
   onSelectBotSubpage,
@@ -298,10 +300,13 @@ export function MobileBotHubScreen({
   const dirty = Boolean(detail && draft && isBotDraftDirty(detail, draft));
   const saving = view.status.status === 'saving' || view.isBusy;
 
+  const showOfflineBanner =
+    !gatewayConnected && (connectionPhase === undefined || connectionPhase === 'unconfigured');
+
   if (!current) {
     return (
       <div className="m-bot-hub__scroll" data-testid="mobile-bot-hub">
-        {!gatewayConnected ? (
+        {showOfflineBanner ? (
           <button
             type="button"
             className="m-home__offline-banner"
@@ -364,7 +369,7 @@ export function MobileBotHubScreen({
   return (
     <div className="m-bot-hub" data-testid="mobile-bot-hub">
       <div className="m-bot-hub__scroll">
-        {!gatewayConnected ? (
+        {showOfflineBanner ? (
           <button
             type="button"
             className="m-home__offline-banner"

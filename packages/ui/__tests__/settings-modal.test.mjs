@@ -11,6 +11,15 @@ import { McpAddDialog } from '../dist/components-react/settings/McpAddDialog.js'
 import { McpRemoveConfirmDialog } from '../dist/components-react/settings/McpRemoveConfirmDialog.js';
 import { SkillDetailDialog } from '../dist/components-react/settings/SkillDetailDialog.js';
 import { SkillInstallDialog } from '../dist/components-react/settings/SkillInstallDialog.js';
+import { BotManagerView } from '../dist/components-react/settings/BotManagerView.js';
+import {
+  MAX_STAR_MAP_ZOOM,
+  MIN_STAR_MAP_ZOOM,
+  clampStarMapZoom,
+  computeFitTransform,
+  focusStarMapNode,
+  zoomStarMapAround,
+} from '../dist/components-react/learning/index.js';
 import { AddProviderDialog } from '../dist/components-react/settings/AddProviderDialog.js';
 import { SwitchDefaultProviderDialog } from '../dist/components-react/settings/SwitchDefaultProviderDialog.js';
 import {
@@ -479,12 +488,12 @@ test('BOT 下方主体区：默认展开列表 + 扁平五菜单（零数字徽�
       },
     }),
   });
-  for (const tab of ['basic', 'soul', 'toolsets', 'skills', 'mcp']) {
+  for (const tab of ['basic', 'soul', 'toolsets', 'skills', 'mcp', 'constellation']) {
     assert.ok(dirtyHtml.includes(`data-bot-tab="${tab}"`), `缺少扁平一级菜单 ${tab}`);
     assert.ok(dirtyHtml.includes(`data-bot-tabpanel="${tab}"`), `缺少一级菜单对应内容页 ${tab}`);
   }
   const tabBtns = dirtyHtml.match(/<button[^>]*data-bot-tab="[^"]+"[^>]*>[\s\S]*?<\/button>/g) ?? [];
-  assert.equal(tabBtns.length, 5, '顶部菜单栏必须固定为 5 个一级扁平菜单');
+  assert.equal(tabBtns.length, 6, '顶部菜单栏必须固定为 6 个一级扁平菜单');
   for (const tabHtml of tabBtns) {
     const labelText = tabHtml.replace(/<[^>]+>/g, '').trim();
     assert.equal(/\d/.test(labelText), false, `顶部菜单项不得携带数字或徽标，实测 "${labelText}"`);
@@ -3186,22 +3195,30 @@ test('Switch 单色高对比样式、模型/厂商双图标选择器、技能简
       skillName: 'codebase-inspection',
       targetProfile: 'arch',
       fallbackDescription: '快速追踪源码调用链',
+      uses: 18,
+      date: '2026-11-24',
+      relatedSkills: [{ id: 'skill:git-ops', label: 'git-ops', uses: 9 }],
+      onSelectRelatedSkill: () => {},
       onClose: () => {},
       onCopy: async () => true,
     }),
   );
   assert.ok(skillDetailHtml.includes('data-skill-detail-dialog="true"'));
+  assert.ok(skillDetailHtml.includes('w-modal-xl') && skillDetailHtml.includes('max-h-modal-xl'), 'SkillDetailDialog 必须放大为 xl 规格窗体');
   assert.ok(skillDetailHtml.includes('data-skill-detail-scroll="true"'));
   assert.ok(skillDetailHtml.includes('快速追踪源码调用链'));
+  assert.ok(skillDetailHtml.includes('git-ops') && skillDetailHtml.includes('18'));
   assert.ok(skillDetailHtml.includes(t('bot.skillViewRendered')));
   assert.ok(skillDetailHtml.includes(t('bot.skillViewRaw')));
   assert.ok(skillDetailHtml.includes(t('bot.skillCopyMarkdown')));
 
   const detailDlgSrc = readSettingsSource('SkillDetailDialog.tsx');
+  const markdownViewSrc = readSettingsSource('SkillMarkdownView.tsx');
   assert.ok(detailDlgSrc.includes('seqRef'), 'SkillDetailDialog 必须持请求序号防止切换技能串台');
-  assert.ok(detailDlgSrc.includes('<MarkdownBlock'), '优雅预览必须复用全站唯一的 MarkdownBlock');
-  assert.ok(detailDlgSrc.includes('splitSkillMarkdownFrontmatter'), '优雅预览须拆分 YAML frontmatter 防止分割线误渲染');
-  assert.equal(detailDlgSrc.includes('content={parsed.body || markdown}'), false, '仅有 frontmatter 时不得回落到原始带分割线全文');
+  assert.ok(detailDlgSrc.includes('<SkillMarkdownView'), 'SkillDetailDialog 必须消费共享的 SkillMarkdownView');
+  assert.ok(markdownViewSrc.includes('<MarkdownBlock'), '优雅预览必须复用全站唯一的 MarkdownBlock');
+  assert.ok(markdownViewSrc.includes('splitSkillMarkdownFrontmatter'), '优雅预览须拆分 YAML frontmatter 防止分割线误渲染');
+  assert.equal(markdownViewSrc.includes('content={parsed.body || markdown}'), false, '仅有 frontmatter 时不得回落到原始带分割线全文');
 });
 
 test('Phase 2 桌面端纯哑光去框化与全局 4px 栅格锁定守卫', () => {
@@ -3325,4 +3342,477 @@ test('工作台与左轨展示归通用页，网关项目独立分组且互不�
   assert.equal(anchorKeys.has('show-done-section'), true);
   assert.equal(anchorKeys.has('auto-reopen-on-send'), true);
   assert.equal(anchorKeys.has('projects-list'), true);
+});
+
+test('桌面端 Bot 认知星图页签、跨 Bot 阻断、starMapViewport 数学与 constellation.css Token 守卫', () => {
+  setLocale('zh-CN');
+  const graphForArch = {
+    profile: 'arch',
+    source: 'rest-graph',
+    nodes: [
+      {
+        id: 'skill:deploy-flow',
+        kind: 'skill',
+        label: 'deploy-flow',
+        fullLabel: 'deploy-flow pipeline',
+        preview: 'Deploy pipeline',
+        category: 'ops',
+        date: '2026-11-24',
+        uses: 14,
+        meta: 'ops · x14',
+        bucketIndex: 0,
+        skillName: 'deploy-flow',
+      },
+      {
+        id: 'skill:docker-ops',
+        kind: 'skill',
+        label: 'docker-ops',
+        fullLabel: 'docker-ops workflow',
+        preview: 'Container tools',
+        category: 'ops',
+        date: '2026-11-24',
+        uses: 6,
+        meta: 'ops · x6',
+        bucketIndex: 0,
+        skillName: 'docker-ops',
+      },
+      {
+        id: 'memory:arch:1',
+        kind: 'memory',
+        label: '灰度发布准则',
+        fullLabel: '灰度发布必须先走 deploy-flow',
+        preview: '灰度发布必须先走 deploy-flow',
+        category: 'ops',
+        date: '2026-11-24',
+        uses: 2,
+        meta: 'ops · x2',
+        bucketIndex: 0,
+      },
+    ],
+    edges: [
+      { source: 'skill:deploy-flow', target: 'skill:docker-ops', kind: 'skill-link' },
+      { source: 'memory:arch:1', target: 'skill:deploy-flow', kind: 'mention' },
+    ],
+    summary: ['2 skills · 1 memories'],
+    totalSkills: 2,
+    totalMemories: 1,
+    totalSkillLinks: 1,
+    axisStart: 'Nov 1',
+    axisEnd: 'Nov 24',
+  };
+
+  const constellationSnap = snapshot({
+    section: 'agents',
+    botManagement: botManagement({
+      status: { status: 'idle', activeBotId: 'arch' },
+      activeBotId: 'arch',
+      roster: [{ id: 'arch', displayName: '架构老王', model: '', isDefault: false, hasDraft: false }],
+      activeDetail: botDetail({ id: 'arch', displayName: '架构老王', isDefault: false }),
+      requestedTab: { tab: 'constellation', seq: 1 },
+    }),
+    learningState: { status: 'ready', profile: 'arch', graph: graphForArch },
+    learningDetail: { status: 'idle' },
+  });
+
+  const desktopConstHtml = renderToStaticMarkup(
+    React.createElement(BotManagerView, {
+      snapshot: constellationSnap,
+      actions: {
+        ...noopActions,
+        onLoadLearningGraph: () => {},
+        onLoadLearningDetail: () => {},
+        onNotify: () => {},
+        onCopy: async () => true,
+      },
+    }),
+  );
+
+  assert.ok(desktopConstHtml.includes('data-bot-tab="constellation"'), '桌面端 BOT 页签栏必须包含记忆页签');
+  assert.ok(desktopConstHtml.includes('>记忆<'), '桌面端 BOT 页签与面板标题必须统一展示「记忆」而非「认知星图」');
+  assert.equal(desktopConstHtml.includes('认知星图'), false, '桌面端 BOT 面板文案不得再显示「认知星图」');
+  setLocale('en-US');
+  try {
+    assert.equal(t('bot.tabConstellation'), 'Memory');
+    assert.equal(t('statusPod.openConstellation'), 'Memory');
+    assert.equal(t('mobile.memory.constellationTitle'), 'Memory');
+  } finally {
+    setLocale('zh-CN');
+  }
+  assert.ok(desktopConstHtml.includes('data-bot-tabpanel="constellation"'));
+  assert.ok(/data-bot-tabpanel="constellation"[^>]*data-settings-anchor="bot-memory"/.test(desktopConstHtml));
+  assert.equal(/<div[^>]*data-bot-tabpanel="basic"[^>]*data-settings-anchor="bot-memory"/.test(desktopConstHtml), false);
+  assert.ok(desktopConstHtml.includes('data-testid="desktop-constellation-panel"'));
+  assert.ok(desktopConstHtml.includes('data-profile="arch"'));
+  assert.ok(desktopConstHtml.includes('data-testid="desktop-constellation-skill-list"'));
+  assert.ok(desktopConstHtml.includes('data-testid="desktop-constellation-skill-item-skill:deploy-flow"'));
+  assert.ok(desktopConstHtml.includes('x14'));
+
+  // 跨 Bot 串台防御：activeBotId=arch 但 learningState 属于 default 时必须展示 loading 并绝不渲染 default 内容
+  const mismatchHtml = renderToStaticMarkup(
+    React.createElement(BotManagerView, {
+      snapshot: snapshot({
+        section: 'agents',
+        botManagement: constellationSnap.botManagement,
+        learningState: {
+          status: 'ready',
+          profile: 'default',
+          graph: {
+            ...graphForArch,
+            profile: 'default',
+            nodes: [{ ...graphForArch.nodes[0], id: 'skill:default-leak', label: 'default-leak' }],
+          },
+        },
+        learningDetail: { status: 'idle' },
+      }),
+      actions: noopActions,
+    }),
+  );
+  assert.ok(mismatchHtml.includes('data-testid="desktop-constellation-loading"'));
+  assert.equal(mismatchHtml.includes('default-leak'), false, 'profile 不一致时严禁泄露出 default bot 技能');
+
+  // starMapViewport 纯数学与边界夹紧守卫
+  assert.equal(clampStarMapZoom(Number.NaN), 1);
+  assert.equal(clampStarMapZoom(0.01), MIN_STAR_MAP_ZOOM);
+  assert.equal(clampStarMapZoom(99), MAX_STAR_MAP_ZOOM);
+
+  const fitZero = computeFitTransform(0, 0, 0, 0);
+  assert.ok(Number.isFinite(fitZero.x) && Number.isFinite(fitZero.y) && Number.isFinite(fitZero.scale));
+
+  const fitNormal = computeFitTransform(1200, 800, 600, 400, 20);
+  assert.ok(fitNormal.scale > 0 && fitNormal.scale < 1);
+  const zoomed = zoomStarMapAround(fitNormal, fitNormal.scale * 1.6, 220, 150);
+  const worldBeforeX = (220 - fitNormal.x) / fitNormal.scale;
+  const worldAfterX = (220 - zoomed.x) / zoomed.scale;
+  assert.ok(Math.abs(worldBeforeX - worldAfterX) < 0.05, '光标锚定缩放前后世界 X 坐标须守恒');
+
+  const focused = focusStarMapNode(320, 210, 800, 500, 1.5);
+  assert.ok(Math.abs(320 * focused.scale + focused.x - 400) < 0.1);
+  assert.ok(Math.abs(210 * focused.scale + focused.y - 250) < 0.1);
+
+  // constellation.css Token 纯净性与移动端热区守卫（去除注释后校验正文规则）
+  const constellationCss = fs.readFileSync(
+    path.resolve(import.meta.dirname, '../src/styles/constellation.css'),
+    'utf8',
+  );
+  const constellationBody = constellationCss.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.equal(/#[0-9a-fA-F]{3,8}\b/.test(constellationBody), false, 'constellation.css 严禁硬编码 hex 色值');
+  assert.equal(/\b(?:rgba?|hsla?)\s*\(/.test(constellationBody), false, 'constellation.css 严禁硬编码 rgb/hsl');
+  assert.equal(/scroll-behavior\s*:\s*smooth/i.test(constellationBody), false);
+  assert.equal(/font-size:\s*\d+px/i.test(constellationBody), false, 'constellation.css 不得出现字面量 px 字号，须收敛到 var(--fs-*)');
+  assert.ok(constellationBody.includes('min-height: 44px;'), '移动端按钮与芯片必须满足 >=44px 触控热区');
+  assert.ok(/\[data-constellation-detail-dialog="true"\]\[data-variant="mobile"\][\s\S]*env\(safe-area-inset-top/.test(constellationBody), '移动端 Portaled xl 详情窗必须避让安全区并脱离对称 top-1/2');
+  assert.ok(constellationBody.includes('--tw-translate-y: 0px;') && constellationBody.includes('translate: -50% 0;') && constellationBody.includes('transform: none;'), '移动端详情窗必须显式清零 Tailwind v4 独立 translate 属性');
+  assert.equal(/\[data-constellation-detail-dialog="true"\]\[data-variant="mobile"\][\s\S]*transform:\s*translateX\(-50%\)/.test(constellationBody), false, '禁止仅覆盖 transform: translateX(-50%) 导致与 Tailwind v4 translate 叠加偏移');
+  assert.ok(/\[data-constellation-detail-dialog="true"\]\[data-variant="mobile"\]\s+button:not\(\[role="switch"\]\)/.test(constellationBody), '移动端 Portaled 详情窗必须覆盖全量按钮 44px 热区');
+
+  // BotManagerView 交互钩子覆盖：默认 basic 页签不得触发 onLoadLearningGraph，切到 constellation 才触发，activeId 为空不触发
+  const scopedSlots = new Map();
+  const loadGraphLog = [];
+  let effectQueue = [];
+  const internals = React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+  const renderWithHooks = (node, key = 'root') => {
+    if (node === null || node === undefined || typeof node === 'boolean') return node;
+    if (typeof node === 'string' || typeof node === 'number') return node;
+    if (Array.isArray(node)) return node.map((child, idx) => renderWithHooks(child, `${key}[${child?.key ?? idx}]`));
+    if (typeof node !== 'object') return node;
+
+    const elType = node.type;
+    if (elType === React.Fragment) {
+      return renderWithHooks(node.props?.children, `${key}.frag`);
+    }
+    if (
+      elType &&
+      typeof elType === 'object' &&
+      (elType.$$typeof === Symbol.for('react.context') || elType.$$typeof === Symbol.for('react.provider'))
+    ) {
+      const ctx = elType._context ?? elType;
+      const prevVal = ctx._currentValue;
+      ctx._currentValue = node.props?.value;
+      try {
+        return {
+          ...node,
+          props: {
+            ...node.props,
+            children: renderWithHooks(node.props?.children, `${key}.ctx`),
+          },
+        };
+      } finally {
+        ctx._currentValue = prevVal;
+      }
+    }
+
+    const innerType =
+      elType && typeof elType === 'object' && elType.$$typeof === Symbol.for('react.memo') ? elType.type : elType;
+    const compFn = typeof innerType === 'function' ? innerType : null;
+
+    if (compFn) {
+      const scopedKey = node.key != null ? `${key}#k=${String(node.key)}` : key;
+      let slot = scopedSlots.get(scopedKey);
+      if (!slot) {
+        slot = { states: [], refs: [], memos: [], effects: [] };
+        scopedSlots.set(scopedKey, slot);
+      }
+      let sIdx = 0;
+      let rIdx = 0;
+      let mIdx = 0;
+      let eIdx = 0;
+      const prevH = internals.H;
+      const scheduleEffect = (fn, deps) => {
+        const idx = eIdx++;
+        if (idx >= slot.effects.length) slot.effects.push({ deps, cleanup: undefined, hasRun: false });
+        const entry = slot.effects[idx];
+        const changed =
+          !entry.hasRun ||
+          deps === undefined ||
+          entry.deps === undefined ||
+          deps.length !== entry.deps.length ||
+          deps.some((d, i) => !Object.is(d, entry.deps[i]));
+        if (changed) {
+          effectQueue.push(() => {
+            if (typeof entry.cleanup === 'function') entry.cleanup();
+            entry.deps = deps;
+            entry.hasRun = true;
+            entry.cleanup = fn();
+          });
+        }
+      };
+      internals.H = {
+        useState(init) {
+          const idx = sIdx++;
+          if (idx >= slot.states.length) slot.states.push(typeof init === 'function' ? init() : init);
+          return [
+            slot.states[idx],
+            (u) => {
+              slot.states[idx] = typeof u === 'function' ? u(slot.states[idx]) : u;
+            },
+          ];
+        },
+        useReducer(reducer, initialArg, init) {
+          const idx = sIdx++;
+          if (idx >= slot.states.length) slot.states.push(init ? init(initialArg) : initialArg);
+          return [
+            slot.states[idx],
+            (action) => {
+              slot.states[idx] = reducer(slot.states[idx], action);
+            },
+          ];
+        },
+        useImperativeHandle() {},
+        useTransition() {
+          return [false, (fn) => fn()];
+        },
+        useDeferredValue(val) {
+          return val;
+        },
+        use(usable) {
+          return usable?._currentValue;
+        },
+        useRef(init) {
+          const idx = rIdx++;
+          if (idx >= slot.refs.length) slot.refs.push({ current: init });
+          return slot.refs[idx];
+        },
+        useMemo(factory, deps) {
+          const idx = mIdx++;
+          if (idx >= slot.memos.length) {
+            slot.memos.push({ val: factory(), deps });
+            return slot.memos[idx].val;
+          }
+          const prev = slot.memos[idx];
+          const same = deps && prev.deps && deps.length === prev.deps.length && deps.every((d, i) => Object.is(d, prev.deps[i]));
+          if (!same) {
+            prev.val = factory();
+            prev.deps = deps;
+          }
+          return prev.val;
+        },
+        useCallback(cb) {
+          return cb;
+        },
+        useEffect: scheduleEffect,
+        useLayoutEffect() {},
+        useInsertionEffect() {},
+        useDebugValue() {},
+        useId() {
+          return `id-${scopedKey}`;
+        },
+        useContext(ctx) {
+          return ctx?._currentValue;
+        },
+        useSyncExternalStore(_sub, getSnap) {
+          return getSnap();
+        },
+      };
+      let rendered;
+      try {
+        rendered = compFn(node.props || {});
+      } finally {
+        internals.H = prevH;
+      }
+      return renderWithHooks(rendered, `${scopedKey}>${compFn.name || 'Fn'}`);
+    }
+
+    if (node.props?.children) {
+      return { ...node, props: { ...node.props, children: renderWithHooks(node.props.children, key) } };
+    }
+    return node;
+  };
+  const walkTree = (node, pred, out = []) => {
+    if (!node || typeof node !== 'object') return out;
+    if (Array.isArray(node)) {
+      node.forEach((n) => walkTree(n, pred, out));
+      return out;
+    }
+    if (pred(node)) out.push(node);
+    if (node.props?.children) walkTree(node.props.children, pred, out);
+    return out;
+  };
+
+  const origDocument = globalThis.document;
+  const origWindow = globalThis.window;
+  if (!origDocument) {
+    globalThis.document = { addEventListener() {}, removeEventListener() {} };
+  }
+  if (!origWindow) {
+    globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  }
+  try {
+    const baseHookSnap = snapshot({
+      section: 'agents',
+      botManagement: botManagement({
+        status: { status: 'idle', activeBotId: 'arch' },
+        activeBotId: 'arch',
+        roster: [{ id: 'arch', displayName: '架构老王', model: '', isDefault: false, hasDraft: false }],
+        activeDetail: botDetail({ id: 'arch', displayName: '架构老王', isDefault: false }),
+        requestedTab: null,
+      }),
+      learningState: { status: 'idle' },
+      learningDetail: { status: 'idle' },
+    });
+    const baseHookActions = {
+      ...noopActions,
+      onLoadLearningGraph: (p, force) => loadGraphLog.push([p, Boolean(force)]),
+      onLoadLearningDetail: (id, p) => loadGraphLog.push(['detail', id, p]),
+    };
+    const cycle = (snapObj, actionsOverride = baseHookActions) => {
+      effectQueue = [];
+      const tree = renderWithHooks(React.createElement(BotManagerView, { snapshot: snapObj, actions: actionsOverride }));
+      for (const fn of effectQueue) fn();
+      return tree;
+    };
+
+    const basicTree = cycle(baseHookSnap);
+    assert.equal(loadGraphLog.length, 0, '停留在 basic 页签时不得提前触发学习星图加载');
+
+    // 点击 constellation 页签并重渲染 -> 触发 onLoadLearningGraph('arch', false)
+    const tabBtn = walkTree(basicTree, (n) => n.props?.['data-bot-tab'] === 'constellation')[0];
+    assert.ok(tabBtn);
+    tabBtn.props.onClick();
+    cycle(baseHookSnap);
+    assert.deepEqual(loadGraphLog, [['arch', false]]);
+
+    // 传入 ready 图谱，触发 refresh 与点击技能行 -> 弹出桌面端大号详情窗
+    loadGraphLog.length = 0;
+    const readyTree = cycle({
+      ...baseHookSnap,
+      learningState: { status: 'ready', profile: 'arch', graph: graphForArch },
+    });
+    const refreshBtn = walkTree(readyTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-refresh')[0];
+    assert.ok(refreshBtn);
+    refreshBtn.props.onClick();
+    const skillRowBtn = walkTree(readyTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-skill-item-skill:deploy-flow')[0];
+    assert.ok(skillRowBtn);
+    skillRowBtn.props.onClick();
+    assert.ok(loadGraphLog.some((e) => e[0] === 'arch' && e[1] === true));
+    assert.ok(loadGraphLog.some((e) => e[0] === 'detail' && e[1] === 'skill:deploy-flow' && e[2] === 'arch'));
+    const detailOpenedTree = cycle({
+      ...baseHookSnap,
+      learningState: { status: 'ready', profile: 'arch', graph: graphForArch },
+      learningDetail: { status: 'ready', id: 'skill:deploy-flow', kind: 'skill', label: 'deploy-flow', content: '# Deploy Flow', profile: 'arch' },
+    });
+    assert.ok(walkTree(detailOpenedTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-detail')[0]);
+
+    // 外部直达 requestedTab 触发切换 + onCopyText 透传 + activeId 为空不触发加载
+    let copiedPayload = '';
+    const jumpActions = {
+      ...baseHookActions,
+      onCopy: async (text) => {
+        copiedPayload = text;
+        return true;
+      },
+    };
+    const jumpedTree = cycle(
+      {
+        ...baseHookSnap,
+        botManagement: {
+          ...baseHookSnap.botManagement,
+          requestedTab: { tab: 'constellation', seq: 2 },
+        },
+        learningState: { status: 'ready', profile: 'arch', graph: graphForArch },
+        learningDetail: { status: 'ready', id: 'skill:deploy-flow', kind: 'skill', label: 'deploy-flow', content: '# Copied MD', profile: 'arch' },
+      },
+      jumpActions,
+    );
+    const copyBtn = walkTree(jumpedTree, (n) => n.props?.['aria-label'] === t('mobile.inspector.copyContent'))[0];
+    assert.ok(copyBtn);
+    copyBtn.props.onClick();
+    assert.equal(copiedPayload, '# Copied MD');
+
+    // 覆盖 BotManagerView 内 learningState/learningDetail ?? idle、identityTitle || activeId 与可选回调缺省分支
+    const omitIdleTree = cycle(
+      {
+        ...baseHookSnap,
+        botManagement: {
+          ...baseHookSnap.botManagement,
+          roster: [{ id: 'arch', displayName: '', model: '', isDefault: false, hasDraft: false }],
+          activeDetail: botDetail({ id: 'arch', displayName: '', isDefault: false }),
+          requestedTab: { tab: 'constellation', seq: 3 },
+        },
+        learningState: undefined,
+        learningDetail: undefined,
+      },
+      {
+        ...noopActions,
+        onLoadLearningGraph: undefined,
+        onLoadLearningDetail: undefined,
+      },
+    );
+    assert.ok(walkTree(omitIdleTree, (n) => n.props?.['data-bot-tabpanel'] === 'constellation')[0]);
+
+    const omitReadyTree = cycle(
+      {
+        ...baseHookSnap,
+        botManagement: {
+          ...baseHookSnap.botManagement,
+          requestedTab: { tab: 'constellation', seq: 4 },
+        },
+        learningState: { status: 'ready', profile: 'arch', graph: graphForArch },
+        learningDetail: undefined,
+      },
+      {
+        ...noopActions,
+        onLoadLearningGraph: undefined,
+        onLoadLearningDetail: undefined,
+      },
+    );
+    const omitRefreshBtn = walkTree(omitReadyTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-refresh')[0];
+    omitRefreshBtn?.props.onClick();
+    const omitSkillBtn = walkTree(omitReadyTree, (n) => n.props?.['data-testid'] === 'desktop-constellation-skill-item-skill:deploy-flow')[0];
+    omitSkillBtn?.props.onClick();
+
+    loadGraphLog.length = 0;
+    cycle({
+      ...baseHookSnap,
+      botManagement: {
+        ...baseHookSnap.botManagement,
+        activeBotId: '',
+        roster: [],
+        activeDetail: undefined,
+      },
+    });
+    assert.equal(loadGraphLog.length, 0);
+  } finally {
+    globalThis.document = origDocument;
+    globalThis.window = origWindow;
+  }
 });

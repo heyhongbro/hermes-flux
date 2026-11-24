@@ -71,6 +71,10 @@ export interface HermesDesktopBridge extends IPlatformBridge {
   getLogDir: () => Promise<string | null>;
   /** 物理激活宿主原生窗口，规避失焦与光标抑制 */
   activateWindow: () => Promise<void>;
+  /** 监听系统休眠/唤醒/解锁电源事件（Desktop 主进程派发） */
+  onPowerEvent?: (callback: (kind: 'suspend' | 'resume' | 'unlock') => void) => () => void;
+  /** 移动端查询当前原生网络接口连通状态 */
+  getNetworkStatus?: () => Promise<{ connected: boolean; connectionType: string }>;
 }
 
 const bridge: HermesDesktopBridge = {
@@ -86,6 +90,13 @@ const bridge: HermesDesktopBridge = {
     ipcRenderer.on('window:state-changed', handler);
     return () => {
       ipcRenderer.removeListener('window:state-changed', handler);
+    };
+  },
+  onPowerEvent: (callback) => {
+    const handler = (_event: unknown, kind: 'suspend' | 'resume' | 'unlock') => callback(kind);
+    ipcRenderer.on('system:power-event', handler);
+    return () => {
+      ipcRenderer.removeListener('system:power-event', handler);
     };
   },
   getDefaultGatewayConfig: () => ipcRenderer.invoke('gateway:get-default-config'),

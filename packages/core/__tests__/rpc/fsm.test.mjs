@@ -42,11 +42,14 @@ test('WebSocketFsm Finite State Machine Unit Tests', async (t) => {
     const fsm = new WebSocketFsm(config);
 
     // Attempt 0: raw 100 * (2^0) = 100 => bounds [0, 100]
+    assert.equal(fsm.getAttemptCount(), 0);
     const d0 = fsm.getNextBackoffMs();
+    assert.equal(fsm.getAttemptCount(), 1);
     assert.ok(d0 >= 0 && d0 <= 100, `Delay d0=${d0} must be in [0, 100]`);
 
     // Attempt 1: raw 100 * (2^1) = 200 => bounds [0, 200]
     const d1 = fsm.getNextBackoffMs();
+    assert.equal(fsm.getAttemptCount(), 2);
     assert.ok(d1 >= 0 && d1 <= 200, `Delay d1=${d1} must be in [0, 200]`);
 
     // Advance attempts to cap at maxDelayMs (1000)
@@ -58,6 +61,7 @@ test('WebSocketFsm Finite State Machine Unit Tests', async (t) => {
 
     // Reset attempts
     fsm.resetAttempts();
+    assert.equal(fsm.getAttemptCount(), 0);
     const dReset = fsm.getNextBackoffMs();
     assert.ok(dReset >= 0 && dReset <= 100, `Reset delay=${dReset} must be in [0, 100]`);
   });

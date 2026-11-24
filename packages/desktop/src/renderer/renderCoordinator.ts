@@ -27,6 +27,8 @@ import {
   mountPromptNavigator,
   mountRightPod,
   mountNewChatDialog,
+  mountConnectionStatusPill,
+  type ConnectionStatusPillHandle,
   renderMiddlePod,
   renderInspectionPod,
   renderInputDock,
@@ -71,6 +73,19 @@ import type { ModalInteractionController } from './events/modalInteractionContro
 import type { StreamAnchor } from './viewport/streamViewportManager.js';
 import { createPostCommitPinObservers } from './viewport/postCommitPinObservers.js';
 
+/**
+ * 判断桌面端断连期间是否应保留当前对话舞台与禁用态输入舱（避免切回 Gateway Onboarding 卡片导致内容与上下文丢失）。
+ */
+export function shouldPreserveConversationShell(state: AppState): boolean {
+  if (state.gatewayConnected) return true;
+  if (!state.connectionPhase || state.connectionPhase === 'unconfigured') return false;
+  return (
+    state.messages.length > 0 ||
+    Boolean(state.activeSessionId) ||
+    (state.activeFocus.type === 'group' && Boolean(state.activeFocus.roomId))
+  );
+}
+
 export interface RenderMessagesSnapshot {
   sessionId: string;
   count: number;
@@ -79,6 +94,7 @@ export interface RenderMessagesSnapshot {
   isStreaming: boolean;
   gatewayConnected: boolean;
   gatewayConnecting: boolean;
+  connectionPhase?: AppState['connectionPhase'];
   hasOlder: boolean;
   isLoadingOlder: boolean;
   profileName: string;
@@ -135,9 +151,11 @@ export interface RenderCoordinatorDeps {
   syncReactSettings: () => void;
   ensureSettingsSectionData: (section: SettingsSectionId) => void;
 
-  // 在场指示器
+  // 在场指示器与连接胶囊
   syncAgentPresenceHost: () => void;
   syncAgentPresence: () => void;
+  mountConnectionPill?: typeof mountConnectionStatusPill;
+  onRetryConnect?: () => Promise<void> | void;
 
   // 视口与滚动控制
   captureStreamAnchor: () => StreamAnchor;
@@ -267,6 +285,85 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
   let lastRenderedSessionId: string | null = null;
   let mobileShellCoordinator: MobileShellCoordinator | undefined = deps.mobileShellCoordinator;
   let mountedMobileCoordinator: MobileShellCoordinator | undefined;
+  let connectionPillHandle: ConnectionStatusPillHandle | null = null;
+  let connectionPillHost: HTMLElement | null = null;
+  let connectionPillMounted = false;
+  let lastConnectionPillKey = '';
+
+  function openDesktopSettings(): void {
+    const state = deps.getState();
+    state.isSettingsOpen = true;
+    deps.ensureSettingsSectionData(state.settingsSection);
+    render();
+  }
+
+  function syncPresenceReplacementAttr(): void {
+    const presenceHost = document.getElementById('react-conv-presence-host');
+    if (presenceHost && presenceHost.dataset.mobileSlot !== 'true') {
+      presenceHost.setAttribute('data-replaced', connectionPillMounted ? 'true' : 'false');
+    }
+  }
+
+  function syncConnectionStatusPill(): void {
+    const state = deps.getState();
+    const phase = state.connectionPhase;
+    if (!phase) return;
+    const isVisible = phase !== 'connected' && phase !== 'unconfigured';
+    if (!connectionPillHandle && !isVisible) {
+      syncPresenceReplacementAttr();
+      return;
+    }
+    let host = document.getElementById('react-conv-connection-host');
+    if (!host) {
+      const middlePod = document.querySelector?.('.flux-middle-pod') ?? null;
+      if (middlePod && typeof document.createElement === 'function' && typeof middlePod.appendChild === 'function') {
+        host = document.createElement('div');
+        host.id = 'react-conv-connection-host';
+        host.dataset.fluxIsland = 'true';
+        middlePod.appendChild(host);
+      }
+    }
+    const isMountableElement =
+      Boolean(host) &&
+      Boolean(host && host.isConnected) &&
+      (host as { nodeType?: unknown }).nodeType === 1;
+    if (!isMountableElement || !host) {
+      if (connectionPillHandle) {
+        connectionPillHandle.unmount();
+        connectionPillHandle = null;
+        connectionPillHost = null;
+        connectionPillMounted = false;
+        lastConnectionPillKey = '';
+        syncPresenceReplacementAttr();
+      }
+      return;
+    }
+    const nextKey = `${phase}|${state.connectionReconnectAttempt}|${state.connectionAuthError ? 1 : 0}`;
+    if (!connectionPillHandle || connectionPillHost !== host) {
+      if (connectionPillHandle) connectionPillHandle.unmount();
+      connectionPillHost = host;
+      lastConnectionPillKey = nextKey;
+      connectionPillHandle = (deps.mountConnectionPill ?? mountConnectionStatusPill)(host, () => {
+        const current = deps.getState();
+        return {
+          phase: current.connectionPhase,
+          attempt: current.connectionReconnectAttempt,
+          isAuthError: current.connectionAuthError,
+          layout: 'stage',
+          onRetry: deps.onRetryConnect,
+          onOpenSettings: openDesktopSettings,
+          onMountedChange: (mounted) => {
+            connectionPillMounted = mounted;
+            syncPresenceReplacementAttr();
+          },
+        };
+      });
+    } else if (lastConnectionPillKey !== nextKey) {
+      lastConnectionPillKey = nextKey;
+      connectionPillHandle.update();
+    }
+    syncPresenceReplacementAttr();
+  }
 
   /**
    * 【单在途渲染后贴底句柄 (Why)】
@@ -691,11 +788,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
           state.inspectorCollapsed = !state.inspectorCollapsed;
           render();
         },
-        onOpenSettings: () => {
-          state.isSettingsOpen = true;
-          deps.ensureSettingsSectionData(state.settingsSection);
-          render();
-        },
+        onOpenSettings: openDesktopSettings,
       });
     }
 
@@ -718,6 +811,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     syncReactNewChat();
     syncReactMessageList();
     deps.syncAgentPresenceHost();
+    syncConnectionStatusPill();
 
     const navHost = document.getElementById('react-prompt-navigator-host');
     if (navHost && !updateReactPromptNavigator) {
@@ -821,6 +915,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
       isStreaming: state.isStreaming,
       gatewayConnected: state.gatewayConnected,
       gatewayConnecting: state.gatewayConnecting,
+      connectionPhase: state.connectionPhase,
       hasOlder: state.hasOlderMessages,
       isLoadingOlder: state.isLoadingOlder,
       profileName: state.profileName,
@@ -897,6 +992,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     const applyAnchorAfterDom = () => { if (scrollDecision.applyAnchor) deps.applyStreamAnchor(streamAnchor, pinBottom); };
 
     const bodyContainer = root.querySelector('.flux-body-container');
+    const preserveShell = shouldPreserveConversationShell(state);
 
     const activeMobile = isMobileShellActive() && mobileShellCoordinator ? mobileShellCoordinator : null;
     if (activeMobile) {
@@ -936,6 +1032,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
           ${renderMiddlePod({
             gatewayConnected: state.gatewayConnected,
             gatewayConnecting: state.gatewayConnecting,
+            preserveStage: preserveShell,
             gatewayUrl: state.gatewayUrl,
             username: state.username,
             password: state.password,
@@ -946,7 +1043,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
             hasOlderMessages: state.hasOlderMessages,
             isLoadingOlder: state.isLoadingOlder,
             isStreaming: deps.isStreamingActiveForCurrentSession(),
-            dockHtml: state.gatewayConnected
+            dockHtml: preserveShell
               ? renderInputDock({
                   selectedModel: state.selectedModel,
                   models: state.availableModels,
@@ -1076,7 +1173,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
 
       const existingDock = root.querySelector('.input-dock-container');
       const dockChanged = hasDockSnapshotChanged(lastInputDockSnapshot, currentDockSnapshot);
-      const shouldBuildDock = state.gatewayConnected && (!existingDock || dockChanged);
+      const shouldBuildDock = preserveShell && (!existingDock || dockChanged);
 
       const nextDockHtml = shouldBuildDock
         ? renderInputDock({
@@ -1110,7 +1207,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
 
       const applyInputDockUpdate = (): void => {
         if (existingDock) {
-          if (!state.gatewayConnected) {
+          if (!preserveShell) {
             existingDock.remove();
             lastInputDockSnapshot = null;
           } else if (dockChanged && nextDockHtml) {
@@ -1129,6 +1226,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     applyInputDockUpdate();
     syncAgentPresenceHost();
     syncAgentPresence();
+    syncConnectionStatusPill();
 
       deps.modalInteractionController.updateModals(root);
 
@@ -1136,7 +1234,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
       if (activeStream && messagesChanged) {
         const reactHost = document.getElementById('react-message-list-host');
         const canUseReactList =
-          state.gatewayConnected && (state.messages.length > 0 || state.messagesPhase === 'loading');
+          preserveShell && (state.messages.length > 0 || state.messagesPhase === 'loading');
         if (reactHost && canUseReactList) {
           syncReactMessageList(structureDirty);
           canvasStructureDirty = false;
@@ -1144,6 +1242,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
           activeStream.innerHTML = renderConversationCanvas({
             gatewayConnected: state.gatewayConnected,
             gatewayConnecting: state.gatewayConnecting,
+            preserveStage: preserveShell,
             gatewayUrl: state.gatewayUrl,
             username: state.username,
             password: state.password,
@@ -1295,6 +1394,13 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     updateReactNewChat = null;
     reactNewChatHost = null;
     lastNewChatSnapshotJson = '';
+    if (connectionPillHandle) {
+      connectionPillHandle.unmount();
+      connectionPillHandle = null;
+    }
+    connectionPillHost = null;
+    connectionPillMounted = false;
+    lastConnectionPillKey = '';
   }
 
   return {

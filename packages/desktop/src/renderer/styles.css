@@ -796,9 +796,22 @@ html[data-platform="web"] .titlebar-right {
 /* 连接指示点：display 必须显式声明。它曾是 flex 子项，靠"flex 子项块化"才拿到宽高；
    一旦父容器换成非 flex（或未来改结构），inline 元素上的 width/height 会被浏览器直接忽略，
    指示点会静默变成 0×0（悬停提示还在，屏幕上却什么都没有）。 */
-.titlebar-connection-indicator { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); }
-/* 连接态由 data-connected 属性驱动：文案(title)随语言切换，用它做选择器会在英文界面直接失效。 */
-.titlebar-connection-indicator[data-connected="true"] { background: var(--success); }
+.titlebar-connection-indicator { display: inline-block; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--muted-foreground); transition: background 180ms ease, box-shadow 180ms ease; }
+/* 连接态由 data-connected / data-status 属性驱动：文案(title)随语言切换，用它做选择器会在英文界面直接失效。 */
+.titlebar-connection-indicator[data-connected="true"],
+.titlebar-connection-indicator[data-status="connected"] { background: var(--success); }
+.titlebar-connection-indicator[data-status="reconnecting"] {
+  background: var(--warning);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 28%, transparent);
+}
+.titlebar-connection-indicator[data-status="syncing"] {
+  background: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 26%, transparent);
+}
+.titlebar-connection-indicator[data-status="offline"] {
+  background: var(--muted-foreground);
+  box-shadow: none;
+}
 
 @layer base {
   * {

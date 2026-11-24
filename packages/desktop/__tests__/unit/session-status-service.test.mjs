@@ -188,6 +188,7 @@ function createServiceHarness(overrides = {}) {
     setTimedDockNotice: (msg) => {
       notices.push(msg);
     },
+    onOpenConstellation: overrides.onOpenConstellation,
     render: () => {
       renders += 1;
     },
@@ -717,5 +718,24 @@ test('SessionStatusService: onConnected 阈值不被并发切会话覆盖、断�
     assert.equal(h.service.getRightPodSnapshot().effectiveCompressionRatio, null, '断线前在途 config.get 绝不可在断线后回写阈值');
   } finally {
     h.service.dispose();
+  }
+
+  // 4. RightPodActions.onOpenConstellation 条件挂载与 profileName 透传
+  const withoutOpen = createServiceHarness();
+  try {
+    assert.equal(withoutOpen.service.getRightPodActions().onOpenConstellation, undefined);
+  } finally {
+    withoutOpen.service.dispose();
+  }
+
+  const openedProfiles = [];
+  const withOpen = createServiceHarness({
+    onOpenConstellation: (p) => openedProfiles.push(p),
+  });
+  try {
+    withOpen.service.getRightPodActions().onOpenConstellation?.('coder');
+    assert.deepEqual(openedProfiles, ['coder']);
+  } finally {
+    withOpen.service.dispose();
   }
 });

@@ -47,7 +47,10 @@ import type {
   ProjectDirectoryEntry,
   ProjectDirectoryMutationResult,
   ProjectDirectorySource,
+  LearningLoadState,
+  LearningDetailState,
 } from '@hermes-flux/core';
+import type { BotDetailTab } from './botPanelLogic.js';
 
 export type { McpServerRow, SkillRow };
 export type { CustomEndpointRow, OauthProviderRow, ProviderView };
@@ -278,6 +281,8 @@ export interface BotManagementView {
   confirmPending?: { message: string };
   /** 新建成功后需要平滑滚动并高亮的目标。 */
   highlightBotId?: string;
+  /** 外部入口（如右侧状态栏直达星图）请求切换的初始 Tab。 */
+  requestedTab?: { tab: BotDetailTab; seq: number } | null;
 }
 
 /**
@@ -321,6 +326,9 @@ export interface SettingsSnapshot {
   bots: SettingsBotRow[];
   /** BOT 配置中枢的完整视图（选择器、详情、草稿、向导、离场拦截）。 */
   botManagement: BotManagementView;
+  /** 当前认知星图与节点详情状态（按 activeBotId 隔离加载）。 */
+  learningState?: LearningLoadState;
+  learningDetail?: LearningDetailState;
   /** 提供商配置当前作用到的 Bot（删除/设为默认/登录都作用于它）；空串表示跟随连接 profile。 */
   scopedProfile: string;
   /** 统一提供商表：订阅与自定义混排，包含每个 Agent 的生效状态。 */
@@ -637,4 +645,9 @@ export interface SettingsActions {
   onNotify: (message: string) => void;
   /** 复制文本，由壳层决定用哪种剪贴板实现。 */
   onCopy: (text: string) => Promise<boolean>;
+  /** 按指定 Bot 加载/刷新认知星图与详情（桌面 BOT 面板与移动端共享）。 */
+  onLoadLearningGraph?: (profile: string, force?: boolean) => void;
+  onLoadLearningDetail?: (id: string, profile?: string) => void;
+  onEditLearningNode?: (id: string, content: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;
+  onDeleteLearningNode?: (id: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;
 }

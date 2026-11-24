@@ -25,7 +25,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `source` 为真实源码路径 | 违者 FAIL |
 | `source`+`symbol` 组合唯一 | 违者 FAIL |
 
-## 总览（66 条，覆盖 17 个领域）
+## 总览（70 条，覆盖 18 个领域）
 
 ### ATTACH（5 条）
 
@@ -58,6 +58,14 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-CACHE-07` | appendRows 同键展示序不漂移 | `packages/core/src/cache/cacheMerge.ts` → `appendRows` | `cache-fence-formal.test.mjs` | 重复追加同一批消息时 displaySeq 重新计算，行跳动 |
 | `INV-CACHE-08` | 更早分片展示序精确切片 | `packages/core/src/cache/cacheMerge.ts` → `sortByDisplayAsc` | `cache-fence-formal.test.mjs` | 按 orderKey 翻页取 displaySeq 不连续，历史消息顺序错乱 |
 
+### CONN（3 条）
+
+| 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
+|---|---|---|---|---|
+| `INV-CONN-01` | 认证失效与手动断连在连接相位归约中的绝对支配律（unconfigured > manual/auth-offline > transient reconnect） | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase#auth-dominance` | `connection-phase-formal.test.mjs` | 401 密码失效或用户主动断开后界面仍虚假显示重连胶囊并死循环撞墙重试 |
+| `INV-CONN-02` | 7态连接相位全序覆盖与 sync 优先级单调律 | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase` | `connection-phase-formal.test.mjs` | HANDSHAKING 或 RECONNECTING 被错误归约为已连接或完全断网，导致标题栏与输入舱状态撕裂 |
+| `INV-CONN-03` | 冷启动退避重试时延有界且单调非降 | `packages/core/src/rpc/connectionPhase.ts` → `computeColdStartRetryDelayMs` | `connection-phase-formal.test.mjs` | 冷启动网络未就绪时退避越界卡死或零延迟风暴重试打爆电池与网关 |
+
 ### FS（6 条）
 
 | 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
@@ -69,11 +77,12 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-FS-05` | 二进制文件与超大文件预览阻断单调性（二进制恒优先于体积上限拦截且绝不误杀图片） | `packages/core/src/fs/fileService.ts` → `evaluateFilePreviewGuard` | `file-tree-formal.test.mjs` | .exe 等二进制文件被当作文本渲染成乱码，或超大文件直接撑爆前端 DOM 表格 |
 | `INV-FS-06` | 项目目录 picker 单段命名清洗、POSIX shell 安全引用与锁定根目录不可重命名守卫 | `packages/core/src/fs/directoryPickerService.ts` → `validateDirectoryName` | `file-tree-formal.test.mjs` | 目录创建或重命名遭 `..`/控制字符/`.env` 注入越界，或误改 `/`/locked_root 破坏工作区 |
 
-### LEARN（1 条）
+### LEARN（2 条）
 
 | 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
 |---|---|---|---|---|
 | `INV-LEARN-01` | 学习星图去重清洗、注释剥离与中心辐射视窗几何有界完备 | `packages/core/src/learning/learningConstellation.ts` → `buildConstellationGraph` | `learning-constellation-formal.test.mjs` | 记忆节点标题残存半截 HTML 注释或全连通边爆表造成移动端星图堆叠不可点 |
+| `INV-LEARN-02` | 全量认知星图确定性无重叠布局（全节点无分页落图、绝对碰撞分离与技能关联统计有界一致） | `packages/core/src/learning/constellationLayout.ts` → `layoutFullConstellationGraph` | `learning-constellation-formal.test.mjs` | 星图节点相互遮挡不可点、跨 Bot 刷新顺序偏移抖动、或技能列表计数与星图不一致 |
 
 ### MSG（1 条）
 

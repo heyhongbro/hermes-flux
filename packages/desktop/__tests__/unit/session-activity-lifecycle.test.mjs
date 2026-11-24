@@ -28,9 +28,11 @@ import {
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 const gatewayDispatchPath = path.resolve(__dir, '../../src/renderer/gateway/gatewayEventDispatcher.ts');
+const appBootstrapPath = path.resolve(__dir, '../../src/renderer/bootstrap/appBootstrap.ts');
 const rendererSource = [
   readFileSync(path.resolve(__dir, '../../src/renderer/index.ts'), 'utf8'),
   existsSync(gatewayDispatchPath) ? readFileSync(gatewayDispatchPath, 'utf8') : '',
+  existsSync(appBootstrapPath) ? readFileSync(appBootstrapPath, 'utf8') : '',
 ].join('\n');
 
 test('Session Activity Lifecycle & Handle Normalization Invariants', async (t) => {

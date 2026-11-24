@@ -42,6 +42,7 @@ import {
 } from '@hermes-flux/core';
 import { t } from '../../i18n/index.js';
 import type { LeftRailActiveFocus } from '../leftRailModel.js';
+import type { SettingsActions } from '../settings/settingsModel.js';
 import type { MobileInspectorTab } from './mobileShellModel.js';
 import { MobileConstellationPanel } from './MobileConstellationPanel.js';
 import { MobileFloatingBackBar } from './MobileMenuPrimitives.js';
@@ -61,6 +62,8 @@ export interface MobileInspectorScreenProps {
   activeFilePath: string;
   workspaceRootName?: string;
   memories: Array<{ category: string; content: string; updated?: string }>;
+  inspectorBotProfile?: string;
+  inspectorBotLabel?: string;
   learningState: LearningLoadState;
   learningDetail: LearningDetailState;
   groupMembers: Array<{ name: string; displayName: string; avatar?: string }>;
@@ -74,10 +77,13 @@ export interface MobileInspectorScreenProps {
   onFilterFileTree: (query: string) => void;
   onOpenWorkspaceFile: (filePath: string) => void;
   onDownloadInspectorFile: () => void;
-  onRefreshLearning: () => void;
-  onLoadLearningDetail: (id: string) => void;
-  onEditLearningNode?: (id: string, content: string) => Promise<{ ok: boolean; message?: string }>;
-  onDeleteLearningNode?: (id: string) => Promise<{ ok: boolean; message?: string }>;
+  onEnsureLearning?: (profile: string) => void;
+  onRefreshLearning: (profile?: string) => void;
+  onLoadLearningDetail: (id: string, profile?: string) => void;
+  onEditLearningNode?: (id: string, content: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;
+  onDeleteLearningNode?: (id: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;
+  onInspectSkill?: SettingsActions['onInspectSkill'];
+  onNotify?: SettingsActions['onNotify'];
 }
 
 export function MobileInspectorScreen({
@@ -93,6 +99,8 @@ export function MobileInspectorScreen({
   fileTreeFilterQuery,
   activeFilePath,
   workspaceRootName,
+  inspectorBotProfile,
+  inspectorBotLabel,
   learningState,
   learningDetail,
   groupMembers,
@@ -106,10 +114,13 @@ export function MobileInspectorScreen({
   onFilterFileTree,
   onOpenWorkspaceFile,
   onDownloadInspectorFile,
+  onEnsureLearning,
   onRefreshLearning,
   onLoadLearningDetail,
   onEditLearningNode,
   onDeleteLearningNode,
+  onInspectSkill,
+  onNotify,
 }: MobileInspectorScreenProps): React.ReactElement {
   const isGroup = activeFocus.type === 'group';
   const tabs: Array<{ id: MobileInspectorTab; label: string }> = [
@@ -378,15 +389,25 @@ export function MobileInspectorScreen({
       );
     }
 
+    const resolvedBotProfile =
+      inspectorBotProfile ||
+      (activeFocus.type === 'bot' ? activeFocus.botName : '') ||
+      'default';
+
     return (
       <MobileConstellationPanel
+        targetProfile={resolvedBotProfile}
+        targetBotLabel={inspectorBotLabel}
         learningState={learningState}
         learningDetail={learningDetail}
+        onEnsureLoaded={onEnsureLearning}
         onRefresh={onRefreshLearning}
         onSelectNodeDetail={onLoadLearningDetail}
         onSaveEdit={onEditLearningNode}
         onDeleteNode={onDeleteLearningNode}
+        onInspectSkill={onInspectSkill}
         onCopyText={onCopyText}
+        onNotify={onNotify}
         footerHint={t('mobile.memory.footerHint')}
       />
     );

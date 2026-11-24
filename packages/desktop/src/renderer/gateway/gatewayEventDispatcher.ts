@@ -24,6 +24,7 @@ import type { AppState } from '../state/appState.js';
 import type { HermesDesktopBridge } from '../../preload/index.js';
 import {
   type HermesGatewayClient,
+  type ProbeOrWakeResult,
   type TurnAction,
   type NormalizedSession,
   type SessionHandleRegistry,
@@ -32,6 +33,9 @@ import {
   type CacheChannelRef,
   type CacheService,
   HermesGatewayClient as GatewayClientImpl,
+  classifyConnectionError,
+  computeColdStartRetryDelayMs,
+  resolveConnectionPhase,
   reduceGatewayEvent,
   applyTurnFailed,
   applySessionTitle,
@@ -118,6 +122,8 @@ export interface GatewayEventDispatcherDeps {
 
   readonly render: () => void;
   readonly t: (key: I18nKey, params?: Record<string, string | number>) => string;
+  readonly onConnectedSync?: (trigger: 'connected' | 'reconnected') => Promise<void> | void;
+  readonly onResumeAliveSync?: () => Promise<void> | void;
   readonly onStatusConnected?: () => void;
   readonly onStatusDisconnected?: () => void;
   readonly onReadyEnsureDoneSessions?: () => void;
@@ -130,6 +136,15 @@ export interface GatewayEventDispatcherDeps {
 export interface GatewayEventDispatcher {
   connect(targetUrl?: string): Promise<void>;
   disconnect(): void;
+  wakeOrRetry(reason: string): Promise<ProbeOrWakeResult>;
+  retryNow(): Promise<void>;
+  markNetworkOffline(): void;
+  setSyncHooks(hooks: {
+    onConnectedSync?: GatewayEventDispatcherDeps['onConnectedSync'];
+    onResumeAliveSync?: GatewayEventDispatcherDeps['onResumeAliveSync'];
+  }): void;
+  resumeReconnectStreaming(storedSessionId: string, liveSessionId: string): void;
+  finishReconnectStreaming(storedSessionId: string): void;
   getConnectionEpoch(): number;
   handleGatewayEvent(params: unknown): void;
   applyTurnActions(actions: TurnAction[]): void;
@@ -138,6 +153,19 @@ export interface GatewayEventDispatcher {
 
 export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): GatewayEventDispatcher {
   let connectionEpoch = 0;
+  let coldStartRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let coldStartRetryAttempt = 0;
+  let inFlightAuthEpoch = 0;
+  let inFlightAuthStartedAt = 0;
+  let dynamicOnConnectedSync: GatewayEventDispatcherDeps['onConnectedSync'];
+  let dynamicOnResumeAliveSync: GatewayEventDispatcherDeps['onResumeAliveSync'];
+
+  function clearColdStartRetryTimer(): void {
+    if (coldStartRetryTimer) {
+      clearTimeout(coldStartRetryTimer);
+      coldStartRetryTimer = null;
+    }
+  }
 
   function handleInspectorEvent(params: unknown): void {
     if (!params || typeof params !== 'object') return;
@@ -572,24 +600,53 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
 
   async function connect(targetUrl?: string): Promise<void> {
     const epoch = ++connectionEpoch;
+    inFlightAuthEpoch = 0;
+    inFlightAuthStartedAt = 0;
+    clearColdStartRetryTimer();
     deps.stopProfileAutoRefresh();
+    let hasConnectedOnce = false;
 
     const oldClient = deps.getGatewayClient();
     if (oldClient) {
       oldClient.disconnect();
       deps.setGatewayClient(null);
     }
-    deps.getSessionHandleRegistry().clear?.();
-    deps.onStatusDisconnected?.();
 
     const state = deps.getState();
+    state.activeLiveSessionId = '';
+    deps.getSessionHandleRegistry().clear?.();
+    deps.onStatusDisconnected?.();
     if (targetUrl) {
       state.gatewayUrl = targetUrl;
     }
+    state.manualDisconnected = false;
+    state.connectionAuthError = false;
+    state.connectionReason = '';
 
-    if (!deps.getEffectiveUrl(state.gatewayUrl)) {
+    const effectiveUrl = deps.getEffectiveUrl(state.gatewayUrl);
+    const hasUrl = Boolean(effectiveUrl);
+
+    const syncConnectionPhaseField = (
+      fsmState: 'DISCONNECTED' | 'CONNECTING' | 'HANDSHAKING' | 'CONNECTED' | 'RECONNECTING' | null,
+    ): void => {
+      state.connectionPhase = resolveConnectionPhase({
+        hasGatewayUrl: hasUrl,
+        manualDisconnected: state.manualDisconnected,
+        authError: state.connectionAuthError,
+        fsmState,
+        isSyncing: state.connectionPhase === 'syncing',
+        isSyncedFlash: state.connectionPhase === 'synced',
+        isColdStartRetrying: coldStartRetryTimer !== null,
+        hasConnectedOnce,
+      });
+    };
+
+    if (!effectiveUrl) {
+      coldStartRetryAttempt = 0;
       state.gatewayConnected = false;
       state.gatewayConnecting = false;
+      state.connectionReconnectAttempt = 0;
+      state.connectionPhase = 'unconfigured';
       state.profilesPhase = 'ready';
       state.sessionsPhase = 'ready';
       state.messagesPhase = 'ready';
@@ -625,16 +682,71 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
       });
     }
 
+    const triggerConnectedSync = (trigger: 'connected' | 'reconnected'): void => {
+      const connectedSync = dynamicOnConnectedSync ?? deps.onConnectedSync;
+      if (connectedSync) {
+        void connectedSync(trigger);
+        return;
+      }
+      Promise.allSettled([
+        deps.fetchProfiles().then(() => Promise.allSettled([
+          deps.fetchSessions().then(() => {
+            deps.onReadyEnsureDoneSessions?.();
+          }),
+          deps.fetchGroupRooms(),
+          deps.prefetchSlashCatalog(),
+        ])),
+        deps.fetchModelOptions(),
+        deps.fetchProjects(),
+      ]);
+    };
+
+    const scheduleColdStartRetry = (reasonMsg: string): void => {
+      const kind = classifyConnectionError(reasonMsg);
+      state.gatewayConnecting = false;
+      state.gatewayConnected = false;
+      state.connectionReason = reasonMsg;
+      if (kind === 'auth' || kind === 'config') {
+        state.connectionAuthError = kind === 'auth';
+        coldStartRetryAttempt = 0;
+        state.connectionReconnectAttempt = 0;
+        state.connectionPhase = 'offline';
+        return;
+      }
+      coldStartRetryAttempt += 1;
+      state.connectionAuthError = false;
+      state.connectionReconnectAttempt = coldStartRetryAttempt;
+      state.connectionPhase = 'reconnecting';
+      const delayMs = computeColdStartRetryDelayMs(coldStartRetryAttempt);
+      coldStartRetryTimer = setTimeout(() => {
+        coldStartRetryTimer = null;
+        if (epoch !== connectionEpoch || state.manualDisconnected || state.connectionAuthError) return;
+        void connect();
+      }, delayMs);
+      coldStartRetryTimer.unref?.();
+    };
+
     state.gatewayConnecting = true;
+    state.connectionPhase = coldStartRetryAttempt > 0 ? 'reconnecting' : 'connecting';
     state.testStatus = undefined;
     deps.render();
 
     try {
-      const test = await deps.testConnection(
-        state.gatewayUrl,
-        state.username,
-        state.password
-      );
+      inFlightAuthEpoch = epoch;
+      inFlightAuthStartedAt = Date.now();
+      let test: GatewayAuthResponse;
+      try {
+        test = await deps.testConnection(
+          state.gatewayUrl,
+          state.username,
+          state.password
+        );
+      } finally {
+        if (inFlightAuthEpoch === epoch) {
+          inFlightAuthEpoch = 0;
+          inFlightAuthStartedAt = 0;
+        }
+      }
 
       if (epoch !== connectionEpoch) return;
 
@@ -642,19 +754,20 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
       state.testStatus = test;
 
       if (!test.ok) {
-        state.gatewayConnecting = false;
-        state.gatewayConnected = false;
         state.profilesPhase = 'ready';
         state.sessionsPhase = 'ready';
         state.messagesPhase = 'ready';
+        scheduleColdStartRetry(test.message);
         void deps.applyColdStartFocus();
         deps.render();
         return;
       }
 
+      coldStartRetryAttempt = 0;
+      state.connectionReconnectAttempt = 0;
       deps.setCurrentTicket(test.ticket);
 
-      const baseUrl = deps.getEffectiveUrl(state.gatewayUrl);
+      const baseUrl = effectiveUrl;
       const desktopApi = deps.getDesktopApi();
       const buildWsUrl = (ticket?: string): string =>
         buildGatewayWsUrl(baseUrl, ticket, desktopApi?.proxyWebSocketUrl);
@@ -671,11 +784,22 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
             state.testStatus = refreshed;
             if (refreshed.ok) {
               deps.setCurrentTicket(refreshed.ticket);
+              return;
+            }
+            if (classifyConnectionError(refreshed.message) === 'auth') {
+              state.connectionAuthError = true;
+              state.connectionReason = refreshed.message;
+              state.gatewayConnected = false;
+              state.gatewayConnecting = false;
+              state.connectionPhase = 'offline';
+              client.disconnect();
+              deps.render();
             }
           },
           fallbackErrorMessage: deps.t('chat.gatewayNotConnected'),
         }),
-        autoConnect: true,
+        autoConnect: false,
+        enableLifecycleWake: false,
         timeoutMs: 25000,
       });
 
@@ -701,19 +825,38 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
       client.getFsm().onStateChange((fsmState) => {
         if (epoch !== connectionEpoch) return;
 
-        const isConnected = fsmState === 'CONNECTED' || fsmState === 'HANDSHAKING';
-        const isConnecting = fsmState === 'CONNECTING';
+        const isConnected = fsmState === 'CONNECTED';
+        const isConnecting = fsmState === 'CONNECTING' || fsmState === 'HANDSHAKING' || fsmState === 'RECONNECTING';
+        const nextAttempt = fsmState === 'CONNECTED' ? 0 : client.getReconnectAttempt();
+        const prevPhase = state.connectionPhase;
+        const prevAttempt = state.connectionReconnectAttempt;
+        const wasConnected = state.gatewayConnected;
 
-        if (state.gatewayConnected !== isConnected || state.gatewayConnecting !== isConnecting) {
-          const wasConnected = state.gatewayConnected;
-          state.gatewayConnected = isConnected;
-          state.gatewayConnecting = isConnecting;
-
-          if (wasConnected && !isConnected) {
-            deps.getSessionHandleRegistry().clear?.();
-            deps.onStatusDisconnected?.();
+        state.gatewayConnected = isConnected;
+        state.gatewayConnecting = isConnecting;
+        state.connectionReconnectAttempt = nextAttempt;
+        if (isConnected) {
+          state.connectionAuthError = false;
+          state.connectionReason = '';
+          if (!(dynamicOnConnectedSync ?? deps.onConnectedSync)) {
+            state.connectionPhase = 'connected';
           }
+        } else {
+          if (state.connectionPhase === 'syncing' || state.connectionPhase === 'synced') {
+            state.connectionPhase = 'reconnecting';
+          }
+          syncConnectionPhaseField(fsmState);
+        }
 
+        if (wasConnected && !isConnected) {
+          // 断连瞬间必须同步清零 live 句柄，绝不能被 settings 编辑早退分支跳过
+          state.activeLiveSessionId = '';
+          deps.getSessionHandleRegistry().clear?.();
+          deps.onStatusDisconnected?.();
+        }
+
+        const phaseOrAttemptChanged = prevPhase !== state.connectionPhase || prevAttempt !== nextAttempt;
+        if (wasConnected !== isConnected || !isConnected || phaseOrAttemptChanged) {
           const isUserEditing =
             typeof document !== 'undefined' &&
             document.activeElement &&
@@ -723,56 +866,31 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
           }
 
           deps.render();
+        }
 
-          if (isConnected) {
-            deps.onStatusConnected?.();
-            deps.startProfileAutoRefresh();
-            Promise.allSettled([
-              deps.fetchProfiles().then(() => Promise.allSettled([
-                deps.fetchSessions().then(() => {
-                  deps.onReadyEnsureDoneSessions?.();
-                }),
-                deps.fetchGroupRooms(),
-                deps.prefetchSlashCatalog(),
-              ])),
-              deps.fetchModelOptions(),
-              deps.fetchProjects(),
-            ]);
-          }
+        if (isConnected && !wasConnected) {
+          const syncTrigger = hasConnectedOnce ? 'reconnected' : 'connected';
+          hasConnectedOnce = true;
+          deps.onStatusConnected?.();
+          deps.startProfileAutoRefresh();
+          triggerConnectedSync(syncTrigger);
         }
       });
 
-      if (client.getState() === 'CONNECTED') {
-        state.gatewayConnected = true;
-        state.gatewayConnecting = false;
-        deps.render();
-        deps.onStatusConnected?.();
-        deps.startProfileAutoRefresh();
-        Promise.allSettled([
-          deps.fetchProfiles().then(() => Promise.allSettled([
-            deps.fetchSessions().then(() => {
-              deps.onReadyEnsureDoneSessions?.();
-            }),
-            deps.fetchGroupRooms(),
-            deps.prefetchSlashCatalog(),
-          ])),
-          deps.fetchModelOptions(),
-          deps.fetchProjects(),
-        ]);
-      }
+      client.connect();
     } catch (err: unknown) {
+      if (epoch !== connectionEpoch) return;
       console.error('[Flux Connect] Connection failed:', err);
-      state.gatewayConnected = false;
-      state.gatewayConnecting = false;
-      state.profilesPhase = 'ready';
-      state.sessionsPhase = 'ready';
-      state.messagesPhase = 'ready';
       const errMsg = err instanceof Error ? err.message : String(err);
       state.testStatus = {
         ok: false,
         message: deps.t('chat.wsHandshakeFailed', { error: errMsg || deps.t('chat.networkError') }),
         latency: 0,
       };
+      state.profilesPhase = 'ready';
+      state.sessionsPhase = 'ready';
+      state.messagesPhase = 'ready';
+      scheduleColdStartRetry(errMsg || deps.t('chat.networkError'));
     }
 
     deps.render();
@@ -780,6 +898,10 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
 
   function disconnect(): void {
     connectionEpoch++;
+    inFlightAuthEpoch = 0;
+    inFlightAuthStartedAt = 0;
+    clearColdStartRetryTimer();
+    coldStartRetryAttempt = 0;
     deps.stopProfileAutoRefresh();
     const client = deps.getGatewayClient();
     if (client) {
@@ -808,8 +930,11 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     deps.clearSessionsRefreshTimer();
 
     const state = deps.getState();
+    state.manualDisconnected = true;
     state.gatewayConnected = false;
     state.gatewayConnecting = false;
+    state.connectionReconnectAttempt = 0;
+    state.connectionPhase = deps.getEffectiveUrl(state.gatewayUrl) ? 'offline' : 'unconfigured';
     state.gatewayLatencyMs = 0;
     state.messagesPhase = 'ready';
     state.sessions = [];
@@ -836,9 +961,98 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     deps.render();
   }
 
+  async function wakeOrRetry(reason: string): Promise<ProbeOrWakeResult> {
+    const state = deps.getState();
+    if (!deps.getEffectiveUrl(state.gatewayUrl) || state.manualDisconnected || state.connectionAuthError) {
+      return 'disconnected';
+    }
+    const client = deps.getGatewayClient();
+    if (!client) {
+      // connect() 与 disconnect() 都会同步清零 inFlightAuthEpoch / inFlightAuthStartedAt，
+      // 因此此处非零即代表当前代际的首跳鉴权确仍在途；手动点击 retryNow ('manual-retry') 允许立即抢占。
+      if (
+        reason !== 'manual-retry' &&
+        inFlightAuthStartedAt > 0 &&
+        Date.now() - inFlightAuthStartedAt < 8_000
+      ) {
+        return 'reconnecting';
+      }
+      clearColdStartRetryTimer();
+      coldStartRetryAttempt = 0;
+      state.connectionReconnectAttempt = 0;
+      state.connectionPhase = 'reconnecting';
+      deps.render();
+      void connect();
+      return 'reconnecting';
+    }
+    const result = await client.probeOrWake(reason);
+    if (result === 'alive') {
+      const resumeAliveSync = dynamicOnResumeAliveSync ?? deps.onResumeAliveSync;
+      void resumeAliveSync?.();
+    }
+    return result;
+  }
+
+  function setSyncHooks(hooks: {
+    onConnectedSync?: GatewayEventDispatcherDeps['onConnectedSync'];
+    onResumeAliveSync?: GatewayEventDispatcherDeps['onResumeAliveSync'];
+  }): void {
+    dynamicOnConnectedSync = hooks.onConnectedSync;
+    dynamicOnResumeAliveSync = hooks.onResumeAliveSync;
+  }
+
+  function resumeReconnectStreaming(storedSessionId: string, liveSessionId: string): void {
+    if (deps.getActiveStreamingContext().activeStreamingStoredSessionId === storedSessionId) {
+      deps.setActiveStreamingContext({ activeStreamingLiveId: liveSessionId });
+      deps.armTurnWatchdog();
+    }
+  }
+
+  function finishReconnectStreaming(storedSessionId: string): void {
+    deps.getTokenCoalescer().clear();
+    deps.clearToolPatchQueue?.();
+    deps.disarmTurnWatchdog();
+    deps.stopRunningToolTimers();
+    if (deps.getActiveStreamingContext().activeStreamingStoredSessionId === storedSessionId) {
+      deps.setActiveStreamingContext({
+        activeStreamingMessageId: null,
+        activeStreamingStoredSessionId: null,
+        activeStreamingLiveId: null,
+        activeStreamingBotName: null,
+      });
+    }
+    deps.getState().isStreaming = false;
+    deps.getActiveRunningSessionIds().delete(storedSessionId);
+  }
+
+  async function retryNow(): Promise<void> {
+    const state = deps.getState();
+    state.manualDisconnected = false;
+    state.connectionAuthError = false;
+    state.connectionReason = '';
+    coldStartRetryAttempt = 0;
+    state.connectionReconnectAttempt = 0;
+    await wakeOrRetry('manual-retry');
+  }
+
+  function markNetworkOffline(): void {
+    const state = deps.getState();
+    if (!deps.getEffectiveUrl(state.gatewayUrl) || state.manualDisconnected || state.connectionAuthError) return;
+    if (state.connectionPhase !== 'reconnecting') {
+      state.connectionPhase = 'reconnecting';
+      deps.render();
+    }
+  }
+
   return {
     connect,
     disconnect,
+    wakeOrRetry,
+    retryNow,
+    markNetworkOffline,
+    setSyncHooks,
+    resumeReconnectStreaming,
+    finishReconnectStreaming,
     getConnectionEpoch: () => connectionEpoch,
     handleGatewayEvent,
     applyTurnActions,

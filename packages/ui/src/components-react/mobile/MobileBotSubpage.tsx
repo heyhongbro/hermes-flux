@@ -87,10 +87,11 @@ export interface MobileBotSubpagePanelProps {
   onOpenGateway?: () => void;
   learningState?: LearningLoadState;
   learningDetail?: LearningDetailState;
-  onRefreshLearning?: () => void;
-  onLoadLearningDetail?: (id: string) => void;
-  onEditLearningNode?: (id: string, content: string) => Promise<{ ok: boolean; message?: string }>;
-  onDeleteLearningNode?: (id: string) => Promise<{ ok: boolean; message?: string }>;
+  onEnsureLearning?: (profile: string) => void;
+  onRefreshLearning?: (profile?: string) => void;
+  onLoadLearningDetail?: (id: string, profile?: string) => void;
+  onEditLearningNode?: (id: string, content: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;
+  onDeleteLearningNode?: (id: string, profile?: string) => Promise<{ ok: boolean; message?: string }>;
   onCopyText?: (text: string) => void;
   cropAvatarFn?: (file: File) => Promise<string>;
 }
@@ -115,6 +116,7 @@ export function MobileBotSubpagePanel({
   onOpenGateway,
   learningState,
   learningDetail,
+  onEnsureLearning,
   onRefreshLearning,
   onLoadLearningDetail,
   onEditLearningNode,
@@ -730,17 +732,24 @@ export function MobileBotSubpagePanel({
       );
     }
 
+    const activeBotLabel = view.roster.find((b) => b.id === activeId)?.displayName || activeDetail?.displayName || activeId;
+
     return (
       <>
         {learningState && onRefreshLearning && onLoadLearningDetail ? (
           <MobileConstellationPanel
+            targetProfile={targetBotId || activeId || 'default'}
+            targetBotLabel={activeBotLabel || undefined}
             learningState={learningState}
             learningDetail={learningDetail ?? { status: 'idle' }}
+            onEnsureLoaded={onEnsureLearning}
             onRefresh={onRefreshLearning}
             onSelectNodeDetail={onLoadLearningDetail}
             onSaveEdit={onEditLearningNode}
             onDeleteNode={onDeleteLearningNode}
+            onInspectSkill={settingsActions.onInspectSkill}
             onCopyText={onCopyText}
+            onNotify={settingsActions.onNotify}
           />
         ) : null}
         <div className="m-settings-card m-settings-card--form">

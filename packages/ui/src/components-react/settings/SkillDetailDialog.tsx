@@ -1,14 +1,14 @@
 import * as React from 'react';
 import { BookOpen, Copy, RotateCcw, X } from 'lucide-react';
-import { splitSkillMarkdownFrontmatter, type SkillInspectView } from '@hermes-flux/core';
+import type { SkillInspectView } from '@hermes-flux/core';
 import { t } from '../../i18n/index.js';
-import { MarkdownBlock } from '../conversation/MarkdownBlock.js';
 import { Badge } from '../primitives/Badge.js';
 import { Button } from '../primitives/Button.js';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '../primitives/Dialog.js';
 import { Skeleton } from '../primitives/Skeleton.js';
 import { Tooltip } from '../primitives/Tooltip.js';
 import { SegmentedControl } from './SegmentedControl.js';
+import { SkillMarkdownView, type SkillMarkdownViewMode } from './SkillMarkdownView.js';
 import type { SettingsActions } from './settingsModel.js';
 
 /**
@@ -27,12 +27,16 @@ import type { SettingsActions } from './settingsModel.js';
  *   3. 所有文案走 `t()`，严禁硬编码实体称谓与原生调色板类名。
  */
 
-export type SkillMarkdownViewMode = 'rendered' | 'raw';
+export type { SkillMarkdownViewMode };
 
 export interface SkillDetailDialogProps {
   skillName: string | null;
   targetProfile: string;
   fallbackDescription?: string;
+  uses?: number;
+  date?: string;
+  relatedSkills?: ReadonlyArray<{ id: string; label: string; uses: number }>;
+  onSelectRelatedSkill?: (id: string) => void;
   onClose: () => void;
   onInspectSkill?: SettingsActions['onInspectSkill'];
   onCopy?: SettingsActions['onCopy'];
@@ -43,6 +47,10 @@ export function SkillDetailDialog({
   skillName,
   targetProfile,
   fallbackDescription,
+  uses,
+  date,
+  relatedSkills,
+  onSelectRelatedSkill,
   onClose,
   onInspectSkill,
   onCopy,
@@ -89,7 +97,6 @@ export function SkillDetailDialog({
 
   const data = state.data;
   const markdown = data?.markdown ?? '';
-  const parsed = React.useMemo(() => splitSkillMarkdownFrontmatter(markdown), [markdown]);
 
   if (!skillName) return null;
 
@@ -111,7 +118,7 @@ export function SkillDetailDialog({
       <DialogContent
         portal={false}
         data-skill-detail-dialog="true"
-        className="flex max-h-modal-md w-full max-w-2xl flex-col gap-0 overflow-hidden rounded-window p-0"
+        className="flex h-modal-xl max-h-modal-xl w-modal-xl max-w-none flex-col gap-0 overflow-hidden rounded-window p-0"
       >
         <div className="flex shrink-0 items-start justify-between gap-4 px-5 pb-2 pt-5">
           <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -126,6 +133,10 @@ export function SkillDetailDialog({
                 <DialogTitle className="truncate text-section font-semibold text-foreground">
                   {data?.name || skillName}
                 </DialogTitle>
+                {typeof uses === 'number' ? (
+                  <Badge variant="secondary">{t('mobile.memory.usesCount', { count: uses })}</Badge>
+                ) : null}
+                {date ? <Badge variant="secondary">{date}</Badge> : null}
                 {data?.source ? (
                   <Badge variant="secondary">{`${t('bot.skillMetaSource')}: ${data.source}`}</Badge>
                 ) : null}
@@ -140,6 +151,23 @@ export function SkillDetailDialog({
               <DialogDescription className="mt-1 text-caption text-muted-foreground">
                 {description || skillName}
               </DialogDescription>
+              {relatedSkills && relatedSkills.length > 0 && onSelectRelatedSkill ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="text-caption text-muted-foreground">{t('mobile.memory.relatedSkillsTitle')}</span>
+                  {relatedSkills.map((rel) => (
+                    <Button
+                      key={rel.id}
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => onSelectRelatedSkill(rel.id)}
+                    >
+                      <span>{rel.label}</span>
+                      {rel.uses > 0 ? <span className="font-code text-muted-foreground">{`x${rel.uses}`}</span> : null}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -219,27 +247,8 @@ export function SkillDetailDialog({
             <p className="rounded-panel surface-raised px-4 py-6 text-center text-caption text-muted-foreground">
               {t('bot.skillInspectEmpty')}
             </p>
-          ) : viewMode === 'raw' ? (
-            <pre
-              data-skill-markdown-raw="true"
-              className="m-0 overflow-x-auto whitespace-pre-wrap break-words rounded-panel bg-code p-4 font-code text-aux leading-normal text-foreground"
-            >
-              {markdown}
-            </pre>
           ) : (
-            <div data-skill-markdown-rendered="true" className="flex flex-col gap-4">
-              {parsed.frontmatter.length > 0 ? (
-                <div className="flex shrink-0 flex-col gap-1 rounded-panel surface-raised px-3 py-2">
-                  {parsed.frontmatter.map((entry) => (
-                    <div key={entry.key} className="flex items-baseline gap-3 text-caption">
-                      <span className="shrink-0 font-code text-muted-foreground">{entry.key}</span>
-                      <span className="min-w-0 flex-1 break-words text-foreground">{entry.value}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {parsed.body.trim() ? <MarkdownBlock content={parsed.body} className="text-body" /> : null}
-            </div>
+            <SkillMarkdownView markdown={markdown} viewMode={viewMode} />
           )}
         </div>
       </DialogContent>

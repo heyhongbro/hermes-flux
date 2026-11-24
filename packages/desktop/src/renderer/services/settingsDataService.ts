@@ -48,6 +48,7 @@ import {
 } from '@hermes-flux/core';
 import {
   mountSettingsModal,
+  type BotDetailTab,
   type SettingsSectionId,
   type SettingsSnapshot,
   type SettingsActions,
@@ -69,13 +70,19 @@ import {
   setLocale,
   messageKeyForVerdict,
 } from '@hermes-flux/ui';
-import { reportStorageFailure, writeGatewayDraft } from './settingsStorageHelpers.js';
+import {
+  applyGatewayDraftToState,
+  reportStorageFailure,
+  resolveBotRoster,
+  resolveProfileAvatarFromState,
+} from './settingsStorageHelpers.js';
 import { createProviderAdminRest } from '../providerAdminRest.js';
 import { createProviderAdminController, planDeleteTarget } from '../providerAdminController.js';
 import { createSettingsController, resolveGatewayPassword } from '../settingsController.js';
 import { createBotManagementController, createBotWizardController } from '../botManagementController.js';
 import { loadProviderCatalog } from '../providerCatalog.js';
 import { createProjectDirectoryActions } from './projectDirectoryActions.js';
+import type { LearningService } from './learningService.js';
 
 export interface GatewayConnectionTestResult {
   ok: boolean;
@@ -121,6 +128,7 @@ export interface SettingsDataDeps {
   ) => Promise<{ ok: boolean; message?: string }>;
   readonly deleteProject?: (projectId: string) => Promise<{ ok: boolean; message?: string }>;
   readonly onOrgPrefsChange?: (patch: Partial<ConversationOrgPrefs>) => void;
+  readonly learningService?: LearningService;
 }
 
 export interface SettingsDataService {
@@ -128,8 +136,9 @@ export interface SettingsDataService {
   subscriptionProfileName(): string;
   botRoster(): Array<{ profile: string; displayName: string; avatar?: string }>;
   reloadProviderCatalog(): Promise<void>;
-  openBotSettings(botId: string): void;
+  openBotSettings(botId: string, options?: { tab?: BotDetailTab }): void;
   getBotManagementSnapshot(): SettingsSnapshot['botManagement'];
+  hasUnsavedBotDrafts(): boolean;
   getSettingsSnapshot(): SettingsSnapshot;
   ensureSettingsSectionData(section: SettingsSectionId, force?: boolean): void;
   createSettingsActions(): SettingsActions;
@@ -161,6 +170,8 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
    */
   let botDirtyGuard: (() => boolean) | null = null;
   let pendingBotExit: BotExitTarget | null = null;
+  let botTabRequestSeq = 0;
+  let requestedBotTab: { tab: BotDetailTab; seq: number } | null = null;
 
   type BindingFlightResult = ToggleProviderAgentResult & {
     confirmRequired?: boolean;
@@ -175,43 +186,15 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     { signature: string; promise: Promise<BindingFlightResult> }
   >();
 
-  function resolveProfileAvatar(botId: string): string | undefined {
-    if (!botId) return undefined;
-    const state = deps.getState();
-    const settingsRow =
-      state.settingsProfiles.status === 'ready'
-        ? state.settingsProfiles.data.find((item) => item.name === botId)
-        : undefined;
-    if (settingsRow?.avatar) return settingsRow.avatar;
-    const profileRow = state.profiles.find((item) => item.name === botId);
-    if (profileRow?.avatar) return profileRow.avatar;
-    const cachedById = deps.profileAvatarCache.get(botId.toLowerCase());
-    if (cachedById) return cachedById;
-    const displayName = settingsRow?.displayName || profileRow?.displayName;
-    if (displayName) {
-      const cachedByName = deps.profileAvatarCache.get(displayName.toLowerCase());
-      if (cachedByName) return cachedByName;
-    }
-    return undefined;
-  }
+  const resolveProfileAvatar = (botId: string): string | undefined =>
+    resolveProfileAvatarFromState(deps.getState(), deps.profileAvatarCache, botId);
 
-  function scopedProfileName(): string {
+  const scopedProfileName = (): string => {
     const state = deps.getState();
     return state.settingsScopedProfile || state.profileName || 'default';
-  }
+  };
 
-  function botRoster(): Array<{ profile: string; displayName: string; avatar?: string }> {
-    const state = deps.getState();
-    if (state.profiles.length === 0) {
-      const name = state.profileName || 'default';
-      return [{ profile: name, displayName: name }];
-    }
-    return state.profiles.map((profile) => ({
-      profile: profile.name,
-      displayName: profile.displayName || profile.name,
-      avatar: profile.avatar,
-    }));
-  }
+  const botRoster = () => resolveBotRoster(deps.getState());
 
   function subscriptionProfileName(): string {
     const state = deps.getState();
@@ -577,6 +560,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     pendingBotExit = null;
     if (target.kind === 'close') {
       state.isSettingsOpen = false;
+      requestedBotTab = null;
     } else {
       state.settingsSection = target.section;
       ensureSettingsSectionData(target.section);
@@ -584,17 +568,29 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     deps.render();
   }
 
-  function openBotSettings(botId: string): void {
+  function openBotSettings(botId: string, options?: { tab?: BotDetailTab }): void {
     const state = deps.getState();
     // 显式打开某个 BOT 是一次新的入场：上一轮挂起的离场目标不得残留。
     pendingBotExit = null;
     state.isSettingsOpen = true;
     state.settingsSection = 'agents';
     state.botManagementActiveBotId = botId;
+    if (options?.tab) {
+      botTabRequestSeq += 1;
+      requestedBotTab = { tab: options.tab, seq: botTabRequestSeq };
+    } else {
+      requestedBotTab = null;
+    }
     const status = state.botManagementStatus.status;
     ensureSettingsSectionData('agents');
     if (status !== 'uninitialized' && status !== 'fetching_list') {
       getBotManagementController().selectBot(botId, { immediate: true });
+    }
+    if (options?.tab === 'constellation') {
+      void deps.learningService?.loadLearningGraph({
+        profile: botId || state.profileName || 'default',
+        force: false,
+      });
     }
     deps.render();
   }
@@ -655,6 +651,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
       confirmPending: state.botManagementConfirm,
       highlightBotId: undefined,
       isBusy: state.botManagementBusy,
+      requestedTab: requestedBotTab,
     };
   }
 
@@ -677,6 +674,8 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
       profiles: state.settingsProfiles,
       bots: botRoster(),
       botManagement: getBotManagementSnapshot(),
+      learningState: state.learningState,
+      learningDetail: state.learningDetail,
       scopedProfile: scopedProfileName(),
       providerViews: state.settingsProviderViews,
       providerFailures: state.settingsProviderFailures,
@@ -739,15 +738,10 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     }
   }
 
-  function applyGatewayDraft(draft: GatewayDraft): void {
+  const applyGatewayDraft = (draft: GatewayDraft): void => {
     const state = deps.getState();
-    state.gatewayUrl = draft.url.trim();
-    state.username = draft.username;
-    state.password = resolveGatewayPassword(draft.password, state.password);
-    state.profileName = draft.profileName.trim() || 'default';
-    // 内存态已更新：落盘失败不得中断后续 runBusy / connect（P-032）。
-    writeGatewayDraft(deps, state);
-  }
+    applyGatewayDraftToState(deps, state, draft, resolveGatewayPassword(draft.password, state.password));
+  };
 
   function createSettingsActions(): SettingsActions {
     const state = deps.getState();
@@ -1424,6 +1418,20 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
           }),
         };
       },
+      onLoadLearningGraph: (profile, force) => {
+        void deps.learningService?.loadLearningGraph({ profile, force: Boolean(force) });
+      },
+      onLoadLearningDetail: (id, profile) => {
+        void deps.learningService?.loadLearningDetail(id, profile);
+      },
+      onEditLearningNode: (id, content, profile) =>
+        deps.learningService
+          ? deps.learningService.editLearningNode(id, content, profile)
+          : Promise.resolve({ ok: false, message: deps.t('settings.notConnected') }),
+      onDeleteLearningNode: (id, profile) =>
+        deps.learningService
+          ? deps.learningService.deleteLearningNode(id, profile)
+          : Promise.resolve({ ok: false, message: deps.t('settings.notConnected') }),
       onTestGateway: (draft) => {
         applyGatewayDraft(draft);
         void getSettingsController().runBusy(async () => {
@@ -1472,6 +1480,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     reloadProviderCatalog,
     openBotSettings,
     getBotManagementSnapshot,
+    hasUnsavedBotDrafts,
     getSettingsSnapshot,
     ensureSettingsSectionData,
     createSettingsActions,

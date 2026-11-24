@@ -227,7 +227,7 @@ async function buildAll() {
   // 提示词导航轨的滚动换算与缓存判定同为纯逻辑，一并独立产物，供 host 侧单测覆盖。
   // transcriptRows 是网关行 → 视图模型的唯一翻译点，同理由行为测试直接导入。
   // 【规则】一律带 SHARED_RUNTIME_EXTERNALS，理由见该常量上方的两段说明。
-  for (const moduleName of ['messageWindow', 'profileRefresh', 'promptNavigator', 'coldStartFocus', 'providerAdminController', 'providerAdminRest', 'providerCatalog', 'gatewayConnection', 'queueControl', 'slashVisibility', 'botManagementController', 'scrollEndController']) {
+  for (const moduleName of ['messageWindow', 'profileRefresh', 'promptNavigator', 'coldStartFocus', 'providerAdminController', 'providerAdminRest', 'learningRest', 'providerCatalog', 'gatewayConnection', 'queueControl', 'slashVisibility', 'botManagementController', 'scrollEndController']) {
     await esbuild.build({
       entryPoints: [path.join(rootDir, `src/renderer/${moduleName}.ts`)],
       outfile: path.join(rootDir, `dist/renderer/${moduleName}.mjs`),
@@ -251,6 +251,15 @@ async function buildAll() {
   await esbuild.build({
     entryPoints: [path.join(rootDir, 'src/main/workspaceFs.ts')],
     outfile: path.join(rootDir, 'dist/main/workspaceFs.mjs'),
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'esm',
+    sourcemap: true,
+  });
+  await esbuild.build({
+    entryPoints: [path.join(rootDir, 'src/main/powerEvents.ts')],
+    outfile: path.join(rootDir, 'dist/main/powerEvents.mjs'),
     bundle: true,
     platform: 'node',
     target: 'node20',
@@ -589,6 +598,18 @@ async function buildAll() {
     target: 'node20',
     format: 'esm',
     external: ['@hermes-flux/core', '@hermes-flux/ui'],
+    sourcemap: true,
+  });
+
+  // 前后台协同同步协调器：单飞视图增量同步与静默/闪烁相位驱动
+  await esbuild.build({
+    entryPoints: [path.join(rootDir, 'src/renderer/services/foregroundSyncCoordinator.ts')],
+    outfile: path.join(rootDir, 'dist/renderer/services/foregroundSyncCoordinator.mjs'),
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'esm',
+    external: SHARED_RUNTIME_EXTERNALS,
     sourcemap: true,
   });
 

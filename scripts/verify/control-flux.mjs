@@ -1463,6 +1463,16 @@ export async function runFeature(featureId) {
           ] },
         };
         s.botDrafts = {};
+        s.learningState = { status: 'ready', profile: 'arch', graph: {
+          profile: 'arch', source: 'rest-graph', summary: ['2 skills · 1 memories'], totalSkills: 2, totalMemories: 1, totalSkillLinks: 1, axisStart: '', axisEnd: '',
+          nodes: [
+            { id: 'skill:codebase-inspection', kind: 'skill', label: 'codebase-inspection', fullLabel: 'Codebase Inspection', preview: 'Inspect repository', category: 'eng', date: '2026-11-24', uses: 14, meta: 'eng · x14', bucketIndex: 0, skillName: 'codebase-inspection' },
+            { id: 'skill:dogfood', kind: 'skill', label: 'dogfood', fullLabel: 'Dogfood Audit', preview: 'Audit UI flows', category: 'eng', date: '2026-11-24', uses: 7, meta: 'eng · x7', bucketIndex: 0, skillName: 'dogfood' },
+            { id: 'memory:arch:1', kind: 'memory', label: 'Arch rule', fullLabel: 'Layered boundaries', preview: 'Layered boundaries', category: 'eng', date: '2026-11-24', uses: 3, meta: 'eng · x3', bucketIndex: 0 },
+          ],
+          edges: [{ source: 'skill:codebase-inspection', target: 'skill:dogfood', kind: 'skill-link' }, { source: 'memory:arch:1', target: 'skill:codebase-inspection', kind: 'mention' }],
+        } };
+        s.learningDetail = { status: 'ready', id: 'skill:codebase-inspection', kind: 'skill', label: 'codebase-inspection', content: '---\\nname: codebase-inspection\\n---\\n# Overview\\n\\nInspect codebase.', profile: 'arch' };
         s.settingsProviderViews = { status: 'ready', data: [
           { key: 'custom:fn', kind: 'custom', id: 'fn', name: 'Fn 网关', models: ['fn/m1', 'fn/m2'],
             detail: 'http://127.0.0.1:9/v1', availability: 'ready', agents: [] },
@@ -1474,7 +1484,7 @@ export async function runFeature(featureId) {
       await session.waitFor('document.querySelector("[data-bot-carousel]") !== null', 8000, 'bot carousel');
       await session.waitFor('document.querySelectorAll("[data-bot-slot]").length === 2', 8000, 'two slots');
 
-      console.log('  2. 默认展开 204px BOT 列表 + 36px/48px 1:1 头像 + 扁平 5 菜单零数字...');
+      console.log('  2. 默认展开 204px BOT 列表 + 36px/48px 1:1 头像 + 扁平 6 菜单零数字...');
       const layout = await session.evaluate(`(() => {
         const panel = document.querySelector('[data-bot-carousel]');
         const model = document.querySelector('#bot-model');
@@ -1503,7 +1513,7 @@ export async function runFeature(featureId) {
       if (layout.railExpanded !== 'true' || layout.railWidth < 196 || !layout.hasFilter) {
         throw new Error(`BOT 列表默认应展开（~204px），实测 ${JSON.stringify(layout)}`);
       }
-      if (layout.tabCount !== 5 || layout.tabWithDigits > 0) throw new Error(`顶部菜单须扁平 5 项且零数字: ${JSON.stringify(layout)}`);
+      if (layout.tabCount !== 6 || layout.tabWithDigits > 0) throw new Error(`顶部菜单须扁平 6 项且零数字: ${JSON.stringify(layout)}`);
       if (layout.hasArrows) throw new Error('折叠按钮禁止出现方向箭头');
       if (layout.distorted > 0 || layout.shadows > 0) throw new Error(`头像异常: ${JSON.stringify(layout)}`);
       if (layout.panelHeight < 200) throw new Error(`列表高度异常，实测 ${layout.panelHeight}`);
@@ -1516,7 +1526,7 @@ export async function runFeature(featureId) {
       await session.click('[data-bot-rail-toggle="true"]');
       await session.waitFor(`document.querySelector('[data-bot-carousel]')?.getAttribute('data-bot-rail-expanded') === 'false' && document.querySelectorAll('[data-bot-slot]').length === 2`, 5000, 'rail collapse');
       await new Promise((r) => setTimeout(r, 260));
-      const railAfterCollapse = await session.evaluate(`({ width: Math.round(document.querySelector('[data-bot-carousel]').getBoundingClientRect().width), tooltipCount: [...document.querySelectorAll('[data-bot-slot]')].filter((n) => n.hasAttribute('data-tooltip')).length })`);
+      const railAfterCollapse = await session.evaluate(`({ width: Math.round(document.querySelector('[data-bot-carousel]').getBoundingClientRect().width), tooltipCount: [...document.querySelectorAll('[data-bot-slot]')].filter((n) => n.hasAttribute('data-tooltip') || Boolean(n.closest('[data-tooltip]'))).length })`);
       if (railAfterCollapse.width < 58 || railAfterCollapse.width > 72 || railAfterCollapse.tooltipCount !== 2) {
         throw new Error(`微轨收起失败: ${JSON.stringify(railAfterCollapse)}`);
       }
@@ -1577,6 +1587,21 @@ export async function runFeature(featureId) {
 
       const capabilityIdCheck = await session.evaluate(`(() => { const ids = [...document.querySelectorAll('[data-bot-capability]')].map((n) => n.id); return { total: ids.length, unique: new Set(ids).size }; })()`);
       if (capabilityIdCheck.total !== capabilityIdCheck.unique) throw new Error('能力开关存在重复 DOM id');
+
+      console.log('  5b. 认知星图全量拓扑、技能清单与大号详情窗（无分页 + profile 隔离）...');
+      await session.click('[data-bot-tab="constellation"]');
+      await session.waitFor(`document.querySelector('[data-testid="desktop-constellation-panel"]')?.getAttribute('data-profile') === 'arch'`, 5000, 'constellation tab ready');
+      const constellationCheck = await session.evaluate(`({ nodeCount: document.querySelectorAll('[data-testid^="desktop-constellation-node-"]').length, skillItems: document.querySelectorAll('[data-testid^="desktop-constellation-skill-item-"]').length, hasZoomIn: Boolean(document.querySelector('[data-testid="desktop-constellation-zoom-in"]')) })`);
+      if (constellationCheck.nodeCount !== 3 || constellationCheck.skillItems !== 2 || !constellationCheck.hasZoomIn) throw new Error('认知星图或技能列表断言失败: ' + JSON.stringify(constellationCheck));
+      await session.click('[data-testid="desktop-constellation-skill-item-skill:codebase-inspection"]');
+      await session.waitFor(`Boolean(document.querySelector('[data-constellation-detail-dialog="true"]'))`, 5000, 'constellation xl detail dialog open');
+      await session.evaluate(`(() => { window.__fluxState.learningDetail = { status: 'ready', id: 'skill:codebase-inspection', kind: 'skill', label: 'codebase-inspection', content: '---\\nname: codebase-inspection\\n---\\n# Overview\\n\\nInspect codebase.', profile: 'arch' }; window.__fluxRender(); })()`);
+      await session.waitFor(`Boolean(document.querySelector('[data-constellation-detail-dialog="true"] [data-skill-markdown-rendered="true"]'))`, 5000, 'constellation skill markdown rendered');
+      const dlgRect = await session.evaluate(`(() => { const d = document.querySelector('[data-constellation-detail-dialog="true"]'); const r = d.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height), rendered: Boolean(d.querySelector('[data-skill-markdown-rendered="true"]')) }; })()`);
+      if (dlgRect.w < 700 || !dlgRect.rendered) throw new Error('大号详情窗宽度或 Markdown 渲染异常: ' + JSON.stringify(dlgRect));
+      await session.click('[data-testid="desktop-constellation-detail-back"]');
+      await session.waitFor(`document.querySelector('[data-constellation-detail-dialog="true"]') === null`, 5000, 'constellation xl detail dialog close');
+
       const screenshot = path.join(featureArtifactsDir, 'screenshot.png');
       // 等待 200ms 滑动滑块与保存胶囊淡出动画收敛后再抓拍稳态截图。
       await new Promise((resolve) => setTimeout(resolve, 260));
@@ -1609,7 +1634,7 @@ export async function runFeature(featureId) {
 
       const evidence = {
         featureId, timestamp: new Date().toISOString(), durationMs: Date.now() - startTime,
-        status: 'PASSED', layout, railAfterExpand, toggled, mcp, errorState, screenshot,
+        status: 'PASSED', layout, railAfterExpand, toggled, mcp, constellationCheck, dlgRect, errorState, screenshot,
       };
       fs.writeFileSync(path.join(featureArtifactsDir, 'evidence.json'), JSON.stringify(evidence, null, 2));
       console.log(`  ✔ BOT 配置中枢验证成功！证据已落盘: ${screenshot}`);

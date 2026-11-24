@@ -63,6 +63,7 @@ import {
   type BotDetailData,
   type BotDraftState,
   type BotManagementStatus,
+  type GatewayConnectionPhase,
   type RightPodMode,
 } from '@hermes-flux/core';
 
@@ -136,6 +137,11 @@ export interface AppState {
   isStreaming: boolean;
   gatewayConnected: boolean;
   gatewayConnecting: boolean;
+  connectionPhase: GatewayConnectionPhase;
+  connectionReconnectAttempt: number;
+  connectionAuthError: boolean;
+  connectionReason: string;
+  manualDisconnected: boolean;
   gatewayLatencyMs: number;
   gatewayUrl: string;
   username: string;
@@ -342,6 +348,11 @@ export function createInitialState(params: InitialStateParams): AppState {
     isStreaming: false,
     gatewayConnected: false,
     gatewayConnecting: Boolean(savedUrl),
+    connectionPhase: savedUrl ? 'connecting' : 'unconfigured',
+    connectionReconnectAttempt: 0,
+    connectionAuthError: false,
+    connectionReason: '',
+    manualDisconnected: false,
     gatewayLatencyMs: 0,
     gatewayUrl: savedUrl,
     username: savedUser,

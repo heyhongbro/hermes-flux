@@ -145,6 +145,17 @@ export const zhChrome = {
   'common.copy': '复制',
   'common.copied': '已复制',
   'common.remove': '移除',
+
+  // Connection & Sync Status Pill
+  'conn.connecting': '正在连接网关',
+  'conn.reconnecting': '正在重连',
+  'conn.reconnectingAttempt': '正在重连 · 第 {count} 次',
+  'conn.syncing': '正在同步最新内容',
+  'conn.synced': '已同步最新',
+  'conn.offline': '连接已断开',
+  'conn.authError': '网关认证失败',
+  'conn.retry': '重试',
+  'conn.settings': '设置',
 };
 
 export const enChrome = {
@@ -281,4 +292,15 @@ export const enChrome = {
   'common.copy': 'Copy',
   'common.copied': 'Copied',
   'common.remove': 'Remove',
+
+  // Connection & Sync Status Pill
+  'conn.connecting': 'Connecting',
+  'conn.reconnecting': 'Reconnecting',
+  'conn.reconnectingAttempt': 'Reconnecting · #{count}',
+  'conn.syncing': 'Syncing latest',
+  'conn.synced': 'Up to date',
+  'conn.offline': 'Disconnected',
+  'conn.authError': 'Auth failed',
+  'conn.retry': 'Retry',
+  'conn.settings': 'Settings',
 };
