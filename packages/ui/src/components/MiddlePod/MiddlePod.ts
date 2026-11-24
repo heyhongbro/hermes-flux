@@ -17,6 +17,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { MessageAttachmentItem, MessageDisplayKind, MessageDisplayMetadata } from '@hermes-flux/core';
 import { ToolBlocks } from '../../components-react/conversation/ToolCapsule.js';
 import type { DataPhase } from '../../components-react/loadPhase.js';
+import { renderBrandSwiftHtml } from '../../icons/BrandMark.js';
 
 export interface MessageViewModel {
   id: string;
@@ -183,8 +184,8 @@ export function renderConversationCanvas(props: MiddlePodProps): string {
     return `
       <div class="content-fluid-canvas conv-canvas" data-conv-layer="canvas">
         ${renderContextGauge(props.contextUsage)}
-        <div style="max-width: 480px; margin: 120px auto 0; text-align: center; color: var(--text-muted); font-size: var(--chat-text-meta); display: flex; flex-direction: column; align-items: center; gap: 10px;">
-          <span style="font-size: 20px;">⚡</span>
+        <div style="max-width: 480px; margin: 120px auto 0; text-align: center; color: var(--text-muted); font-size: var(--chat-text-meta); display: flex; flex-direction: column; align-items: center; gap: 12px;">
+          ${renderBrandSwiftHtml({ variant: 'mark', motion: 'fly', size: 64, idPrefix: 'flux-conn' })}
           <span>${t('conversation.connecting')}</span>
         </div>
       </div>
@@ -330,22 +331,8 @@ function renderGatewayOnboarding(props: MiddlePodProps): string {
     ">
       <!-- Header -->
       <div style="display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;">
-        <div style="
-          width: 52px;
-          height: 52px;
-          border-radius: 14px;
-          background: var(--accent-subtle);
-          border: 1px solid var(--accent-border);
-          color: var(--accent);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          margin-bottom: 4px;
-          box-shadow: 0 0 20px var(--accent-glow);
-        ">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-          </svg>
+        <div style="margin-bottom: 4px; display: flex; align-items: center; justify-content: center;">
+          ${renderBrandSwiftHtml({ variant: 'badge', motion: 'static', size: 64, idPrefix: 'flux-onboard' })}
         </div>
         <h2 style="font-size: 19px; font-weight: 700; color: var(--text-main); margin: 0; letter-spacing: -0.01em;">${t('gateway.onboardingTitle')}</h2>
         <p style="font-size: 12.5px; color: var(--text-secondary); margin: 0; line-height: 1.55; max-width: 440px;">
@@ -476,20 +463,7 @@ function renderWelcomeEmptyState(): string {
       gap: 16px;
       color: var(--text-muted);
     ">
-      <div style="
-        width: 58px;
-        height: 58px;
-        border-radius: 16px;
-        background: var(--bg-card);
-        border: 1px solid var(--border-medium);
-        color: var(--accent);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow: var(--shadow-card);
-      ">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-      </div>
+      ${renderBrandSwiftHtml({ variant: 'badge', motion: 'glide', size: 76, idPrefix: 'flux-welcome' })}
       <h3 style="font-size: 17px; font-weight: 700; color: var(--text-main); margin: 0; letter-spacing: -0.01em;">${t('chat.welcomeTitle')}</h3>
       <p style="font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0; max-width: 480px;">
         ${t('chat.welcomeSub')}

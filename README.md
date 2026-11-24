@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="packages/ui/src/icons/brand/hermes-flux-badge.svg" alt="Hermes Flux" width="120" />
+</p>
+
 # Hermes Flux
 
 > **Cross-Platform Workspace for Hermes Agent**  

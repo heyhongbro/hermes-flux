@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 /**
  * 窗口控制纯决策层（主进程）。
  *
@@ -43,4 +45,57 @@ export function resolveWindowToggle(state: WindowStateProbe): WindowToggleDecisi
  */
 export function resolveTitlebarMaximized(state: WindowStateProbe): boolean {
   return state.isMaximized || state.isFullScreen;
+}
+
+export interface WindowIconProbe {
+  readonly platform: string;
+  readonly buildDir: string;
+  readonly fileExists: (targetPath: string) => boolean;
+}
+
+export interface MacDockIconProbe extends WindowIconProbe {
+  readonly isPackaged: boolean;
+}
+
+/**
+ * 解析桌面主窗口在各平台下应加载的品牌图标路径。
+ *
+ * 设计意图 (Why)：
+ *   Windows 需要 `.ico` 多尺寸图标，Linux 需要高分辨率 `.png`，macOS 窗口本身由 App Bundle 承载图标；
+ *   抽出纯决策函数后可在不启动 Electron 的单测里覆盖所有平台与缺失容错分支。
+ */
+export function resolveWindowIconPath({ platform, buildDir, fileExists }: WindowIconProbe): string | undefined {
+  if (platform === 'darwin') return undefined;
+  const candidate = path.join(buildDir, platform === 'win32' ? 'icon.ico' : 'icon.png');
+  return fileExists(candidate) ? candidate : undefined;
+}
+
+/**
+ * 解析 macOS 未打包开发态下 Dock 应动态注入的品牌图标路径。
+ */
+export function resolveMacDockIconPath({
+  platform,
+  isPackaged,
+  buildDir,
+  fileExists,
+}: MacDockIconProbe): string | undefined {
+  if (platform !== 'darwin' || isPackaged) return undefined;
+  const candidate = path.join(buildDir, 'icon.png');
+  return fileExists(candidate) ? candidate : undefined;
+}
+
+export interface MacDockController {
+  setIcon: (iconPath: string) => void;
+}
+
+/**
+ * 在 macOS 未打包开发态下向注入的 Dock 控制器写入应用图标（纯可测协调器）。
+ */
+export function applyMacDockIcon(
+  probe: MacDockIconProbe & { readonly dock?: MacDockController },
+): string | undefined {
+  const iconPath = resolveMacDockIconPath(probe);
+  if (!iconPath || !probe.dock) return undefined;
+  probe.dock.setIcon(iconPath);
+  return iconPath;
 }

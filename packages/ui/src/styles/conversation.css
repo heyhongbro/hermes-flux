@@ -12066,6 +12066,158 @@ html[data-page-hidden="true"] .conn-pill *,
   animation-play-state: paused !important;
 }
 
+/* ==========================================================================
+   品牌折纸雨燕多态动效 (Brand Swift Motion · Pure GPU Compositor)
+   【设计意图 (Why)】
+     冷启动、网关连接中、会话历史加载与新会话空白画布统一消费 `<BrandSwiftMark />`，
+     在克制优雅的前提下传递品牌辨识度与动态生命力。
+   【约束与规则 (Rules)】
+     1. 严禁修改除 transform / opacity 外的任何属性，确保 100% 走合成器图层零重排；
+     2. 严禁将该动效施加于 #conversation-stream / .conv-stream 滚动容器；
+     3. 窗口隐藏 (:root[data-app-hidden="true"] / :root[data-page-hidden="true"])
+        立即暂停关键帧，prefers-reduced-motion 下完全静止。
+   ========================================================================== */
+.flux-brand-swift {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.flux-brand-swift__rotor {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.flux-brand-swift__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.flux-brand-swift__shadow {
+  width: 44%;
+  height: 6px;
+  margin-top: 4px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--foreground) 14%, transparent);
+  opacity: 0.72;
+}
+
+@supports not (background: color-mix(in oklab, Canvas 14%, transparent)) {
+  .flux-brand-swift__shadow {
+    background: var(--border);
+  }
+}
+
+/* 温和入场滑翔（空会话舞台：滑翔两周后平稳静置，杜绝空闲期 60fps 空转） */
+.flux-brand-swift[data-brand-motion="glide"] .flux-brand-swift__rotor {
+  animation: fluxSwiftGlide 2.8s ease-in-out 2;
+}
+
+/* 活跃加载飞行（仅在冷启动、网关连接中与加载骨架存在期间运行） */
+.flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__rotor {
+  animation: fluxSwiftFly 2.4s ease-in-out infinite;
+  will-change: transform;
+}
+
+.flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__wing-upper {
+  animation: fluxSwiftWingUpper 0.9s ease-in-out infinite;
+}
+
+.flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__wing-lower {
+  animation: fluxSwiftWingLower 0.9s ease-in-out infinite;
+}
+
+.flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__tail {
+  animation: fluxSwiftTail 2.4s ease-in-out infinite;
+}
+
+.flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__shadow {
+  animation: fluxSwiftShadow 2.4s ease-in-out infinite;
+}
+
+@keyframes fluxSwiftGlide {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  50% {
+    transform: translate3d(0, -4px, 0) rotate(-1.5deg);
+  }
+}
+
+@keyframes fluxSwiftFly {
+  0% {
+    transform: translate3d(-10px, 2px, 0) rotate(-3deg);
+  }
+  25% {
+    transform: translate3d(0, -8px, 0) rotate(2deg);
+  }
+  50% {
+    transform: translate3d(10px, -1px, 0) rotate(-1deg);
+  }
+  75% {
+    transform: translate3d(0, 5px, 0) rotate(3deg);
+  }
+  100% {
+    transform: translate3d(-10px, 2px, 0) rotate(-3deg);
+  }
+}
+
+@keyframes fluxSwiftWingUpper {
+  0%, 100% {
+    transform: rotate(0deg) scaleY(1);
+  }
+  45% {
+    transform: rotate(-4.5deg) scaleY(0.92);
+  }
+}
+
+@keyframes fluxSwiftWingLower {
+  0%, 100% {
+    transform: rotate(0deg) scaleY(1);
+  }
+  45% {
+    transform: rotate(3.5deg) scaleY(0.95);
+  }
+}
+
+@keyframes fluxSwiftTail {
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(-3deg);
+  }
+}
+
+@keyframes fluxSwiftShadow {
+  0%, 100% {
+    transform: translate3d(-6px, 0, 0) scaleX(0.95);
+    opacity: 0.55;
+  }
+  25% {
+    transform: translate3d(0, 0, 0) scaleX(0.72);
+    opacity: 0.32;
+  }
+  50% {
+    transform: translate3d(6px, 0, 0) scaleX(0.95);
+    opacity: 0.55;
+  }
+  75% {
+    transform: translate3d(0, 0, 0) scaleX(1.06);
+    opacity: 0.72;
+  }
+}
+
 /* 全变体页面隐藏节能与无障碍降级统一挂接 */
 :root[data-page-hidden="true"] .flux-activity-dot--running::after,
 :root[data-page-hidden="true"] .flux-cloud-stream,
@@ -12097,6 +12249,24 @@ html[data-page-hidden="true"] .conn-pill *,
 :root[data-page-hidden="true"] .flux-vortex-eye,
 :root[data-page-hidden="true"] .flux-pc-dot {
   animation-play-state: paused;
+}
+
+:root[data-app-hidden="true"] .flux-brand-swift__rotor,
+:root[data-app-hidden="true"] .flux-brand-swift__wing-upper,
+:root[data-app-hidden="true"] .flux-brand-swift__wing-lower,
+:root[data-app-hidden="true"] .flux-brand-swift__tail,
+:root[data-app-hidden="true"] .flux-brand-swift__shadow,
+:root[data-page-hidden="true"] .flux-brand-swift__rotor,
+:root[data-page-hidden="true"] .flux-brand-swift__wing-upper,
+:root[data-page-hidden="true"] .flux-brand-swift__wing-lower,
+:root[data-page-hidden="true"] .flux-brand-swift__tail,
+:root[data-page-hidden="true"] .flux-brand-swift__shadow {
+  animation-play-state: paused !important;
+}
+
+:root[data-app-hidden="true"] .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__rotor,
+:root[data-page-hidden="true"] .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__rotor {
+  will-change: auto;
 }
 
 :root[data-page-hidden="true"] .flux-pc-dot {
@@ -12172,8 +12342,15 @@ html[data-page-hidden="true"] .conn-pill *,
   .flux-cloud-indicator--unread[data-transition="just-completed"] .flux-vortex-done-outer,
   .flux-cloud-indicator--unread[data-transition="just-completed"] .flux-pc-done-ring,
   .flux-cloud-indicator--unread[data-transition="just-completed"] .flux-pc-done-spark,
-  .flux-cloud-indicator--unread[data-transition="just-completed"] .flux-cloud-label--done {
+  .flux-cloud-indicator--unread[data-transition="just-completed"] .flux-cloud-label--done,
+  .flux-brand-swift[data-brand-motion="glide"] .flux-brand-swift__rotor,
+  .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__rotor,
+  .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__wing-upper,
+  .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__wing-lower,
+  .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__tail,
+  .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__shadow {
     animation: none;
+    will-change: auto;
   }
 
   .conn-pill,
@@ -12186,3 +12363,4 @@ html[data-page-hidden="true"] .conn-pill *,
     opacity: 0;
   }
 }
+

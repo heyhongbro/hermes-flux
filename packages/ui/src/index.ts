@@ -118,6 +118,19 @@ export { renderBotAvatar, escapeHtml } from './utils/botAvatar.js';
 export { mountStatusBar, mountTitlebar, mountLeftRail, mountRightPod, mountNewChatDialog, type StatusBarSnapshot, type TitlebarSnapshot, type LeftRailSnapshot, type LeftRailActions, type RightPodSnapshot, type RightPodActions } from './components-react/mount-shell-components.js';
 export type { StatusSubjectIdentity } from './components-react/status/types.js';
 export { StatusPanelGlyph } from './icons/titlebarGlyphs.js';
+export {
+  BrandSwiftMark,
+  renderBrandSwiftHtml,
+  BRAND_SPEC,
+  type BrandSwiftVariant,
+  type BrandSwiftMotion,
+  type BrandSwiftMarkProps,
+  type BrandSwiftHtmlOptions,
+  type BrandSpec,
+  type BrandFacet,
+  type BrandFacetPart,
+  type BrandVariantTransform,
+} from './icons/BrandMark.js';
 export { RightPodRoot } from './components-react/status/RightPodRoot.js';
 export { SessionStatusPanel } from './components-react/status/SessionStatusPanel.js';
 export { SubagentRow } from './components-react/status/SubagentRow.js';

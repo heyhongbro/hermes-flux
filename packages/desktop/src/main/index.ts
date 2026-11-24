@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '@hermes-flux/core';
 import { createMainWindow } from './window';
+import { applyMacDockIcon } from './windowControl';
 import { registerIpcHandlers } from './ipc';
 import { registerPowerEvents } from './powerEvents';
 import { HermesFluxTray } from './tray';
@@ -134,6 +135,14 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(() => {
+    applyMacDockIcon({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      buildDir: path.join(__dirname, '../build'),
+      fileExists: (p) => fs.existsSync(p),
+      dock: app.dock,
+    });
+
     // Create main window
     const win = createMainWindow();
     mainWindow = win;

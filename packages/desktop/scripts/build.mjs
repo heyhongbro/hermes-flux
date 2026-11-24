@@ -267,6 +267,15 @@ async function buildAll() {
     sourcemap: true,
   });
   await esbuild.build({
+    entryPoints: [path.join(rootDir, 'src/main/windowControl.ts')],
+    outfile: path.join(rootDir, 'dist/main/windowControl.mjs'),
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'esm',
+    sourcemap: true,
+  });
+  await esbuild.build({
     entryPoints: [path.join(rootDir, 'src/main/ipc.ts')],
     outfile: path.join(rootDir, 'dist/main/ipc.cjs'),
     bundle: true,
@@ -792,6 +801,18 @@ async function buildAll() {
   if (!fs.existsSync(vendorIconLicense)) throw new Error('缺少 lobe 图标 LICENSE，禁止在无许可声明的情况下分发品牌资产');
   fs.copyFileSync(vendorIconLicense, path.join(vendorIconTargetDir, 'LICENSE'));
   console.log(`  ✔ Model vendor icons copied (${copiedVendorIcons} svg + LICENSE)`);
+
+  // 品牌折纸雨燕矢量资产与 favicon 拷贝到渲染产物根目录 icons/brand/（desktop 与 mobile 共用）。
+  const brandIconSourceDir = path.join(repoDir, 'packages', 'ui', 'src', 'icons', 'brand');
+  const brandIconTargetDir = path.join(rootDir, 'dist', 'renderer', 'icons', 'brand');
+  fs.mkdirSync(brandIconTargetDir, { recursive: true });
+  let copiedBrandIcons = 0;
+  for (const name of fs.readdirSync(brandIconSourceDir)) {
+    if (!name.endsWith('.svg') && !name.endsWith('.png')) continue;
+    fs.copyFileSync(path.join(brandIconSourceDir, name), path.join(brandIconTargetDir, name));
+    copiedBrandIcons += 1;
+  }
+  console.log(`  ✔ Brand identity assets copied (${copiedBrandIcons} files)`);
 
   // 字体清单由 scripts/font-manifest.json 提供（与 tokens/fonts.ts 的 source 字段一一对应）。
   // 只拷贝 latin 子集；中文继续走系统字体，避免引入 MB 级 CJK 字重。

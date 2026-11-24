@@ -19,6 +19,7 @@ import { Badge } from '../primitives/Badge.js';
 import { Switch } from '../primitives/Switch.js';
 import { ActivityIndicator } from '../primitives/ActivityIndicator.js';
 import { Tooltip } from '../primitives/Tooltip.js';
+import { BrandSwiftMark } from '../../icons/BrandMark.js';
 import { SegmentedControl } from './SegmentedControl.js';
 import { SettingField, SettingInset, SettingRow, SettingSection, SettingTwoColumn } from './SettingRow.js';
 import { SettingsSectionHeading } from './SettingsSectionHeading.js';
@@ -1111,11 +1112,14 @@ function AboutPanel({ snapshot }: { snapshot: SettingsSnapshot }): React.ReactEl
   return (
     <div className="flex flex-col gap-3">
       <Surface level="raised" padding="loose" bordered={false} specular={false} className="flex flex-col gap-3" data-settings-anchor="about-version">
-        <div className="flex flex-col gap-1">
-          <span className="text-title text-foreground">Hermes Flux</span>
-          <span className="font-code text-caption text-muted-foreground">
-            {t('settings.aboutVersion', { version: snapshot.appVersion || t('settings.aboutVersionUnknown') })}
-          </span>
+        <div className="flex items-center gap-3">
+          <BrandSwiftMark variant="icon" motion="static" size={48} className="shrink-0" decorative />
+          <div className="flex flex-col gap-1">
+            <span className="text-title text-foreground">Hermes Flux</span>
+            <span className="font-code text-caption text-muted-foreground">
+              {t('settings.aboutVersion', { version: snapshot.appVersion || t('settings.aboutVersionUnknown') })}
+            </span>
+          </div>
         </div>
         <div className="flex flex-col gap-2 text-body text-secondary-foreground">
           <span data-settings-anchor="about-platform">{t('settings.aboutPlatform', { platform: snapshot.platform })}</span>

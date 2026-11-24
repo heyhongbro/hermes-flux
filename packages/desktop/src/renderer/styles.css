@@ -2496,6 +2496,29 @@ blockquote {
   font-weight: 600;
 }
 
+/* ═══ Cold-Boot Brand Splash (renderer/index.html pre-mount) ═══ */
+.flux-boot-splash {
+  flex: 1;
+  min-height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.flux-boot-splash__wordmark {
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  color: var(--muted-foreground);
+}
 
 
 
