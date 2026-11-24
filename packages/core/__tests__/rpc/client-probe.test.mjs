@@ -87,12 +87,31 @@ test('HermesGatewayClient probeOrWake & handshake hardening unit suite', async (
       const s3 = sockets[sockets.length - 1];
       s3.readyState = 1;
       s3._onSend = () => {}; // no reply -> times out at 40ms
+      let s3CloseAttempted = false;
       s3._onClose = () => {
+        s3CloseAttempted = true;
         throw new Error('close failed on half-open handshake');
       };
+      // 必须事件驱动监听 HANDSHAKING -> RECONNECTING：WebSocketFsm 采用全抖动退避 Uniform(0, 1000)，
+      // 固定 sleep 会偶发晚于随机短退避定时器触发 connect() 而观测到 CONNECTING。
+      const waitReconnecting = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          unsub();
+          reject(new Error(`Expected HANDSHAKING -> RECONNECTING, current state=${client.getState()}`));
+        }, 2000);
+        const unsub = client.getFsm().onStateChange((next, prev) => {
+          if (prev === 'HANDSHAKING' && next === 'RECONNECTING') {
+            clearTimeout(timer);
+            unsub();
+            resolve();
+          }
+        });
+      });
       s3.onopen();
-      await new Promise((r) => setTimeout(r, 80));
+      await waitReconnecting;
+      assert.equal(s3CloseAttempted, true);
       assert.equal(client.getState(), 'RECONNECTING');
+      assert.ok(client.getReconnectAttempt() >= 1);
 
       client.disconnect();
     } finally {
