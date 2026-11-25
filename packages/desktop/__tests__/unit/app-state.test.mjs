@@ -147,18 +147,30 @@ test('AppState 领域状态模型测试', async (t) => {
     assert.ok(layout === 'stage' || layout === 'dock');
   });
 
-  await t.test('3. resolveActiveWorkspaceCwd 四级工作区目录解析优先级与默认文件树状态', () => {
+  await t.test('3. resolveActiveWorkspaceCwd 严格按当前会话/Bot解析并禁止跨工程劫持', () => {
     const initial = createInitialState({ platform: 'windows' });
     assert.deepEqual(initial.fileTreeState, { status: 'idle' });
     assert.deepEqual(initial.fileTreeExpandedPaths, []);
     assert.equal(initial.fileTreeFilterQuery, '');
     assert.equal(initial.fileTreeCollapsed, false);
     assert.equal(initial.fileTreeLoadedCwd, '');
+    assert.deepEqual(initial.sessionCwds, {});
 
     assert.equal(resolveActiveWorkspaceCwd(null), '');
     assert.equal(resolveActiveWorkspaceCwd({}), '');
 
-    // 1. activeSession.cwd 最高优先级
+    // 1. sessionCwds 按 sessionId 精准记录，覆盖未入 sessions 列表的专职 Bot Forever Chat
+    assert.equal(
+      resolveActiveWorkspaceCwd({
+        activeSessionId: 'forever-bot-1',
+        sessions: [{ id: 'other', cwd: '/ws/other' }],
+        sessionCwds: { 'forever-bot-1': 'D:\\bots\\coder\\' },
+        projects: [{ id: 'p1', name: 'NewProj', path: '/ws/hijack' }],
+      }),
+      'D:/bots/coder',
+    );
+
+    // 2. activeSession.cwd（包含归档会话 archivedSessions）
     assert.equal(
       resolveActiveWorkspaceCwd({
         activeSessionId: 's1',
@@ -167,8 +179,16 @@ test('AppState 领域状态模型测试', async (t) => {
       }),
       'E:/repos/proj-a',
     );
+    assert.equal(
+      resolveActiveWorkspaceCwd({
+        activeSessionId: 's-arch',
+        sessions: [],
+        archivedSessions: [{ id: 's-arch', cwd: '/ws/archived' }],
+      }),
+      '/ws/archived',
+    );
 
-    // 2. 无 cwd 时匹配会话归属 project.path
+    // 3. 无 cwd 时匹配会话归属 project.path
     assert.equal(
       resolveActiveWorkspaceCwd({
         activeSessionId: 's2',
@@ -178,7 +198,7 @@ test('AppState 领域状态模型测试', async (t) => {
       '/ws/p1',
     );
 
-    // 2b. 通过 projectName 匹配 project.path
+    // 3b. 通过 projectName 匹配 project.path
     assert.equal(
       resolveActiveWorkspaceCwd({
         activeSessionId: 's3',
@@ -188,29 +208,38 @@ test('AppState 领域状态模型测试', async (t) => {
       '/ws/name-match',
     );
 
-    // 3. 回落 selectedNewTaskProjectId 对应项目路径
+    // 4. 群聊焦点无单一工作区，必须返回空
     assert.equal(
       resolveActiveWorkspaceCwd({
-        activeSessionId: '',
-        sessions: [],
+        activeSessionId: 's1',
+        activeFocus: { type: 'group', roomId: 'room-1' },
+        sessions: [{ id: 's1', cwd: '/ws/s1' }],
+        sessionCwds: { s1: '/ws/s1' },
+      }),
+      '',
+    );
+
+    // 5. 回归不变量：无 cwd 且未归属项目的会话（或空激活态）绝不可被 selectedNewTaskProjectId 或 projects[0] 劫持
+    assert.equal(
+      resolveActiveWorkspaceCwd({
+        activeSessionId: 'plain-session',
+        sessions: [{ id: 'plain-session' }],
         selectedNewTaskProjectId: 'p-sel',
         projects: [
           { id: 'p-first', name: 'First', path: '/ws/first' },
           { id: 'p-sel', name: 'Sel', path: '/ws/selected' },
         ],
       }),
-      '/ws/selected',
+      '',
     );
-
-    // 4. 再回落首个带 path 的工程
     assert.equal(
       resolveActiveWorkspaceCwd({
         activeSessionId: '',
         sessions: [],
-        selectedNewTaskProjectId: 'missing',
-        projects: [{ id: 'p-first', name: 'First', path: '/ws/first' }],
+        selectedNewTaskProjectId: 'p-sel',
+        projects: [{ id: 'p-sel', name: 'Sel', path: '/ws/selected' }],
       }),
-      '/ws/first',
+      '',
     );
   });
 });

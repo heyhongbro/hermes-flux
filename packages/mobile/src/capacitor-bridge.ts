@@ -547,7 +547,12 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         fetchOptions.body = JSON.stringify(options.body);
       }
 
-      const res = await fetchWithTimeout(fullUrl, fetchOptions, httpProxyTimeoutMs);
+      const requestedMediaMime =
+        detectMediaMimeFromRequestPath(fullUrl) ?? detectMediaMimeFromRequestPath(options.path);
+      const effectiveTimeoutMs =
+        overrides?.httpProxyTimeoutMs ??
+        (requestedMediaMime?.startsWith('video/') ? 120_000 : httpProxyTimeoutMs);
+      const res = await fetchWithTimeout(fullUrl, fetchOptions, effectiveTimeoutMs);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
@@ -572,6 +577,15 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
           blobType.startsWith('image/') || blobType.startsWith('video/')
             ? blob
             : blob.slice(0, blob.size, resolvedMime);
+        // Why: >2MB 的视频若转 Base64 Data URL 会膨胀 ~33% 并长时间阻塞 JS 主线程，优先创建零拷贝 blob: URL 供 <video> 流式播放。
+        if (
+          resolvedMime.startsWith('video/') &&
+          typedBlob.size > 2 * 1024 * 1024 &&
+          typeof URL !== 'undefined' &&
+          typeof URL.createObjectURL === 'function'
+        ) {
+          return URL.createObjectURL(typedBlob);
+        }
         return await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onloadend = () => resolve(reader.result as string);

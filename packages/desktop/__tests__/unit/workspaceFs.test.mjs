@@ -163,6 +163,9 @@ test('Main IPC fs:read-file 环境变量(.env)/空字节防线、视频 DataURL 
   const electronMock = {
     ipcMain: {
       on() {},
+      removeHandler(channel) {
+        handlers.delete(channel);
+      },
       handle(channel, fn) {
         handlers.set(channel, fn);
       },
@@ -283,12 +286,21 @@ test('Main IPC fs:list-directory 与 Preload listDirectory 真实链路覆盖', 
   const origLoad = Module._load;
 
   const registeredHandlers = new Map();
+  const protocolHandlers = new Map();
   const invokedCalls = [];
   let exposedBridge = null;
 
   const electronMock = {
+    protocol: {
+      handle(scheme, fn) {
+        protocolHandlers.set(scheme, fn);
+      },
+    },
     ipcMain: {
       on() {},
+      removeHandler(channel) {
+        registeredHandlers.delete(channel);
+      },
       handle(channel, fn) {
         registeredHandlers.set(channel, fn);
       },
@@ -591,6 +603,26 @@ test('Main IPC fs:list-directory 与 Preload listDirectory 真实链路覆盖', 
         content: 'http://127.0.0.1:9999/api/fs/download?path=%2Fws%2Fhttp.exe',
       });
       assert.equal(httpContentDl.success, true);
+
+      // hermes-media:// 流式协议绑定、media:resolve-stream-url IPC 通道及重复 registerIpcHandlers 热替换控制器
+      const sampleVideoAbs = path.join(tmpDir, 'stream-demo.mp4');
+      fs.writeFileSync(sampleVideoAbs, Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]));
+      const streamUrl = await exposedBridge.resolveMediaStreamUrl({
+        filePath: sampleVideoAbs,
+        gatewayUrl: 'http://127.0.0.1:9999',
+        profile: 'coder',
+        sessionId: 'sess-media',
+      });
+      assert.ok(typeof streamUrl === 'string' && streamUrl.startsWith('hermes-media://'));
+      const mediaHandler = protocolHandlers.get('hermes-media');
+      assert.equal(typeof mediaHandler, 'function');
+      const mediaRes = await mediaHandler(new Request(streamUrl));
+      assert.equal(mediaRes.status, 200);
+      assert.equal(mediaRes.headers.get('content-type'), 'video/mp4');
+      await mediaRes.arrayBuffer();
+
+      ipcMod.registerIpcHandlers(mockWin);
+      assert.equal(protocolHandlers.size, 1, '二次注册窗口时不得重复调用 protocol.handle');
     } finally {
       globalThis.fetch = origFetch;
       console.warn = origWarn;

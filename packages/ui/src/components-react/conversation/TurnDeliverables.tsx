@@ -41,7 +41,7 @@ export interface TurnDeliverablesProps {
   onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
 }
 
-const DIRECT_URL_RE = /^(?:data:image\/|data:video\/|https?:\/\/|blob:)/i;
+const DIRECT_URL_RE = /^(?:data:image\/|data:video\/|https?:\/\/|blob:|hermes-media:\/\/)/i;
 
 function isDirectMediaUrl(val?: string): boolean {
   return Boolean(val && DIRECT_URL_RE.test(val.trim()));
@@ -100,12 +100,15 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
 
   const [mediaUrls, setMediaUrls] = React.useState<Record<string, string>>({});
   const [failedMedia, setFailedMedia] = React.useState<Record<string, boolean>>({});
+  const [loadingVideos, setLoadingVideos] = React.useState<Record<string, boolean>>({});
+  const loadingVideosRef = React.useRef<Record<string, boolean>>({});
   const [expandedVideos, setExpandedVideos] = React.useState<Record<string, boolean>>({});
   const [retryToken, setRetryToken] = React.useState(0);
 
+  // Why: 仅在挂载后自动预加载图片缩略图；视频文件可能较大，延后到用户点击展开时按需请求，防止首屏阻塞与重复流量浪费。
   React.useEffect(() => {
     if (!resolveMediaUrl || isStreaming) return;
-    const pending = [...images, ...videos].filter((item) => {
+    const pending = images.filter((item) => {
       if (mediaUrls[item.path] || failedMedia[item.path]) return false;
       if (isDirectMediaUrl(item.previewUrl)) return false;
       if (isDirectMediaUrl(item.path)) return false;
@@ -132,11 +135,50 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
     return () => {
       cancelled = true;
     };
-  }, [images, videos, resolveMediaUrl, isStreaming, mediaUrls, failedMedia, retryToken]);
+  }, [images, resolveMediaUrl, isStreaming, mediaUrls, failedMedia, retryToken]);
+
+  const requestVideoUrl = React.useCallback(
+    (targetPath: string, resolver: NonNullable<TurnDeliverablesProps['resolveMediaUrl']>) => {
+      if (loadingVideosRef.current[targetPath]) return;
+      loadingVideosRef.current[targetPath] = true;
+      setFailedMedia((prev) => {
+        if (!prev[targetPath]) return prev;
+        const next = { ...prev };
+        delete next[targetPath];
+        return next;
+      });
+      setLoadingVideos((prev) => ({ ...prev, [targetPath]: true }));
+      void resolver(targetPath)
+        .then((resolved) => {
+          delete loadingVideosRef.current[targetPath];
+          setLoadingVideos((prev) => {
+            const next = { ...prev };
+            delete next[targetPath];
+            return next;
+          });
+          if (resolved && isDirectMediaUrl(resolved)) {
+            setMediaUrls((prev) => ({ ...prev, [targetPath]: resolved }));
+          } else {
+            setFailedMedia((prev) => ({ ...prev, [targetPath]: true }));
+          }
+        })
+        .catch(() => {
+          delete loadingVideosRef.current[targetPath];
+          setLoadingVideos((prev) => {
+            const next = { ...prev };
+            delete next[targetPath];
+            return next;
+          });
+          setFailedMedia((prev) => ({ ...prev, [targetPath]: true }));
+        });
+    },
+    [],
+  );
 
   if (deliverables.length === 0) return null;
 
   const resolveDisplayUrl = (item: DeliverableItem): string => {
+    if (failedMedia[item.path]) return '';
     if (mediaUrls[item.path]) return mediaUrls[item.path];
     if (isDirectMediaUrl(item.previewUrl)) return item.previewUrl as string;
     if (isDirectMediaUrl(item.path)) return item.path;
@@ -258,10 +300,17 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
 
         {videos.map((vid) => {
           const url = resolveDisplayUrl(vid);
-          const failed = Boolean(failedMedia[vid.path]) && !url;
+          const isVideoLoading = Boolean(loadingVideos[vid.path]);
+          const failed = Boolean(failedMedia[vid.path]) && !url && !isVideoLoading;
           const displayName = resolveDeliverableDisplayName(vid.path, vid.name);
           const extLabel = formatDeliverableExtLabel(displayName, 'video');
           const isExpanded = Boolean(expandedVideos[vid.id]);
+          const retryVideoHandler =
+            isDirectMediaUrl(vid.previewUrl) || isDirectMediaUrl(vid.path)
+              ? () => handleRetryMedia(vid.path)
+              : resolveMediaUrl
+                ? () => requestVideoUrl(vid.path, resolveMediaUrl)
+                : null;
           return (
             <div key={vid.id} className="conv-deliverable-video-wrap" data-testid="turn-deliverable-video">
               <div className="conv-deliverable-file-card conv-deliverable-file-card--video" title={vid.path}>
@@ -271,9 +320,16 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
                   onClick={() => {
                     if (url) {
                       setExpandedVideos((prev) => ({ ...prev, [vid.id]: !prev[vid.id] }));
-                    } else {
-                      onOpenFile?.(vid.path, vid.previewUrl);
+                      return;
                     }
+                    if (resolveMediaUrl) {
+                      setExpandedVideos((prev) => ({ ...prev, [vid.id]: !prev[vid.id] }));
+                      if (!isVideoLoading) {
+                        requestVideoUrl(vid.path, resolveMediaUrl);
+                      }
+                      return;
+                    }
+                    onOpenFile?.(vid.path, vid.previewUrl);
                   }}
                 >
                   <Film size={15} className="conv-deliverable-file__icon" aria-hidden="true" />
@@ -281,11 +337,14 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
                   <span className="conv-deliverable-file__ext">{extLabel}</span>
                   <ChevronRight size={14} className="conv-deliverable-file__chevron" aria-hidden="true" />
                 </button>
-                {failed && resolveMediaUrl ? (
+                {failed && retryVideoHandler ? (
                   <button
                     type="button"
                     className="conv-deliverable-retry-btn"
-                    onClick={() => handleRetryMedia(vid.path)}
+                    onClick={() => {
+                      setExpandedVideos((prev) => ({ ...prev, [vid.id]: true }));
+                      retryVideoHandler();
+                    }}
                   >
                     <RotateCw size={12} aria-hidden="true" />
                     <span>{t('conversation.deliverableRetry')}</span>
@@ -310,7 +369,26 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
                   playsInline
                   preload="metadata"
                   src={url}
+                  onError={() => {
+                    setMediaUrls((prev) => {
+                      if (!(vid.path in prev)) return prev;
+                      const next = { ...prev };
+                      delete next[vid.path];
+                      return next;
+                    });
+                    setFailedMedia((prev) => ({ ...prev, [vid.path]: true }));
+                  }}
                 />
+              ) : isExpanded && isVideoLoading ? (
+                <div className="conv-deliverable-video__loading" data-testid="turn-deliverable-video-loading">
+                  <span>{t('inspector.videoLoading')}</span>
+                  <span className="conv-deliverable-video__loading-sub">{t('inspector.videoLoadingSub')}</span>
+                </div>
+              ) : isExpanded && failed ? (
+                <div className="conv-deliverable-video__loading" data-testid="turn-deliverable-video-error">
+                  <span>{t('inspector.videoLoadError')}</span>
+                  <span className="conv-deliverable-video__loading-sub">{t('inspector.videoLoadErrorSub')}</span>
+                </div>
               ) : null}
             </div>
           );

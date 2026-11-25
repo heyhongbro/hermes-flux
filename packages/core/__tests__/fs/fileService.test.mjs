@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   isImageExtension,
   isVideoExtension,
+  isDirectVideoStreamUrl,
   detectMediaMimeFromRequestPath,
   isBinaryExtension,
   hasBinaryNullBytes,
@@ -591,6 +592,38 @@ test('Unified File Service (packages/core/src/fs/fileService.ts)', async (t) => 
       assert.equal(fallbackVideo.source, 'fallback');
       assert.equal(fallbackVideo.isVideo, true);
       assert.equal(fallbackVideo.isImage, false);
+
+      // 11. 桌面端 resolveMediaStreamUrl 直出零缓冲流式协议，豁免 50MB Base64 上限且不经过 httpProxy
+      let proxyInvoked = false;
+      const streamedLargeVideo = await resolveFileContent('/opt/data/workspace/huge-render.mp4', {
+        gatewayUrl: 'https://gw.example.com:9119',
+        profile: 'coder',
+        sessionId: 'sess-9',
+        knownSize: MAX_PREVIEW_VIDEO_BYTES + 2048,
+        platformBridge: {
+          resolveMediaStreamUrl: async (req) =>
+            `hermes-media://gateway/?base=${encodeURIComponent(req.gatewayUrl || '')}&path=${encodeURIComponent(req.sourcePath)}&profile=${encodeURIComponent(req.profile || '')}&sessionId=${encodeURIComponent(req.sessionId || '')}&token=tok`,
+          httpProxy: async () => {
+            proxyInvoked = true;
+            return null;
+          },
+        },
+      });
+      assert.equal(proxyInvoked, false, '命中 resolveMediaStreamUrl 后严禁再经由 httpProxy 拉取整文件缓冲');
+      assert.equal(streamedLargeVideo.isVideo, true);
+      assert.equal(Boolean(streamedLargeVideo.isTooLarge), false);
+      assert.equal(streamedLargeVideo.source, 'gateway_api');
+      assert.ok(streamedLargeVideo.content.startsWith('hermes-media://gateway/'));
+
+      const streamedNullFallback = await resolveFileContent('/ws/huge-fallback.mp4', {
+        knownSize: MAX_PREVIEW_VIDEO_BYTES + 2048,
+        platformBridge: {
+          resolveMediaStreamUrl: async () => null,
+        },
+      });
+      assert.equal(isDirectVideoStreamUrl(''), false);
+      assert.equal(isDirectVideoStreamUrl(null), false);
+      assert.equal(streamedNullFallback.isTooLarge, true, 'resolveMediaStreamUrl 返回 null 时应正确退回原有守卫');
     } finally {
       console.warn = savedWarn;
     }

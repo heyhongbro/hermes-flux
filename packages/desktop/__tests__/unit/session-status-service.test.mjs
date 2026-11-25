@@ -739,3 +739,100 @@ test('SessionStatusService: onConnected 阈值不被并发切会话覆盖、断�
     withOpen.service.dispose();
   }
 });
+
+test('SessionStatusService: recordSessionCwd、onGatewayTurnAction(session-info) 与 onSessionDeleted 工作区映射闭环', () => {
+  const h = createServiceHarness({
+    state: {
+      activeSessionId: 'stored-1',
+      sessions: [{ id: 'stored-1', botName: 'coder', title: 'S1', cwd: '/repo/init' }],
+      archivedSessions: [{ id: 'arch-1', botName: 'coder', title: 'Archived' }],
+    },
+  });
+  try {
+    // 1. onLiveSessionReady 异常/空 cwd 输入守卫 + rec.path 分支 + 同值幂等
+    h.service.onLiveSessionReady('stored-1', 'live-1', null, 'coder');
+    assert.equal(h.state.sessionCwds, undefined);
+
+    h.service.onLiveSessionReady('stored-1', 'live-1', { cwd: '   ' }, 'coder');
+    assert.equal(h.state.sessionCwds, undefined);
+
+    h.service.onLiveSessionReady('stored-1', 'live-1', { path: 'E:\\bots\\coder\\' }, 'coder');
+    assert.equal(h.state.sessionCwds['stored-1'], 'E:/bots/coder');
+    assert.equal(h.state.sessions[0].cwd, 'E:/bots/coder');
+
+    // 幂等 repeat：sessionCwds & matched.cwd 均相等时不重写
+    const prevCwdsRef = h.state.sessionCwds;
+    h.service.onLiveSessionReady('stored-1', 'live-1', { cwd: 'E:/bots/coder' }, 'coder');
+    assert.strictEqual(h.state.sessionCwds, prevCwdsRef);
+
+    // 2. onGatewayTurnAction('session-info') 更新 archivedSessions 与未知 session 的 sessionCwds
+    h.service.onGatewayTurnAction(
+      {
+        type: 'session-info',
+        sessionId: 'arch-1',
+        info: { cwd: '/opt/archived/ws/' },
+      },
+      () => 'arch-1',
+    );
+    assert.equal(h.state.sessionCwds['arch-1'], '/opt/archived/ws');
+    assert.equal(h.state.archivedSessions[0].cwd, '/opt/archived/ws');
+
+    h.service.onGatewayTurnAction(
+      {
+        type: 'session-info',
+        sessionId: 'orphan-1',
+        info: { cwd: '/opt/orphan' },
+      },
+      () => null,
+    );
+    assert.equal(h.state.sessionCwds['orphan-1'], '/opt/orphan');
+
+    h.service.onGatewayTurnAction(
+      {
+        type: 'session-info',
+        sessionId: '',
+        info: null,
+      },
+      () => '',
+    );
+    h.service.onGatewayTurnAction(
+      {
+        type: 'session-info',
+        sessionId: 'stored-1',
+        info: 'bad-info',
+      },
+      () => 'stored-1',
+    );
+    h.service.onGatewayTurnAction(
+      {
+        type: 'session-info',
+        sessionId: 'stored-1',
+        info: { model: 'gpt-4o' },
+      },
+      () => 'stored-1',
+    );
+    assert.equal(h.state.sessionCwds['stored-1'], 'E:/bots/coder');
+
+    h.service.onSessionDeleted('not-in-map');
+    assert.equal(h.state.sessionCwds['stored-1'], 'E:/bots/coder');
+
+    h.service.onSessionDeleted('stored-1');
+    assert.equal('stored-1' in h.state.sessionCwds, false);
+    assert.equal(h.state.sessionCwds['arch-1'], '/opt/archived/ws');
+
+    // sessions 与 archivedSessions 均未定义时仍安全写入 sessionCwds 且不抛错
+    h.state.sessions = undefined;
+    h.state.archivedSessions = undefined;
+    h.service.onGatewayTurnAction(
+      {
+        type: 'session-info',
+        sessionId: 'no-lists-1',
+        info: { cwd: '/opt/no-lists' },
+      },
+      () => 'no-lists-1',
+    );
+    assert.equal(h.state.sessionCwds['no-lists-1'], '/opt/no-lists');
+  } finally {
+    h.service.dispose();
+  }
+});

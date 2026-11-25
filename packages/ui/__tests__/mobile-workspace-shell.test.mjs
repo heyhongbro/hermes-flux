@@ -5437,13 +5437,10 @@ test('移动端体验修复 Regression：容器 icon 后置、首屏无持续选
       settingsActions: sample.actions.settingsActions,
     }),
   );
-  const projTitlePos = homeMarkup.indexOf('MobileProject');
-  const projIconPos = homeMarkup.indexOf('data-container-icon="project"');
-  assert.ok(projTitlePos > -1 && projIconPos > -1 && projTitlePos < projIconPos, '移动端项目图标必须位于名称之后');
-  const fldTitlePos = homeMarkup.indexOf('MobileCustomFolder');
-  const fldIconPos = homeMarkup.indexOf('data-container-icon="folder"');
-  assert.ok(fldTitlePos > -1 && fldIconPos > -1 && fldTitlePos < fldIconPos, '移动端文件夹图标必须位于名称之后');
-  assert.ok(homeMarkup.includes('m-section__folder-icon--success'), '移动端文件夹颜色类名必须保留');
+  assert.ok(homeMarkup.includes('MobileProject'), '移动端项目名称必须渲染');
+  assert.equal(homeMarkup.includes('data-container-icon="project"'), false, '移动端项目名称后不得渲染文件夹图标');
+  assert.ok(homeMarkup.includes('MobileCustomFolder'), '移动端文件夹名称必须渲染');
+  assert.equal(homeMarkup.includes('data-container-icon="folder"'), false, '移动端自定义文件夹名称后不得渲染文件夹图标');
   assert.equal(homeMarkup.includes('class="m-entity-row" data-active="true"'), false, '移动端首页列表不得保留持久化深底选中态');
 
   const mobileCss = fs.readFileSync(path.resolve(import.meta.dirname, '../src/styles/mobile-shell.css'), 'utf8');
@@ -5679,16 +5676,23 @@ test('MobileInspectorScreen 与 MobileWorkspaceShell 媒体成果物点击、Mar
   assert.deepEqual(wsOpenCalls, ['/out/page.html']);
   v2b.unmount();
 
-  // 2. Markdown 阅读器：默认 rendered，连续切换 rendered <-> raw 覆盖往返标签与状态翻转
+  // 2. Markdown 阅读器：YAML frontmatter 解析 + 默认 rendered，连续切换 rendered <-> raw 覆盖往返标签与状态翻转
   const dMd = createReactHookDriver();
   const vMd = dMd.mount(() =>
     React.createElement(MobileInspectorScreen, {
       ...baseProps,
       readerOpen: true,
-      readerItem: { kind: 'artifacts', title: 'notes.md', filePath: '/out/notes.md', content: '# 标题', canDownload: true },
+      readerItem: {
+        kind: 'artifacts',
+        title: 'notes.md',
+        filePath: '/out/notes.md',
+        content: '---\ntitle: Mobile Doc\n---\n# 标题\n\n正文',
+        canDownload: true,
+      },
     }),
   );
   assert.ok(collect(vMd.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-markdown').length === 1);
+  assert.ok(collect(vMd.tree, (n) => n.props?.className === 'flux-doc-frontmatter').length === 1);
   const toggleBtnRendered = collect(vMd.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-toggle-view')[0];
   const labelWhenRendered = toggleBtnRendered.props['aria-label'];
   toggleBtnRendered.props.onClick();
@@ -5700,6 +5704,102 @@ test('MobileInspectorScreen 与 MobileWorkspaceShell 媒体成果物点击、Mar
   vMd.rerender();
   assert.ok(collect(vMd.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-markdown').length === 1);
   vMd.unmount();
+
+  // 2b. 视频加载中立即渲染 loading 卡片且支持取消后/异常时的显式错误兜底
+  const dVidLoad = createReactHookDriver();
+  const vVidLoad = dVidLoad.mount(() =>
+    React.createElement(MobileInspectorScreen, {
+      ...baseProps,
+      readerOpen: true,
+      readerItem: {
+        kind: 'files',
+        title: 'heavy.mp4',
+        filePath: '/out/heavy.mp4',
+        isVideo: true,
+        isLoading: true,
+        content: '',
+        canDownload: true,
+      },
+    }),
+  );
+  assert.ok(collect(vVidLoad.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-loading').length === 1);
+  assert.equal(collect(vVidLoad.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-toggle-view').length, 0);
+  vVidLoad.unmount();
+
+  // 非视频 file loading（isLoading: true 且无 canDownload + 仅 title 无 filePath）以及无 frontmatter Markdown
+  const dPlainLoad = createReactHookDriver();
+  const vPlainLoad = dPlainLoad.mount(() =>
+    React.createElement(MobileInspectorScreen, {
+      ...baseProps,
+      readerOpen: true,
+      readerItem: {
+        kind: 'files',
+        title: 'notes.md',
+        filePath: '',
+        isLoading: true,
+        content: '',
+        canDownload: false,
+      },
+    }),
+  );
+  assert.ok(collect(vPlainLoad.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-loading').length === 1);
+  assert.equal(collect(vPlainLoad.tree, (n) => n.props?.className === 'm-inspector__reader-notice').length, 0);
+  vPlainLoad.unmount();
+
+  const dEmptyRefLoad = createReactHookDriver();
+  const vEmptyRefLoad = dEmptyRefLoad.mount(() =>
+    React.createElement(MobileInspectorScreen, {
+      ...baseProps,
+      readerOpen: true,
+      readerItem: {
+        kind: 'files',
+        title: '',
+        filePath: '',
+        isLoading: true,
+        content: '',
+        canDownload: false,
+      },
+    }),
+  );
+  assert.ok(collect(vEmptyRefLoad.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-loading').length === 1);
+  vEmptyRefLoad.unmount();
+
+  const dPlainMd = createReactHookDriver();
+  const vPlainMd = dPlainMd.mount(() =>
+    React.createElement(MobileInspectorScreen, {
+      ...baseProps,
+      readerOpen: true,
+      readerItem: {
+        kind: 'files',
+        title: 'plain.md',
+        filePath: '/ws/plain.md',
+        content: '# 无 Frontmatter 文档\n\n纯正文段落',
+        canDownload: true,
+      },
+    }),
+  );
+  assert.ok(collect(vPlainMd.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-markdown').length === 1);
+  assert.equal(collect(vPlainMd.tree, (n) => n.props?.className === 'flux-doc-frontmatter').length, 0);
+  vPlainMd.unmount();
+
+  const dVidErr = createReactHookDriver();
+  const vVidErr = dVidErr.mount(() =>
+    React.createElement(MobileInspectorScreen, {
+      ...baseProps,
+      readerOpen: true,
+      readerItem: {
+        kind: 'files',
+        title: 'broken.mp4',
+        filePath: '/out/broken.mp4',
+        isVideo: true,
+        content: 'not-a-valid-video-url',
+        canDownload: true,
+      },
+    }),
+  );
+  assert.equal(collect(vVidErr.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-video').length, 0);
+  assert.equal(collect(vVidErr.tree, (n) => n.props?.className === 'm-inspector__reader-code').length, 0);
+  vVidErr.unmount();
 
   // 3. 图片阅读器点击放大打开灯箱
   const lbImgClicks = [];

@@ -1662,6 +1662,35 @@ html[data-rail-resizing="right"] .status-pod-window {
   background: var(--primary-hover);
 }
 
+.inspector-video-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  padding: 20px;
+  overflow: auto;
+}
+
+.inspector-video-player {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--radius-inner);
+  background: var(--background);
+}
+
+.inspector-video-caption {
+  margin-top: 12px;
+  font-size: var(--fs-caption);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
 #flux-inspector-pod[data-motion-state="entering"],
 #flux-inspector-pod:not(.inspector-collapsed) {
   transition-duration: var(--duration-enter);

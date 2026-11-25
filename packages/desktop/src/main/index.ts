@@ -2,16 +2,30 @@
  * Hermes Flux Desktop Main Process
  */
 
-import { app, BrowserWindow, powerMonitor } from 'electron';
+import { app, BrowserWindow, powerMonitor, protocol } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '@hermes-flux/core';
 import { createMainWindow } from './window';
 import { applyMacDockIcon } from './windowControl';
 import { registerIpcHandlers } from './ipc';
+import { HERMES_MEDIA_SCHEME } from './mediaStreamProtocol';
 import { registerPowerEvents } from './powerEvents';
 import { HermesFluxTray } from './tray';
 import { initFileLogging } from './logFile';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: HERMES_MEDIA_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      bypassCSP: true,
+    },
+  },
+]);
 
 const appLog = createLogger('main');
 

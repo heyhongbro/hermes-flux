@@ -487,7 +487,12 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       fileTreeExpandedPaths: Array.from(state.fileTreeExpandedPaths),
       fileTreeFilterQuery: state.fileTreeFilterQuery,
       activeFilePath: state.activeFilePath,
-      workspaceRootName: extractPathBasename(resolveActiveWorkspaceCwd(state) || '') || undefined,
+      workspaceRootName:
+        extractPathBasename(
+          resolveActiveWorkspaceCwd(state) ||
+            (state.fileTreeState?.status === 'ready' ? state.fileTreeState.rootPath : '') ||
+            '',
+        ) || undefined,
       memories: state.memories,
       learningState: state.learningState,
       learningDetail: state.learningDetail,
@@ -541,10 +546,9 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     onSelectPane: (pane) => {
       activePane = pane;
       inspectorReaderOpen = false;
+      openFileGen += 1;
       if (pane === 'inspector') {
         ensureInspectorTabData(inspectorTab);
-      } else {
-        openFileGen += 1;
       }
       deps.render();
     },
@@ -1005,14 +1009,66 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     const cleanPath = (filePath || '').trim();
     if (!cleanPath) return;
     const expectedGen = ++openFileGen;
+    const initialState = deps.getState();
+    const initialNorm = cleanPath.replace(/\\/g, '/');
+    const cachedReady = initialState.openFiles.find(
+      (f) =>
+        (f.path === cleanPath || f.path.replace(/\\/g, '/') === initialNorm) &&
+        !f.isLoading &&
+        f.source !== 'fallback' &&
+        (Boolean(f.content) || Boolean(f.isBinary) || Boolean(f.isTooLarge)),
+    );
     if (opts.switchToInspector) {
       activePane = 'inspector';
       if (inspectorTab !== 'artifacts' && inspectorTab !== 'files') {
         inspectorTab = 'files';
       }
-      deps.render();
     }
-    await deps.openWorkspaceFile?.(cleanPath);
+    const tabAllowedBeforeAwait =
+      inspectorTab === 'files' || (opts.allowArtifactsTab && inspectorTab === 'artifacts');
+    if (activePane !== 'inspector' || !tabAllowedBeforeAwait) {
+      return;
+    }
+    const title = extractPathBasename(cleanPath);
+    inspectorReaderItem = cachedReady
+      ? {
+          kind: inspectorTab === 'artifacts' ? 'artifacts' : 'files',
+          title: extractPathBasename(cachedReady.path),
+          subtitle:
+            typeof cachedReady.byteSize === 'number'
+              ? formatFileSize(cachedReady.byteSize)
+              : cachedReady.path,
+          content: cachedReady.content,
+          filePath: cachedReady.path,
+          isImage: isImageExtension(cachedReady.path),
+          isVideo: cachedReady.isVideo ?? isVideoExtension(cachedReady.path),
+          isBinary: cachedReady.isBinary,
+          isTooLarge: cachedReady.isTooLarge,
+          isLoading: false,
+          byteSize: cachedReady.byteSize,
+          canDownload: true,
+        }
+      : {
+          kind: inspectorTab === 'artifacts' ? 'artifacts' : 'files',
+          title,
+          subtitle: cleanPath,
+          content: '',
+          filePath: cleanPath,
+          isImage: isImageExtension(cleanPath),
+          isVideo: isVideoExtension(cleanPath),
+          isLoading: true,
+          canDownload: true,
+        };
+    inspectorReaderOpen = true;
+    deps.render();
+
+    let openFailed = false;
+    try {
+      await deps.openWorkspaceFile?.(cleanPath);
+    } catch (err) {
+      openFailed = true;
+      console.warn('[MobileShellCoordinator] openWorkspaceFile failed:', err);
+    }
     const tabAllowed = inspectorTab === 'files' || (opts.allowArtifactsTab && inspectorTab === 'artifacts');
     // 规则: 若异步加载期间离开了检查舱、切换了非授权 Tab 或发起更新的文件请求，丢弃过期结果
     if (expectedGen !== openFileGen || activePane !== 'inspector' || !tabAllowed) {
@@ -1024,10 +1080,10 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       (f) => f.path === cleanPath || f.path.replace(/\\/g, '/') === normalized,
     );
     if (target) {
-      const title = extractPathBasename(target.path) || target.path;
+      const targetTitle = extractPathBasename(target.path);
       inspectorReaderItem = {
         kind: inspectorTab === 'artifacts' ? 'artifacts' : 'files',
-        title,
+        title: targetTitle,
         subtitle: typeof target.byteSize === 'number' ? formatFileSize(target.byteSize) : target.path,
         content: target.content,
         filePath: target.path,
@@ -1035,10 +1091,30 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
         isVideo: target.isVideo ?? isVideoExtension(target.path),
         isBinary: target.isBinary,
         isTooLarge: target.isTooLarge,
+        isLoading: target.isLoading,
         byteSize: target.byteSize,
         canDownload: true,
       };
       inspectorReaderOpen = true;
+      deps.render();
+    } else if (openFailed) {
+      const isVideoTarget = isVideoExtension(cleanPath);
+      inspectorReaderItem = {
+        kind: inspectorTab === 'artifacts' ? 'artifacts' : 'files',
+        title,
+        subtitle: cleanPath,
+        content: isVideoTarget ? '' : `// ${cleanPath}\n\n${t('inspector.remoteNotice')}`,
+        filePath: cleanPath,
+        isImage: isImageExtension(cleanPath),
+        isVideo: isVideoTarget,
+        isLoading: false,
+        canDownload: true,
+      };
+      inspectorReaderOpen = true;
+      deps.render();
+    } else {
+      inspectorReaderItem = null;
+      inspectorReaderOpen = false;
       deps.render();
     }
   }

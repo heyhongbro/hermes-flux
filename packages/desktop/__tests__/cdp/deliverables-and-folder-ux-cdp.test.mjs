@@ -350,6 +350,8 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
   const desktopDom = await waitFor(
     () =>
       cdp.evalVal(`(() => {
+        const projHeader = document.querySelector('[data-container-kind="project"]');
+        const fldHeader = document.querySelector('[data-container-kind="folder"]');
         const projIcon = document.querySelector('[data-container-kind="project"] [data-container-icon="project"]');
         const fldIcon = document.querySelector('[data-container-kind="folder"] [data-container-icon="folder"]');
         const gallery = document.querySelector('[data-testid="turn-deliverables-images"]');
@@ -358,20 +360,11 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
         const delivBox = document.querySelector('[data-testid="turn-deliverables"]');
         const footerBox = document.querySelector('[data-msg-id="d-a1"] .conv-message__footer');
         const railBadge = document.querySelector('#flux-inspector-rail [data-tab="artifacts"] [data-testid="desktop-artifacts-badge"]');
-        if (!projIcon || !fldIcon || !gallery || imgs.length !== 3 || inlineCards.length !== 3 || !delivBox || !footerBox || !railBadge) return null;
+        if (!projHeader || !fldHeader || !gallery || imgs.length !== 3 || inlineCards.length !== 3 || !delivBox || !footerBox || !railBadge) return null;
         if (!imgs.every((img) => img.complete && img.naturalWidth > 0)) return null;
-        const readRowGeom = (selector) => {
-          const icon = document.querySelector(selector);
-          const btn = icon?.closest('button');
-          const nameEl = btn?.querySelector('.truncate');
-          if (!icon || !nameEl) return null;
-          const ir = icon.getBoundingClientRect();
-          const nr = nameEl.getBoundingClientRect();
-          return { iconLeft: ir.left, nameRight: nr.right, iconW: ir.width, nameText: nameEl.textContent?.trim() };
-        };
         return {
-          projGeom: readRowGeom('[data-container-kind="project"] [data-container-icon="project"]'),
-          fldGeom: readRowGeom('[data-container-kind="folder"] [data-container-icon="folder"]'),
+          hasProjIcon: Boolean(projIcon),
+          hasFldIcon: Boolean(fldIcon),
           countAttr: gallery.getAttribute('data-count'),
           inlineSummary: inlineCards.map((el) => ({
             name: el.querySelector('.conv-inline-deliverable__name')?.textContent?.trim() || '',
@@ -393,14 +386,8 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
     120,
   );
   assert.ok(desktopDom, 'Desktop 项目/文件夹容器与原地+隐式成果物必须在 DOM 上完整渲染');
-  assert.ok(
-    desktopDom.projGeom && desktopDom.projGeom.iconLeft >= desktopDom.projGeom.nameRight - 2,
-    `Desktop 项目图标必须位于名称右侧: ${JSON.stringify(desktopDom.projGeom)}`,
-  );
-  assert.ok(
-    desktopDom.fldGeom && desktopDom.fldGeom.iconLeft >= desktopDom.fldGeom.nameRight - 2,
-    `Desktop 文件夹图标必须位于名称右侧: ${JSON.stringify(desktopDom.fldGeom)}`,
-  );
+  assert.equal(desktopDom.hasProjIcon, false, 'Desktop 项目标题旁不得保留后置文件夹图标');
+  assert.equal(desktopDom.hasFldIcon, false, 'Desktop 文件夹标题旁不得保留后置文件夹图标');
   assert.deepEqual(
     desktopDom.inlineSummary.map((c) => c.name),
     ['2026-11-23-t3code-telemetry.html', '2026-11-23-t3code-xiaohongshu.md', 't3-timeline.png'],
@@ -652,35 +639,20 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
   const mobileHomeIcons = await waitFor(
     () =>
       cdp.evalVal(`(() => {
-        const projIcon = document.querySelector('[data-container-icon="project"]');
-        const fldIcon = document.querySelector('[data-container-icon="folder"].m-section__folder-icon--warning');
-        if (!projIcon || !fldIcon) return null;
-        const measure = (icon) => {
-          const btn = icon.closest('button');
-          const title = btn?.querySelector('.m-section__title');
-          if (!title) return null;
-          const ir = icon.getBoundingClientRect();
-          const tr = title.getBoundingClientRect();
-          return { iconLeft: ir.left, titleRight: tr.right };
-        };
+        const hasSessionRow = Boolean(document.querySelector('.m-section[data-section="sessions"] .m-entity-row'));
+        if (!hasSessionRow) return null;
         return {
-          proj: measure(projIcon),
-          fld: measure(fldIcon),
-          hasSessionRow: Boolean(document.querySelector('.m-section[data-section="sessions"] .m-entity-row')),
+          hasProjIcon: Boolean(document.querySelector('[data-container-icon="project"]')),
+          hasFldIcon: Boolean(document.querySelector('[data-container-icon="folder"]')),
+          hasSessionRow,
         };
       })()`),
     15000,
     120,
   );
   assert.ok(mobileHomeIcons && mobileHomeIcons.hasSessionRow, 'Mobile 首页容器与普通会话行必须渲染');
-  assert.ok(
-    mobileHomeIcons.proj && mobileHomeIcons.proj.iconLeft >= mobileHomeIcons.proj.titleRight - 2,
-    `Mobile 项目图标必须位于标题右侧: ${JSON.stringify(mobileHomeIcons.proj)}`,
-  );
-  assert.ok(
-    mobileHomeIcons.fld && mobileHomeIcons.fld.iconLeft >= mobileHomeIcons.fld.titleRight - 2,
-    `Mobile 自定义文件夹图标必须位于标题右侧: ${JSON.stringify(mobileHomeIcons.fld)}`,
-  );
+  assert.equal(mobileHomeIcons.hasProjIcon, false, 'Mobile 项目标题旁不得保留后置文件夹图标');
+  assert.equal(mobileHomeIcons.hasFldIcon, false, 'Mobile 自定义文件夹标题旁不得保留后置文件夹图标');
 
   // 点击进入会话舞台，随后按返回回到首页并断言全行取消激活且透明底
   await cdp.evalVal(`document.querySelector('.m-section[data-section="sessions"] .m-entity-row')?.click()`);

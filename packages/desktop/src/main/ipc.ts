@@ -2,7 +2,7 @@
  * Hermes Flux Desktop IPC Handler Registration
  */
 
-import { ipcMain, BrowserWindow, shell, dialog, app, clipboard } from 'electron';
+import { ipcMain, BrowserWindow, shell, dialog, app, clipboard, protocol } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -15,6 +15,11 @@ import {
   renameWorkspaceDirectory,
   resolveSafeLocalSourceFile,
 } from './workspaceFs';
+import {
+  createMediaStreamController,
+  HERMES_MEDIA_SCHEME,
+  type MediaStreamController,
+} from './mediaStreamProtocol';
 import { detectMediaMimeFromRequestPath, type LogRecord } from '@hermes-flux/core';
 
 /**
@@ -81,9 +86,41 @@ async function cancelResponseBody(res: Response): Promise<void> {
   }
 }
 
+interface MediaControllerSlot {
+  controller: MediaStreamController;
+}
+
+let activeMediaSlot: MediaControllerSlot | undefined;
+
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   let activeGatewayCookies = '';
   let activeGatewayOrigin = '';
+
+  const mediaStreamController = createMediaStreamController({
+    getGatewayAuth: () => ({ cookies: activeGatewayCookies, origin: activeGatewayOrigin }),
+    getFallbackCwd: () => process.cwd(),
+  });
+  if (activeMediaSlot) {
+    activeMediaSlot.controller = mediaStreamController;
+  } else {
+    const slot: MediaControllerSlot = { controller: mediaStreamController };
+    activeMediaSlot = slot;
+    if (typeof protocol?.handle === 'function') {
+      protocol.handle(HERMES_MEDIA_SCHEME, (request) =>
+        slot.controller.handleProtocolRequest(request),
+      );
+    }
+  }
+
+  ipcMain.removeHandler('media:resolve-stream-url');
+  ipcMain.handle('media:resolve-stream-url', (_event, options: {
+    filePath: string;
+    gatewayUrl?: string;
+    profile?: string;
+    sessionId?: string;
+  }) => {
+    return mediaStreamController.buildStreamUrl(options);
+  });
 
   const shouldAttachGatewayCookies = (targetUrl: string): boolean => {
     if (!activeGatewayCookies || !activeGatewayOrigin) return false;

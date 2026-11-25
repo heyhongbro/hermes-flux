@@ -47,6 +47,7 @@ export interface MobileInspectorReaderItem {
   filePath?: string;
   isImage?: boolean;
   isVideo?: boolean;
+  isLoading?: boolean;
   isBinary?: boolean;
   isTooLarge?: boolean;
   byteSize?: number;

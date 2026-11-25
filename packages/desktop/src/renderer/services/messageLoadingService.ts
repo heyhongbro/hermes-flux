@@ -40,6 +40,7 @@ import {
   countLocalCoveredRows,
   syncActiveSessionToBot,
   reconcileAuthoritativeActivity,
+  normalizeWorkspacePath,
   runGuarded,
   sortByDisplayAsc,
 } from '@hermes-flux/core';
@@ -549,6 +550,15 @@ export class MessageLoadingService {
         const rawInfo = (
           res && typeof res === 'object' && res.info && typeof res.info === 'object' ? res.info : res
         ) as Record<string, unknown>;
+        const archivedBeforeResume = state.archivedSessions ?? [];
+        const activeBeforeResume =
+          state.sessions.find((s) => s.id === sessionId && (!resolvedBotName || s.botName === resolvedBotName)) ||
+          state.sessions.find((s) => s.id === sessionId) ||
+          archivedBeforeResume.find((s) => s.id === sessionId && (!resolvedBotName || s.botName === resolvedBotName)) ||
+          archivedBeforeResume.find((s) => s.id === sessionId);
+        const prevRecordedCwd = state.sessionCwds?.[sessionId] || '';
+        const prevSessionCwd = activeBeforeResume?.cwd || '';
+
         const handles = readSessionHandles(res, sessionId);
         if (handles) {
           this.deps.defaultSessionHandleRegistry.register(handles);
@@ -576,15 +586,25 @@ export class MessageLoadingService {
           }
         }
 
-        const resumedCwd = typeof rawInfo.cwd === 'string' ? rawInfo.cwd : typeof rawInfo.path === 'string' ? rawInfo.path : undefined;
+        const rawResumedCwd = typeof rawInfo.cwd === 'string' ? rawInfo.cwd : typeof rawInfo.path === 'string' ? rawInfo.path : undefined;
+        const resumedCwd = rawResumedCwd ? normalizeWorkspacePath(rawResumedCwd) : undefined;
         const resumedProjId = typeof rawInfo.project_id === 'string' ? rawInfo.project_id : typeof rawInfo.projectId === 'string' ? rawInfo.projectId : undefined;
         const resumedProjName = typeof rawInfo.project_name === 'string' ? rawInfo.project_name : typeof rawInfo.projectName === 'string' ? rawInfo.projectName : undefined;
 
+        let changed = Boolean(
+          resumedCwd && (prevRecordedCwd !== resumedCwd || prevSessionCwd !== resumedCwd),
+        );
+        if (resumedCwd && state.sessionCwds?.[sessionId] !== resumedCwd) {
+          state.sessionCwds = { ...(state.sessionCwds ?? {}), [sessionId]: resumedCwd };
+          changed = true;
+        }
+        const archivedSessions = state.archivedSessions ?? [];
         const currentActive = state.sessions.find((s) => s.id === sessionId && (!resolvedBotName || s.botName === resolvedBotName))
-          || state.sessions.find((s) => s.id === sessionId);
+          || state.sessions.find((s) => s.id === sessionId)
+          || archivedSessions.find((s) => s.id === sessionId && (!resolvedBotName || s.botName === resolvedBotName))
+          || archivedSessions.find((s) => s.id === sessionId);
         if (currentActive) {
-          let changed = false;
-          if (resumedCwd && !currentActive.cwd) {
+          if (resumedCwd && currentActive.cwd !== resumedCwd) {
             currentActive.cwd = resumedCwd;
             changed = true;
           }
@@ -596,9 +616,9 @@ export class MessageLoadingService {
             currentActive.projectName = resumedProjName;
             changed = true;
           }
-          if (changed) {
-            this.deps.render();
-          }
+        }
+        if (changed) {
+          this.deps.render();
         }
 
         if (!fastLoaded) {

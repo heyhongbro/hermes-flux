@@ -89,6 +89,12 @@ export interface IPlatformBridge {
   createDirectory?(parentDir: string, folderName: string): Promise<{ ok: boolean; path?: string; error?: string }>;
   renameDirectory?(dirPath: string, newName: string): Promise<{ ok: boolean; path?: string; error?: string }>;
   readFile?(filePath: string): Promise<string | null>;
+  resolveMediaStreamUrl?(options: {
+    filePath: string;
+    gatewayUrl?: string;
+    profile?: string;
+    sessionId?: string;
+  }): Promise<string | null>;
   saveFile?(options: {
     fileName: string;
     content: string;

@@ -102,6 +102,16 @@ export function isVideoExtension(filePath: string): boolean {
   return PLAYABLE_VIDEO_EXTENSIONS.has(ext);
 }
 
+const DIRECT_VIDEO_STREAM_RE = /^(?:hermes-media:\/\/|data:video\/|https?:\/\/|blob:)/i;
+
+/**
+ * 判断 URL 是否为可直接挂载到 `<video src>` 的流式/直连媒体地址。
+ */
+export function isDirectVideoStreamUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  return DIRECT_VIDEO_STREAM_RE.test(url.trim());
+}
+
 /**
  * 从 HTTP 代理请求路径（含 `?path=...&profile=...` 查询参数或纯 pathname）提取媒体 MIME 类型。
  */
@@ -602,6 +612,33 @@ export async function resolveFileContent(
   const isVideo = !isImage && isVideoExtension(cleanTarget);
   const isHtml = ext === 'html' || ext === 'htm';
   const isHttp = cleanTarget.startsWith('http://') || cleanTarget.startsWith('https://');
+
+  // -1. 优先尝试零缓冲流式媒体通道（桌面 Electron hermes-media:// 原生 HTTP Range 透传，免全量拉取与 Base64 膨胀）
+  if (isVideo && !isHttp && options.platformBridge?.resolveMediaStreamUrl) {
+    try {
+      const streamUrl = await options.platformBridge.resolveMediaStreamUrl({
+        filePath: cleanTarget,
+        gatewayUrl: options.gatewayUrl,
+        profile: options.profile,
+        sessionId: options.sessionId,
+      });
+      if (streamUrl && isDirectVideoStreamUrl(streamUrl)) {
+        return {
+          content: streamUrl,
+          isImage: false,
+          isVideo: true,
+          isHtml: false,
+          ...(options.knownSize !== undefined ? { byteSize: options.knownSize } : {}),
+          fromCache: false,
+          source:
+            streamUrl.startsWith('hermes-media://local/') || !options.gatewayUrl
+              ? 'local_fs'
+              : 'gateway_api',
+        };
+      }
+    // gate-degrade: 流式媒体通道失败时自动回退标准媒体拉取链
+    } catch {}
+  }
 
   // 0. 前置二进制/超大文件阻断：已知为二进制或超限文件时直接返回下载卡片态，绝不消耗带宽与渲染节点
   const preGuard = evaluateFilePreviewGuard({

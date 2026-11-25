@@ -54,7 +54,7 @@ export interface InspectionPodProps {
   deliverables?: readonly DeliverableListRowVM[];
   artifactsFilterQuery?: string;
   // Extensible functional tabs (kept for backward prop compatibility; future features added one by one)
-  previewFile?: { path: string; content: string; language?: string; isDiff?: boolean };
+  previewFile?: OpenFileItem;
   artifacts?: Array<{ id: string; name: string; type: string; size: string; preview?: string }>;
   browserFrame?: { url: string; title: string; screenshotUrl?: string };
   gitDiffs?: Array<{ file: string; additions: number; deletions: number; patch?: string }>;
@@ -119,10 +119,8 @@ export function renderInspectionPod(props: InspectionPodProps): string {
       }));
     } else if (props.previewFile) {
       files = [{
-        path: props.previewFile.path,
-        content: props.previewFile.content,
+        ...props.previewFile,
         language: props.previewFile.language || detectFileLanguage(props.previewFile.path),
-        isDiff: props.previewFile.isDiff,
       }];
     }
 
@@ -141,7 +139,7 @@ export function renderInspectionPod(props: InspectionPodProps): string {
     const searchQuery = props.searchQuery || '';
     const treeCollapsed = Boolean(props.fileTreeCollapsed);
     const fileTreeState: FileTreeLoadState = props.fileTreeState ?? { status: 'idle' };
-    const isNonPreview = Boolean(currentFile?.isBinary || currentFile?.isTooLarge);
+    const isNonPreview = Boolean(currentFile?.isBinary || currentFile?.isTooLarge || currentFile?.isLoading);
     const textToolDisabledAttr = isNonPreview ? 'disabled' : '';
 
     const treePaneHtml = !treeCollapsed

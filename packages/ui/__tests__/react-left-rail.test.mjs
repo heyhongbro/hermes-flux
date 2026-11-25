@@ -740,7 +740,7 @@ test('反密集点阵与六变体结构守卫：三套重制彻底清零密点�
   assert.ok(matrixDone.includes('flux-vortex-done-ring'));
 });
 
-test('容器标题图标几何对齐：项目与自定义文件夹 icon 必须位于名称之后而非左侧对齐线前', () => {
+test('容器标题渲染干净：移除项目与自定义文件夹标题后的文件夹图标并保持左栏排版结构', () => {
   const projectHtml = renderToStaticMarkup(React.createElement(RailOrgContainerSection, {
     kind: 'project',
     id: 'p-flux',
@@ -751,10 +751,8 @@ test('容器标题图标几何对齐：项目与自定义文件夹 icon 必须�
     isEmpty: false,
     children: React.createElement('div', null, 'child'),
   }));
-  const projTitleIdx = projectHtml.indexOf('FluxWorkspace');
-  const projIconIdx = projectHtml.indexOf('data-container-icon="project"');
-  assert.ok(projTitleIdx > -1 && projIconIdx > -1, '项目分节必须渲染名称与项目图标');
-  assert.ok(projTitleIdx < projIconIdx, '项目图标必须排在名称之后，确保名称左侧与其它分区严格同轴对齐');
+  assert.ok(projectHtml.includes('FluxWorkspace'), '项目分节必须渲染名称');
+  assert.equal(projectHtml.includes('data-container-icon="project"'), false, '项目名称后不得渲染文件夹图标');
 
   const folderHtml = renderToStaticMarkup(React.createElement(RailOrgContainerSection, {
     kind: 'folder',
@@ -767,9 +765,6 @@ test('容器标题图标几何对齐：项目与自定义文件夹 icon 必须�
     isEmpty: false,
     children: React.createElement('div', null, 'child'),
   }));
-  const fldTitleIdx = folderHtml.indexOf('MyCustomFolder');
-  const fldIconIdx = folderHtml.indexOf('data-container-icon="folder"');
-  assert.ok(fldTitleIdx > -1 && fldIconIdx > -1, '文件夹分节必须渲染名称与文件夹图标');
-  assert.ok(fldTitleIdx < fldIconIdx, '自定义文件夹图标必须排在名称之后');
-  assert.ok(folderHtml.includes('text-primary'), '自定义文件夹颜色 Token 必须保留');
+  assert.ok(folderHtml.includes('MyCustomFolder'), '文件夹分节必须渲染名称');
+  assert.equal(folderHtml.includes('data-container-icon="folder"'), false, '自定义文件夹名称后不得渲染文件夹图标');
 });

@@ -41,6 +41,7 @@ import {
   isImageExtension,
   isVideoExtension,
   normalizeWorkspacePath,
+  splitSkillMarkdownFrontmatter,
   type FileTreeLoadState,
   type FileTreeNode,
   type LearningDetailState,
@@ -483,6 +484,32 @@ export function MobileInspectorScreen({
   };
 
   const renderReaderBody = (item: MobileInspectorReaderItem): React.ReactNode => {
+    const targetRef = (item.filePath || item.title || '').split(/[?#]/)[0];
+    if (item.isLoading) {
+      const isLoadingVideo = Boolean(item.isVideo) || isVideoExtension(targetRef);
+      return (
+        <div className="m-inspector__reader-loading" data-testid="mobile-inspector-loading">
+          <div className="m-inspector__reader-loading-title">
+            {isLoadingVideo ? t('inspector.videoLoading') : t('inspector.fileLoading')}
+          </div>
+          {isLoadingVideo ? (
+            <p className="m-inspector__reader-notice">
+              {t('inspector.videoLoadingSub')}
+            </p>
+          ) : null}
+          {item.canDownload ? (
+            <button
+              type="button"
+              className="m-primary-btn"
+              onClick={onDownloadInspectorFile}
+            >
+              <Download size={16} aria-hidden="true" />
+              <span>{t('mobile.inspector.downloadFile')}</span>
+            </button>
+          ) : null}
+        </div>
+      );
+    }
     if (item.isBinary || item.isTooLarge) {
       return (
         <div className="m-inspector__tree-state">
@@ -503,7 +530,6 @@ export function MobileInspectorScreen({
       );
     }
     const lowerContent = item.content.trim().toLowerCase();
-    const targetRef = (item.filePath || item.title || '').split(/[?#]/)[0];
     const ext = (targetRef.split('.').pop() || '').toLowerCase();
     const isHtmlFile = !item.isDiff && (ext === 'html' || ext === 'htm');
     const isMarkdownFile = !item.isDiff && (ext === 'md' || ext === 'markdown');
@@ -512,8 +538,29 @@ export function MobileInspectorScreen({
       lowerContent.startsWith('data:video/') ||
       lowerContent.startsWith('https://') ||
       lowerContent.startsWith('http://') ||
-      lowerContent.startsWith('blob:');
-    if ((item.isVideo || isVideoExtension(targetRef) || lowerContent.startsWith('data:video/')) && isSafeVideoSrc) {
+      lowerContent.startsWith('blob:') ||
+      lowerContent.startsWith('hermes-media://');
+    if (item.isVideo || isVideoExtension(targetRef) || lowerContent.startsWith('data:video/')) {
+      if (!isSafeVideoSrc) {
+        return (
+          <div className="m-inspector__tree-state">
+            <div className="m-inspector__reader-loading-title">{t('inspector.videoLoadError')}</div>
+            <p className="m-inspector__reader-notice">
+              {t('inspector.videoLoadErrorSub')}
+            </p>
+            {item.canDownload ? (
+              <button
+                type="button"
+                className="m-primary-btn"
+                onClick={onDownloadInspectorFile}
+              >
+                <Download size={16} aria-hidden="true" />
+                <span>{t('mobile.inspector.downloadFile')}</span>
+              </button>
+            ) : null}
+          </div>
+        );
+      }
       return (
         <div className="m-inspector__reader-video-wrap m-no-swipe" data-testid="mobile-inspector-video">
           <video
@@ -575,10 +622,25 @@ export function MobileInspectorScreen({
     }
 
     if (isMarkdownFile && readerViewMode === 'rendered') {
+      const { frontmatter, body } = splitSkillMarkdownFrontmatter(item.content);
       return (
         <div className="m-inspector__reader-code-wrap" data-gesture-ignore="pan-x">
           <div className="m-inspector__reader-markdown" data-testid="mobile-inspector-markdown">
-            <MarkdownBlock content={item.content} onOpenMediaLightbox={onOpenMediaLightbox} />
+            {frontmatter.length > 0 ? (
+              <dl className="flux-doc-frontmatter">
+                {frontmatter.map(({ key, value }, idx) => (
+                  <div key={`${key}-${idx}`} className="flux-doc-frontmatter__item">
+                    <dt className="flux-doc-frontmatter__key">{key}</dt>
+                    <dd className="flux-doc-frontmatter__val">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : null}
+            <MarkdownBlock
+              content={body}
+              className="flux-doc-markdown"
+              onOpenMediaLightbox={onOpenMediaLightbox}
+            />
           </div>
         </div>
       );
@@ -594,6 +656,7 @@ export function MobileInspectorScreen({
   const readerExt = ((readerItem?.filePath || readerItem?.title || '').split(/[?#]/)[0].split('.').pop() || '').toLowerCase();
   const canToggleRichMode =
     Boolean(readerItem) &&
+    !readerItem?.isLoading &&
     !readerItem?.isBinary &&
     !readerItem?.isTooLarge &&
     !readerItem?.isImage &&
@@ -677,7 +740,7 @@ export function MobileInspectorScreen({
                       <Download size={16} />
                     </button>
                   ) : null}
-                  {!readerItem.isImage && !readerItem.isVideo && !readerItem.isBinary && !readerItem.isTooLarge ? (
+                  {!readerItem.isLoading && !readerItem.isImage && !readerItem.isVideo && !readerItem.isBinary && !readerItem.isTooLarge ? (
                     <button
                       type="button"
                       className="m-float-circle-btn"

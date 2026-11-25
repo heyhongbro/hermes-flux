@@ -17,6 +17,7 @@ import {
   formatFileSize,
   isVideoExtension,
   normalizeWorkspacePath,
+  splitSkillMarkdownFrontmatter,
   type FileTreeLoadState,
   type FileTreeNode,
 } from '@hermes-flux/core';
@@ -37,6 +38,7 @@ export interface OpenFileItem {
   isVideo?: boolean;
   isBinary?: boolean;
   isTooLarge?: boolean;
+  isLoading?: boolean;
   byteSize?: number;
   source?: 'session_tool' | 'local_fs' | 'remote_http' | 'gateway_api' | 'fallback';
 }
@@ -92,45 +94,68 @@ export function renderFileTab(file: OpenFileItem, isActive: boolean): string {
   `;
 }
 
+function renderInspectorStatusCard(opts: {
+  file: OpenFileItem;
+  kindBadge: string;
+  title: string;
+  sub: string;
+  testId?: string;
+}): string {
+  const fileName = opts.file.path.split(/[/\\]/).pop() || opts.file.path;
+  const dotIdx = fileName.lastIndexOf('.');
+  const extLabel = dotIdx > 0 ? fileName.slice(dotIdx + 1).toUpperCase() : '';
+  const sizeText = formatFileSize(opts.file.byteSize);
+  const fileIcon = renderFileTypeIcon(opts.file.path, 'inspector-nonpreview-icon');
+  const testAttr = opts.testId ? ` data-testid="${escapeInspectorHtml(opts.testId)}"` : '';
+
+  return `
+    <div class="inspector-nonpreview-card"${testAttr}>
+      <div class="inspector-nonpreview-icon-wrap">
+        ${fileIcon}
+      </div>
+      <div class="inspector-nonpreview-filename" title="${escapeInspectorHtml(opts.file.path)}">${escapeInspectorHtml(fileName)}</div>
+      <div class="inspector-nonpreview-badges">
+        <span class="inspector-nonpreview-badge">${escapeInspectorHtml(opts.kindBadge)}</span>
+        ${extLabel ? `<span class="inspector-nonpreview-badge">${escapeInspectorHtml(extLabel)}</span>` : ''}
+        ${sizeText ? `<span class="inspector-nonpreview-badge">${escapeInspectorHtml(sizeText)}</span>` : ''}
+      </div>
+      <div class="inspector-nonpreview-title">${escapeInspectorHtml(opts.title)}</div>
+      ${opts.sub ? `<div class="inspector-nonpreview-sub">${escapeInspectorHtml(opts.sub)}</div>` : ''}
+      <button type="button" id="btn-preview-download-file" class="inspector-download-cta-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>${escapeInspectorHtml(t('inspector.downloadFileBtn'))}</span>
+      </button>
+    </div>
+  `;
+}
+
 export function renderInspectorFileContent(
   file: OpenFileItem,
   opts: { viewMode: FileViewMode; showLineNumbers: boolean; wordWrap: boolean; searchQuery: string },
 ): string {
-  if (file.isBinary || file.isTooLarge) {
-    const fileName = file.path.split(/[/\\]/).pop() || file.path;
-    const dotIdx = fileName.lastIndexOf('.');
-    const extLabel = dotIdx > 0 ? fileName.slice(dotIdx + 1).toUpperCase() : '';
-    const sizeText = formatFileSize(file.byteSize);
-    const kindBadge = file.isBinary ? t('inspector.binaryBadge') : t('inspector.largeFileBadge');
-    const title = file.isBinary ? t('inspector.binaryFileTitle') : t('inspector.largeFileTitle');
-    const sub = file.isBinary ? t('inspector.binaryFileSub') : t('inspector.largeFileSub');
-    const fileIcon = renderFileTypeIcon(file.path, 'inspector-nonpreview-icon');
-
-    return `
-      <div class="inspector-nonpreview-card">
-        <div class="inspector-nonpreview-icon-wrap">
-          ${fileIcon}
-        </div>
-        <div class="inspector-nonpreview-filename" title="${escapeInspectorHtml(file.path)}">${escapeInspectorHtml(fileName)}</div>
-        <div class="inspector-nonpreview-badges">
-          <span class="inspector-nonpreview-badge">${escapeInspectorHtml(kindBadge)}</span>
-          ${extLabel ? `<span class="inspector-nonpreview-badge">${escapeInspectorHtml(extLabel)}</span>` : ''}
-          ${sizeText ? `<span class="inspector-nonpreview-badge">${escapeInspectorHtml(sizeText)}</span>` : ''}
-        </div>
-        <div class="inspector-nonpreview-title">${escapeInspectorHtml(title)}</div>
-        <div class="inspector-nonpreview-sub">${escapeInspectorHtml(sub)}</div>
-        <button type="button" id="btn-preview-download-file" class="inspector-download-cta-btn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span>${escapeInspectorHtml(t('inspector.downloadFileBtn'))}</span>
-        </button>
-      </div>
-    `;
-  }
-
   const ext = (file.path.split('.').pop() || '').toLowerCase();
   const isMarkdown = ext === 'md' || ext === 'markdown';
   const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext);
   const isVideo = Boolean(file.isVideo) || isVideoExtension(file.path);
+
+  if (file.isLoading) {
+    return renderInspectorStatusCard({
+      file,
+      kindBadge: isVideo ? t('inspector.largeFileBadge') : t('inspector.fileLoading'),
+      title: isVideo ? t('inspector.videoLoading') : t('inspector.fileLoading'),
+      sub: isVideo ? t('inspector.videoLoadingSub') : '',
+      testId: 'inspector-file-loading',
+    });
+  }
+
+  if (file.isBinary || file.isTooLarge) {
+    return renderInspectorStatusCard({
+      file,
+      kindBadge: file.isBinary ? t('inspector.binaryBadge') : t('inspector.largeFileBadge'),
+      title: file.isBinary ? t('inspector.binaryFileTitle') : t('inspector.largeFileTitle'),
+      sub: file.isBinary ? t('inspector.binaryFileSub') : t('inspector.largeFileSub'),
+    });
+  }
 
   if (isVideo) {
     const trimmedContent = file.content.trim();
@@ -138,22 +163,21 @@ export function renderInspectorFileContent(
       trimmedContent.startsWith('data:video/') ||
       trimmedContent.startsWith('http://') ||
       trimmedContent.startsWith('https://') ||
-      trimmedContent.startsWith('blob:');
+      trimmedContent.startsWith('blob:') ||
+      trimmedContent.startsWith('hermes-media://');
     if (!isReadyVideo) {
-      return `
-        <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--card); border-radius: var(--radius-panel); padding: 32px 20px; overflow: auto; text-align: center;">
-          <div style="font-size: var(--fs-body); font-weight: 600; color: var(--foreground); margin-bottom: 6px;">${escapeInspectorHtml(t('inspector.videoLoadError'))}</div>
-          <div style="font-size: var(--fs-aux); color: var(--muted-foreground); max-width: 320px; line-height: 1.5; margin-bottom: 16px;">${escapeInspectorHtml(t('inspector.videoLoadErrorSub'))}</div>
-          <button type="button" id="btn-preview-download-file" class="inspector-download-cta-btn">
-            <span>${escapeInspectorHtml(t('inspector.downloadFileBtn'))}</span>
-          </button>
-        </div>
-      `;
+      return renderInspectorStatusCard({
+        file,
+        kindBadge: t('inspector.largeFileBadge'),
+        title: t('inspector.videoLoadError'),
+        sub: t('inspector.videoLoadErrorSub'),
+        testId: 'inspector-video-error',
+      });
     }
     return `
-      <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--card); border-radius: var(--radius-panel); padding: 20px; overflow: auto;">
-        <video controls playsinline preload="metadata" src="${escapeInspectorHtml(trimmedContent)}" style="max-width: 100%; max-height: 100%; border-radius: var(--radius-inner); background: var(--background);"></video>
-        <div style="margin-top: 12px; font-size: var(--fs-caption); color: var(--muted-foreground); font-family: var(--font-mono);">${escapeInspectorHtml(file.path)}</div>
+      <div class="inspector-video-stage">
+        <video controls playsinline preload="metadata" data-video-player="true" src="${escapeInspectorHtml(trimmedContent)}" class="inspector-video-player"></video>
+        <div class="inspector-video-caption">${escapeInspectorHtml(file.path)}</div>
       </div>
     `;
   }
@@ -187,19 +211,21 @@ export function renderInspectorFileContent(
   }
 
   if (isMarkdown && opts.viewMode === 'rendered') {
+    const { frontmatter, body } = splitSkillMarkdownFrontmatter(file.content);
+    const frontmatterHtml =
+      frontmatter.length > 0
+        ? `<dl class="flux-doc-frontmatter">${frontmatter
+            .map(
+              ({ key, value }) =>
+                `<div class="flux-doc-frontmatter__item"><dt class="flux-doc-frontmatter__key">${escapeInspectorHtml(key)}</dt><dd class="flux-doc-frontmatter__val">${escapeInspectorHtml(value)}</dd></div>`,
+            )
+            .join('')}</dl>`
+        : '';
     return `
-      <div class="inspector-rendered-markdown" style="
-        flex: 1;
-        background: var(--card);
-        border-radius: var(--radius-panel);
-        padding: 16px 20px;
-        overflow-y: auto;
-        font-size: var(--fs-body);
-        line-height: 1.6;
-        color: var(--foreground);
-        user-select: text;
-      ">
-        ${renderMarkdown(file.content)}
+      <div class="inspector-rendered-markdown">
+        <div class="flux-doc-markdown__inner conv-markdown flux-doc-markdown">
+          ${frontmatterHtml}${renderMarkdown(body)}
+        </div>
       </div>
     `;
   }

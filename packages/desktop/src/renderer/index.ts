@@ -56,7 +56,7 @@ import { createToolPatchQueue } from './toolPatchQueue.js';
 import { resolveColdStartFocus } from './coldStartFocus.js';
 import { createModalInteractionController } from './events/modalInteractionController.js';
 import { createInputDockController } from './events/inputDockController.js';
-import { type AppState, createInitialState, resolveActiveViewportKey } from './state/appState.js';
+import { type AppState, createInitialState, resolveActiveViewportKey, resolveActiveWorkspaceCwd } from './state/appState.js';
 import { createTurnExecutionService } from './services/turnExecutionService.js';
 import { createGatewayEventDispatcher } from './gateway/gatewayEventDispatcher.js';
 import { createActiveViewSyncAdapters, createForegroundSyncCoordinator } from './services/foregroundSyncCoordinator.js';
@@ -772,12 +772,7 @@ const inputCompletion = createInputCompletion(
   {
     activeSessionId: () => state.activeSessionId, profileName: () => state.profileName,
     sessionKind: () => deriveSessionKind(state.activeFocus),
-    activeCwd: () => {
-      const sess = state.sessions.find((s) => s.id === state.activeSessionId);
-      if (sess?.cwd) return sess.cwd;
-      const proj = state.projects.find((p) => p.id === sess?.projectId || (sess?.projectName && p.name === sess.projectName));
-      return proj?.path || '';
-    },
+    activeCwd: () => resolveActiveWorkspaceCwd(state),
     openFiles: () => state.openFiles, agentMentionItems: () => state.mentionItems.filter((m) => m.type === 'agent'),
     inputText: () => {
       const el = document.getElementById('dock-prompt-input') as HTMLTextAreaElement | null;

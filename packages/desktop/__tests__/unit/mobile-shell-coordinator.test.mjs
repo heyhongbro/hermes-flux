@@ -1181,4 +1181,101 @@ test('移动端检查舱成果物自动聚合与正文路径唤起阅读器/灯�
 
   h.coordinator.closeMediaLightbox();
   assert.equal(h.coordinator.buildSnapshot().mediaLightbox, null);
+
+  // 触发 openWorkspaceFile 抛错时，必须显式落地非 loading 错误态（而非持续转圈或静默关闭阅读器）
+  const savedWarnErr = console.warn;
+  console.warn = () => {};
+  try {
+    const errHost = createHarness({
+      openWorkspaceFile: async () => {
+        throw new Error('network timeout');
+      },
+      state: {
+        activeFocus: { type: 'group', roomId: 'room-fallback' },
+        activeSessionId: '',
+        sessions: [],
+        fileTreeState: { status: 'ready', rootPath: '/opt/fallback-tree', nodes: [], source: 'gateway_api' },
+      },
+    });
+    assert.equal(errHost.coordinator.buildSnapshot().workspaceRootName, 'fallback-tree');
+    const errActs = errHost.coordinator.getActions();
+    errActs.onOpenArtifactFile?.('/out/timeout-clip.mp4');
+    await new Promise((r) => setTimeout(r, 15));
+    const errSnap = errHost.coordinator.buildSnapshot();
+    assert.equal(errSnap.activePane, 'inspector');
+    assert.equal(errSnap.inspectorReaderOpen, true);
+    assert.equal(errSnap.inspectorReaderItem?.isLoading, false);
+    assert.equal(errSnap.inspectorReaderItem?.isVideo, true);
+    assert.equal(errSnap.inspectorReaderItem?.content, '');
+
+    // 非视频文件打开失败同样展示显式提示而非卡死 loading
+    errActs.onOpenArtifactFile?.('/out/readme.md');
+    await new Promise((r) => setTimeout(r, 15));
+    const mdErrSnap = errHost.coordinator.buildSnapshot();
+    assert.equal(mdErrSnap.inspectorReaderOpen, true);
+    assert.equal(mdErrSnap.inspectorReaderItem?.isLoading, false);
+    assert.equal(mdErrSnap.inspectorReaderItem?.isVideo, false);
+    assert.ok(mdErrSnap.inspectorReaderItem?.content.startsWith('// /out/readme.md\n\n'));
+    assert.ok((mdErrSnap.inspectorReaderItem?.content.length ?? 0) > '// /out/readme.md\n\n'.length);
+
+    // onSelectPane('inspector') 期间也必须作废在途打开请求
+    let releaseLateFile;
+    const stalePaneHost = createHarness({
+      openWorkspaceFile: async () => {
+        await new Promise((r) => {
+          releaseLateFile = r;
+        });
+      },
+      state: {
+        activeSessionId: 's1',
+        openFiles: [{ path: '/out/late.txt', content: 'ok' }],
+      },
+    });
+    const staleActs = stalePaneHost.coordinator.getActions();
+    staleActs.onOpenArtifactFile?.('/out/late.txt');
+    staleActs.onSelectPane('inspector');
+    releaseLateFile?.();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(stalePaneHost.coordinator.buildSnapshot().inspectorReaderOpen, false);
+
+    // cachedReady 命中 isBinary / isTooLarge（content 为空）立即非 loading 打开，以及 files tab 打开失败显式提示
+    const cachedBinHost = createHarness({
+      openWorkspaceFile: async () => {},
+      state: {
+        activeSessionId: 's-cache',
+        openFiles: [
+          { path: '/out/archive.zip', content: '', isBinary: true, source: 'gateway_api', byteSize: 4096 },
+          { path: '/out/huge.log', content: '', isTooLarge: true, source: 'gateway_api', byteSize: 9999999 },
+        ],
+      },
+    });
+    const binActs = cachedBinHost.coordinator.getActions();
+    binActs.onSelectPane('inspector');
+    binActs.onSelectInspectorTab('files');
+    binActs.onOpenWorkspaceFile('/out/archive.zip');
+    assert.equal(cachedBinHost.coordinator.buildSnapshot().inspectorReaderItem?.isBinary, true);
+    assert.equal(cachedBinHost.coordinator.buildSnapshot().inspectorReaderItem?.isLoading, false);
+    binActs.onOpenWorkspaceFile('/out/huge.log');
+    assert.equal(cachedBinHost.coordinator.buildSnapshot().inspectorReaderItem?.isTooLarge, true);
+    assert.equal(cachedBinHost.coordinator.buildSnapshot().inspectorReaderItem?.isLoading, false);
+
+    const filesFailHost = createHarness({
+      openWorkspaceFile: async () => {
+        throw new Error('files tab read fail');
+      },
+      state: { activeSessionId: 's-fail', openFiles: [] },
+    });
+    const failActs = filesFailHost.coordinator.getActions();
+    failActs.onSelectPane('inspector');
+    failActs.onSelectInspectorTab('files');
+    failActs.onOpenWorkspaceFile('/out/files-tab-broken.txt');
+    await new Promise((r) => setTimeout(r, 15));
+    const failFilesSnap = filesFailHost.coordinator.buildSnapshot();
+    assert.equal(failFilesSnap.inspectorReaderOpen, true);
+    assert.equal(failFilesSnap.inspectorReaderItem?.kind, 'files');
+    assert.equal(failFilesSnap.inspectorReaderItem?.isLoading, false);
+    assert.ok(failFilesSnap.inspectorReaderItem?.content.startsWith('// /out/files-tab-broken.txt\n\n'));
+  } finally {
+    console.warn = savedWarnErr;
+  }
 });

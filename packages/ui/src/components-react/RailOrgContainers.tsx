@@ -17,19 +17,12 @@
  */
 
 import * as React from 'react';
-import { ChevronRight, Folder, FolderGit2, Plus } from 'lucide-react';
+import { ChevronRight, Plus } from 'lucide-react';
 import type { FolderColorToken } from '@hermes-flux/core';
 import { t } from '../i18n/index.js';
 import { Button } from './primitives/Button.js';
 import { Tooltip } from './primitives/Tooltip.js';
 import type { RailRowHoverAction } from './RailEntityRow.js';
-
-const FOLDER_COLOR_CLASS: Partial<Record<FolderColorToken, string>> = {
-  primary: 'text-primary',
-  success: 'text-success',
-  warning: 'text-warning',
-  destructive: 'text-destructive',
-};
 
 /**
  * 构造行内右侧 hover「✓ 完成」/「↺ 恢复」极简哑光胶囊配置；缺省回调时返回 undefined。
@@ -79,7 +72,6 @@ export function RailOrgContainerSection({
   id,
   containerId,
   name,
-  color,
   expanded,
   isSearching,
   isEmpty,
@@ -90,7 +82,6 @@ export function RailOrgContainerSection({
 }: RailOrgContainerSectionProps): React.ReactElement {
   const safeDomSuffix = containerId.replace(/[^a-zA-Z0-9_-]/g, '_');
   const listId = `rail-container-list-${safeDomSuffix}`;
-  const colorClass = color ? FOLDER_COLOR_CLASS[color] || 'text-muted-foreground' : 'text-muted-foreground';
 
   return (
     <section
@@ -123,21 +114,6 @@ export function RailOrgContainerSection({
             className="flux-grouped-section__chevron shrink-0 text-muted-foreground"
           />
           <span className="truncate">{name}</span>
-          {kind === 'project' ? (
-            <FolderGit2
-              size={13}
-              aria-hidden="true"
-              data-container-icon="project"
-              className="shrink-0 text-muted-foreground opacity-75"
-            />
-          ) : (
-            <Folder
-              size={13}
-              aria-hidden="true"
-              data-container-icon="folder"
-              className={`shrink-0 ${colorClass}`}
-            />
-          )}
         </button>
 
         {onNewChat ? (

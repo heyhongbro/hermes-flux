@@ -851,6 +851,7 @@ test('TurnDeliverables 全数量/失败重试/视频/文档图标 + MarkdownBloc
       ],
       resolveMediaUrl: async (p) => {
         if (mediaResolveMode === 'reject') throw new Error('offline');
+        if (mediaResolveMode === 'null') return null;
         return p.endsWith('.mp4') ? 'data:video/mp4;base64,VV==' : 'data:image/png;base64,PP==';
       },
       onOpenFile: (p, url) => openedFiles.push({ p, url }),
@@ -866,19 +867,64 @@ test('TurnDeliverables 全数量/失败重试/视频/文档图标 + MarkdownBloc
   await new Promise((r) => setTimeout(r, 15));
   tdView.rerender();
 
-  // 解析失败后显示 retry + open 按钮
+  // 解析失败后，图片立即可重试；视频卡片点击触发按需加载（加载中再点收起/重开不重复发请求），加载态转失败后同样显示 retry 按钮
+  const initialVideoTrigger = findAll(tdView.tree, (n) => n.props?.className === 'conv-deliverable-video__trigger')[0];
+  assert.ok(initialVideoTrigger, '视频卡片应存在于成果物列表中');
+  initialVideoTrigger.props.onClick();
+  tdView.rerender();
+  assert.ok(
+    findAll(tdView.tree, (n) => n.props?.['data-testid'] === 'turn-deliverable-video-loading').length === 1,
+    '点击未解析的视频卡应立刻展开加载态提示',
+  );
+  // 同帧并发再点击一次（此时 loadingVideos[targetPath] 已置位），以及渲染后折叠重开
+  initialVideoTrigger.props.onClick();
+  findAll(tdView.tree, (n) => n.props?.className === 'conv-deliverable-video__trigger')[0].props.onClick();
+  tdView.rerender();
+  findAll(tdView.tree, (n) => n.props?.className === 'conv-deliverable-video__trigger')[0].props.onClick();
+  tdView.rerender();
+  await new Promise((r) => setTimeout(r, 15));
+  tdView.rerender();
+
   const retryBtns = findAll(tdView.tree, (n) => n.props?.className === 'conv-deliverable-retry-btn');
   assert.ok(retryBtns.length >= 3);
   const openInErrBtns = retryBtns.filter((b) => String(b.props?.children?.props?.children || '').includes('打开') || b.props?.['data-testid'] === 'turn-deliverable-video-open');
   openInErrBtns.forEach((b) => b.props.onClick());
 
-  // 切换到成功并点击重试
+  // 切换到 null 返回并测试 resolve -> null 失败分支，随后切换 ok 并点击重试
+  mediaResolveMode = 'null';
+  const vidRetryOnly = retryBtns.filter(
+    (b) => b.props?.['data-testid'] !== 'turn-deliverable-video-open',
+  );
+  vidRetryOnly.at(-1).props.onClick();
+  tdView.rerender();
+  await new Promise((r) => setTimeout(r, 15));
+  tdView.rerender();
   mediaResolveMode = 'ok';
-  retryBtns[0].props.onClick();
+  const retryTextBtns = findAll(tdView.tree, (n) => n.props?.className === 'conv-deliverable-retry-btn').filter(
+    (b) => b.props?.['data-testid'] !== 'turn-deliverable-video-open',
+  );
+  retryTextBtns.forEach((b) => b.props.onClick());
   tdView.rerender();
   await new Promise((r) => setTimeout(r, 15));
   tdView.rerender();
   assert.ok(findAll(tdView.tree, (n) => n.props?.['data-testid'] === 'turn-deliverable-image').length === 1);
+  const readyVideoEl = findAll(tdView.tree, (n) => n.props?.className === 'conv-deliverable-video__player')[0];
+  assert.ok(readyVideoEl, '点击 Retry 并解析成功后应挂载 video 播放器');
+  readyVideoEl.props.onError();
+  tdView.rerender();
+  assert.ok(
+    findAll(tdView.tree, (n) => n.props?.['data-testid'] === 'turn-deliverable-video-error').length === 1,
+    '流式视频播放报错触发 onError 时必须回退显式错误与重试态',
+  );
+  const resolvedVidRetry = findAll(
+    findAll(tdView.tree, (n) => n.props?.['data-testid'] === 'turn-deliverable-video')[0],
+    (n) => n.props?.className === 'conv-deliverable-retry-btn',
+  ).find((b) => b.props?.['data-testid'] !== 'turn-deliverable-video-open');
+  resolvedVidRetry.props.onClick();
+  tdView.rerender();
+  await new Promise((r) => setTimeout(r, 15));
+  tdView.rerender();
+  assert.ok(findAll(tdView.tree, (n) => n.props?.className === 'conv-deliverable-video__player').length === 1);
   tdView.unmount();
 
   // TurnDeliverables resolve=null 分支(L122)、直连媒体豁免分支(L108-109)、无点文档扩展名回退(L302)与卸载 cancel 分支(L118/126)
@@ -899,6 +945,7 @@ test('TurnDeliverables 全数量/失败重试/视频/文档图标 + MarkdownBloc
           attachments: [
             { id: 'att-dir', name: 'direct.png', previewUrl: 'data:image/png;base64,AA==' },
             { id: 'att-nodot', name: 'Report', previewUrl: 'blob:https://app/nodot-doc' },
+            { id: 'att-vid-blob', name: 'clip-att.mp4', type: 'video', previewUrl: 'blob:https://app/clip-att' },
           ],
         },
       ],
@@ -916,12 +963,28 @@ test('TurnDeliverables 全数量/失败重试/视频/文档图标 + MarkdownBloc
   assert.ok(extNodes.includes('PDF'));
   assert.ok(extNodes.includes('FILE'));
 
-  findAll(nullView.tree, (n) => n.props?.className === 'conv-deliverable-video__trigger')[0].props.onClick();
+  findAll(nullView.tree, (n) => n.props?.className === 'conv-deliverable-video__trigger').forEach((tr) => tr.props.onClick());
   nullView.rerender();
-  const directVid = findAll(nullView.tree, (n) => n.props?.className === 'conv-deliverable-video__player')[0];
-  assert.equal(directVid?.props?.src, 'https://cdn.example.com/v.mp4');
-  assert.equal(directVid?.props?.controls, true);
-  assert.equal(directVid?.props?.playsInline, true);
+  const directVidPlayers = findAll(nullView.tree, (n) => n.props?.className === 'conv-deliverable-video__player');
+  const directVid = directVidPlayers.find((vp) => vp.props?.src === 'https://cdn.example.com/v.mp4');
+  assert.ok(directVid, 'https 直连视频必须正常渲染播放节点');
+  assert.ok(directVidPlayers.some((vp) => vp.props?.src === 'blob:https://app/clip-att'), 'blob 附件视频也必须正常渲染播放节点');
+  assert.equal(directVid.props.controls, true);
+  assert.equal(directVid.props.playsInline, true);
+
+  // 直连 URL / blob 视频触发 onError 也必须屏蔽旧 src 并落地错误+重试态，点击重试恢复播放
+  directVidPlayers.forEach((vp) => vp.props.onError());
+  nullView.rerender();
+  assert.ok(
+    findAll(nullView.tree, (n) => n.props?.['data-testid'] === 'turn-deliverable-video-error').length >= 1,
+    '直连 URL 视频报错触发 onError 时不得继续挂载损坏的 video 节点',
+  );
+  findAll(nullView.tree, (n) => n.props?.['data-testid'] === 'turn-deliverable-video').forEach((vc) => {
+    const rb = findAll(vc, (n) => n.props?.className === 'conv-deliverable-retry-btn')[0];
+    rb?.props?.onClick();
+  });
+  nullView.rerender();
+  assert.ok(findAll(nullView.tree, (n) => n.props?.className === 'conv-deliverable-video__player').length >= 1);
 
   let preventedFile = false;
   let stoppedFile = false;
@@ -931,6 +994,17 @@ test('TurnDeliverables 全数量/失败重试/视频/文档图标 + MarkdownBloc
   });
   assert.equal(preventedFile && stoppedFile, true);
   nullView.unmount();
+
+  const noResVidView = createReactHookDriver().mount(() =>
+    React.createElement(TurnDeliverables, {
+      isStreaming: false,
+      messages: [{ id: 'm-nores-vid', role: 'assistant', content: 'MEDIA:/out/nores.mp4' }],
+      onOpenFile: (p, pu) => openedFiles.push({ p, pu }),
+    }),
+  );
+  findAll(noResVidView.tree, (n) => n.props?.className === 'conv-deliverable-video__trigger')[0].props.onClick();
+  assert.equal(openedFiles.at(-1)?.p, '/out/nores.mp4');
+  noResVidView.unmount();
 
   let tdOk;
   let tdErr;

@@ -1040,7 +1040,20 @@ test('RenderCoordinator - 渲染装配与协调管线领域纯行为测试', asy
           contains: (c) => shellClasses.has(c),
         },
       };
-      const filesHost = { id: 'flux-inspector-files-host', innerHTML: '' };
+      let filesHostWrites = 0;
+      let filesHostHtml = '';
+      const filesHost = {
+        id: 'flux-inspector-files-host',
+        childElementCount: 0,
+        get innerHTML() {
+          return filesHostHtml;
+        },
+        set innerHTML(val) {
+          filesHostWrites += 1;
+          filesHostHtml = String(val);
+          this.childElementCount = filesHostHtml ? 1 : 0;
+        },
+      };
       const podClasses = new Set(['flux-inspector-pod']);
       const podAttrs = new Map();
       const podEl = {
@@ -1120,6 +1133,11 @@ test('RenderCoordinator - 渲染装配与协调管线领域纯行为测试', asy
         state.fileTreeCollapsed = true;
         coordinator.render();
         assert.ok(filesHost.innerHTML.includes('id="btn-file-tree-expand"'));
+
+        // 状态未变时再次 render：lastInspectorFilesHtml 幂等守卫必须跳过 innerHTML 重写
+        const writesBeforeIdle = filesHostWrites;
+        coordinator.render();
+        assert.equal(filesHostWrites, writesBeforeIdle, 'files 检查舱 HTML 未变化时不得重复覆写 innerHTML');
 
         // 无本地 session cwd 时，workspaceRootName 必须回退取 fileTreeState.rootPath basename
         state.sessions = [];

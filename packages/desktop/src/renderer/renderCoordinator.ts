@@ -305,6 +305,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
   let lastPushedLeftRailSnapshot: LeftRailSnapshot | null = null;
 
   let lastInspectorCollapsed = true;
+  let lastInspectorFilesHtml: string | null = null;
   let inspectorMotionController: ReturnType<typeof attachMotionController> | null = null;
   let lastRenderedSessionId: string | null = null;
   let mobileShellCoordinator: MobileShellCoordinator | undefined = deps.mobileShellCoordinator;
@@ -1110,6 +1111,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
       `;
 
       root.innerHTML = html;
+      lastInspectorFilesHtml = null;
       // 【同步关闭 overflow-anchor (Pitfall)】mountReactShellComponents() 会立即调用 syncReactMessageList()，
       // 必须在 React 19 提交前同步关闭 overflow-anchor，防止替换 #msg-content-* 时被 Blink 锚回上方。
       if (shouldArmPostRenderPin) {
@@ -1148,10 +1150,14 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
         if (!state.inspectorCollapsed && targetMode === 'files') {
           const filesHost = root.querySelector('#flux-inspector-files-host') as HTMLElement | null;
           if (filesHost) {
-            filesHost.innerHTML = renderInspectionPod({
+            const nextFilesHtml = renderInspectionPod({
               ...buildInspectorProps(state, false, deps.getSessionDeliverables),
               innerOnly: true,
             });
+            if (lastInspectorFilesHtml !== nextFilesHtml || filesHost.childElementCount === 0) {
+              lastInspectorFilesHtml = nextFilesHtml;
+              filesHost.innerHTML = nextFilesHtml;
+            }
           }
         }
 
@@ -1387,6 +1393,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
 
   function dispose(): void {
     lastRenderedSessionId = null;
+    lastInspectorFilesHtml = null;
     cancelActivePostRenderPin();
     postCommitPinObservers?.dispose();
     mobileShellCoordinator?.dispose();

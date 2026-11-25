@@ -49,8 +49,8 @@ export interface MediaResolver {
 }
 
 const MAX_CACHE_ENTRIES = 64;
-const DIRECT_RENDERABLE_RE = /^(?:data:image\/|data:video\/|blob:)/i;
-const SAFE_RESULT_RE = /^(?:data:image\/|data:video\/|https?:\/\/|blob:)/i;
+const DIRECT_RENDERABLE_RE = /^(?:data:image\/|data:video\/|blob:|hermes-media:\/\/)/i;
+const SAFE_RESULT_RE = /^(?:data:image\/|data:video\/|https?:\/\/|blob:|hermes-media:\/\/)/i;
 
 /**
  * 构建带并发去重与有界 LRU 缓存的跨端媒体解析器。

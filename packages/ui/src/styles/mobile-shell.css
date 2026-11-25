@@ -2105,18 +2105,43 @@ html[data-page-hidden="true"] .m-trace-dot {
 }
 
 .m-inspector__reader-markdown {
-  padding: 14px;
+  padding: 16px;
   border-radius: var(--radius-panel);
   background: var(--card);
   border: 1px solid var(--border-subtle);
   font-size: var(--fs-body);
-  line-height: 1.6;
+  line-height: 1.72;
   color: var(--foreground);
+  overflow-wrap: anywhere;
   user-select: text;
 }
 
 .m-inspector__reader-notice {
+  margin: 0;
+  padding: 0;
   max-width: 340px;
+  font-size: var(--fs-aux);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+.m-inspector__reader-loading {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.m-inspector__reader-loading-title {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--foreground);
 }
 
 /* ---------------- 全屏分层设置页与 Bot 子页 ---------------- */

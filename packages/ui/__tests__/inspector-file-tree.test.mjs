@@ -192,15 +192,50 @@ test('InspectionPod 右侧常驻竖栏与悬浮文件树分栏全状态渲染', 
     assert.equal(detectFileLanguage(''), 'text');
     assert.ok(renderFileTab({ path: 'dir/', content: '' }, false).includes('dir/'));
 
-    const httpImg = renderInspectionPod({
+    const mdDoc = renderInspectionPod({
       collapsed: false,
       gatewayConnected: true,
       isFullscreen: true,
       viewMode: 'rendered',
-      artifacts: [{ id: '1', name: 'doc.md', type: 'md', size: '1kb', preview: '# Title\n\nBody' }],
+      artifacts: [
+        {
+          id: '1',
+          name: 'doc.md',
+          type: 'md',
+          size: '1kb',
+          preview: '---\ntitle: Quarterly Review\nauthor: Hermes\n---\n# Title\n\nBody copy',
+        },
+      ],
     });
-    assert.ok(httpImg.includes('inspector-rendered-markdown'));
-    assert.ok(httpImg.includes('inspector-shell-fullscreen'));
+    assert.ok(mdDoc.includes('inspector-rendered-markdown'));
+    assert.ok(mdDoc.includes('flux-doc-markdown'));
+    assert.ok(mdDoc.includes('flux-doc-frontmatter'));
+    assert.ok(mdDoc.includes('Quarterly Review'));
+    assert.ok(mdDoc.includes('inspector-shell-fullscreen'));
+
+    const plainMd = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      viewMode: 'rendered',
+      previewFile: { path: 'NOTES.md', content: '# Plain Heading\n\nNo frontmatter here' },
+    });
+    assert.ok(plainMd.includes('flux-doc-markdown'));
+    assert.equal(plainMd.includes('flux-doc-frontmatter'), false);
+
+    const textLoading = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      previewFile: { path: 'src/index.ts', content: '', isLoading: true },
+    });
+    assert.ok(textLoading.includes('data-testid="inspector-file-loading"'));
+    assert.equal(textLoading.includes('class="inspector-nonpreview-sub"'), false);
+
+    const trailingSlashBin = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      previewFile: { path: 'trailing-entry/', content: '', isBinary: true },
+    });
+    assert.ok(trailingSlashBin.includes('trailing-entry/'));
 
     const imgHttp = renderInspectionPod({
       collapsed: false,
@@ -291,8 +326,24 @@ test('InspectionPod 右侧常驻竖栏与悬浮文件树分栏全状态渲染', 
     assert.match(styles, /@media\s*\(max-width:\s*768px\)[\s\S]*min-width:\s*0\s*!important;/);
   });
 
-  await tCtx.test('5. 视频 (.mp4) 在有效媒体 URL 下渲染播放器，异常载荷回退显式错误卡片', () => {
+  await tCtx.test('5. 视频 (.mp4) 在有效媒体 URL 与加载态下渲染正确视口，异常载荷回退显式错误卡片', () => {
     setLocale('zh-CN');
+    const loadingVideo = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      previewFile: { path: '/out/heavy.mp4', content: '', isVideo: true, isLoading: true, byteSize: 42 * 1024 * 1024 },
+    });
+    assert.ok(loadingVideo.includes('data-testid="inspector-file-loading"'));
+    assert.ok(loadingVideo.includes('42.0 MB') && loadingVideo.includes('btn-preview-download-file'));
+
+    const streamVideo = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      previewFile: { path: '/out/heavy.mp4', content: 'hermes-media://local/?path=%2Fout%2Fheavy.mp4&token=t1', isVideo: true },
+    });
+    assert.ok(streamVideo.includes('<video ') && streamVideo.includes('data-video-player="true"'));
+    assert.ok(streamVideo.includes('hermes-media://local/'));
+
     const readyVideo = renderInspectionPod({
       collapsed: false,
       gatewayConnected: true,
@@ -314,7 +365,11 @@ test('InspectionPod 右侧常驻竖栏与悬浮文件树分栏全状态渲染', 
       previewFile: { path: '/out/broken.mp4', content: 'Unable to load remote binary', isVideo: true },
     });
     assert.equal(brokenVideo.includes('<video '), false, '无效 video 内容不得强行挂载损坏播放器');
-    assert.ok(brokenVideo.includes('inspector-nonpreview-card') || brokenVideo.includes('btn-preview-download-file'));
+    assert.ok(
+      brokenVideo.includes('inspector-nonpreview-card') &&
+        brokenVideo.includes('data-testid="inspector-video-error"') &&
+        brokenVideo.includes('btn-preview-download-file'),
+    );
   });
 
   await tCtx.test('6. 成果物侧边栏 (data-tab="artifacts")：计数徽标、纯文件名展示、短格式徽标、筛选与零内联边框', () => {
