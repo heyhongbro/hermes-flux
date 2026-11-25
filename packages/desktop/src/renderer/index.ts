@@ -53,7 +53,7 @@ import { createModalInteractionController } from './events/modalInteractionContr
 import { createInputDockController } from './events/inputDockController.js';
 import { type AppState, createInitialState, resolveActiveViewportKey } from './state/appState.js';
 import { createTurnExecutionService } from './services/turnExecutionService.js';
-import { createGatewayEventDispatcher } from './gateway/gatewayEventDispatcher.js';
+import { createGatewayEventDispatcher, resolveBotNameForSession as resolveForeverBotNameForSession } from './gateway/gatewayEventDispatcher.js';
 import { createActiveViewSyncAdapters, createForegroundSyncCoordinator } from './services/foregroundSyncCoordinator.js';
 type GatewayAuthResponse = { ok: boolean; message: string; latency: number };
 import { createProjectOperationService } from './services/projectOperationService.js';
@@ -70,7 +70,7 @@ import {
   settleTurnTermination, applyTurnCompleted, ActivityTransitionTracker,
   type ActivityDomain, type GroupMessageEntry, InteractiveService,
   HandoffService, runGuarded, SessionListGeneration, CacheService,
-  deriveSessionKind,
+  deriveSessionKind, LiveStreamRegistry,
   type CachedMessageRow, type CacheChannelRef, type MessageDisplayKind,
 } from '@hermes-flux/core';
 import { profilesDiffer } from './profileRefresh.js';
@@ -358,7 +358,9 @@ function resolveAgentAvatar(nameOrDisplayName?: string): string {
   return '';
 }
 
-const TURN_WATCHDOG_MS = 10 * 60 * 1000;
+const liveStreamRegistry = new LiveStreamRegistry();
+const resolveBotNameForSession = (sid: string): string | null =>
+  resolveForeverBotNameForSession(sid, botForeverChatCache, state);
 function describeRpcError(error: unknown): string {
   if (!error) return '';
   if (typeof error === 'string') return error;
@@ -394,6 +396,7 @@ const sessionMessagesCache = new Map<string, MessageViewModel[]>();
 const tokenStreamWriter = createTokenStreamWriter({
   getState: () => state, sessionMessagesCache, botActivityStore,
   getActiveStreamingStoredSessionId: () => activeStreamingStoredSessionId,
+  resolveSessionIdForMessage: (mid) => liveStreamRegistry.getSessionIdForMessage(mid), resolveBotNameForSession,
   isStreamNearBottom: (s) => isStreamNearBottom(s), markProgrammaticScroll: (s) => markProgrammaticScroll(s), logStream,
 });
 
@@ -696,13 +699,14 @@ const messageLoadingService = createMessageLoadingService({
   setCanvasStructureDirty: (v) => { canvasStructureDirty = v; }, setSuppressPinBottomOnce: (v) => renderCoordinator.setSuppressPinBottomOnce(v),
   isGroupConversationActive: (id) => isGroupConversationActive(id), hostedRoomIds, formatSessionTime, formatTimestamp: (ts) => formatTimestamp(ts),
   botActivityStore, botForeverChatCache, sessionPreviewCache,
-  persistSessionPreviewCache: () => persistSessionPreviewCache(), getActiveStreamingStoredSessionId: () => activeStreamingStoredSessionId,
+  persistSessionPreviewCache: () => persistSessionPreviewCache(), getActiveStreamingStoredSessionId: () => activeStreamingStoredSessionId, getLiveStreamRegistry: () => liveStreamRegistry,
   defaultSessionHandleRegistry, activeRunningSessionIds, activityTransitionTracker,
   getGeneration: () => activeLoadMessagesGeneration, onGenerationIncremented: (g) => { activeLoadMessagesGeneration = g; },
   logSession, logScroll,
   onSessionActivated: (sid, bot) => statusIntegration.onSessionActivated(sid, bot),
   onSessionMessagesLoaded: (sid) => statusIntegration.onSessionMessagesLoaded(sid),
   onLiveSessionReady: (sid, lid, info, bot) => statusIntegration.onLiveSessionReady(sid, lid, info, bot),
+  onActiveTurnDiscovered: (p) => gatewayEventDispatcher.attachLiveTurnFromResume(p),
 });
 
 const sessionServerOffset = messageLoadingService.sessionServerOffset;
@@ -725,8 +729,9 @@ sessionOperationService = createSessionOperationService({
   sessionHandleRegistry: defaultSessionHandleRegistry, cacheService,
   persistSessionsToCache: (s) => persistSessionsToCache(s),
   forgetOlderCursorState: (id) => messageLoadingService.forgetOlderCursorState(id),
-  sessionListGeneration, getActiveStreamingStoredSessionId: () => activeStreamingStoredSessionId,
+  sessionListGeneration, getActiveStreamingStoredSessionId: () => activeStreamingStoredSessionId, getLiveStreamRegistry: () => liveStreamRegistry,
   getActiveStreamingMessageId: () => activeStreamingMessageId, scheduleToolPatch: (mid) => scheduleToolPatch(mid),
+  onReenterSameSession: () => { void messageLoadingService.refreshActiveSession({ checkLiveTurn: true }); }, onSyncFocusedStream: (sid) => gatewayEventDispatcher.syncFocusedStreamingProjection(sid),
   resetActiveStreamingState: () => {
     tokenCoalescer.clear(); toolPatchQueue.clear(); disarmTurnWatchdog();
     activeStreamingMessageId = null; activeStreamingStoredSessionId = null;
@@ -757,8 +762,7 @@ sessionOperationService = createSessionOperationService({
 });
 
 async function fetchSessions(): Promise<void> {
-  // state.sessionsPhase = 'ready';
-  // state.profilesPhase = 'ready';
+  // state.sessionsPhase = 'ready'; state.profilesPhase = 'ready';
   return sessionOperationService.fetchSessions();
 }
 
@@ -875,6 +879,9 @@ const turnExecutionService = createTurnExecutionService({
   clearToolPatchQueue: () => toolPatchQueue.clear(), stopRunningToolTimers: () => stopRunningToolTimers(), runSlashCommand: (cmd) => inputDockController.runSlashCommand(cmd),
   enqueueDraft: () => inputDockController.enqueueDraft(), handleQueueAction: (action, id) => inputDockController.handleQueueAction(action, id),
   setMessageWindowUserExpanded: (val) => messageWindowManager.setMessageWindowUserExpanded(val), ensureMessageWindow: (total) => ensureMessageWindow(total),
+  getLiveStreamRegistry: () => liveStreamRegistry, resolveBotNameForSession, onWatchdogTurnStillRunning: (sid, r) => gatewayEventDispatcher.reconcileActiveTurnFromResume(sid, r),
+  onWatchdogTurnCompleted: (sid) => { if (sid === state.activeSessionId) void messageLoadingService.refreshActiveSession({ forceRefreshAfterReconnect: true, checkLiveTurn: true }); },
+  onQueuedSubmitRace: (sid) => { if (sid === state.activeSessionId) return messageLoadingService.refreshActiveSession({ forceRefreshAfterReconnect: true, checkLiveTurn: true }); },
   render: () => render(), t, logStream, onBeforeSendEntity: (k, id, p) => conversationOrgCoordinator.autoReopenIfDone(k, id, p),
 });
 
@@ -885,7 +892,7 @@ const gatewayEventDispatcher = createGatewayEventDispatcher({
   getCurrentTicket: () => currentTicket ?? undefined, setCurrentTicket: (ticket) => { currentTicket = ticket ?? null; },
   getDesktopApi: () => desktopApi, getEffectiveUrl: (url) => getEffectiveUrl(url ?? state.gatewayUrl),
   testConnection: (url, user, pass) => testConnection(url, user, pass), completeEntityTurn,
-  getSessionHandleRegistry: () => defaultSessionHandleRegistry, getSessionMessagesCache: () => sessionMessagesCache,
+  getSessionHandleRegistry: () => defaultSessionHandleRegistry, getLiveStreamRegistry: () => liveStreamRegistry, resolveBotNameForSession, getSessionMessagesCache: () => sessionMessagesCache,
   getTokenCoalescer: () => tokenCoalescer, getActivityTransitionTracker: () => activityTransitionTracker,
   getBotActivityStore: () => botActivityStore, getCacheService: () => cacheService,
   getActiveRunningSessionIds: () => activeRunningSessionIds, getUnreadSessionIds: () => unreadSessionIds,
@@ -918,6 +925,7 @@ const gatewayEventDispatcher = createGatewayEventDispatcher({
   armTurnWatchdog: () => turnExecutionService.armTurnWatchdog(), feedTurnWatchdog: () => turnExecutionService.feedTurnWatchdog(), disarmTurnWatchdog: () => turnExecutionService.disarmTurnWatchdog(),
   clearPresenceTerminal: () => turnExecutionService.clearPresenceTerminal(), armPresenceTerminal: (terminal) => turnExecutionService.armPresenceTerminal(terminal),
   setTimedDockNotice: (msg, dur, opts) => turnExecutionService.setTimedDockNotice(msg, dur, opts), isStreamNearBottom: () => isStreamNearBottom(document.getElementById('conversation-stream')), setPendingScrollToBottom: (val) => renderCoordinator.setPendingScrollToBottom(val),
+  refreshActiveSession: (o) => messageLoadingService.refreshActiveSession(o), onForceSyncMessageList: (f) => syncReactMessageList(f), ensureMessageWindow: (n) => ensureMessageWindow(n), setMessageWindowUserExpanded: (v) => messageWindowManager.setMessageWindowUserExpanded(v),
   render: () => render(), t,
   onStatusConnected: () => { void statusIntegration.onConnected(); },
   onStatusDisconnected: () => statusIntegration.onDisconnected(),
@@ -1229,6 +1237,7 @@ const presenceController = createPresenceController({
   resolveAgentAvatar: (name) => resolveAgentAvatar(name),
   isGroupConversationActive: () => isGroupConversationActive(),
   isStreamingActiveForCurrentSession: () => isStreamingActiveForCurrentSession(),
+  getTurnStartedSessionId: () => turnStartedSessionId,
   activeRunningGroupRoomIds,
   mountAgentPresence: (host, getSnapshot) => mountAgentPresence(host, getSnapshot),
   ensureAgentPresenceHost: (layout) => ensureAgentPresenceHost(layout),
@@ -1318,7 +1327,7 @@ const mobileShellCoordinator = createMobileShellCoordinator({
   moveEntityToFolder: (k, id, c, p) => conversationOrgCoordinator.moveEntityToFolder(k, id, c, p), createFolder: (n, m) => conversationOrgCoordinator.createFolder(n, m),
   renameFolder: (fid, n) => conversationOrgCoordinator.renameFolder(fid, n), deleteFolder: (fid) => conversationOrgCoordinator.deleteFolder(fid),
   assignNewEntityContainer: (k, id, o) => conversationOrgCoordinator.assignNewEntityContainer(k, id, o), setOrgPrefs: (p) => conversationOrgCoordinator.setOrgPrefs(p),
-  onRetryConnect: gatewayEventDispatcher.retryNow,
+  onEnterStage: () => { void messageLoadingService.refreshActiveSession({ checkLiveTurn: true }); }, onRetryConnect: gatewayEventDispatcher.retryNow,
 });
 renderCoordinator.setMobileShellCoordinator(mobileShellCoordinator);
 const foregroundSyncCoordinator = createForegroundSyncCoordinator({
@@ -1337,7 +1346,7 @@ const foregroundSyncCoordinator = createForegroundSyncCoordinator({
   }),
 });
 gatewayEventDispatcher.setSyncHooks({ onConnectedSync: foregroundSyncCoordinator.syncOnConnected, onResumeAliveSync: foregroundSyncCoordinator.syncOnResumeAlive });
-messageLoadingService.setReconnectHooks({ onReconnectStillStreaming: gatewayEventDispatcher.resumeReconnectStreaming, onReconnectStreamFinished: gatewayEventDispatcher.finishReconnectStreaming, onForceSyncMessageList: syncReactMessageList });
+messageLoadingService.setReconnectHooks({ onReconnectStillStreaming: gatewayEventDispatcher.resumeReconnectStreaming, onReconnectStreamFinished: gatewayEventDispatcher.finishReconnectStreaming, onActiveTurnDiscovered: gatewayEventDispatcher.attachLiveTurnFromResume, onForceSyncMessageList: syncReactMessageList });
 if (typeof window !== 'undefined') {
   window.__fluxRender = render;
   window.__fluxConnect = connect;

@@ -36,8 +36,12 @@ import {
   type AttachedImageResult,
   type FileAttachResult,
   type PromptSubmitResult,
+  type LiveStreamRegistry,
+  type WatchdogTimeoutReason,
   extractMessageAttachments,
   formatAttachmentPromptText,
+  extractResumeInflightState,
+  decideWatchdogProbeAction,
   GroupLogPollerManager,
   deriveSessionKind,
   planSendRoute,
@@ -129,6 +133,12 @@ export interface TurnExecutionDeps {
   readonly setActiveStreamingContext: (ctx: Partial<ActiveStreamingContext>) => void;
   readonly getTurnStartedSessionId: () => string | null;
   readonly setTurnStartedSessionId: (id: string | null) => void;
+  readonly getLiveStreamRegistry?: () => LiveStreamRegistry;
+  readonly resolveBotNameForSession?: (storedSessionId: string) => string | null;
+  readonly onWatchdogTurnStillRunning?: (storedSessionId: string, resumeResult: Record<string, unknown>) => void;
+  readonly onWatchdogTurnCompleted?: (storedSessionId: string) => Promise<void> | void;
+  readonly onQueuedSubmitRace?: (storedSessionId: string) => Promise<void> | void;
+  readonly watchdogHardLimitMs?: number;
 
   readonly getSessionHistoryTrust: () => Map<string, 'server-priority' | 'client-priority'>;
   readonly forgetOlderCursorState: (sessionId: string) => void;
@@ -166,7 +176,7 @@ export type TurnExecutionWatchdogFeeder = () => void;
 export interface TurnExecutionService {
   armTurnWatchdog(): void;
   feedTurnWatchdog: TurnExecutionWatchdogFeeder;
-  disarmTurnWatchdog(): void;
+  disarmTurnWatchdog(force?: boolean): void;
   isStreamingActiveForCurrentSession(): boolean;
   clearPresenceTerminal(): void;
   armPresenceTerminal(terminal: NonNullable<AppState['presenceTerminal']>): void;
@@ -219,19 +229,27 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     }
   };
 
-  // 【动态滑动看门狗】双层时序：60s 空闲静默超时 + 30min 绝对防死锁硬上限
-  function handleWatchdogTimeout(): void {
+  // 【动态滑动看门狗】双层时序 + 权威探活续期：空闲静默先询问网关是否仍在运行，避免长耗时工具/深思考误杀
+  let watchdogProbeGeneration = 0;
+  let consecutiveProbeFailures = 0;
+
+  function settleWatchdogTimeout(targetSessionOverride?: string | null): void {
     const state = deps.getState();
-    if (!state.isStreaming) return;
+    const ctx = deps.getActiveStreamingContext();
+    const streamRegistry = deps.getLiveStreamRegistry?.();
+    const timedOutSessionId = targetSessionOverride ?? ctx.activeStreamingStoredSessionId;
+    const streamEntry = timedOutSessionId ? streamRegistry?.getBySession(timedOutSessionId) : undefined;
+    const timedOutBotName =
+      streamEntry?.botName ??
+      (ctx.activeStreamingStoredSessionId === timedOutSessionId ? ctx.activeStreamingBotName : null) ??
+      (timedOutSessionId ? (deps.resolveBotNameForSession?.(timedOutSessionId) ?? null) : null);
+
     // 【贴底意图必须在 flush 改写 DOM 前捕获 (Why)】避免 flush 撑高容器后误判为非贴底，
     // 导致超时收口 render 把视口锁回上方。
     const wasNearBottomBeforeTimeout = deps.isStreamNearBottom?.() ?? false;
     deps.getTokenCoalescer().flush();
     deps.clearToolPatchQueue?.();
     deps.stopRunningToolTimers?.();
-    const ctx = deps.getActiveStreamingContext();
-    const timedOutSessionId = ctx.activeStreamingStoredSessionId;
-    const timedOutBotName = ctx.activeStreamingBotName;
     if (timedOutSessionId && timedOutSessionId === state.activeSessionId && wasNearBottomBeforeTimeout) {
       deps.setPendingScrollToBottom(true);
     }
@@ -241,28 +259,183 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       sessionId: timedOutSessionId,
       botName: timedOutBotName,
     });
-    releaseTurnOwnership(ctx.activeStreamingMessageId, timedOutSessionId, timedOutBotName);
+    const timedOutMsgId =
+      streamEntry?.messageId ??
+      (!timedOutSessionId || timedOutSessionId === ctx.activeStreamingStoredSessionId ? ctx.activeStreamingMessageId : null);
+    releaseTurnOwnership(timedOutMsgId, timedOutSessionId, timedOutBotName);
+    if (timedOutSessionId) {
+      streamRegistry?.removeSession(timedOutSessionId);
+    }
     const tracker = deps.getActivityTransitionTracker();
     if (timedOutSessionId) tracker.clear('session', timedOutSessionId);
     if (timedOutBotName) tracker.clear('bot', timedOutBotName);
-    state.isStreaming = false;
-    // 【在场指示器】看门狗解除锁定后回合已不在运行：时长锚点必须一并清空，
-    // 否则指示器会拿着一个早已超时的锚点算出虚高的语气档。
-    state.turnStartedAt = undefined;
-    deps.setTurnStartedSessionId(null);
-    deps.setActiveStreamingContext({
-      activeStreamingMessageId: null,
-      activeStreamingStoredSessionId: null,
-      activeStreamingLiveId: null,
-      activeStreamingBotName: null,
-    });
-    state.dockNotice = deps.t('chat.watchdogTimeoutNotice');
+
+    const remainingStreams = streamRegistry?.listSessionIds() ?? [];
+    if (!timedOutSessionId || timedOutSessionId === ctx.activeStreamingStoredSessionId) {
+      deps.setActiveStreamingContext({
+        activeStreamingMessageId: null,
+        activeStreamingStoredSessionId: null,
+        activeStreamingLiveId: null,
+        activeStreamingBotName: null,
+      });
+    }
+    const isFocusedTimeout = !timedOutSessionId
+      ? state.activeFocus.type !== 'group'
+      : timedOutSessionId === state.activeSessionId ||
+        (!streamRegistry && timedOutSessionId === ctx.activeStreamingStoredSessionId && state.activeFocus.type !== 'group');
+    if (isFocusedTimeout && (remainingStreams.length === 0 || !streamRegistry?.hasSession(state.activeSessionId))) {
+      state.isStreaming = false;
+      // 【在场指示器】看门狗解除锁定后回合已不在运行：时长锚点必须一并清空，
+      // 否则指示器会拿着一个早已超时的锚点算出虚高的语气档。
+      state.turnStartedAt = undefined;
+      deps.setTurnStartedSessionId(null);
+      state.dockNotice = deps.t('chat.watchdogTimeoutNotice');
+    }
     deps.render();
+    if (remainingStreams.length > 0) {
+      slidingWatchdog.arm();
+    }
+  }
+
+  async function callSessionResumeForProbe(
+    client: NonNullable<ReturnType<TurnExecutionDeps['getGatewayClient']>>,
+    storedSessionId: string,
+    profile: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      return await client.call<Record<string, unknown>>('session.resume', {
+        session_id: storedSessionId,
+        profile,
+        omit_messages: true,
+      });
+    } catch (firstErr: unknown) {
+      if (!describeRpcError(firstErr).includes('Extra inputs')) {
+        throw firstErr;
+      }
+      try {
+        return await client.call<Record<string, unknown>>('session.resume', {
+          session_id: storedSessionId,
+          profile,
+        });
+      } catch (secondErr: unknown) {
+        if (!describeRpcError(secondErr).includes('Extra inputs')) {
+          throw secondErr;
+        }
+        return await client.call<Record<string, unknown>>('session.resume', {
+          session_id: storedSessionId,
+        });
+      }
+    }
+  }
+
+  async function probeWatchdogAuthority(probeGen: number, targetStoredId: string): Promise<void> {
+    const client = deps.getGatewayClient();
+    const state = deps.getState();
+    const streamBotName = deps.getLiveStreamRegistry?.().getBySession(targetStoredId)?.botName;
+    const resolvedProfile =
+      streamBotName ||
+      (state.activeFocus.type === 'bot' && state.activeSessionId === targetStoredId
+        ? state.activeFocus.botName
+        : state.sessions.find((s) => s.id === targetStoredId)?.botName) ||
+      deps.resolveBotNameForSession?.(targetStoredId) ||
+      state.profileName ||
+      'default';
+
+    let resumeRes: Record<string, unknown> | null = null;
+    let probeError = false;
+    try {
+      if (client && state.gatewayConnected !== false) {
+        resumeRes = await callSessionResumeForProbe(client, targetStoredId, resolvedProfile);
+      }
+    } catch (err) {
+      probeError = true;
+      deps.logStream?.warn?.('watchdog authority probe failed', { sessionId: targetStoredId, error: describeRpcError(err) });
+    }
+
+    if (probeGen !== watchdogProbeGeneration) return;
+
+    const inflight = extractResumeInflightState(resumeRes);
+    const decision = decideWatchdogProbeAction({
+      reason: 'inactivity',
+      isGatewayConnected: Boolean(deps.getGatewayClient()) && deps.getState().gatewayConnected !== false,
+      probeResult: resumeRes ? { isRunning: inflight.isRunning } : null,
+      probeError,
+      consecutiveProbeFailures,
+    });
+
+    if (decision === 'renew' || decision === 'defer-offline') {
+      consecutiveProbeFailures = probeError || decision === 'defer-offline' ? consecutiveProbeFailures + 1 : 0;
+      if (resumeRes && inflight.isRunning) {
+        deps.onWatchdogTurnStillRunning?.(targetStoredId, resumeRes);
+      }
+      if (!slidingWatchdog.renewIdle()) {
+        settleWatchdogTimeout(targetStoredId);
+      }
+      return;
+    }
+
+    consecutiveProbeFailures = 0;
+    settleWatchdogTimeout(targetStoredId);
+    if (decision === 'settle-completed') {
+      void deps.onWatchdogTurnCompleted?.(targetStoredId);
+    }
+  }
+
+  function pickLeastRecentlyActiveStreamId(): string | null {
+    const streamRegistry = deps.getLiveStreamRegistry?.();
+    if (!streamRegistry) return null;
+    let oldestSid: string | null = null;
+    let oldestAt = Infinity;
+    for (const sid of streamRegistry.listSessionIds()) {
+      const entry = streamRegistry.getBySession(sid);
+      if (entry && entry.lastActivityAt < oldestAt) {
+        oldestAt = entry.lastActivityAt;
+        oldestSid = sid;
+      }
+    }
+    return oldestSid;
+  }
+
+  function handleWatchdogTimeout(reason: WatchdogTimeoutReason): void {
+    const state = deps.getState();
+    const streamIds = deps.getLiveStreamRegistry?.().listSessionIds() ?? [];
+    if (!state.isStreaming && streamIds.length === 0) return;
+
+    const ctx = deps.getActiveStreamingContext();
+    const targetStoredId =
+      pickLeastRecentlyActiveStreamId() ||
+      ctx.activeStreamingStoredSessionId ||
+      (state.isStreaming ? state.activeSessionId : null) ||
+      streamIds[0] ||
+      null;
+    const client = deps.getGatewayClient();
+    const probeGen = ++watchdogProbeGeneration;
+
+    if (reason === 'hard-limit' || !targetStoredId) {
+      settleWatchdogTimeout(targetStoredId);
+      return;
+    }
+
+    if (!client || state.gatewayConnected === false) {
+      const offlineDecision = decideWatchdogProbeAction({
+        reason,
+        isGatewayConnected: false,
+        consecutiveProbeFailures,
+      });
+      if (offlineDecision === 'defer-offline') {
+        consecutiveProbeFailures += 1;
+        if (slidingWatchdog.renewIdle()) return;
+      }
+      settleWatchdogTimeout(targetStoredId);
+      return;
+    }
+
+    void probeWatchdogAuthority(probeGen, targetStoredId);
   }
 
   const slidingWatchdog = new SlidingActiveWatchdog({
     idleTimeoutMs: deps.watchdogIdleTimeoutMs ?? 60_000,
-    hardLimitMs: 30 * 60_000,
+    hardLimitMs: deps.watchdogHardLimitMs ?? 120 * 60_000,
     throttleMs: 500,
     // 【显式注入系统时钟 (Rules)】生产构造必须走「时钟是函数」这条契约路径：
     //   留空会让同一份 core 源码在入口 bundle 里只走到回落分支，
@@ -272,20 +445,39 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   });
 
   function armTurnWatchdog(): void {
+    watchdogProbeGeneration += 1;
+    consecutiveProbeFailures = 0;
     slidingWatchdog.arm();
   }
 
   function feedTurnWatchdog(): void {
+    consecutiveProbeFailures = 0;
+    if (slidingWatchdog.getState() === 'expired') {
+      watchdogProbeGeneration += 1;
+      slidingWatchdog.renewIdle();
+      return;
+    }
     slidingWatchdog.feed();
   }
 
-  function disarmTurnWatchdog(): void {
+  function disarmTurnWatchdog(force = false): void {
+    // 【多流并发守卫 (Why)】删除/中断某个会话时若 LiveStreamRegistry 中仍有其他后台活跃流，
+    // 不得误关共享看门狗，否则后台流永久丧失探活与兜底能力；仅在无活跃流或显式 force 时撤防。
+    if (!force && (deps.getLiveStreamRegistry?.().size() ?? 0) > 0) {
+      return;
+    }
+    watchdogProbeGeneration += 1;
+    consecutiveProbeFailures = 0;
     slidingWatchdog.disarm();
   }
 
   function isStreamingActiveForCurrentSession(): boolean {
-    const ctx = deps.getActiveStreamingContext();
     const state = deps.getState();
+    if (!state.activeSessionId) return false;
+    if (deps.getLiveStreamRegistry?.().hasSession(state.activeSessionId)) {
+      return true;
+    }
+    const ctx = deps.getActiveStreamingContext();
     return Boolean(
       ctx.activeStreamingStoredSessionId &&
       ctx.activeStreamingStoredSessionId === state.activeSessionId &&
@@ -516,7 +708,6 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     deps.getTokenCoalescer().flush();
     deps.clearToolPatchQueue?.();
     deps.stopRunningToolTimers?.();
-    disarmTurnWatchdog();
 
     const isCurrent = ctx.activeStreamingStoredSessionId === state.activeSessionId;
     if (isCurrent && ctx.activeStreamingMessageId) {
@@ -582,6 +773,10 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       groupRoomId: interruptedGroupRoomId,
     });
     releaseTurnOwnership(ctx.activeStreamingMessageId, interruptedSessionId, interruptedBotName);
+    if (interruptedSessionId) {
+      deps.getLiveStreamRegistry?.().removeSession(interruptedSessionId);
+    }
+    disarmTurnWatchdog();
     const tracker = deps.getActivityTransitionTracker();
     if (interruptedSessionId) tracker.clear('session', interruptedSessionId);
     if (interruptedBotName) tracker.clear('bot', interruptedBotName);
@@ -745,6 +940,17 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     };
     state.messages.push(assistantMsg);
 
+    deps.getLiveStreamRegistry?.().registerStream({
+      storedSessionId: targetStoredSessionId,
+      liveSessionId: liveId,
+      messageId: assistantMsgId,
+      botName: focusBotName,
+      origin: 'local',
+      startedAt: nowMs,
+      userMessageSynced: true,
+      nowMs,
+    });
+
     deps.getSessionMessagesCache().set(state.activeSessionId, [...state.messages]);
 
     // 【主动意图对齐 (Why)】用户发出新 Prompt，明确要求观察最新回合。
@@ -756,6 +962,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     state.turnStartedAt = Date.now();
     deps.setTurnStartedSessionId(state.activeSessionId);
     clearPresenceTerminal();
+    deps.getTokenCoalescer().flush();
     deps.getTokenCoalescer().clear();
     armTurnWatchdog();
     deps.setPendingScrollToBottom(true);
@@ -787,6 +994,12 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
       assistantMsg.content = assistantContent;
       const isFocused = state.activeSessionId === targetStoredSessionId;
+      if (ownedSessionId) {
+        sessionTurnOwner.delete(ownedSessionId);
+        deps.getLiveStreamRegistry?.().removeSession(ownedSessionId);
+        applyTurnFailed(deps.getActiveRunningSessionIds(), ownedSessionId);
+        deps.getActivityTransitionTracker().clear('session', ownedSessionId);
+      }
       if (ownsStreamCtx) {
         if (isFocused) {
           state.isStreaming = false;
@@ -799,11 +1012,6 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
           activeStreamingBotName: null,
         });
         disarmTurnWatchdog();
-      }
-      if (ownedSessionId) {
-        sessionTurnOwner.delete(ownedSessionId);
-        applyTurnFailed(deps.getActiveRunningSessionIds(), ownedSessionId);
-        deps.getActivityTransitionTracker().clear('session', ownedSessionId);
       }
       if (ownedBotName) {
         botTurnOwner.delete(ownedBotName);
@@ -884,7 +1092,8 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
         return;
       }
 
-      if (submitResult?.status && submitResult.status !== 'streaming' && submitResult.status !== 'queued') {
+      const acceptedStatuses = new Set(['streaming', 'queued', 'steered', 'redirected']);
+      if (submitResult?.status && !acceptedStatuses.has(submitResult.status)) {
         const rejectedStatus = String(submitResult.status);
         failSubmittedTurn(
           deps.t('chat.gatewayNotAccepted', { status: rejectedStatus }),
@@ -901,6 +1110,59 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
           const cachedUser = cached?.find((m) => m.id === userMsg.id);
           if (cachedUser) cachedUser.rowId = submitResult.user_row_id;
         }
+      }
+
+      // 多端并发提交竞态收敛：另一端已先开启当前回合，网关把本次提交入队（queued）或注入（steered/redirected）。
+      // 此时立即撤下本地误创建的空助手占位行（queued 连同用户行进 queuedMessages），并触发附着远端真实在途流。
+      if (
+        (submitResult?.status === 'queued' || submitResult?.status === 'steered' || submitResult?.status === 'redirected') &&
+        targetStoredSessionId
+      ) {
+        const isQueuedRace = submitResult.status === 'queued';
+        const stripIds = isQueuedRace ? new Set([userMsgId, assistantMsgId]) : new Set([assistantMsgId]);
+        state.messages = state.messages.filter((m) => !stripIds.has(m.id));
+        const cached = deps.getSessionMessagesCache().get(targetStoredSessionId);
+        if (cached && cached !== state.messages) {
+          deps.getSessionMessagesCache().set(
+            targetStoredSessionId,
+            cached.filter((m) => !stripIds.has(m.id)),
+          );
+        }
+        releaseTurnOwnership(assistantMsgId, targetStoredSessionId, focusBotName);
+        const registry = deps.getLiveStreamRegistry?.();
+        if (registry?.getBySession(targetStoredSessionId)?.messageId === assistantMsgId) {
+          registry.removeSession(targetStoredSessionId);
+        }
+        if (focusBotName && !registry?.hasSession(targetStoredSessionId)) {
+          deps.getActiveRunningBotNames().delete(focusBotName);
+          deps.getActivityTransitionTracker().clear('bot', focusBotName);
+        }
+        if (deps.getActiveStreamingContext().activeStreamingMessageId === assistantMsgId) {
+          deps.setActiveStreamingContext({
+            activeStreamingMessageId: null,
+            activeStreamingStoredSessionId: null,
+            activeStreamingLiveId: null,
+            activeStreamingBotName: null,
+          });
+        }
+        if (!registry?.hasSession(targetStoredSessionId)) {
+          if (state.activeSessionId === targetStoredSessionId) {
+            state.isStreaming = false;
+            state.turnStartedAt = undefined;
+            deps.setTurnStartedSessionId(null);
+          }
+          disarmTurnWatchdog();
+        }
+        if (isQueuedRace) {
+          const admissionId = submitResult.admission_id || `queued-${nowMs}-${turnSeq}`;
+          const existingQueue = Array.isArray(state.queuedMessages) ? state.queuedMessages : [];
+          if (!existingQueue.some((q) => q.admissionId === admissionId)) {
+            state.queuedMessages = [...existingQueue, { id: admissionId, admissionId, text: finalText }];
+          }
+        }
+        deps.render();
+        void deps.onQueuedSubmitRace?.(targetStoredSessionId);
+        return;
       }
 
       if (armedRowId !== null && targetStoredSessionId) {

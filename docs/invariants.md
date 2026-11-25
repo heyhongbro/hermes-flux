@@ -25,7 +25,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `source` 为真实源码路径 | 违者 FAIL |
 | `source`+`symbol` 组合唯一 | 违者 FAIL |
 
-## 总览（70 条，覆盖 18 个领域）
+## 总览（76 条，覆盖 18 个领域）
 
 ### ATTACH（5 条）
 
@@ -139,11 +139,16 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-STAGE-03` | 流式工具状态机收敛 | `packages/core/src/session/eventReducer.ts` → `reduceEvent` | `interactive-stage-formal.test.mjs` | 工具卡状态不收敛，幽灵工具残留 |
 | `INV-STAGE-04` | @ 路由排他性与 cleanText 不残留 token | `packages/desktop/src/renderer/mentionToken.ts` → `parseMentionToken` | `interactive-stage-formal.test.mjs` | 通道类型错配；正文里残留 @token 原文 |
 
-### STREAM（1 条）
+### STREAM（6 条）
 
 | 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
 |---|---|---|---|---|
 | `INV-STREAM-01` | 流式直写锚点存在性：流式末条助手行恒有 #msg-content-*，非流式全空行恒不占位 | `packages/ui/src/components-react/conversation/MessageRow.tsx` → `MessageRow#streamingAnchor` | `streaming-anchor-formal.test.mjs` | 流式正文一次性铺满：空助手行被判空抹掉锚点，tokenStreamWriter 直写全程空转 |
+| `INV-STREAM-02` | 多会话流注册表严格保持 storedSessionId <-> messageId 1:1 双射 | `packages/core/src/session/liveStreamSync.ts` → `LiveStreamRegistry` | `live-stream-sync-formal.test.mjs` | 多端或并发会话流覆盖/迁移后出现双绑与跨会话 token 串台污染 |
+| `INV-STREAM-03` | LiveStreamRegistry.acceptDelta 按 (turnId, segment, offset) 去重与幂等 | `packages/core/src/session/liveStreamSync.ts` → `LiveStreamRegistry.acceptDelta` | `live-stream-sync-formal.test.mjs` | 重连/对账或双端并行帧重复送达导致流式文本重复拼接 |
+| `INV-STREAM-04` | reconcileInflightText 仅向前对账，绝不回退已领先的本地流 | `packages/core/src/session/liveStreamSync.ts` → `LiveStreamRegistry.reconcileInflightText` | `live-stream-sync-formal.test.mjs` | 较慢的 inflight.assistant 快照覆盖已超前的流式正文，引发界面文字倒流 |
+| `INV-STREAM-05` | 远端用户气泡插入规划幂等且精准定位在流式助手行前 | `packages/core/src/session/liveStreamSync.ts` → `planRemoteUserPromptInsert` | `live-stream-sync-formal.test.mjs` | 多端同步用户提问时在观察端重复生成多条相同用户气泡 |
+| `INV-STREAM-06` | 看门狗超时裁决遵循先探活后收口，hard-limit 无条件止损 | `packages/core/src/session/liveStreamSync.ts` → `decideWatchdogProbeAction` | `live-stream-sync-formal.test.mjs` | 长耗时工具或深思考期间无 delta 静默超过 60s 即被前端看门狗误杀为离线闲置 |
 
 ### SUBAGENT（7 条）
 
@@ -170,11 +175,12 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-TIME-01` | 时间格式化确定性 | `packages/ui/src/components-react/leftRailModel.ts` → `formatLeftRailTime#deterministic` | `rail-time-format-formal.test.mjs` | 同一时间戳重复渲染出不同文案，界面抖动 |
 | `INV-TIME-02` | 时间分桶单调且非法输入安全降级 | `packages/ui/src/components-react/leftRailModel.ts` → `formatLeftRailTime#buckets` | `rail-time-format-formal.test.mjs` | 未来时刻落入昨前桶；非法时间戳抛错或复活旧值 |
 
-### TURN（1 条）
+### TURN（2 条）
 
 | 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
 |---|---|---|---|---|
 | `INV-TURN-01` | 看门狗时序参数恒满足夹取与单调（含空时钟回落） | `packages/core/src/turn/slidingWatchdog.ts` → `constructor#clamp` | `sliding-watchdog-formal.test.mjs` | 时钟注入为 null 时回合一开始就崩在熔断器；或上下限倒挂把 30 分钟保险丝缩成几秒 |
+| `INV-TURN-02` | 看门狗权威续期不得复活 idle/disarmed，且绝对受 hardLimitMs 封顶 | `packages/core/src/turn/slidingWatchdog.ts` → `SlidingActiveWatchdog.renewIdle` | `live-stream-sync-formal.test.mjs` | 已撤防或已完成看门狗被幽灵续期，或重置 turnStartedAt 导致硬上限失效无限挂死 |
 
 ### VIEW（6 条）
 

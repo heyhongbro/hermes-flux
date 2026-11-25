@@ -345,6 +345,26 @@
 | 守卫 | ① `AndroidManifest.xml` 锁定 `android:windowSoftInputMode="adjustResize"` 且 `capacitor.config.json` 声明 `SystemBars.initialViewportFitValueHint: "cover"`；② `capacitor-bridge.ts` 新增纯函数 `resolveCssKeyboardHeight` 与 `resolveVisualViewportKeyboardHeight`（Android 原生视口已收缩时恒锁 `0px`，仅老旧 ROM 未收缩才兜底；无插件 Mobile Web 走 `visualViewport` 推算）；③ `mobile-shell.css` 以 `--m-bottom-inset: max(env(safe-area-inset-bottom, 0px), var(--keyboard-height, 0px))` 统一底部避让并在所有非滚动裁切容器声明 `overflow: clip`；④ `MobileConversationScreen` 通过 `ResizeObserver` 在键盘压窄流区时保持贴底可读；⑤ `capacitor-bridge.test.mjs`、`mobile-workspace-shell.test.mjs` 与 `cdp-mobile-bridge.test.mjs`（Android 视口收缩 / iOS 键盘变量 / 新建页避让） |
 | 复现命令 | `npm run test:mobile:cdp` 与 `node --test packages/mobile/__tests__/unit/capacitor-bridge.test.mjs packages/ui/__tests__/mobile-workspace-shell.test.mjs` |
 
+## P-035 长耗时任务静默超时误杀与退出重进不续流
+
+| 项目 | 内容 |
+|---|---|
+| 症状 | Agent 执行超过 60s 无增量输出的长耗时工具/深思考任务时，状态栏头像翻转为空闲；退出会话或切走重进后只看到已落盘静态消息，不再继续实时流式输出 |
+| 根因 | ① `SlidingActiveWatchdog` 60s 无 delta 即无条件调用 `settleWatchdogTimeout()` 误杀在途回合，且 `tool.progress`、`status.update`、`session.info(running)`、`subagent.*`、`message.interim` 未喂狗；② `PresenceController` 未将 `turnStartedSessionId` 同步到 `AgentPresenceManager`，时长档锚点恒为空；③ `MessageLoadingService` 重进会话仅做孤儿清理，未解析 `session.resume` 返回的 `inflight` 快照与挂接实时流，且同会话重点击早退未探活 |
+| 识别特征 | 长工具期间出现 `watchdogTimeoutNotice` 或状态指示器变灰；重进同一运行中会话时 `state.isStreaming === false` 且 `activeStreamingMessageId === null` |
+| 守卫 | ① `SlidingActiveWatchdog.renewIdle()` 受 `hardLimitMs` 封顶且禁复活 `idle/disarmed`（`INV-TURN-02`）；② `turnExecutionService` 超时先调 `session.resume` 经 `decideWatchdogProbeAction` 裁决续期或收口（`INV-STREAM-06`）；③ `eventReducer` 派发 `stream-activity` 喂狗保活；④ `MessageLoadingService` + `liveStreamCoordinator.attachLiveTurnFromResume` 在重进/切回时恢复 `activeLiveSessionId` 与 `inflight` 并继续接收后续 delta |
+| 复现命令 | `node --test packages/core/__tests__/formal/live-stream-sync-formal.test.mjs packages/desktop/__tests__/unit/turnExecutionService.test.mjs packages/desktop/__tests__/unit/messageLoadingService.test.mjs` |
+
+## P-036 多端/多会话协同观察端丢流、跨会话串台与提交竞态
+
+| 项目 | 内容 |
+|---|---|
+| 症状 | 桌面端与移动端同时打开同一会话时，一端发起对话另一端空闲无响应或丢失用户气泡；多会话并发时后台会话增量误写入当前气泡或误清前台 `isStreaming`；两段并发提交入队留下空助手占位气泡 |
+| 根因 | ① 全局单槽 `activeStreamingMessageId` 导致观察端（`null`）直接丢弃全部 `message.delta`，并发会话（非空）把 B 会话分片拼接到 A 会话气泡且 B 完成误关全局 `isStreaming`；② `sessions.changed` 只刷左栏不刷新空闲聚焦会话；③ 并发 `prompt.submit` 返回 `queued/steered/redirected` 未撤下本地乐观占位气泡 |
+| 识别特征 | 观察端需手动刷新才见消息；多会话并流文本混杂；出现“发送中…”空泡与排队胶囊重叠 |
+| 守卫 | ① `LiveStreamRegistry` 按 `storedSessionId <-> messageId` 1:1 隔离追踪并基于 `(turnId, segment, offset)` 去重、`reconcileInflightText` 单调防倒流（`INV-STREAM-02..04`）；② `gatewayEventDispatcher` + `liveStreamCoordinator` 为远端回合自动挂载 `origin='remote'` 观察流并幂等补齐用户气泡（`INV-STREAM-05`），按 `ownerSessionId` 定向写入 `tokenStreamWriter` 与工具栏；③ `turnExecutionService` 识别 `queued/steered/redirected` 竞态清理占位气泡并续接远端流 |
+| 复现命令 | `node --test packages/core/__tests__/session/liveStreamSync.test.mjs packages/desktop/__tests__/unit/gatewayEventDispatcher.test.mjs packages/desktop/__tests__/unit/tokenStreamWriter.test.mjs` |
+
 ## 守卫总览
 
 | 守卫 | 命令 | 拦住的坑 |
@@ -379,3 +399,5 @@
 | 存储写入降级守卫 | `npm test`（safe-storage 五路径 + 三服务抛错注入） | P-032 |
 | 拖拽高亮单线贯穿守卫 | `npm test`（titlebar-geometry：左把手边框恒透明 + 顶栏续接规则）+ 真机像素列取样 | P-033 |
 | 移动端软键盘双重避让与裁切滚动守卫 | `capacitor-bridge.test`（`resolveCssKeyboardHeight` / `resolveVisualViewportKeyboardHeight` + Manifest/Config 契约）+ `mobile-workspace-shell.test`（CSS `--m-bottom-inset` / `overflow: clip` + `ResizeObserver`）+ `cdp-mobile-bridge.test` | P-034 |
+| 长耗时任务权威探活续期与退出重进续流守卫 | `npm run verify:formal`（`INV-TURN-02` / `INV-STREAM-04` / `INV-STREAM-06`）+ `turnExecutionService.test` / `messageLoadingService.test` / `presenceController.test` | P-035 |
+| 多端/多会话流式物理隔离、观察端补流与幂等增量守卫 | `npm run verify:formal`（`INV-STREAM-02` / `INV-STREAM-03` / `INV-STREAM-05`）+ `liveStreamSync.test` / `gatewayEventDispatcher.test` / `tokenStreamWriter.test` | P-036 |

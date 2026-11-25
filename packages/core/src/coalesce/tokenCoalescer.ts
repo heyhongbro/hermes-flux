@@ -127,6 +127,15 @@ export class TokenCoalescer {
     this.onFlush(batch);
   }
 
+  public dropMessage(messageId: string): boolean {
+    const deleted = this.buffer.delete(messageId);
+    if (deleted && this.buffer.size === 0 && this.rafId !== null && typeof cancelAnimationFrame !== 'undefined') {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+    return deleted;
+  }
+
   public clear(): void {
     this.buffer.clear();
     if (this.rafId !== null && typeof cancelAnimationFrame !== 'undefined') {

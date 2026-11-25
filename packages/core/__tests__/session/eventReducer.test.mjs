@@ -478,3 +478,338 @@ test('Gateway event contract guard - 事件 payload 必须落在契约白名单�
   });
 });
 
+
+test('reduceGatewayEvent: 覆盖 session.reclaimed、message.interim、流式保活与分段游标字段', () => {
+  const ctx = {
+    activeSessionIds: ['sess-1', 'live-1'],
+    activeStreamingMessageId: 'ast-1',
+  };
+
+  // 1. session.reclaimed 全局广播不受 activeSessionIds 过滤影响
+  assert.deepEqual(
+    reduceGatewayEvent(
+      {
+        type: 'session.reclaimed',
+        session_id: 'live-bg',
+        payload: { stored_session_id: 'sess-bg', reason: 'idle_ttl' },
+      },
+      ctx,
+    ),
+    [{
+      type: 'session-reclaimed',
+      sessionId: 'live-bg',
+      storedSessionId: 'sess-bg',
+      reason: 'idle_ttl',
+    }],
+  );
+
+  // 2. message.start 携带 turn_id 与提示词文本时向观察端透传
+  assert.deepEqual(
+    reduceGatewayEvent(
+      {
+        type: 'message.start',
+        session_id: 'live-1',
+        payload: { turn_id: 'turn-9', text: 'raw', display_text: 'shown' },
+      },
+      ctx,
+    ),
+    [{
+      type: 'turn-started',
+      turnId: 'turn-9',
+      text: 'raw',
+      displayText: 'shown',
+    }],
+  );
+
+  // 3. message.delta 携带分段与偏移；text=null 退化为 stream-activity 保活
+  assert.deepEqual(
+    reduceGatewayEvent(
+      {
+        type: 'message.delta',
+        session_id: 'live-1',
+        payload: { turn_id: 'turn-9', segment: 1, offset: 4, text: 'hello' },
+      },
+      ctx,
+    ),
+    [{
+      type: 'append-content',
+      messageId: 'ast-1',
+      text: 'hello',
+      turnId: 'turn-9',
+      segment: 1,
+      offset: 4,
+    }],
+  );
+
+  assert.deepEqual(
+    reduceGatewayEvent(
+      {
+        type: 'message.delta',
+        session_id: 'live-1',
+        payload: { text: null },
+      },
+      ctx,
+    ),
+    [{ type: 'stream-activity', sessionId: 'live-1', eventType: 'message.delta' }],
+  );
+
+  // 4. message.interim 与多种工具/推理保活事件
+  assert.deepEqual(
+    reduceGatewayEvent(
+      {
+        type: 'message.interim',
+        session_id: 'live-1',
+        payload: { text: 'step 1', already_streamed: false, turn_id: 'turn-9', segment: 0 },
+      },
+      ctx,
+    ),
+    [{
+      type: 'interim-content',
+      messageId: 'ast-1',
+      text: 'step 1',
+      alreadyStreamed: false,
+      turnId: 'turn-9',
+      segment: 0,
+    }],
+  );
+
+  for (const evtType of [
+    'tool.progress',
+    'tool.generating',
+    'status.update',
+    'reasoning.available',
+    'agent.terminal.output',
+    'browser.progress',
+    'moa.phase',
+  ]) {
+    assert.deepEqual(
+      reduceGatewayEvent({ type: evtType, session_id: 'live-1', payload: {} }, ctx),
+      [{ type: 'stream-activity', sessionId: 'live-1', eventType: evtType }],
+    );
+  }
+
+  // 5. tool.complete 将服务端 duration_s 折算为毫秒
+  const toolDone = reduceGatewayEvent(
+    {
+      type: 'tool.complete',
+      session_id: 'live-1',
+      payload: { tool_id: 'tc-1', output: 'ok', duration_s: 2.345 },
+    },
+    ctx,
+  );
+  assert.deepEqual(toolDone, [{
+    type: 'tool-complete',
+    messageId: 'ast-1',
+    toolCallId: 'tc-1',
+    output: 'ok',
+    durationMs: 2345,
+  }]);
+});
+
+test('reduceGatewayEvent: activeSessionIds 为空数组（如群聊焦点或未激活列表）时严禁放行带 session_id 的回合事件', () => {
+  const emptyCtx = { activeSessionIds: [], activeStreamingMessageId: null };
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.start', session_id: 'stray-sess', payload: { text: 'leak' } }, emptyCtx),
+    [],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.delta', session_id: 'stray-sess', payload: { text: 'leak' } }, emptyCtx),
+    [],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.complete', session_id: 'stray-sess', payload: { text: 'done' } }, emptyCtx),
+    [],
+  );
+});
+
+
+test('reduceGatewayEvent: 缺省/边界字段组合覆盖 (turn-started / delta / interim / tool.complete)', () => {
+  const ctx = {
+    activeSessionIds: ['sess-1', 'live-1'],
+    activeStreamingMessageId: 'ast-1',
+  };
+  const emptyMsgCtx = {
+    activeSessionIds: ['sess-1', 'live-1'],
+    activeStreamingMessageId: null,
+  };
+
+  // message.start 无元信息 / 仅 text / 仅 display_text 兜底
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.start', session_id: 'live-1', payload: {} }, ctx),
+    [{ type: 'turn-started' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.start', session_id: 'live-1', payload: { text: 'r-txt' } }, ctx),
+    [{ type: 'turn-started', text: 'r-txt' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.start', session_id: 'live-1', payload: { display_text: 'd-txt' } }, ctx),
+    [{ type: 'turn-started', displayText: 'd-txt' }],
+  );
+
+  // message.delta 无分段偏移 / 非法非空 text
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.delta', session_id: 'live-1', payload: { text: 'plain' } }, ctx),
+    [{ type: 'append-content', messageId: 'ast-1', text: 'plain' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.delta', session_id: 'live-1', payload: { text: 123 } }, ctx),
+    [],
+  );
+
+  // message.interim 非字符串 text 归一为空串透传 & 无 turnId/segment 透传 & already_streamed=true
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.interim', session_id: 'live-1', payload: { text: null } }, ctx),
+    [{ type: 'interim-content', messageId: 'ast-1', text: '', alreadyStreamed: false }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent(
+      { type: 'message.interim', session_id: 'live-1', payload: { text: 'step', already_streamed: true } },
+      emptyMsgCtx,
+    ),
+    [{ type: 'stream-activity', sessionId: 'live-1', eventType: 'message.interim' }],
+  );
+
+  // tool.complete 缺省 duration_s 时省略 durationMs 字段而不产出 NaN
+  assert.deepEqual(
+    reduceGatewayEvent(
+      { type: 'tool.complete', session_id: 'live-1', payload: { tool_id: 'tc-2', output: 'ok' } },
+      ctx,
+    ),
+    [{ type: 'tool-complete', messageId: 'ast-1', toolCallId: 'tc-2', output: 'ok' }],
+  );
+
+  // 保活分支全路径覆盖：frameSessionId 为空时回落 ctx.activeSessionIds[0]，双方均为空则静默丢弃
+  const fallbackOnlyCtx = { activeSessionIds: ['sess-fb'], activeStreamingMessageId: null };
+  const noSessionCtx = { activeSessionIds: [], activeStreamingMessageId: null };
+
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.delta', payload: { text: null } }, fallbackOnlyCtx),
+    [{ type: 'stream-activity', sessionId: 'sess-fb', eventType: 'message.delta' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.delta', payload: { text: null } }, noSessionCtx),
+    [],
+  );
+
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.interim', payload: { text: 'step' } }, fallbackOnlyCtx),
+    [{ type: 'stream-activity', sessionId: 'sess-fb', eventType: 'message.interim' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.interim', payload: { text: 'step' } }, noSessionCtx),
+    [],
+  );
+
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'tool.generating', session_id: 'live-1', payload: {} }, {
+      activeSessionIds: ['live-1'],
+      activeStreamingMessageId: null,
+    }),
+    [{ type: 'stream-activity', sessionId: 'live-1', eventType: 'tool.generating' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'tool.progress', payload: {} }, fallbackOnlyCtx),
+    [{ type: 'stream-activity', sessionId: 'sess-fb', eventType: 'tool.progress' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'status.update', payload: {} }, noSessionCtx),
+    [],
+  );
+});
+
+test('reduceGatewayEvent 变异消杀全边界：side-agent/tool.start/tool.complete/error/reclaimed/display_kind/moa', () => {
+  const ctx = { activeSessionIds: ['live-1'], activeStreamingMessageId: 'ast-1' };
+  const emptyMsgCtx = { activeSessionIds: ['live-1'], activeStreamingMessageId: null };
+
+  // 1. session.reclaimed 空 ID 严格返回 [] (L405)
+  assert.deepEqual(reduceGatewayEvent({ type: 'session.reclaimed', payload: {} }, ctx), []);
+
+  // 2. error 缺省 message 返回中文默认错误提示 (L415)
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'error', session_id: 'live-1', payload: {} }, ctx),
+    [{ type: 'turn-failed', message: '网关返回了未标注内容的系统错误', sessionId: 'live-1' }],
+  );
+
+  // 3. message.start with vs without display_kind (L586, L592)
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.start', session_id: 'live-1', payload: { display_kind: 'thinking' } }, ctx),
+    [{ type: 'turn-started', displayKind: 'thinking' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'message.start', session_id: 'live-1', payload: { display_kind: '' } }, ctx),
+    [{ type: 'turn-started' }],
+  );
+
+  // 4. btw.complete / background.complete (L596-606)
+  assert.deepEqual(reduceGatewayEvent({ type: 'btw.complete', payload: {} }, ctx), []);
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'btw.complete', payload: { task_id: 't-b', text: 'ans-b' } }, ctx),
+    [{ type: 'side-agent-complete', channel: 'btw', taskId: 't-b', text: 'ans-b' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'background.complete', payload: { task_id: 't-bg', text: 'ans-bg' } }, ctx),
+    [{ type: 'side-agent-complete', channel: 'background', taskId: 't-bg', text: 'ans-bg' }],
+  );
+
+  // 5. thinking.delta / reasoning.delta 空 text / 无 messageId 拒绝与正常透传 (L650)
+  assert.deepEqual(reduceGatewayEvent({ type: 'thinking.delta', session_id: 'live-1', payload: { text: '' } }, ctx), []);
+  assert.deepEqual(reduceGatewayEvent({ type: 'thinking.delta', session_id: 'live-1', payload: { text: 'th' } }, emptyMsgCtx), []);
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'reasoning.delta', session_id: 'live-1', payload: { text: 're' } }, ctx),
+    [{ type: 'append-thought', messageId: 'ast-1', text: 're' }],
+  );
+
+  // 6. moa.* 事件保活透传 (L661-665)
+  for (const evt of ['moa.phase', 'moa.progress', 'moa.reference']) {
+    assert.deepEqual(
+      reduceGatewayEvent({ type: evt, session_id: 'live-1', payload: {} }, ctx),
+      [{ type: 'stream-activity', sessionId: 'live-1', eventType: evt }],
+    );
+  }
+
+  // 7. tool.start 全主/备键降级与空 messageId 忽略 (L668-685)
+  assert.deepEqual(reduceGatewayEvent({ type: 'tool.start', session_id: 'live-1', payload: {} }, emptyMsgCtx), []);
+  const sByToolId = reduceGatewayEvent(
+    { type: 'tool.start', session_id: 'live-1', payload: { tool_id: 'tid-1', name: 'bash', args: '{"cmd":"ls"}' } },
+    ctx,
+  );
+  assert.deepEqual(sByToolId, [{ type: 'tool-start', messageId: 'ast-1', toolCall: { id: 'tid-1', name: 'bash', args: '{"cmd":"ls"}' } }]);
+  const sById = reduceGatewayEvent(
+    { type: 'tool.start', session_id: 'live-1', payload: { id: 'tid-2', tool: 'read', arguments: 'raw-args' } },
+    ctx,
+  );
+  assert.deepEqual(sById, [{ type: 'tool-start', messageId: 'ast-1', toolCall: { id: 'tid-2', name: 'read', args: 'raw-args' } }]);
+  const sByCallId = reduceGatewayEvent(
+    { type: 'tool.start', session_id: 'live-1', payload: { tool_call_id: 'tid-3', args: { k: 1 } } },
+    ctx,
+  );
+  assert.deepEqual(sByCallId, [{ type: 'tool-start', messageId: 'ast-1', toolCall: { id: 'tid-3', name: '工具执行', args: '{"k":1}' } }]);
+  const sByParams = reduceGatewayEvent(
+    { type: 'tool.start', session_id: 'live-1', payload: { parameters: { p: 2 } } },
+    ctx,
+  );
+  assert.match(sByParams[0].toolCall.id, /^tool-\d+$/);
+  assert.equal(sByParams[0].toolCall.args, '{"p":2}');
+  const sByInput = reduceGatewayEvent(
+    { type: 'tool.start', session_id: 'live-1', payload: { input: { i: 3 } } },
+    ctx,
+  );
+  assert.equal(sByInput[0].toolCall.args, '{"i":3}');
+  const sEmptyArgs = reduceGatewayEvent({ type: 'tool.start', session_id: 'live-1', payload: {} }, ctx);
+  assert.equal(sEmptyArgs[0].toolCall.args, '{}');
+
+  // 8. tool.complete / tool.end / tool.error 耗时 duration_s=0 / <0 / 缺 messageId (L692-705)
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'tool.complete', session_id: 'live-1', payload: { duration_s: 0 } }, ctx),
+    [{ type: 'tool-complete', messageId: 'ast-1', toolCallId: '', output: undefined, durationMs: 0 }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'tool.end', session_id: 'live-1', payload: { tool_id: 'tx', duration_s: -1, result: 'r' } }, ctx),
+    [{ type: 'tool-complete', messageId: 'ast-1', toolCallId: 'tx', output: 'r' }],
+  );
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'tool.complete', session_id: 'live-1', payload: { tool_id: 'tx', output: 'ok' } }, emptyMsgCtx),
+    [],
+  );
+});

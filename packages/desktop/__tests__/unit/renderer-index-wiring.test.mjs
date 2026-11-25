@@ -51,6 +51,16 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
     /setPendingScrollToBottom: \(p\) => renderCoordinator\.setPendingScrollToBottom\(p\)/,
     '待贴底标记必须转发给渲染协调器',
   );
+  // 【多流同步与唤醒接线守卫】校验 index.ts 将 LiveStreamRegistry、重连/watchdog 恢复与前台同步回调准确接入各服务
+  assert.match(source, /const liveStreamRegistry = new LiveStreamRegistry\(\);/);
+  assert.match(source, /resolveSessionIdForMessage: \(mid\) => liveStreamRegistry\.getSessionIdForMessage\(mid\), resolveBotNameForSession/);
+  assert.match(source, /onActiveTurnDiscovered: \(p\) => gatewayEventDispatcher\.attachLiveTurnFromResume\(p\)/);
+  assert.match(source, /onReenterSameSession: \(\) => \{ void messageLoadingService\.refreshActiveSession\(\{ checkLiveTurn: true \}\); \}, onSyncFocusedStream: \(sid\) => gatewayEventDispatcher\.syncFocusedStreamingProjection\(sid\)/);
+  assert.match(source, /onWatchdogTurnStillRunning: \(sid, r\) => gatewayEventDispatcher\.reconcileActiveTurnFromResume\(sid, r\)/);
+  assert.match(source, /onWatchdogTurnCompleted: \(sid\) => \{ if \(sid === state\.activeSessionId\) void messageLoadingService\.refreshActiveSession\(\{ forceRefreshAfterReconnect: true, checkLiveTurn: true \}\); \}/);
+  assert.match(source, /onQueuedSubmitRace: \(sid\) => \{ if \(sid === state\.activeSessionId\) return messageLoadingService\.refreshActiveSession\(\{ forceRefreshAfterReconnect: true, checkLiveTurn: true \}\); \}/);
+  assert.match(source, /getTurnStartedSessionId: \(\) => turnStartedSessionId/);
+  assert.match(source, /onEnterStage: \(\) => \{ void messageLoadingService\.refreshActiveSession\(\{ checkLiveTurn: true \}\); \}/);
 
   const req = createRequire(import.meta.url);
   try {

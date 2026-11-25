@@ -566,6 +566,54 @@
       "symbol": "computeColdStartRetryDelayMs",
       "test": "packages/core/__tests__/formal/connection-phase-formal.test.mjs",
       "failure": "冷启动网络未就绪时退避越界卡死或零延迟风暴重试打爆电池与网关"
+    },
+    {
+      "id": "INV-TURN-02",
+      "topic": "看门狗权威续期不得复活 idle/disarmed，且绝对受 hardLimitMs 封顶",
+      "source": "packages/core/src/turn/slidingWatchdog.ts",
+      "symbol": "SlidingActiveWatchdog.renewIdle",
+      "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
+      "failure": "已撤防或已完成看门狗被幽灵续期，或重置 turnStartedAt 导致硬上限失效无限挂死"
+    },
+    {
+      "id": "INV-STREAM-02",
+      "topic": "多会话流注册表严格保持 storedSessionId <-> messageId 1:1 双射",
+      "source": "packages/core/src/session/liveStreamSync.ts",
+      "symbol": "LiveStreamRegistry",
+      "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
+      "failure": "多端或并发会话流覆盖/迁移后出现双绑与跨会话 token 串台污染"
+    },
+    {
+      "id": "INV-STREAM-03",
+      "topic": "LiveStreamRegistry.acceptDelta 按 (turnId, segment, offset) 去重与幂等",
+      "source": "packages/core/src/session/liveStreamSync.ts",
+      "symbol": "LiveStreamRegistry.acceptDelta",
+      "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
+      "failure": "重连/对账或双端并行帧重复送达导致流式文本重复拼接"
+    },
+    {
+      "id": "INV-STREAM-04",
+      "topic": "reconcileInflightText 仅向前对账，绝不回退已领先的本地流",
+      "source": "packages/core/src/session/liveStreamSync.ts",
+      "symbol": "LiveStreamRegistry.reconcileInflightText",
+      "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
+      "failure": "较慢的 inflight.assistant 快照覆盖已超前的流式正文，引发界面文字倒流"
+    },
+    {
+      "id": "INV-STREAM-05",
+      "topic": "远端用户气泡插入规划幂等且精准定位在流式助手行前",
+      "source": "packages/core/src/session/liveStreamSync.ts",
+      "symbol": "planRemoteUserPromptInsert",
+      "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
+      "failure": "多端同步用户提问时在观察端重复生成多条相同用户气泡"
+    },
+    {
+      "id": "INV-STREAM-06",
+      "topic": "看门狗超时裁决遵循先探活后收口，hard-limit 无条件止损",
+      "source": "packages/core/src/session/liveStreamSync.ts",
+      "symbol": "decideWatchdogProbeAction",
+      "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
+      "failure": "长耗时工具或深思考期间无 delta 静默超过 60s 即被前端看门狗误杀为离线闲置"
     }
   ]
 }

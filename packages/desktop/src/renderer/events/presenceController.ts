@@ -34,6 +34,7 @@ export interface PresenceControllerDeps {
   resolveAgentAvatar: (name: string) => string;
   isGroupConversationActive: () => boolean;
   isStreamingActiveForCurrentSession: () => boolean;
+  getTurnStartedSessionId?: () => string | null;
   activeRunningGroupRoomIds: ReadonlySet<string>;
   mountAgentPresence: (
     host: HTMLElement,
@@ -88,7 +89,15 @@ export class PresenceController {
     this.manager.ensurePresenceTicker('idle');
   }
 
+  private syncTurnStartedAnchor(): void {
+    const sid = this.deps.getTurnStartedSessionId?.();
+    if (sid !== undefined) {
+      this.manager.setTurnStartedSessionId(sid);
+    }
+  }
+
   getSnapshot(): AgentPresenceSnapshot {
+    this.syncTurnStartedAnchor();
     return this.manager.getAgentPresenceSnapshot();
   }
 
@@ -101,6 +110,7 @@ export class PresenceController {
   }
 
   syncAgentPresenceHost(): void {
+    this.syncTurnStartedAnchor();
     const state = this.deps.getState();
     const presenceHost = this.deps.ensureAgentPresenceHost(state.presenceLayout);
     if (presenceHost && presenceHost === this.agentPresenceHost && presenceHost.isConnected) return;
@@ -127,6 +137,7 @@ export class PresenceController {
   }
 
   syncAgentPresence(): void {
+    this.syncTurnStartedAnchor();
     if (!this.updateReactAgentPresence) return;
     if (!this.agentPresenceHost?.isConnected) {
       this.syncAgentPresenceHost();
