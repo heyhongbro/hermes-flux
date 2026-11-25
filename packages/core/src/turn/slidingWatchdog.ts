@@ -117,6 +117,48 @@ export class SlidingActiveWatchdog {
   }
 
   /**
+   * 网关权威探活确认回合仍在运行后，在硬上限预算内续期空闲计时器。
+   *
+   * 【设计意图 (Why)】
+   *   长耗时 Shell 执行、MCP 工具调用或深度思考期间可能超过 60s 无下行增量，
+   *   `inactivity` 超时触发后，上层先向网关 `session.resume` 探活；确认服务端仍 `running: true` 时，
+   *   通过本方法续期下一轮空闲监控窗口，而不是重新 reset `turnStartedAt` 或复活已撤防回合。
+   *
+   * 【约束与规则 (Rules)】
+   *   1. 仅允许在 `expired`（刚触发 inactivity）或 `armed` 态续期，`idle`/`disarmed` 恒返回 `false`；
+   *   2. 不重设 `turnStartedAt`：硬上限（`hardLimitMs`）依然从回合最初开始时间单调计时；
+   *   3. 剩余硬上限预算耗尽时保持 `expired` 并返回 `false`。
+   */
+  public renewIdle(): boolean {
+    if (this.state !== 'expired' && this.state !== 'armed') return false;
+
+    const currentTime = this.now();
+    const elapsed = Math.max(0, currentTime - this.turnStartedAt);
+    const remainingHard = this.hardLimitMs - elapsed;
+    if (remainingHard <= 0) {
+      this.clearTimers();
+      this.state = 'expired';
+      return false;
+    }
+
+    this.clearTimers();
+    this.state = 'armed';
+    this.lastFeedTestAt = currentTime;
+
+    const nextIdleDelay = Math.min(this.idleTimeoutMs, remainingHard);
+    this.idleTimer = setTimeout(() => {
+      this.handleTimeout('inactivity');
+    }, nextIdleDelay);
+    this.safeUnref(this.idleTimer);
+
+    this.hardTimer = setTimeout(() => {
+      this.handleTimeout('hard-limit');
+    }, remainingHard);
+    this.safeUnref(this.hardTimer);
+    return true;
+  }
+
+  /**
    * 当前看门狗状态。
    */
   public getState(): WatchdogState {

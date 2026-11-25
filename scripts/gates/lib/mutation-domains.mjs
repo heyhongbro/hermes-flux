@@ -25,9 +25,9 @@ export const MUTATION_DOMAINS = {
     mutate: ['packages/core/src/coalesce/tokenCoalescer.ts'],
     testFiles: ['packages/core/__tests__/coalesce/tokenCoalescer.test.mjs'],
     buildCommand: 'npm run build:core',
-    // 经补齐 RAF/定时器节拍步进后实测得分 76.47%（0 NoCoverage），门禁硬锁 ≥70%
-    minScore: 70,
-    targetScore: 70,
+    // 实测 136 mutant / 99 killed / 9 timeout / 28 survived / 0 noCov = 79.41%（2026-11-25），门禁锁 ≥75%
+    minScore: 75,
+    targetScore: 75,
   },
   session: {
     title: '会话生命周期与截断合并 (Session Merge & Truncate Plan)',
@@ -83,7 +83,7 @@ export const MUTATION_DOMAINS = {
     mutate: ['packages/desktop/src/renderer/stream/tokenStreamWriter.ts'],
     testFiles: ['packages/desktop/__tests__/unit/tokenStreamWriter.test.mjs'],
     buildCommand: 'node scripts/gates/build-desktop-unit.mjs src/renderer/stream/tokenStreamWriter.ts',
-    // 实测 185 mutant / 157 killed / 23 survived / 5 noCov = 84.86%（2026-11-18）
+    // 实测 194 mutant / 169 killed / 23 survived / 2 noCov = 87.11%（被测 88.02%，2026-11-25）
     minScore: 80,
   },
   streamViewport: {
@@ -116,30 +116,50 @@ export const MUTATION_DOMAINS = {
     minScore: 80,
   },
   turnSettlement: {
-    title: '流式回合收口与中断超时保底 (Turn Settlement)',
-    mutate: [
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:322-448',
-      'packages/desktop/src/renderer/services/turnExecutionService.ts:201-238',
-      'packages/desktop/src/renderer/services/turnExecutionService.ts:297-317',
-      'packages/desktop/src/renderer/services/turnExecutionService.ts:442-540',
-    ],
-    testFiles: [
-      'packages/desktop/__tests__/unit/gatewayEventDispatcher.test.mjs',
-      'packages/desktop/__tests__/unit/turnExecutionService.test.mjs',
-    ],
+    title: '流式回合收口与状态收敛 (Turn Settlement)',
+    mutate: ['packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:546-763'],
+    testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.test.mjs'],
     buildCommand:
-      'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts src/renderer/services/turnExecutionService.ts',
-    // 实测 361 mutant / 304 killed / 57 survived / 0 noCov = 84.21%（2026-11-18）
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
+    // 实测 393 mutant / 345 killed / 48 survived / 0 noCov = 87.79%（2026-11-25）
+    minScore: 85,
+  },
+  turnExecutionWatchdog: {
+    title: '回合看门狗探活续期与离线收敛 (Turn Execution Watchdog)',
+    mutate: ['packages/desktop/src/renderer/services/turnExecutionService.ts:232-486'],
+    testFiles: ['packages/desktop/__tests__/unit/turnExecutionService.test.mjs'],
+    buildCommand:
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/services/turnExecutionService.ts',
+    // 实测 317 mutant / 260 killed / 57 survived / 0 noCov = 82.02%（2026-11-25）
+    minScore: 80,
+  },
+  turnExecutionSubmit: {
+    title: '回合并发提交、打断与流式绑定 (Turn Execution Submit & Interrupt)',
+    mutate: [
+      'packages/desktop/src/renderer/services/turnExecutionService.ts:774-780',
+      'packages/desktop/src/renderer/services/turnExecutionService.ts:942-1016',
+      'packages/desktop/src/renderer/services/turnExecutionService.ts:1095-1166',
+    ],
+    testFiles: ['packages/desktop/__tests__/unit/turnExecutionService.test.mjs'],
+    buildCommand:
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/services/turnExecutionService.ts',
+    // 实测 210 mutant / 186 killed / 24 survived / 0 noCov = 88.57%（2026-11-25）
     minScore: 80,
   },
   sessionSelectToolPatch: {
-    title: '会话切回流式工具补刷 (Session Select Tool Patch)',
-    mutate: ['packages/desktop/src/renderer/services/sessionOperationService.ts:539-550'],
+    title: '会话切回流式工具补刷与删除清理 (Session Select & Delete Cleanup)',
+    mutate: [
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:409-415',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:446-452',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:742-751',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:779-797',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:825-838',
+    ],
     testFiles: ['packages/desktop/__tests__/unit/sessionOperationService.test.mjs'],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/services/sessionOperationService.ts',
-    // 实测 20 mutant / 16 killed / 4 survived / 0 noCov = 80.00%（2026-11-18）
-    minScore: 70,
+    // 实测 84 mutant / 79 killed / 5 survived / 0 noCov = 94.05%（2026-11-25）
+    minScore: 90,
   },
   toolSection: {
     title: '工具区块流式/收口原子交接 (ToolSection Key Swap)',
@@ -239,5 +259,116 @@ export const MUTATION_DOMAINS = {
     testFiles: ['packages/mobile/__tests__/unit/android-signing-config.test.mjs'],
     buildCommand: 'node -e ""',
     minScore: 80,
+  },
+  liveStreamSync: {
+    title: '多端实时流式同步纯内核 (Live Stream Registry & Sync)',
+    mutate: ['packages/core/src/session/liveStreamSync.ts'],
+    testFiles: [
+      'packages/core/__tests__/session/liveStreamSync.test.mjs',
+      'packages/core/__tests__/formal/live-stream-sync-formal.test.mjs',
+    ],
+    buildCommand: 'npm run build:core',
+    // 实测 479 mutant / 433 killed / 46 survived / 0 noCov = 90.40%（2026-11-25）
+    minScore: 88,
+  },
+  slidingWatchdog: {
+    title: '滑动流式活跃看门狗 (Sliding Active Watchdog)',
+    mutate: ['packages/core/src/turn/slidingWatchdog.ts'],
+    testFiles: [
+      'packages/core/__tests__/turn/slidingWatchdog.test.mjs',
+      'packages/core/__tests__/formal/sliding-watchdog-formal.test.mjs',
+    ],
+    buildCommand: 'npm run build:core',
+    // 实测 115 mutant / 109 killed / 6 survived / 0 noCov = 94.78%（2026-11-25）
+    minScore: 90,
+  },
+  eventReducerStreaming: {
+    title: '网关流式事件归约扩展 (Event Reducer Streaming Extension)',
+    mutate: [
+      'packages/core/src/session/eventReducer.ts:401-415',
+      'packages/core/src/session/eventReducer.ts:574-706',
+    ],
+    testFiles: ['packages/core/__tests__/session/eventReducer.test.mjs'],
+    buildCommand: 'npm run build:core',
+    // 实测 247 mutant / 245 killed / 2 survived / 0 noCov = 99.19%（2026-11-25）
+    minScore: 95,
+  },
+  liveStreamCoordHydration: {
+    title: '实时流解析、同步与远端补全协调器 (Live Stream Hydration)',
+    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:90-390'],
+    testFiles: ['packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs'],
+    buildCommand:
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
+    // 实测 358 mutant / 306 killed / 52 survived / 0 noCov = 85.47%（2026-11-25）
+    minScore: 82,
+  },
+  liveStreamCoordAttach: {
+    title: '实时流恢复挂载与观察者投影协调器 (Live Stream Attach & Observer)',
+    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:390-635'],
+    testFiles: ['packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs'],
+    buildCommand:
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
+    // 实测 284 mutant / 240 killed / 44 survived / 0 noCov = 84.51%（2026-11-25）
+    minScore: 80,
+  },
+  messageLoadingStreaming: {
+    title: '会话加载权威对账与恢复状态机 (Message Loading Streaming)',
+    mutate: [
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:169-194',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:221-274',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:352-415',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:465-533',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:636-670',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:758-783',
+    ],
+    testFiles: ['packages/desktop/__tests__/unit/messageLoadingService.test.mjs'],
+    buildCommand:
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/services/messageLoadingService.ts',
+    // 实测 283 mutant / 235 killed / 47 survived / 1 noCov = 83.04%（2026-11-25）
+    minScore: 80,
+  },
+  multideviceHooks: {
+    title: '多端协同状态与桌面/移动端钩子 (Multidevice Hooks)',
+    mutate: [
+      'packages/desktop/src/renderer/events/presenceController.ts:92-148',
+      'packages/desktop/src/renderer/mobile/mobileShellCoordinator.ts:487-500',
+    ],
+    testFiles: [
+      'packages/desktop/__tests__/unit/presenceController.test.mjs',
+      'packages/desktop/__tests__/unit/mobile-shell-coordinator.test.mjs',
+    ],
+    buildCommand:
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/events/presenceController.ts src/renderer/mobile/mobileShellCoordinator.ts',
+    // 实测 69 mutant / 60 killed / 9 survived / 0 noCov = 86.96%（2026-11-25）
+    minScore: 85,
+  },
+  gatewayStreamingDispatch: {
+    title: '网关流式事件动作分发 (Gateway Streaming Dispatch)',
+    mutate: [
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:181-220',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:277-385',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:412-527',
+    ],
+    testFiles: [
+      'packages/desktop/__tests__/unit/gatewayEventDispatcher.test.mjs',
+      'packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs',
+    ],
+    buildCommand:
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
+    // 实测 352 mutant / 301 killed / 50 survived / 1 unreachable noCov = 85.51%（2026-11-25）
+    minScore: 82,
+  },
+  gatewayFrameAndReconnect: {
+    title: '网关帧解析与重连续流 (Gateway Frame & Reconnect)',
+    mutate: [
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:789-921',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1242-1244',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1346-1403',
+    ],
+    testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.test.mjs'],
+    buildCommand:
+      'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
+    // 实测 284 mutant / 239 killed / 2 timeout / 43 survived / 0 noCov = 84.86%（2026-11-25）
+    minScore: 82,
   },
 };

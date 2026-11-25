@@ -32,7 +32,9 @@ import {
   type CachedMessageRow,
   type SessionHandleRegistry,
   type BotActivityRecord,
+  type LiveStreamRegistry,
   readSessionHandles,
+  extractResumeInflightState,
   resolveLineageChain,
   planOlderBatchPrependMerge,
   planOlderBatchPrependMergeDetailed,
@@ -118,6 +120,7 @@ export interface MessageLoadingDeps {
 
   // 流式与代际状态
   readonly getActiveStreamingStoredSessionId: () => string | null;
+  readonly getLiveStreamRegistry?: () => LiveStreamRegistry;
   readonly defaultSessionHandleRegistry: SessionHandleRegistry;
   readonly activeRunningSessionIds: Set<string>;
   readonly activityTransitionTracker: { clear: (type: 'session' | 'group' | 'bot', id: string) => void };
@@ -146,12 +149,48 @@ export interface MessageLoadingDeps {
     info?: Record<string, unknown> | null,
     profile?: string,
   ) => void;
-  readonly onReconnectStillStreaming?: (storedSessionId: string, liveSessionId: string) => void;
+  readonly onReconnectStillStreaming?: (
+    storedSessionId: string,
+    liveSessionId: string,
+    resumeResult?: Record<string, unknown>,
+  ) => void;
   readonly onReconnectStreamFinished?: (storedSessionId: string) => void;
+  readonly onActiveTurnDiscovered?: (input: {
+    storedSessionId: string;
+    liveSessionId: string;
+    resumeResult: Record<string, unknown>;
+    botName: string | null;
+  }) => void;
   readonly onForceSyncMessageList?: (force?: boolean) => void;
 
   // DOM 容器引用（可选）
   readonly getConversationStreamElement?: () => HTMLElement | null;
+}
+
+function areMessageListsEquivalent(prev: readonly MessageViewModel[], next: readonly MessageViewModel[]): boolean {
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (
+      a.id !== b.id ||
+      a.role !== b.role ||
+      a.content !== b.content ||
+      a.thought !== b.thought ||
+      a.rowId !== b.rowId ||
+      (a.toolCalls?.length ?? 0) !== (b.toolCalls?.length ?? 0)
+    ) {
+      return false;
+    }
+    if (a.toolCalls && b.toolCalls) {
+      for (let j = 0; j < a.toolCalls.length; j += 1) {
+        if (a.toolCalls[j].id !== b.toolCalls[j].id || a.toolCalls[j].status !== b.toolCalls[j].status) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
 }
 
 export class MessageLoadingService {
@@ -180,8 +219,18 @@ export class MessageLoadingService {
   private olderLoadingStartedAt = 0;
 
   private reconnectHooks: {
-    onReconnectStillStreaming?: (storedSessionId: string, liveSessionId: string) => void;
+    onReconnectStillStreaming?: (
+      storedSessionId: string,
+      liveSessionId: string,
+      resumeResult?: Record<string, unknown>,
+    ) => void;
     onReconnectStreamFinished?: (storedSessionId: string) => void;
+    onActiveTurnDiscovered?: (input: {
+      storedSessionId: string;
+      liveSessionId: string;
+      resumeResult: Record<string, unknown>;
+      botName: string | null;
+    }) => void;
     onForceSyncMessageList?: (force?: boolean) => void;
   } = {};
 
@@ -191,11 +240,35 @@ export class MessageLoadingService {
 
   /** 注册断连重连期间的流式对账回调 */
   setReconnectHooks(hooks: {
-    onReconnectStillStreaming?: (storedSessionId: string, liveSessionId: string) => void;
+    onReconnectStillStreaming?: (
+      storedSessionId: string,
+      liveSessionId: string,
+      resumeResult?: Record<string, unknown>,
+    ) => void;
     onReconnectStreamFinished?: (storedSessionId: string) => void;
+    onActiveTurnDiscovered?: (input: {
+      storedSessionId: string;
+      liveSessionId: string;
+      resumeResult: Record<string, unknown>;
+      botName: string | null;
+    }) => void;
     onForceSyncMessageList?: (force?: boolean) => void;
   }): void {
     this.reconnectHooks = hooks;
+  }
+
+  private isSessionStreaming(sessionId: string): boolean {
+    return Boolean(
+      this.deps.getLiveStreamRegistry?.().hasSession(sessionId) ||
+      this.deps.getActiveStreamingStoredSessionId() === sessionId,
+    );
+  }
+
+  private resolveForeverBotName(sessionId: string): string | null {
+    for (const [bName, foreverId] of this.deps.botForeverChatCache.entries()) {
+      if (foreverId === sessionId) return bName;
+    }
+    return null;
   }
 
   /** 获取当前代际计数 */
@@ -281,22 +354,43 @@ export class MessageLoadingService {
     gatewayClient: HermesGatewayClient,
     sessionId: string,
     resolvedBotName: string,
+    omitMessages: boolean,
   ): Promise<Record<string, unknown> | null> {
     try {
+      if (omitMessages) {
+        return await gatewayClient.call<Record<string, unknown>>('session.resume', {
+          session_id: sessionId,
+          profile: resolvedBotName,
+          omit_messages: true,
+        });
+      }
       return await gatewayClient.call<Record<string, unknown>>('session.resume', {
         session_id: sessionId,
         profile: resolvedBotName,
       });
     } catch (firstErr: unknown) {
-      if (describeRpcError(firstErr).includes('Extra inputs')) {
-        return await gatewayClient.call<Record<string, unknown>>('session.resume', { session_id: sessionId });
+      if (!describeRpcError(firstErr).includes('Extra inputs')) {
+        throw firstErr;
       }
-      throw firstErr;
+      if (omitMessages) {
+        try {
+          return await gatewayClient.call<Record<string, unknown>>('session.resume', {
+            session_id: sessionId,
+            profile: resolvedBotName,
+          });
+        } catch (secondErr: unknown) {
+          if (!describeRpcError(secondErr).includes('Extra inputs')) {
+            throw secondErr;
+          }
+          return await gatewayClient.call<Record<string, unknown>>('session.resume', { session_id: sessionId });
+        }
+      }
+      return await gatewayClient.call<Record<string, unknown>>('session.resume', { session_id: sessionId });
     }
   }
 
   /** 对当前激活会话发起无破坏静默增量刷新（前台唤醒/重连自愈专用） */
-  async refreshActiveSession(opts?: { forceRefreshAfterReconnect?: boolean }): Promise<void> {
+  async refreshActiveSession(opts?: { forceRefreshAfterReconnect?: boolean; checkLiveTurn?: boolean }): Promise<void> {
     const state = this.deps.getState();
     const sessionId = state.activeSessionId;
     if (!sessionId || this.deps.isGroupConversationActive(sessionId)) return;
@@ -306,6 +400,7 @@ export class MessageLoadingService {
     await this.loadMessagesInner(sessionId, resolvedBotName, {
       silent: true,
       forceRefreshAfterReconnect: opts?.forceRefreshAfterReconnect,
+      checkLiveTurn: opts?.checkLiveTurn,
     });
   }
 
@@ -313,7 +408,7 @@ export class MessageLoadingService {
   async loadMessagesInner(
     sessionId: string,
     targetBotName?: string,
-    opts?: { silent?: boolean; forceRefreshAfterReconnect?: boolean },
+    opts?: { silent?: boolean; forceRefreshAfterReconnect?: boolean; checkLiveTurn?: boolean },
   ): Promise<void> {
     const state = this.deps.getState();
     const gatewayClient = this.deps.getGatewayClient();
@@ -369,17 +464,44 @@ export class MessageLoadingService {
     }
 
     // 2. If this session is currently actively streaming:
-    //    - 正常切换保留实时流缓冲区；
-    //    - 断连重连后必须先调 session.resume 校验网关端是否仍在生成，已收口则清理本地卡死流态并重拉权威历史。
+    //    - 正常切换保留实时流缓冲区（若因重进清空 activeLiveSessionId 则立即恢复）；
+    //    - 断连重连/重检后先调 session.resume 校验网关端是否仍在生成，已收口则清理本地卡死流态并重拉权威历史。
     let streamFinishedOnReconnect = false;
-    if (this.deps.getActiveStreamingStoredSessionId() === sessionId) {
-      if (!forceRefreshAfterReconnect) {
+    if (this.isSessionStreaming(sessionId)) {
+      const shouldProbeLive = forceRefreshAfterReconnect || Boolean(opts?.checkLiveTurn);
+      if (!shouldProbeLive) {
+        const existingStream = this.deps.getLiveStreamRegistry?.().getBySession(sessionId);
+        if (!state.activeLiveSessionId) {
+          state.activeLiveSessionId =
+            existingStream?.liveSessionId || this.deps.defaultSessionHandleRegistry.toLiveId(sessionId) || sessionId;
+        }
+        if (existingStream) {
+          state.isStreaming = true;
+          if (!state.messages.some((m) => m.id === existingStream.messageId)) {
+            state.messages = [
+              ...state.messages,
+              {
+                id: existingStream.messageId,
+                role: 'assistant',
+                content: existingStream.accumulatedText,
+                timestamp: this.deps.formatTimestamp(existingStream.startedAt),
+              },
+            ];
+            this.deps.sessionMessagesCache.set(sessionId, state.messages);
+            this.deps.render();
+          }
+        }
         this.deps.logSession?.info('session is actively streaming, preserving live state', { sessionId });
         return;
       }
       if (!gatewayClient) return;
       try {
-        const checkRes = await this.callSessionResume(gatewayClient, sessionId, resolvedBotName);
+        const checkRes = await this.callSessionResume(
+          gatewayClient,
+          sessionId,
+          resolvedBotName,
+          Boolean(silent && state.messages.length > 0),
+        );
         if (currentGen !== this.activeLoadMessagesGeneration || state.activeSessionId !== sessionId) return;
         const rawCheckInfo = (
           checkRes && typeof checkRes === 'object' && checkRes.info && typeof checkRes.info === 'object'
@@ -394,14 +516,12 @@ export class MessageLoadingService {
         } else {
           state.activeLiveSessionId = sessionId;
         }
-        const isStillRunning = Boolean(checkRes && checkRes.running);
-        const inflightCheck = checkRes?.inflight && typeof checkRes.inflight === 'object'
-          ? (checkRes.inflight as { streaming?: boolean })
-          : null;
-        if (isStillRunning || Boolean(inflightCheck?.streaming)) {
+        const checkResumeState = extractResumeInflightState(checkRes);
+        if (checkResumeState.isRunning && checkRes) {
           (this.reconnectHooks.onReconnectStillStreaming ?? this.deps.onReconnectStillStreaming)?.(
             sessionId,
             state.activeLiveSessionId,
+            checkRes,
           );
           return;
         }
@@ -514,16 +634,21 @@ export class MessageLoadingService {
           localCoveredRows,
         );
         this.sessionServerOffset.set(sessionId, currentKnown);
+        const messagesChanged = !silent || !areMessageListsEquivalent(state.messages, merged);
         state.messages = merged;
         state.hasOlderMessages = merged.length > serverKnownCount
           ? true
           : computeHasOlderMessages(merged, serverKnownCount, INITIAL_WINDOW_PAGE_SIZE, this.hasRemainingParentLineage(sessionId));
-        state.dockNotice = '';
+        if (!silent || messagesChanged) {
+          state.dockNotice = '';
+        }
         this.deps.onSessionMessagesLoaded?.(sessionId);
         if (streamFinishedOnReconnect) {
           (this.reconnectHooks.onForceSyncMessageList ?? this.deps.onForceSyncMessageList)?.(true);
         }
-        this.deps.render();
+        if (!silent || messagesChanged || streamFinishedOnReconnect) {
+          this.deps.render();
+        }
         fastLoaded = true;
 
         this.deps.logSession?.info('session loaded via high-speed REST', {
@@ -541,7 +666,7 @@ export class MessageLoadingService {
     const resumePromise = (async () => {
       const rpcStartedAt = performance.now();
       try {
-        const res = await this.callSessionResume(gatewayClient, sessionId, resolvedBotName);
+        const res = await this.callSessionResume(gatewayClient, sessionId, resolvedBotName, fastLoaded);
 
         if (currentGen !== this.activeLoadMessagesGeneration || state.activeSessionId !== sessionId) {
           return;
@@ -566,24 +691,6 @@ export class MessageLoadingService {
           this.deps.onLiveSessionReady?.(handles.storedId, handles.liveId, rawInfo, resolvedBotName);
         } else {
           state.activeLiveSessionId = sessionId;
-        }
-
-        if (res && typeof res === 'object') {
-          const isGwRunning = Boolean(res.running);
-          const inflightObj = res.inflight && typeof res.inflight === 'object' ? (res.inflight as { streaming?: boolean }) : null;
-          const hasInflight = Boolean(inflightObj && inflightObj.streaming);
-          const reconciled = reconcileAuthoritativeActivity({
-            runningIds: this.deps.activeRunningSessionIds,
-            entityId: sessionId,
-            isGatewayRunning: isGwRunning,
-            hasInflightStreaming: hasInflight,
-            currentStreamingId: this.deps.getActiveStreamingStoredSessionId(),
-          });
-          if (reconciled) {
-            this.deps.activityTransitionTracker.clear('session', sessionId);
-            this.deps.logSession?.info('reconciled orphan running state via authoritative gateway status', { sessionId });
-            this.deps.render();
-          }
         }
 
         const rawResumedCwd = typeof rawInfo.cwd === 'string' ? rawInfo.cwd : typeof rawInfo.path === 'string' ? rawInfo.path : undefined;
@@ -665,6 +772,32 @@ export class MessageLoadingService {
               state.messages = [...existing];
               this.deps.render();
             }
+          }
+        }
+
+        if (res && typeof res === 'object') {
+          const resumeState = extractResumeInflightState(res);
+          const reconciled = reconcileAuthoritativeActivity({
+            runningIds: this.deps.activeRunningSessionIds,
+            entityId: sessionId,
+            isGatewayRunning: Boolean(res.running),
+            hasInflightStreaming: resumeState.isRunning,
+            currentStreamingId: this.isSessionStreaming(sessionId) ? sessionId : this.deps.getActiveStreamingStoredSessionId(),
+          });
+          if (reconciled) {
+            this.deps.activityTransitionTracker.clear('session', sessionId);
+            this.deps.logSession?.info('reconciled orphan running state via authoritative gateway status', { sessionId });
+            this.deps.render();
+          }
+          if (resumeState.isRunning) {
+            this.deps.activeRunningSessionIds.add(sessionId);
+            const activeHook = this.reconnectHooks.onActiveTurnDiscovered ?? this.deps.onActiveTurnDiscovered;
+            activeHook?.({
+              storedSessionId: sessionId,
+              liveSessionId: state.activeLiveSessionId || sessionId,
+              resumeResult: res,
+              botName: this.resolveForeverBotName(sessionId),
+            });
           }
         }
 

@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSessionOperationService } from '../../dist/renderer/services/sessionOperationService.mjs';
-import { SessionListGeneration, RpcErrorCode } from '@hermes-flux/core';
+import { SessionListGeneration, RpcErrorCode, LiveStreamRegistry } from '@hermes-flux/core';
 
 function createMockDeps(overrides = {}) {
   let promptInputValue = '';
@@ -768,4 +768,364 @@ test('跨 Profile 同 ID 归档隔离、恢复及 fetchArchivedSessions 部分 P
   const noProjHarness = createMockDeps({ state: { sessionCwds: {} } });
   await createSessionOperationService(noProjHarness.deps).createNewSession({});
   assert.equal(noProjHarness.state.sessionCwds['sess-new'], undefined);
+});
+
+test('SessionOperationService - 同会话重进探活、后台流切回恢复与删除仅清理单会话流', async () => {
+  // 1. 点击已选中且非本端流式会话时必须触发 onReenterSameSession 同步远端消息/运行态
+  const reentered = [];
+  const { deps: sameDeps } = createMockDeps({
+    state: {
+      activeSessionId: 'sess-current',
+      activeLiveSessionId: 'live-current',
+      messages: [{ id: 'm1', role: 'user', content: 'hi' }],
+    },
+    onReenterSameSession: (id) => reentered.push(id),
+  });
+  await createSessionOperationService(sameDeps).selectSession('sess-current');
+  assert.deepEqual(reentered, ['sess-current']);
+
+  // 2. 切回存在后台活跃流的会话必须恢复 activeLiveSessionId、isStreaming 与补刷 toolPatch
+  const syncedFocus = [];
+  const toolPatches = [];
+  const streamEntries = new Map([
+    ['sess-next', { storedSessionId: 'sess-next', liveSessionId: 'live-bg-77', messageId: 'ast-bg-77' }],
+    ['sess-other', { storedSessionId: 'sess-other', liveSessionId: 'live-other', messageId: 'ast-other' }],
+  ]);
+  const fakeRegistry = {
+    hasSession: (sid) => streamEntries.has(sid),
+    getBySession: (sid) => streamEntries.get(sid),
+    removeSession: (sid) => {
+      const e = streamEntries.get(sid);
+      streamEntries.delete(sid);
+      return e;
+    },
+  };
+  const { deps: switchDeps, state: switchState } = createMockDeps({
+    state: {
+      sessions: [
+        { id: 'sess-current', title: 'Cur', botName: 'default' },
+        { id: 'sess-next', title: 'Next', botName: 'default' },
+      ],
+    },
+    getLiveStreamRegistry: () => fakeRegistry,
+    onSyncFocusedStream: (sid) => syncedFocus.push(sid),
+    scheduleToolPatch: (mid) => toolPatches.push(mid),
+    loadMessages: async (sid) => {
+      switchState.messages = [
+        { id: 'ast-bg-77', role: 'assistant', content: 'working', toolCalls: [{ id: 'tc-1', name: 'bash', status: 'running' }] },
+      ];
+    },
+  });
+  const switchSvc = createSessionOperationService(switchDeps);
+  await switchSvc.selectSession('sess-next');
+  assert.equal(switchState.activeLiveSessionId, 'live-bg-77');
+  assert.equal(switchState.isStreaming, true);
+  assert.deepEqual(syncedFocus, ['sess-next']);
+  assert.deepEqual(toolPatches, ['ast-bg-77']);
+
+  // 3. 删除目标会话仅从 LiveStreamRegistry 移除该会话，绝不误删并发其它会话流
+  await switchSvc.deleteSession('sess-next');
+  assert.equal(streamEntries.has('sess-next'), false);
+  assert.equal(streamEntries.has('sess-other'), true, '删除单一会话不得波及后台并发会话流');
+});
+
+test('SessionOperationService + 真实投影时序: 从 B 会话切回后台流式 A 会话绝不将 B 历史污染写入 A 缓存', async () => {
+  const { LiveStreamRegistry, TokenCoalescer } = await import('@hermes-flux/core');
+  const { createGatewayEventDispatcher } = await import('../../dist/renderer/gateway/gatewayEventDispatcher.mjs');
+
+  const reg = new LiveStreamRegistry();
+  reg.registerStream({
+    storedSessionId: 'sess-a',
+    liveSessionId: 'live-a',
+    messageId: 'ast-a-live',
+    origin: 'local',
+    initialContent: 'A-live',
+  });
+
+  const { deps, state } = createMockDeps({
+    state: {
+      activeSessionId: 'sess-b',
+      activeLiveSessionId: 'live-b',
+      sessions: [
+        { id: 'sess-a', title: 'Session A', botName: 'default' },
+        { id: 'sess-b', title: 'Session B', botName: 'default' },
+      ],
+      messages: [
+        { id: 'usr-b', role: 'user', content: 'from B only' },
+        { id: 'ast-b', role: 'assistant', content: 'answer B' },
+      ],
+    },
+    getLiveStreamRegistry: () => reg,
+  });
+
+  deps.sessionMessagesCache.set('sess-a', [
+    { id: 'usr-a', role: 'user', rowId: 1, content: 'question A' },
+  ]);
+  deps.sessionMessagesCache.set('sess-b', state.messages);
+
+  // 真实 loadMessages 行为：切换后首先从 sessionMessagesCache 读取目标会话消息进 state.messages
+  deps.loadMessages = async (sid) => {
+    const cached = deps.sessionMessagesCache.get(sid) || [];
+    state.messages = [...cached];
+  };
+
+  let activeCtx = {
+    activeStreamingMessageId: null,
+    activeStreamingStoredSessionId: null,
+    activeStreamingLiveId: null,
+    activeStreamingBotName: null,
+  };
+  const unreadSessions = new Set();
+  const runningBots = new Set();
+  const unreadBots = new Set();
+  const runningGroups = new Set();
+  const unreadGroups = new Set();
+  const tokenCoalescer = new TokenCoalescer(() => {});
+  const dispatcher = createGatewayEventDispatcher({
+    getState: () => state,
+    getGatewayClient: () => null,
+    setGatewayClient: () => {},
+    getCurrentTicket: () => '',
+    setCurrentTicket: () => {},
+    getDesktopApi: () => undefined,
+    getEffectiveUrl: (u) => u || '',
+    testConnection: async () => ({ ok: true, latency: 1, ticket: '', message: 'ok' }),
+    completeEntityTurn: () => {},
+    getSessionHandleRegistry: () => ({
+      getLiveIds: (ids) => ids,
+      toLiveId: (id) => id,
+      toStoredId: (id) => id,
+      register: () => {},
+      clear: () => {},
+    }),
+    getLiveStreamRegistry: () => reg,
+    resolveBotNameForSession: () => null,
+    getSessionMessagesCache: () => deps.sessionMessagesCache,
+    getTokenCoalescer: () => tokenCoalescer,
+    getActivityTransitionTracker: () => ({ clear: () => {}, clearAll: () => {} }),
+    getBotActivityStore: () => ({ updateLatestActivity: () => {} }),
+    getCacheService: () => ({ truncate: async () => {} }),
+    getActiveRunningSessionIds: () => deps.activeRunningSessionIds,
+    getUnreadSessionIds: () => unreadSessions,
+    getActiveRunningBotNames: () => runningBots,
+    getUnreadBotNames: () => unreadBots,
+    getActiveRunningGroupRoomIds: () => runningGroups,
+    getUnreadGroupRoomIds: () => unreadGroups,
+    getActiveStreamingContext: () => activeCtx,
+    setActiveStreamingContext: (patch) => { activeCtx = { ...activeCtx, ...patch }; },
+    getTurnStartedSessionId: () => null,
+    setTurnStartedSessionId: () => {},
+    stopProfileAutoRefresh: () => {},
+    startProfileAutoRefresh: () => {},
+    stopAllGroupPollers: () => {},
+    clearTransitionRefreshTimer: () => {},
+    clearSessionsRefreshTimer: () => {},
+    scheduleSessionsRefresh: () => {},
+    persistTurnToCache: () => {},
+    persistSessionsToCache: () => {},
+    syncProfileLastMessages: () => {},
+    syncAgentPresence: () => {},
+    scheduleToolPatch: () => {},
+    stopRunningToolTimers: () => {},
+    setMessageContent: () => {},
+    toStoredSessionId: (id) => id || null,
+    applyColdStartFocus: async () => {},
+    fetchProfiles: async () => {},
+    fetchSessions: async () => {},
+    fetchGroupRooms: async () => {},
+    fetchModelOptions: async () => {},
+    fetchProjects: async () => {},
+    prefetchSlashCatalog: async () => {},
+    armTurnWatchdog: () => {},
+    feedTurnWatchdog: () => {},
+    disarmTurnWatchdog: () => {},
+    clearPresenceTerminal: () => {},
+    armPresenceTerminal: () => {},
+    setTimedDockNotice: () => {},
+    refreshActiveSession: async () => {},
+    onForceSyncMessageList: () => {},
+    ensureMessageWindow: () => {},
+    setMessageWindowUserExpanded: () => {},
+    render: () => {},
+    t: (k) => k,
+  });
+  deps.onSyncFocusedStream = (sid) => dispatcher.syncFocusedStreamingProjection(sid);
+
+  const svc = createSessionOperationService(deps);
+  await svc.selectSession('sess-a');
+
+  assert.equal(state.messages.some((m) => m.id === 'usr-b'), false, '切回 A 后 state.messages 严禁混入 B 会话消息');
+  assert.equal(
+    deps.sessionMessagesCache.get('sess-a').some((m) => m.id === 'usr-b'),
+    false,
+    '切回 A 后 sess-a 缓存严禁被 B 会话消息污染',
+  );
+  assert.equal(state.messages.some((m) => m.id === 'ast-a-live' && m.content === 'A-live'), true);
+  assert.equal(activeCtx.activeStreamingMessageId, 'ast-a-live');
+});
+
+
+test('SessionOperationService: 从流式会话切入非流式空闲会话时复位前景 isStreaming 状态', async () => {
+  const fakeRegistry = {
+    hasSession: () => false,
+    getBySession: () => undefined,
+    removeSession: () => undefined,
+  };
+  const { deps, state } = createMockDeps({
+    state: {
+      activeSessionId: 'sess-current',
+      isStreaming: true,
+    },
+    getLiveStreamRegistry: () => fakeRegistry,
+  });
+  const svc = createSessionOperationService(deps);
+  await svc.selectSession('sess-next');
+  assert.equal(state.activeSessionId, 'sess-next');
+  assert.equal(state.isStreaming, false);
+});
+
+test('SessionOperationService: deleteSession 遇到 SessionMissing 时同步从 LiveStreamRegistry 移除目标会话流', async () => {
+  const reg = new LiveStreamRegistry();
+  reg.registerStream({
+    storedSessionId: 'sess-current',
+    liveSessionId: 'live-current',
+    messageId: 'ast-cur',
+    origin: 'local',
+  });
+  reg.registerStream({
+    storedSessionId: 'sess-next',
+    liveSessionId: 'live-next',
+    messageId: 'ast-next',
+    origin: 'remote',
+  });
+
+  const { deps, state } = createMockDeps({
+    getLiveStreamRegistry: () => reg,
+    persistSessionsToCache: () => {
+      throw Object.assign(new Error('session missing'), { code: RpcErrorCode.SessionMissing });
+    },
+  });
+
+  const svc = createSessionOperationService(deps);
+  await svc.deleteSession('sess-current');
+
+  assert.equal(reg.hasSession('sess-current'), false, 'SessionMissing 清理分支必须摘除已消失会话的并发流');
+  assert.equal(reg.hasSession('sess-next'), true, '其他会话并发流必须保持完好');
+  assert.equal(state.activeSessionId, 'sess-next');
+});
+
+test('SessionOperationService 变异消杀全边界：deleteSession 正常/缺失流清理与 selectSession 全状态复位/补刷', async () => {
+  // 1. 正常 deleteSession 对激活流触发 resetActiveStreamingState，对非流式会话不误触发 (L412-413)
+  let resetCalls = 0;
+  const { deps: deps1, state: state1 } = createMockDeps({
+    getActiveStreamingStoredSessionId: () => 'sess-current',
+    resetActiveStreamingState: () => {
+      resetCalls += 1;
+      state1.isStreaming = false;
+    },
+  });
+  const svc1 = createSessionOperationService(deps1);
+  await svc1.deleteSession('sess-next');
+  assert.equal(resetCalls, 0, '删除非当前流式会话时不得复位活跃流态');
+  await svc1.deleteSession('sess-current');
+  assert.equal(resetCalls, 1, '删除正在流式输出的会话时必须复位活跃流态');
+
+  // 2. SessionMissing 删除非激活流式会话 / 不在列表中幽灵会话 / 缺省 registry (L446-452)
+  let missingResetCalls = 0;
+  const unregistered = [];
+  const deletedEvents = [];
+  const { deps: deps2, state: state2 } = createMockDeps({
+    getActiveStreamingStoredSessionId: () => 'sess-next',
+    resetActiveStreamingState: () => { missingResetCalls += 1; },
+    onSessionDeleted: (id, bot) => deletedEvents.push([id, bot]),
+    sessionHandleRegistry: {
+      register: () => {},
+      unregister: (id) => unregistered.push(id),
+      toStoredSessionId: (id) => id,
+    },
+    persistSessionsToCache: () => {
+      throw Object.assign(new Error('gone'), { code: RpcErrorCode.SessionMissing });
+    },
+  });
+  const svc2 = createSessionOperationService(deps2);
+  await svc2.deleteSession('sess-next');
+  assert.equal(missingResetCalls, 1);
+  assert.ok(unregistered.includes('sess-next'));
+  assert.equal(state2.activeSessionId, 'sess-current', '删除非当前缺失会话不得改写 activeSessionId');
+  assert.ok(deletedEvents.some(([id, bot]) => id === 'sess-next' && bot === 'default'));
+  deletedEvents.length = 0;
+  await svc2.deleteSession('sess-ghost');
+  assert.deepEqual(deletedEvents.at(-1), ['sess-ghost', undefined]);
+
+  // 3. selectSession：空消息重入不早退 / 无 onReenterSameSession 早退 / 焦点保留 / unread/modelMenu/activeLiveSessionId 清理 (L746-792)
+  let loadCalls = 0;
+  const clearedTransitions = [];
+  const { deps: deps3, state: state3 } = createMockDeps({
+    state: {
+      activeSessionId: 'sess-current',
+      activeLiveSessionId: 'live-old',
+      modelMenuOpen: true,
+      messages: [],
+      activeFocus: { type: 'bot', botName: 'arch' },
+    },
+    unreadSessionIds: new Set(['sess-next']),
+    activityTransitionTracker: { clear: (kind, id) => clearedTransitions.push([kind, id]) },
+    incrementActiveLoadMessagesGeneration: undefined,
+    loadMessages: async (id) => {
+      loadCalls += 1;
+      if (id === 'sess-next') {
+        state3.messages = [
+          { id: 'u-first', role: 'user', content: 'q' },
+          { id: 'm-tool', role: 'assistant', content: 'ans', toolCalls: [{ id: 'tc1', name: 'bash', status: 'running' }] },
+        ];
+      }
+    },
+  });
+  const svc3 = createSessionOperationService(deps3);
+  await svc3.selectSession('sess-current');
+  assert.equal(loadCalls, 1, 'messages 为空时重入当前会话不得提前跳过加载');
+  state3.messages = [{ id: 'm1', role: 'assistant', content: 'ok' }];
+  state3.activeLiveSessionId = 'live-reloaded';
+  await svc3.selectSession('sess-current');
+  assert.equal(loadCalls, 1, '有消息重入即使缺省 onReenterSameSession 也必须安全早退');
+
+  // preserveFocus: true 保留原焦点，同时验证 activeLiveSessionId 清空、unread 与 transition 清理及 modelMenu 关闭
+  state3.activeFocus = { type: 'bot', botName: 'arch' };
+  await svc3.selectSession('sess-next', { preserveFocus: true });
+  assert.deepEqual(state3.activeFocus, { type: 'bot', botName: 'arch' });
+  assert.equal(state3.activeLiveSessionId, '');
+  assert.equal(state3.modelMenuOpen, false);
+  assert.equal(deps3.unreadSessionIds.has('sess-next'), false);
+  assert.deepEqual(clearedTransitions, [['session', 'sess-current'], ['session', 'sess-next']]);
+
+  // 默认 selectSession 更新 activeFocus.type='session' & 切回非注册表活跃流时走 getActiveStreamingMessageId + 非匹配前置消息 (L826-835)
+  const syncCalls = [];
+  const patchedIds = [];
+  const { deps: deps4, state: state4 } = createMockDeps({
+    getActiveStreamingStoredSessionId: () => 'sess-next',
+    getActiveStreamingMessageId: () => 'm-tool',
+    getLiveStreamRegistry: () => ({ hasSession: () => false, getBySession: () => undefined }),
+    onSyncFocusedStream: (id) => syncCalls.push(id),
+    scheduleToolPatch: (mid) => patchedIds.push(mid),
+    loadMessages: async () => {
+      state4.messages = [
+        { id: 'u-unrelated', role: 'user', content: 'prompt' },
+        { id: 'm-tool', role: 'assistant', content: '', toolCalls: [{ id: 'tc-2', name: 'read', status: 'running' }] },
+      ];
+    },
+  });
+  const svc4 = createSessionOperationService(deps4);
+  await svc4.selectSession('sess-next');
+  assert.deepEqual(state4.activeFocus, { type: 'session', sessionId: 'sess-next' });
+  assert.deepEqual(syncCalls, [], '注册表无会话时不得误调 onSyncFocusedStream');
+  assert.deepEqual(patchedIds, ['m-tool'], '无 registry.getBySession 时必须降级 getActiveStreamingMessageId 补刷工具');
+
+  // streamingMsgId 缺失 & scheduleToolPatch 缺失防御
+  const { deps: deps5 } = createMockDeps({
+    getActiveStreamingStoredSessionId: () => 'sess-next',
+    getActiveStreamingMessageId: undefined,
+    getLiveStreamRegistry: undefined,
+    scheduleToolPatch: undefined,
+  });
+  await createSessionOperationService(deps5).selectSession('sess-next');
 });

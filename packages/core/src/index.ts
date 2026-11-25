@@ -65,6 +65,7 @@ export * from './viewport/adaptiveMedianEstimator.js';
 export * from './viewport/renderScrollDecision.js';
 export * from './viewport/scrollEndMachine.js';
 export * from './turn/slidingWatchdog.js';
+export * from './session/liveStreamSync.js';
 export * from './session/sessionStatusStore.js';
 export type {
   AttachedImageResult,

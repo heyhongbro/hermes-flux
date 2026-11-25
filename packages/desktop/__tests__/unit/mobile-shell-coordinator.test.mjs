@@ -1279,3 +1279,29 @@ test('移动端检查舱成果物自动聚合与正文路径唤起阅读器/灯�
     console.warn = savedWarnErr;
   }
 });
+
+test('MobileShellCoordinator: 仅在切入 stage 屏且从非 stage 迁入时触发 onEnterStage 拉取最新消息/流', () => {
+  let enterStageCalls = 0;
+  const h = createHarness({
+    onEnterStage: () => { enterStageCalls += 1; },
+  });
+  const acts = h.coordinator.getActions();
+
+  // 默认启动在 home，切入 stage 触发一次，且每次切屏均必须 render（L499）
+  const rendersBefore = h.calls.filter(([k]) => k === 'render').length;
+  acts.onSelectPane('stage');
+  assert.equal(enterStageCalls, 1, 'home -> stage 必须触发 onEnterStage');
+  assert.equal(h.calls.filter(([k]) => k === 'render').length, rendersBefore + 1);
+
+  // 已在 stage 时重复点击不重复拉取
+  acts.onSelectPane('stage');
+  assert.equal(enterStageCalls, 1, 'stage -> stage 不得重复触发');
+
+  // 切入 inspector 再切回 home 不触发 onEnterStage（kills L495 pane === 'stage' -> true），再切到 stage 才触发
+  acts.onSelectPane('inspector');
+  assert.equal(enterStageCalls, 1);
+  acts.onSelectPane('home');
+  assert.equal(enterStageCalls, 1, 'inspector -> home 绝不得误触发 onEnterStage');
+  acts.onSelectPane('stage');
+  assert.equal(enterStageCalls, 2, 'home -> stage 返回必须触发 onEnterStage 续流/对账');
+});

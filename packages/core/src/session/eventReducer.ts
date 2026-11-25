@@ -133,12 +133,28 @@ export interface SubagentUpdateAction {
 }
 
 export type TurnAction =
-  | { type: 'turn-started' }
+  | {
+      type: 'turn-started';
+      turnId?: string;
+      text?: string;
+      displayText?: string;
+      displayKind?: string;
+    }
   | { type: 'turn-completed'; sessionId?: string; finalText?: string }
   | { type: 'turn-failed'; sessionId?: string; message: string }
-  | { type: 'append-content'; messageId: string; text: string }
+  | { type: 'append-content'; messageId: string; text: string; turnId?: string; segment?: number; offset?: number }
   | { type: 'append-thought'; messageId: string; text: string }
+  | {
+      type: 'interim-content';
+      messageId: string;
+      text: string;
+      alreadyStreamed: boolean;
+      turnId?: string;
+      segment?: number;
+    }
   | { type: 'replace-content'; messageId: string; text: string }
+  | { type: 'stream-activity'; sessionId: string; eventType: string }
+  | { type: 'session-reclaimed'; sessionId: string; storedSessionId?: string; reason: string }
   | { type: 'tool-start'; messageId: string; toolCall: { id: string; name: string; args: string; title?: string } }
   | { type: 'tool-complete'; messageId: string; toolCallId: string; output?: string; durationMs?: number; imagePath?: string; inlineDiff?: string }
   | {
@@ -382,6 +398,19 @@ export function reduceGatewayEvent(params: unknown, ctx: TurnEventContext): Turn
     return [{ type: 'session-title', sessionId, title }];
   }
 
+  if (type === 'session.reclaimed') {
+    const sessionId = frameSessionId || asText(payload.session_id);
+    const storedSessionId = asText(payload.stored_session_id) || undefined;
+    const resolvedId = sessionId || storedSessionId;
+    if (!resolvedId) return [];
+    return [{
+      type: 'session-reclaimed',
+      sessionId: resolvedId,
+      ...(storedSessionId ? { storedSessionId } : {}),
+      reason: asText(payload.reason),
+    }];
+  }
+
   if (type === 'error') {
     const message = asText(payload.message) || '网关返回了未标注内容的系统错误';
     const action: TurnAction = { type: 'turn-failed', message };
@@ -543,15 +572,26 @@ export function reduceGatewayEvent(params: unknown, ctx: TurnEventContext): Turn
   }
 
   // --- Turn-scoped events: ignore streams belonging to other sessions ------
-  if (frameSessionId && ctx.activeSessionIds.length > 0 && !ctx.activeSessionIds.includes(frameSessionId)) {
+  if (frameSessionId && !ctx.activeSessionIds.includes(frameSessionId)) {
     return [];
   }
 
   const messageId = ctx.activeStreamingMessageId;
 
   switch (type) {
-    case 'message.start':
-      return [{ type: 'turn-started' }];
+    case 'message.start': {
+      const turnId = asText(payload.turn_id) || undefined;
+      const text = asText(payload.text) || undefined;
+      const displayText = asText(payload.display_text) || undefined;
+      const displayKind = asText(payload.display_kind) || undefined;
+      return [{
+        type: 'turn-started',
+        ...(turnId ? { turnId } : {}),
+        ...(text ? { text } : {}),
+        ...(displayText ? { displayText } : {}),
+        ...(displayKind ? { displayKind } : {}),
+      }];
+    }
 
     case 'btw.complete':
     case 'background.complete': {
@@ -566,9 +606,42 @@ export function reduceGatewayEvent(params: unknown, ctx: TurnEventContext): Turn
     }
 
     case 'message.delta': {
+      if (payload.text === null) {
+        const sid = frameSessionId || ctx.activeSessionIds[0] || '';
+        return sid ? [{ type: 'stream-activity', sessionId: sid, eventType: type }] : [];
+      }
       const text = asText(payload.text);
       if (!text || !messageId) return [];
-      return [{ type: 'append-content', messageId, text }];
+      const turnId = asText(payload.turn_id) || undefined;
+      const segment = asFiniteNumber(payload.segment);
+      const offset = asFiniteNumber(payload.offset);
+      return [{
+        type: 'append-content',
+        messageId,
+        text,
+        ...(turnId ? { turnId } : {}),
+        ...(segment !== undefined ? { segment } : {}),
+        ...(offset !== undefined ? { offset } : {}),
+      }];
+    }
+
+    case 'message.interim': {
+      const text = asText(payload.text);
+      const alreadyStreamed = Boolean(payload.already_streamed);
+      const turnId = asText(payload.turn_id) || undefined;
+      const segment = asFiniteNumber(payload.segment);
+      if (messageId) {
+        return [{
+          type: 'interim-content',
+          messageId,
+          text,
+          alreadyStreamed,
+          ...(turnId ? { turnId } : {}),
+          ...(segment !== undefined ? { segment } : {}),
+        }];
+      }
+      const sid = frameSessionId || ctx.activeSessionIds[0] || '';
+      return sid ? [{ type: 'stream-activity', sessionId: sid, eventType: type }] : [];
     }
 
     case 'thinking.delta':
@@ -576,6 +649,20 @@ export function reduceGatewayEvent(params: unknown, ctx: TurnEventContext): Turn
       const text = asText(payload.text);
       if (!text || !messageId) return [];
       return [{ type: 'append-thought', messageId, text }];
+    }
+
+    case 'tool.progress':
+    case 'tool.generating':
+    case 'status.update':
+    case 'reasoning.available':
+    case 'agent.terminal.output':
+    case 'browser.progress':
+    case 'moa.phase':
+    case 'moa.progress':
+    case 'moa.reference':
+    case 'moa.aggregating': {
+      const sid = frameSessionId || ctx.activeSessionIds[0] || '';
+      return sid ? [{ type: 'stream-activity', sessionId: sid, eventType: type }] : [];
     }
 
     case 'tool.start': {
@@ -606,6 +693,8 @@ export function reduceGatewayEvent(params: unknown, ctx: TurnEventContext): Turn
       const output = formatEventToolOutput(payload.output ?? payload.result ?? payload.text ?? payload.error);
       const imagePath = asText(payload.image_path).trim() || undefined;
       const inlineDiff = asText(payload.inline_diff).trim() || undefined;
+      const durationSec = asFiniteNumber(payload.duration_s);
+      const durationMs = durationSec !== undefined && durationSec >= 0 ? Math.round(durationSec * 1000) : undefined;
 
       if (messageId) {
         actions.push({
@@ -615,6 +704,7 @@ export function reduceGatewayEvent(params: unknown, ctx: TurnEventContext): Turn
           output,
           ...(imagePath ? { imagePath } : {}),
           ...(inlineDiff ? { inlineDiff } : {}),
+          ...(durationMs !== undefined ? { durationMs } : {}),
         });
       }
       return actions;

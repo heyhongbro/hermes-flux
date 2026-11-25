@@ -348,3 +348,72 @@ test('TokenStreamWriter: 思维链直写 DOM 展开 details 折叠面板并更�
   assert.equal(sessionMessagesCache.size, cacheSizeBefore);
   assert.equal(state.messages[1].content, 'Hello ');
 });
+
+test('TokenStreamWriter: 多会话并发消息精确归属 resolveSessionIdForMessage 与 Forever Chat 隔离更新', () => {
+  const botUpdates = [];
+  const state = {
+    activeSessionId: 'sess-a',
+    activeFocus: { type: 'session', sessionId: 'sess-a' },
+    sessions: [
+      { id: 'sess-a', title: 'A', botName: 'default', preview: '', timestamp: 0 },
+      { id: 'sess-bg-forever', title: 'Bot', botName: 'arch-bot', preview: '', timestamp: 0 },
+    ],
+    messages: [{ id: 'ast-a', role: 'assistant', content: 'A0' }],
+  };
+  const cache = new Map([
+    ['sess-a', state.messages],
+    ['sess-bg-forever', [{ id: 'ast-bg', role: 'assistant', content: 'B0' }]],
+  ]);
+
+  const ownerMap = new Map([
+    ['ast-a', 'sess-a'],
+    ['ast-bg', 'sess-bg-forever'],
+  ]);
+  const writer = createTokenStreamWriter({
+    getState: () => state,
+    sessionMessagesCache: cache,
+    botActivityStore: {
+      updateLatestActivity: (botName, content) => botUpdates.push({ botName, content }),
+    },
+    getActiveStreamingStoredSessionId: () => 'sess-a',
+    resolveSessionIdForMessage: (mid) => ownerMap.get(mid) ?? null,
+    resolveBotNameForSession: (sid) => (sid === 'sess-bg-forever' ? 'arch-bot' : null),
+    isStreamNearBottom: () => false,
+    markProgrammaticScroll: () => {},
+  });
+
+  // 同时刷新前台普通会话 ast-a 与后台 Forever Chat ast-bg
+  writer.writeFlushedTokens(new Map([
+    ['ast-a', { content: '+A1' }],
+    ['ast-bg', { content: '+B1' }],
+  ]));
+
+  assert.equal(state.messages[0].content, 'A0+A1');
+  assert.equal(cache.get('sess-a')[0].content, 'A0+A1');
+  assert.equal(cache.get('sess-bg-forever')[0].content, 'B0+B1');
+  assert.equal(state.messages.some((m) => m.id === 'ast-bg'), false, '后台消息绝对不得串入当前激活视口 state.messages');
+  assert.deepEqual(
+    botUpdates,
+    [{ botName: 'arch-bot', content: 'B0+B1' }],
+    '仅 Forever Chat 允许反哺 Bot 活动摘要，Scratchpad 普通会话严禁污染',
+  );
+
+  // 补充：focus 为 bot 但后台普通会话 delta 到来，isCurrentSessionActive=false 时绝不能误更新 activeFocus.botName（L105），
+  // 且激活会话 state.messages 缺失 msgId 但 cached 已有条目时，必须从 cache 同步回 state.messages（L112, L120）
+  botUpdates.length = 0;
+  state.activeFocus = { type: 'bot', botName: 'focused-bot' };
+  state.activeSessionId = 'sess-focused-bot';
+  state.messages = [{ id: 'u-pre', role: 'user', content: 'q' }];
+  ownerMap.set('ast-bg-normal', 'sess-bg-normal');
+  ownerMap.set('ast-hydrate', 'sess-focused-bot');
+  writer.writeFlushedTokens(new Map([
+    ['ast-bg-normal', { content: 'norm', thought: 'bg-thought' }],
+  ]));
+  assert.equal(botUpdates.length, 0, '非激活普通会话绝不可借 activeFocus.bot 错写 Bot 活动');
+  assert.equal(cache.get('sess-bg-normal')?.[0]?.thought, 'bg-thought');
+
+  writer.writeFlushedTokens(new Map([
+    ['ast-hydrate', { content: 'hydrated' }],
+  ]));
+  assert.equal(state.messages.some((m) => m.id === 'ast-hydrate' && m.content === 'hydrated'), true);
+});

@@ -229,4 +229,68 @@ test('TokenCoalescer Streaming Coalescing Engine Unit & Mutation Tests', async (
     coalescer.clear();
     assert.equal(called, false);
   });
+
+  await t.test('10. dropMessage: 精确剔除目标消息并按空缓冲区复位 rAF 句柄', () => {
+    const originalRaf = globalThis.requestAnimationFrame;
+    const originalCancel = globalThis.cancelAnimationFrame;
+    let nextId = 100;
+    const activeIds = [];
+    const canceledIds = [];
+
+    globalThis.requestAnimationFrame = () => {
+      const id = ++nextId;
+      activeIds.push(id);
+      return id;
+    };
+    globalThis.cancelAnimationFrame = (id) => {
+      canceledIds.push(id);
+    };
+
+    try {
+      const batches = [];
+      const coalescer = new TokenCoalescer((batch) => batches.push(batch), { cadence: true });
+
+      assert.equal(coalescer.dropMessage('missing-empty'), false);
+
+      coalescer.push({ messageId: 'm1', delta: 'drop-me' });
+      coalescer.push({ messageId: 'm2', delta: 'keep-me' });
+      assert.equal(activeIds.length, 1);
+
+      assert.equal(coalescer.dropMessage('non-existent'), false);
+      assert.equal(coalescer.dropMessage('m1'), true);
+      // 缓冲区仍有 m2 时严禁取消在途 rAF
+      assert.equal(canceledIds.length, 0);
+      coalescer.flush();
+      assert.equal(batches.length, 1);
+      assert.equal(batches[0].has('m1'), false);
+      assert.deepEqual(batches[0].get('m2'), { content: 'keep-me', thought: '' });
+
+      // 移除最后一条消息时必须取消 rAF 并清零 rafId，后续 push 必须能重新调度
+      coalescer.push({ messageId: 'm-only', delta: 'abc' });
+      assert.equal(activeIds.length, 2);
+      const cancelBefore = canceledIds.length;
+      assert.equal(coalescer.dropMessage('m-only'), true);
+      assert.deepEqual(canceledIds.slice(cancelBefore), [102]);
+      coalescer.push({ messageId: 'm-after', delta: 'xyz' });
+      assert.equal(activeIds.length, 3, 'dropMessage 清空缓冲区必须复位 rafId 以便下次调度');
+      coalescer.clear();
+    } finally {
+      globalThis.requestAnimationFrame = originalRaf;
+      globalThis.cancelAnimationFrame = originalCancel;
+    }
+
+    // cancelAnimationFrame 缺失环境下仍可安全 drop
+    const savedCancel = globalThis.cancelAnimationFrame;
+    const savedRaf = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = () => 99;
+    globalThis.cancelAnimationFrame = undefined;
+    try {
+      const c2 = new TokenCoalescer(() => {}, { cadence: true });
+      c2.push({ messageId: 'm-noraf', delta: 'v' });
+      assert.equal(c2.dropMessage('m-noraf'), true);
+    } finally {
+      globalThis.requestAnimationFrame = savedRaf;
+      globalThis.cancelAnimationFrame = savedCancel;
+    }
+  });
 });
