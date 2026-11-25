@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveAndroidSigningStatus } from './android-signing-config.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +47,15 @@ if (!env.ANDROID_HOME && process.env.LOCALAPPDATA) {
 }
 if (!env.ANDROID_SDK_ROOT && env.ANDROID_HOME) {
   env.ANDROID_SDK_ROOT = env.ANDROID_HOME;
+}
+
+const signingStatus = resolveAndroidSigningStatus({ androidDir, env });
+if (signingStatus.mode === 'release') {
+  console.log(`  [android:build] Release signing: Release Keystore (${signingStatus.source}: ${signingStatus.keystorePath})`);
+} else {
+  console.warn(
+    `  [android:build] WARNING: Release APK will fall back to Debug Keystore (${signingStatus.missingFields.join(', ')}) — Android will warn "开发者身份未验证". Configure keystore.properties or ANDROID_KEYSTORE_* (see docs/testing/android-release-signing.md).`,
+  );
 }
 
 execSync(`${gradlewCmd} assembleRelease assembleDebug`, { cwd: androidDir, stdio: 'inherit', env });

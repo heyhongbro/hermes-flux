@@ -13,6 +13,7 @@ import path from 'node:path';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { LeftRail } from '../dist/components-react/LeftRail.js';
+import { RailOrgContainerSection } from '../dist/components-react/RailOrgContainers.js';
 import {
   ActivityIndicator,
   ACTIVITY_INDICATOR_VARIANTS,
@@ -737,4 +738,38 @@ test('反密集点阵与六变体结构守卫：三套重制彻底清零密点�
   const matrixDone = unreadOf('matrix');
   assert.ok(matrixDone.includes('flux-vortex-done-outer'));
   assert.ok(matrixDone.includes('flux-vortex-done-ring'));
+});
+
+test('容器标题图标几何对齐：项目与自定义文件夹 icon 必须位于名称之后而非左侧对齐线前', () => {
+  const projectHtml = renderToStaticMarkup(React.createElement(RailOrgContainerSection, {
+    kind: 'project',
+    id: 'p-flux',
+    containerId: 'prj:p-flux',
+    name: 'FluxWorkspace',
+    expanded: true,
+    isSearching: false,
+    isEmpty: false,
+    children: React.createElement('div', null, 'child'),
+  }));
+  const projTitleIdx = projectHtml.indexOf('FluxWorkspace');
+  const projIconIdx = projectHtml.indexOf('data-container-icon="project"');
+  assert.ok(projTitleIdx > -1 && projIconIdx > -1, '项目分节必须渲染名称与项目图标');
+  assert.ok(projTitleIdx < projIconIdx, '项目图标必须排在名称之后，确保名称左侧与其它分区严格同轴对齐');
+
+  const folderHtml = renderToStaticMarkup(React.createElement(RailOrgContainerSection, {
+    kind: 'folder',
+    id: 'fld-1',
+    containerId: 'fld-1',
+    name: 'MyCustomFolder',
+    color: 'primary',
+    expanded: true,
+    isSearching: false,
+    isEmpty: false,
+    children: React.createElement('div', null, 'child'),
+  }));
+  const fldTitleIdx = folderHtml.indexOf('MyCustomFolder');
+  const fldIconIdx = folderHtml.indexOf('data-container-icon="folder"');
+  assert.ok(fldTitleIdx > -1 && fldIconIdx > -1, '文件夹分节必须渲染名称与文件夹图标');
+  assert.ok(fldTitleIdx < fldIconIdx, '自定义文件夹图标必须排在名称之后');
+  assert.ok(folderHtml.includes('text-primary'), '自定义文件夹颜色 Token 必须保留');
 });

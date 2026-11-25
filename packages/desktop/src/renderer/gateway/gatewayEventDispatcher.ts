@@ -323,6 +323,12 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
                 if (action.output) {
                   tc.output = typeof action.output === 'object' ? JSON.stringify(action.output, null, 2) : String(action.output);
                 }
+                if (action.imagePath) {
+                  tc.imagePath = action.imagePath;
+                }
+                if (action.inlineDiff) {
+                  tc.inlineDiff = action.inlineDiff;
+                }
                 const serverMs = action.durationMs;
                 if (typeof serverMs === 'number' && serverMs >= 0) {
                   tc.durationMs = tc.durationMs !== undefined ? Math.max(tc.durationMs, serverMs) : serverMs;

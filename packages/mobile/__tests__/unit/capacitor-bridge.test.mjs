@@ -767,6 +767,86 @@ test('hapticSelection 与 saveFile remoteUrl 下载导出契约', async () => {
     assert.deepEqual(readCalls, [{ path: '/cache/src.bin' }]);
     assert.equal(writeCalls[0]?.data, 'SGk=');
     assert.equal(shareCalls[0]?.url, 'file:///docs/src.bin');
+
+    // 注入 FileReader Mock：覆盖 httpProxy 字节流 MIME 回退(.mp4)、>50MB 413 守卫、text/html 放行与 saveFile(blob:)
+    const origFileReader = globalThis.FileReader;
+    globalThis.FileReader = class MockFileReader {
+      readAsDataURL(blob) {
+        blob.arrayBuffer().then((buf) => {
+          const b64 = Buffer.from(buf).toString('base64');
+          const mime = blob.type || 'application/octet-stream';
+          this.result = `data:${mime};base64,${b64}`;
+          this.onloadend?.();
+        }).catch((err) => this.onerror?.(err));
+      }
+    };
+    try {
+      let fetchMode = 'mp4-octet';
+      globalThis.fetch = async (url) => {
+        if (String(url).startsWith('blob:')) {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'video/mp4' }),
+            blob: async () => new Blob([Uint8Array.from([1, 2, 3, 4])], { type: 'video/mp4' }),
+          };
+        }
+        if (fetchMode === 'too-large') {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'video/mp4' }),
+            blob: async () => ({ size: 50 * 1024 * 1024 + 1, type: 'video/mp4', slice() { return this; } }),
+          };
+        }
+        if (fetchMode === 'html') {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
+            text: async () => '<html><body>SPA</body></html>',
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/octet-stream' }),
+          blob: async () => new Blob([Uint8Array.from([9, 8, 7])], { type: 'application/octet-stream' }),
+        };
+      };
+
+      const dataVideo = await mockFsBridge.httpProxy({
+        baseUrl: 'https://gw.example.com',
+        path: '/api/fs/download?path=%2Ftmp%2Fclip.mp4&profile=default',
+        method: 'GET',
+      });
+      assert.ok(String(dataVideo).startsWith('data:video/mp4;base64,'));
+
+      fetchMode = 'too-large';
+      await assert.rejects(
+        () => mockFsBridge.httpProxy({ baseUrl: 'https://gw.example.com', path: '/tmp/huge.mp4', method: 'GET' }),
+        /413|50MB/,
+      );
+
+      fetchMode = 'html';
+      const htmlFallback = await mockFsBridge.httpProxy({
+        baseUrl: 'https://gw.example.com',
+        path: '/api/fs/download?path=clip.mp4',
+        method: 'GET',
+      });
+      assert.equal(htmlFallback, '<html><body>SPA</body></html>');
+
+      const blobSaved = await mockFsBridge.saveFile({
+        fileName: 'clip.mp4',
+        content: 'blob:https://localhost/clip-1',
+        isBase64: false,
+      });
+      assert.equal(blobSaved.success, true);
+      assert.equal(writeCalls.at(-1)?.path, 'clip.mp4');
+      assert.equal(writeCalls.at(-1)?.data, Buffer.from([1, 2, 3, 4]).toString('base64'));
+    } finally {
+      globalThis.FileReader = origFileReader;
+    }
   } finally {
     globalThis.fetch = prevFetch;
   }

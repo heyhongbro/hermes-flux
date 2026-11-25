@@ -74,6 +74,8 @@ export interface CachedToolCall {
   argsText?: string;
   resultText?: string;
   status: 'running' | 'done' | 'error';
+  imagePath?: string;
+  inlineDiff?: string;
 }
 
 /** 消息缓存行。主键四元组 (profile, channel, channelId, orderKey)。 */

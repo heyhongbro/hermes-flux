@@ -143,12 +143,22 @@ function MobileContainerHeader({
       onPointerCancel={clearTimer}
     >
       <ChevronRight size={14} className="m-section__chevron" aria-hidden="true" />
-      {bucket.kind === 'project' ? (
-        <FolderGit2 size={14} className="m-section__folder-icon" aria-hidden="true" />
-      ) : (
-        <Folder size={14} className="m-section__folder-icon" aria-hidden="true" />
-      )}
       <span className="m-section__title">{bucket.name}</span>
+      {bucket.kind === 'project' ? (
+        <FolderGit2
+          size={14}
+          className="m-section__folder-icon"
+          data-container-icon="project"
+          aria-hidden="true"
+        />
+      ) : (
+        <Folder
+          size={14}
+          className={`m-section__folder-icon${bucket.color ? ` m-section__folder-icon--${bucket.color}` : ''}`}
+          data-container-icon="folder"
+          aria-hidden="true"
+        />
+      )}
     </button>
   );
 }
@@ -225,7 +235,7 @@ export function MobileHomeScreen({
           subtitle={row.subtitle || t('mobile.home.groupMembersCount', { count: row.members.length })}
           timeText={row.timeText}
           avatarHtml={renderGroupCollageAvatar(row.members, groupAvatars, 40)}
-          isActive={row.isActive}
+          isActive={false}
           activityState={row.activityState}
           activityTransition={row.activityTransition}
           activityTransitionToken={row.activityTransitionToken}
@@ -257,7 +267,7 @@ export function MobileHomeScreen({
           40,
           'circle',
         )}
-        isActive={row.isActive}
+        isActive={false}
         isPinned={row.isPinned}
         activityState={row.activityState}
         activityTransition={row.activityTransition}
@@ -447,7 +457,7 @@ export function MobileHomeScreen({
                     subtitle={row.subtitle}
                     timeText={row.timeText}
                     avatarHtml={renderBotAvatar(row.profile.name, row.profile.displayName, row.avatarUrl, 40, 'circle')}
-                    isActive={row.isActive}
+                    isActive={false}
                     activityState={row.activityState}
                     activityTransition={row.activityTransition}
                     activityTransitionToken={row.activityTransitionToken}

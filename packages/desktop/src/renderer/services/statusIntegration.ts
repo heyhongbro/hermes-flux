@@ -53,6 +53,7 @@ export interface StatusIntegration {
   getRightPodSnapshot(): RightPodSnapshot;
   getRightPodActions(): RightPodActions;
   getRunningSubagentCount(): number;
+  getActiveSubagentWrittenPaths(): string[];
   onToggleInspector(): void;
   onBackFromFiles(): void;
   onInspectorStateChange(): void;
@@ -118,6 +119,17 @@ export function createStatusIntegration(deps: StatusIntegrationDeps): StatusInte
     getRightPodSnapshot: () => service.getRightPodSnapshot(),
     getRightPodActions: () => service.getRightPodActions(),
     getRunningSubagentCount: () => service.getRunningSubagentCount(),
+    getActiveSubagentWrittenPaths: () => {
+      const sid = deps.getState().activeSessionId;
+      if (!sid) return [];
+      const out = new Set<string>();
+      for (const task of service.subagentStore.getTasksBySession(sid)) {
+        for (const p of task.filesWritten ?? []) {
+          if (p) out.add(p);
+        }
+      }
+      return Array.from(out);
+    },
     onToggleInspector: () => service.applyRightPodAction({ type: 'toggle-status-bar' }),
     onBackFromFiles: () => service.applyRightPodAction({ type: 'back-from-files' }),
     onInspectorStateChange: () => {

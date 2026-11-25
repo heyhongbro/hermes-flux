@@ -43,6 +43,7 @@ import {
   type TitlebarSnapshot,
   type ConversationSnapshot,
   type ConversationMessageVM,
+  type MediaLightboxItem,
   type RenderInputDockSnapshot,
   type MessageViewModel,
   type DataPhase,
@@ -64,9 +65,16 @@ import {
   doesSessionBelongToProject,
   decideViewportPin,
   chooseViewportAnchor,
-  extractPathBasename,
+  type DeliverableItem,
 } from '@hermes-flux/core';
-import { type AppState, resolveActiveViewportKey, resolveActiveWorkspaceCwd } from './state/appState.js';
+import { type AppState, resolveActiveViewportKey } from './state/appState.js';
+import { createDesktopMediaLightboxController } from './services/desktopMediaLightboxController.js';
+import {
+  buildInspectorProps,
+  setInspectorClassFlag,
+  setInspectorPodModeAttr,
+  syncInspectorRailChrome,
+} from './inspectorDomHelper.js';
 import { decideConversationPush } from './conversationPush.js';
 import type { MessageWindowManager } from './messageWindowManager.js';
 import type { ModalInteractionController } from './events/modalInteractionController.js';
@@ -118,6 +126,14 @@ export interface RenderCoordinatorDeps {
   modalInteractionController: ModalInteractionController;
   isStreamingActiveForCurrentSession: () => boolean;
   resolveSessionKnownFiles: () => readonly string[];
+  getVerifiedDeliverablePaths?: () => readonly string[];
+  getSubagentWrittenPaths?: () => readonly string[];
+  getSessionDeliverables?: () => readonly DeliverableItem[];
+  scheduleDeliverableVerification?: () => void;
+  clearDeliverables?: () => void;
+  resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
+  onOpenFile?: (filePath: string, previewUrl?: string) => void;
+  onDownloadMediaItem?: (item: MediaLightboxItem) => void;
 
   // 标题栏操作
   getTitlebarSnapshot: () => TitlebarSnapshot;
@@ -195,6 +211,8 @@ export interface RenderCoordinator {
   mountReactShellComponents(): void;
   syncRightPod(): void;
   syncTitlebar(): void;
+  openMediaLightbox(items: readonly MediaLightboxItem[], initialIndex: number): void;
+  closeMediaLightbox(): void;
   isMobileShellActive(): boolean;
 
   getCanvasStructureDirty(): boolean;
@@ -258,9 +276,15 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
   let lastSeenLoadingOlder = false;
   let lastSeenMessagesPhase: DataPhase = 'ready';
   let lastSeenStreaming = false;
+  let lastSeenVerifiedPaths: readonly string[] | undefined = undefined;
+  let lastSeenSubagentWritten: readonly string[] | undefined = undefined;
   let renderedMessageIds = new Set<string>();
   let reactMessageList: ReturnType<typeof mountMessageList> | null = null;
   let reactMessageListHost: HTMLElement | null = null;
+  const desktopLightboxController = createDesktopMediaLightboxController({
+    onDownloadMediaItem: deps.onDownloadMediaItem,
+    resolveMediaUrl: deps.resolveMediaUrl,
+  });
 
   let canvasStructureDirty = false;
   let suppressPinBottomOnce = false;
@@ -510,17 +534,25 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
       virtualHeightPx: deps.messageWindowManager.computeVirtualHeightPx(),
       virtualWindowAtTail: messageWindowEnd >= state.messages.length,
       knownFiles: deps.resolveSessionKnownFiles(),
+      verifiedDeliverablePaths: deps.getVerifiedDeliverablePaths?.(),
+      subagentWrittenPaths: deps.getSubagentWrittenPaths?.(),
       locale: state.lang,
       compactTrace: mobileActive,
       onOpenSubagentDetail: mobileActive
         ? (payload) => mobileShellCoordinator?.openSubagentDetail(payload)
         : undefined,
+      resolveMediaUrl: deps.resolveMediaUrl,
+      onOpenFile: deps.onOpenFile,
+      onDownloadMediaItem: deps.onDownloadMediaItem,
+      onOpenMediaLightbox: mobileActive
+        ? (items, initialIndex) => mobileShellCoordinator?.openMediaLightbox(items, initialIndex)
+        : (items, initialIndex) => openMediaLightbox(items, initialIndex),
       messages: windowedMessages.map((m) => {
         const isLast = m.id === lastMessageId;
         const displayKind = m.displayKind ?? 'user';
         const toolsSignature =
           m.toolCalls
-            ?.map((tc) => `${tc.id}:${tc.status}:${tc.output?.length ?? 0}:${tc.args?.length ?? 0}:${tc.subagentId ?? ''}`)
+            ?.map((tc) => `${tc.id}:${tc.status}:${tc.output?.length ?? 0}:${tc.args?.length ?? 0}:${tc.subagentId ?? ''}:${tc.imagePath ?? ''}:${tc.inlineDiff?.length ?? 0}`)
             .join('|') ?? '';
         if (!isLast) {
           const cached = conversationVmCache.get(m);
@@ -556,6 +588,8 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
             startedAt: tc.startTime,
             subagentId: tc.subagentId,
             delegationId: tc.delegationId,
+            imagePath: tc.imagePath,
+            inlineDiff: tc.inlineDiff,
           })),
         };
         if (!isLast) {
@@ -618,11 +652,18 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     const messagesPhaseChanged = lastSeenMessagesPhase !== state.messagesPhase;
     lastSeenMessagesPhase = state.messagesPhase;
 
+    const nextVerified = deps.getVerifiedDeliverablePaths?.();
+    const nextSubagent = deps.getSubagentWrittenPaths?.();
+    const deliverablesDepsChanged =
+      nextVerified !== lastSeenVerifiedPaths || nextSubagent !== lastSeenSubagentWritten;
+    lastSeenVerifiedPaths = nextVerified;
+    lastSeenSubagentWritten = nextSubagent;
+
     const shouldPush = decideConversationPush({
       prevIds: renderedMessageIds,
       nextIds: currentIds,
       justStoppedStreaming,
-      force: force || sessionSwitchPending,
+      force: force || sessionSwitchPending || deliverablesDepsChanged,
       loadingOlderChanged,
       messagesPhaseChanged,
     });
@@ -633,6 +674,18 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
       renderedMessageIds = new Set(currentIds);
       deps.messageWindowManager.scheduleVirtualHeightSync();
     }
+  }
+
+  function openMediaLightbox(items: readonly MediaLightboxItem[], initialIndex: number): void {
+    if (isMobileShellActive() && mobileShellCoordinator) {
+      mobileShellCoordinator.openMediaLightbox(items, initialIndex);
+      return;
+    }
+    desktopLightboxController.open(items, initialIndex);
+  }
+
+  function closeMediaLightbox(): void {
+    desktopLightboxController.close();
   }
 
   function bindInspectorController(el: HTMLElement): NonNullable<typeof inspectorMotionController> {
@@ -650,37 +703,6 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     });
     inspectorMotionController = controller;
     return controller;
-  }
-
-  function buildInspectorProps(collapsed: boolean) {
-    const state = deps.getState();
-    const cwd = resolveActiveWorkspaceCwd(state);
-    return {
-      collapsed,
-      podMode: state.rightPodMode?.kind ?? (collapsed ? 'closed' : 'files'),
-      canReturnToStatus: state.rightPodMode?.kind === 'files' && state.rightPodMode?.returnTo === 'status',
-      activeTab: state.activeInspectorTab,
-      gatewayConnected: state.gatewayConnected,
-      isFullscreen: state.inspectorFullscreen,
-      openFiles: state.openFiles,
-      activeFilePath: state.activeFilePath,
-      viewMode: state.fileViewMode,
-      showLineNumbers: state.fileShowLineNumbers,
-      wordWrap: state.fileWordWrap,
-      searchOpen: state.fileSearchOpen,
-      searchQuery: state.fileSearchQuery,
-      fileTreeState: state.fileTreeState ?? { status: 'idle' as const },
-      fileTreeExpandedPaths: state.fileTreeExpandedPaths ?? [],
-      fileTreeFilterQuery: state.fileTreeFilterQuery ?? '',
-      fileTreeCollapsed: state.fileTreeCollapsed ?? false,
-      workspaceRootName: extractPathBasename(
-        cwd || (state.fileTreeState?.status === 'ready' ? state.fileTreeState.rootPath : ''),
-      ),
-      artifacts: state.artifacts,
-      browserFrame: state.browserFrame,
-      gitDiffs: state.gitDiffs,
-      memories: state.memories,
-    };
   }
 
   function syncTitlebar(): void {
@@ -1074,7 +1096,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
               : '',
           })}
 
-          ${renderInspectionPod(buildInspectorProps(state.inspectorCollapsed))}
+          ${renderInspectionPod(buildInspectorProps(state, state.inspectorCollapsed, deps.getSessionDeliverables))}
           </div><!-- /.flux-main-block -->
         </div>
 
@@ -1117,40 +1139,25 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
       const replaceTarget = shellEl ?? inspectEl;
       if (replaceTarget && inspectEl) {
         const targetMode = state.rightPodMode?.kind ?? (state.inspectorCollapsed ? 'closed' : 'files');
-        const isFilesActive = !state.inspectorCollapsed && targetMode === 'files';
         const isFs = Boolean(state.inspectorFullscreen) && !state.inspectorCollapsed;
-        const setPodModeAttr = (el: HTMLElement, mode: string): void => {
-          if (el.dataset) el.dataset.podMode = mode;
-          el.setAttribute?.('data-pod-mode', mode);
-        };
-        const setClassFlag = (el: Element | null | undefined, cls: string, on: boolean): void => {
-          if (!el?.classList) return;
-          if (typeof el.classList.toggle === 'function') {
-            el.classList.toggle(cls, on);
-          } else if (on) {
-            el.classList.add(cls);
-          } else {
-            el.classList.remove(cls);
-          }
-        };
-
-        root.querySelectorAll('#flux-inspector-rail .vertical-tab-item').forEach((btn) => {
-          setClassFlag(btn, 'active-tab', isFilesActive);
-          btn.setAttribute('aria-pressed', isFilesActive ? 'true' : 'false');
-        });
-        setClassFlag(shellEl, 'inspector-shell-fullscreen', isFs);
-        setClassFlag(inspectEl, 'inspector-fullscreen', isFs);
+        const deliverablesCount = deps.getSessionDeliverables ? deps.getSessionDeliverables().length : 0;
+        syncInspectorRailChrome(root, state, targetMode, deliverablesCount);
+        setInspectorClassFlag(shellEl, 'inspector-shell-fullscreen', isFs);
+        setInspectorClassFlag(inspectEl, 'inspector-fullscreen', isFs);
 
         if (!state.inspectorCollapsed && targetMode === 'files') {
           const filesHost = root.querySelector('#flux-inspector-files-host') as HTMLElement | null;
           if (filesHost) {
-            filesHost.innerHTML = renderInspectionPod({ ...buildInspectorProps(false), innerOnly: true });
+            filesHost.innerHTML = renderInspectionPod({
+              ...buildInspectorProps(state, false, deps.getSessionDeliverables),
+              innerOnly: true,
+            });
           }
         }
 
         if (lastInspectorCollapsed !== state.inspectorCollapsed) {
           if (!state.inspectorCollapsed) {
-            setPodModeAttr(inspectEl, targetMode);
+            setInspectorPodModeAttr(inspectEl, targetMode);
             inspectEl.classList.add('inspector-collapsed');
             inspectEl.style.display = 'flex';
             void inspectEl.offsetWidth;
@@ -1164,7 +1171,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
           }
           lastInspectorCollapsed = state.inspectorCollapsed;
         } else if (!state.inspectorCollapsed) {
-          setPodModeAttr(inspectEl, targetMode);
+          setInspectorPodModeAttr(inspectEl, targetMode);
           if (!inspectorMotionController) {
             bindInspectorController(inspectEl);
           }
@@ -1299,6 +1306,9 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
 
       deps.syncComposerBadges?.();
       deps.syncComposerPoppers();
+      deps.scheduleDeliverableVerification?.();
+    } else {
+      deps.scheduleDeliverableVerification?.();
     }
 
     // 【规则】进入计划挂起时即使消息快照未变也必须推进，否则缓存命中的切会话永远不落定；
@@ -1389,6 +1399,8 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
       reactMessageList = null;
       reactMessageListHost = null;
     }
+    desktopLightboxController.dispose();
+    deps.clearDeliverables?.();
     updateReactRightPod = null;
     reactRightPodHost = null;
     updateReactNewChat = null;
@@ -1410,6 +1422,8 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     mountReactShellComponents,
     syncRightPod,
     syncTitlebar,
+    openMediaLightbox,
+    closeMediaLightbox,
     isMobileShellActive,
 
     getCanvasStructureDirty: () => canvasStructureDirty,

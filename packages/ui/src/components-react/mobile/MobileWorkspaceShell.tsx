@@ -52,6 +52,7 @@ import { MobileSubagentSheet } from './MobileSubagentSheet.js';
 import { MobileSettingsPage } from './MobileSettingsPage.js';
 import { MobileBotSubpagePanel, MobileBotWizardSheet } from './MobileBotSubpage.js';
 import { ConnectionStatusPill } from '../ConnectionStatusPill.js';
+import { MediaLightbox } from '../conversation/MediaLightbox.js';
 
 export interface MobileWorkspaceShellProps {
   snapshot: MobileWorkspaceSnapshot;
@@ -117,8 +118,9 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
   }, [snapshot.newChatOpen]);
 
   const botWizardOpen = Boolean(snapshot.settingsSnapshot.botManagement?.wizard?.open);
+  const mediaLightboxOpen = Boolean(snapshot.mediaLightbox && snapshot.mediaLightbox.items.length > 0);
   const anySheetOpen =
-    snapshot.newChatOpen || Boolean(snapshot.subagentSheet) || Boolean(snapshot.actionSheet) || botWizardOpen;
+    snapshot.newChatOpen || Boolean(snapshot.subagentSheet) || Boolean(snapshot.actionSheet) || botWizardOpen || mediaLightboxOpen;
 
   // Android 物理返回键 / 系统返回统一归约分发
   React.useEffect(() => {
@@ -127,6 +129,7 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
       const outcome = reduceMobileBackAction({
         activePane: snapshot.activePane,
         homeTab: snapshot.homeTab,
+        mediaLightboxOpen,
         hasActionSheet: Boolean(snapshot.actionSheet),
         actionSheetStep: sheetStep,
         hasModelSheet: modelPickerOpen,
@@ -146,6 +149,9 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
       event.preventDefault();
 
       switch (outcome.effect) {
+        case 'closeMediaLightbox':
+          actions.onCloseMediaLightbox?.();
+          break;
         case 'actionSheetBackToMenu':
           setSheetStep('menu');
           setPendingMoveTarget(null);
@@ -396,7 +402,9 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             onToggleFileTreeDir={actions.onToggleFileTreeDir}
             onFilterFileTree={actions.onFilterFileTree}
             onOpenWorkspaceFile={actions.onOpenWorkspaceFile}
+            onOpenArtifactFile={actions.onOpenArtifactFile}
             onDownloadInspectorFile={actions.onDownloadInspectorFile}
+            onOpenMediaLightbox={actions.onOpenMediaLightbox}
             onEnsureLearning={actions.onEnsureLearning}
             onRefreshLearning={actions.onRefreshLearning}
             onLoadLearningDetail={actions.onLoadLearningDetail}
@@ -497,6 +505,16 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
         settingsSnapshot={snapshot.settingsSnapshot}
         settingsActions={actions.settingsActions}
       />
+
+      {snapshot.mediaLightbox && snapshot.mediaLightbox.items.length > 0 ? (
+        <MediaLightbox
+          items={snapshot.mediaLightbox.items}
+          initialIndex={snapshot.mediaLightbox.initialIndex}
+          onClose={() => actions.onCloseMediaLightbox?.()}
+          onDownload={actions.onDownloadMediaItem}
+          resolveMediaUrl={actions.resolveMediaUrl}
+        />
+      ) : null}
 
       {snapshot.connectionPhase !== undefined &&
       (snapshot.activePane !== 'stage' || snapshot.settingsOpen || snapshot.botSubpage !== null) &&

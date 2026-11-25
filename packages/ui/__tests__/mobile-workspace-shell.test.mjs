@@ -31,6 +31,7 @@ import {
   MobileWorkspaceShell,
   buildMobileHomeModel,
   mountMobileWorkspaceShell,
+  reduceMobileBackAction,
   runMobileMcpRemove,
   runMobileMcpTest,
 } from '../dist/components-react/mobile/index.js';
@@ -5358,5 +5359,404 @@ test('记忆图谱组件全分支补充：ResizeObserver/拖拽/捏合、清单�
     globalThis.document = origDoc;
     globalThis.Element = origEl;
     globalThis.ResizeObserver = origRO;
+  }
+});
+
+test('移动端体验修复 Regression：容器 icon 后置、首屏无持续选中深底、灯箱返回键优先级与 HTML/Markdown/视频阅读器', () => {
+  const sample = createSampleData();
+  const activeHomeModel = {
+    ...sample.snapshot.homeModel,
+    projectSections: [
+      {
+        kind: 'project',
+        id: 'p-1',
+        containerId: 'prj:p-1',
+        name: 'MobileProject',
+        isCollapsed: false,
+        effectiveExpanded: true,
+        items: [
+          {
+            kind: 'session',
+            id: 's-proj',
+            title: 'Project Session',
+            subtitle: 'sub',
+            ownerBotName: 'default',
+            ownerBotDisplayName: 'Default',
+            timeText: '10:00',
+            isPinned: false,
+            isActive: true,
+            containerId: 'prj:p-1',
+            activityState: 'read',
+            activityTransition: 'none',
+            statusTextKey: null,
+            session: { id: 's-proj', title: 'Project Session' },
+          },
+        ],
+      },
+    ],
+    folderSections: [
+      {
+        kind: 'folder',
+        id: 'fld-mob',
+        containerId: 'fld-mob',
+        name: 'MobileCustomFolder',
+        color: 'success',
+        isCollapsed: false,
+        effectiveExpanded: true,
+        items: [],
+      },
+    ],
+  };
+
+  // Issue 1 & Issue 2: 首屏 DOM 图标位置在标题后 + 即使 model 标 active 移动端首页所有行也不高亮保持 data-active="false"
+  const homeMarkup = renderToStaticMarkup(
+    React.createElement(MobileHomeScreen, {
+      homeTab: 'chats',
+      model: activeHomeModel,
+      allProfiles: sample.snapshot.allProfiles,
+      groupAvatars: sample.snapshot.groupAvatars,
+      activeBotName: 'default',
+      gatewayConnected: true,
+      gatewayConnecting: false,
+      searchOpen: false,
+      settingsSnapshot: sample.snapshot.settingsSnapshot,
+      modelDetails: [],
+      onSelectHomeTab: () => {},
+      onSelectBotSubpage: () => {},
+      onOpenSettings: () => {},
+      onOpenSettingsGateway: () => {},
+      onOpenSearch: () => {},
+      onCloseSearch: () => {},
+      onSearchChange: () => {},
+      onOpenNewChat: () => {},
+      onToggleSection: () => {},
+      onSelectBot: () => {},
+      onSelectGroup: () => {},
+      onSelectSession: () => {},
+      onOpenActionSheet: () => {},
+      settingsActions: sample.actions.settingsActions,
+    }),
+  );
+  const projTitlePos = homeMarkup.indexOf('MobileProject');
+  const projIconPos = homeMarkup.indexOf('data-container-icon="project"');
+  assert.ok(projTitlePos > -1 && projIconPos > -1 && projTitlePos < projIconPos, '移动端项目图标必须位于名称之后');
+  const fldTitlePos = homeMarkup.indexOf('MobileCustomFolder');
+  const fldIconPos = homeMarkup.indexOf('data-container-icon="folder"');
+  assert.ok(fldTitlePos > -1 && fldIconPos > -1 && fldTitlePos < fldIconPos, '移动端文件夹图标必须位于名称之后');
+  assert.ok(homeMarkup.includes('m-section__folder-icon--success'), '移动端文件夹颜色类名必须保留');
+  assert.equal(homeMarkup.includes('class="m-entity-row" data-active="true"'), false, '移动端首页列表不得保留持久化深底选中态');
+
+  const mobileCss = fs.readFileSync(path.resolve(import.meta.dirname, '../src/styles/mobile-shell.css'), 'utf8');
+  assert.equal(
+    /\.m-entity-row\[data-active="true"\]/.test(mobileCss),
+    false,
+    'mobile-shell.css 不得再定义 .m-entity-row[data-active="true"] 持久高亮背景',
+  );
+  const destructiveColorIdx = mobileCss.indexOf('.m-section__folder-icon--destructive');
+  const dupFolderRuleIdx = mobileCss.indexOf('.m-section__folder-icon {', destructiveColorIdx);
+  assert.equal(
+    dupFolderRuleIdx,
+    -1,
+    'mobile-shell.css 不得在颜色修饰类之后重定义 .m-section__folder-icon 覆盖文件夹色',
+  );
+  assert.ok(mobileCss.includes('color-scheme: light;') && mobileCss.includes('background: Canvas;'), 'HTML 预览 iframe 必须保证亮色纸底');
+
+  // Issue 4a: 物理返回键最高优先关闭悬浮图片灯箱
+  const backRes = reduceMobileBackAction({
+    activePane: 'stage',
+    mediaLightboxOpen: true,
+    hasActionSheet: true,
+    hasModelSheet: false,
+    hasSubagentSheet: false,
+    newChatOpen: false,
+    newChatStep: 'compose',
+    searchOpen: false,
+    settingsOpen: false,
+    settingsSubpage: null,
+    inspectorReaderOpen: false,
+  });
+  assert.deepEqual(backRes, { handled: true, effect: 'closeMediaLightbox' });
+
+  // Issue 4b: MobileInspectorScreen 成果物列表与 HTML / Markdown / Video / Image 阅读器
+  const lightboxCalls = [];
+  const wsOpenCalls = [];
+  const artifactsMarkup = renderToStaticMarkup(
+    React.createElement(MobileInspectorScreen, {
+      activeFocus: { type: 'session', sessionId: 's-1' },
+      activeTab: 'artifacts',
+      readerOpen: false,
+      readerItem: null,
+      artifacts: [
+        { id: 'd1', name: 'chart.png', type: 'PNG', size: '', path: '/out/chart.png', kind: 'image', previewUrl: 'data:image/png;base64,AA==' },
+        { id: 'd2', name: 'demo.html', type: 'HTML', size: '', path: '/out/demo.html', kind: 'html' },
+      ],
+      gitDiffs: [],
+      openFiles: [],
+      fileTreeState: { status: 'idle' },
+      fileTreeExpandedPaths: [],
+      fileTreeFilterQuery: '',
+      activeFilePath: '',
+      memories: [],
+      learningState: { status: 'idle', profile: 'default' },
+      learningDetail: { status: 'idle' },
+      groupMembers: [],
+      onSelectTab: () => {},
+      onOpenItem: () => {},
+      onCloseReader: () => {},
+      onCopyText: () => {},
+      onLoadFileTree: () => {},
+      onToggleFileTreeDir: () => {},
+      onFilterFileTree: () => {},
+      onOpenWorkspaceFile: (p) => wsOpenCalls.push(p),
+      onDownloadInspectorFile: () => {},
+      onOpenMediaLightbox: (items, idx) => lightboxCalls.push({ items, idx }),
+    }),
+  );
+  assert.equal((artifactsMarkup.match(/data-testid="mobile-artifact-card"/g) || []).length, 2);
+  assert.ok(artifactsMarkup.includes('chart.png') && artifactsMarkup.includes('PNG'));
+  assert.ok(artifactsMarkup.includes('demo.html') && artifactsMarkup.includes('HTML'));
+  assert.equal(artifactsMarkup.includes('>/out/chart.png<'), false, '移动端成果物卡不得在可见区重复渲染完整目录路径');
+
+  // HTML reader -> sandbox="allow-scripts" iframe + view toggle
+  const htmlReaderMarkup = renderToStaticMarkup(
+    React.createElement(MobileInspectorScreen, {
+      activeFocus: { type: 'session', sessionId: 's-1' },
+      activeTab: 'artifacts',
+      readerOpen: true,
+      readerItem: { kind: 'artifacts', title: 'demo.html', filePath: '/out/demo.html', content: '<h1>Hello</h1>', canDownload: true },
+      artifacts: [],
+      gitDiffs: [],
+      openFiles: [],
+      fileTreeState: { status: 'idle' },
+      fileTreeExpandedPaths: [],
+      fileTreeFilterQuery: '',
+      activeFilePath: '/out/demo.html',
+      memories: [],
+      learningState: { status: 'idle', profile: 'default' },
+      learningDetail: { status: 'idle' },
+      groupMembers: [],
+      onSelectTab: () => {},
+      onOpenItem: () => {},
+      onCloseReader: () => {},
+      onCopyText: () => {},
+      onLoadFileTree: () => {},
+      onToggleFileTreeDir: () => {},
+      onFilterFileTree: () => {},
+      onOpenWorkspaceFile: () => {},
+      onDownloadInspectorFile: () => {},
+    }),
+  );
+  assert.ok(htmlReaderMarkup.includes('data-testid="mobile-inspector-html-frame"'));
+  assert.ok(htmlReaderMarkup.includes('sandbox="allow-scripts"'));
+  assert.equal(htmlReaderMarkup.includes('allow-same-origin'), false, 'HTML sandbox 严禁开放 allow-same-origin');
+  assert.ok(htmlReaderMarkup.includes('data-testid="mobile-inspector-toggle-view"'));
+
+  // Video reader -> <video controls>
+  const videoReaderMarkup = renderToStaticMarkup(
+    React.createElement(MobileInspectorScreen, {
+      activeFocus: { type: 'session', sessionId: 's-1' },
+      activeTab: 'files',
+      readerOpen: true,
+      readerItem: { kind: 'files', title: 'demo.mp4', filePath: '/out/demo.mp4', isVideo: true, content: 'data:video/mp4;base64,AAA', canDownload: true },
+      artifacts: [],
+      gitDiffs: [],
+      openFiles: [],
+      fileTreeState: { status: 'idle' },
+      fileTreeExpandedPaths: [],
+      fileTreeFilterQuery: '',
+      activeFilePath: '/out/demo.mp4',
+      memories: [],
+      learningState: { status: 'idle', profile: 'default' },
+      learningDetail: { status: 'idle' },
+      groupMembers: [],
+      onSelectTab: () => {},
+      onOpenItem: () => {},
+      onCloseReader: () => {},
+      onCopyText: () => {},
+      onLoadFileTree: () => {},
+      onToggleFileTreeDir: () => {},
+      onFilterFileTree: () => {},
+      onOpenWorkspaceFile: () => {},
+      onDownloadInspectorFile: () => {},
+    }),
+  );
+  assert.ok(videoReaderMarkup.includes('data-testid="mobile-inspector-video"'));
+  assert.ok(videoReaderMarkup.includes('<video '));
+});
+
+test('MobileInspectorScreen 与 MobileWorkspaceShell 媒体成果物点击、Markdown切换、视频图标与返回关灯箱', () => {
+  const collect = (node, pred, acc = []) => {
+    if (!node || typeof node !== 'object') return acc;
+    if (Array.isArray(node)) {
+      node.forEach((n) => collect(n, pred, acc));
+      return acc;
+    }
+    if (pred(node)) acc.push(node);
+    if (node.props && 'children' in node.props) collect(node.props.children, pred, acc);
+    return acc;
+  };
+
+  // 1. artifacts Tab 全类型图标、图片直进灯箱、优先 onOpenArtifactFile / 次选 onOpenWorkspaceFile / 无 path 兜底 onOpenItem
+  const lightboxCalls = [];
+  const artifactOpenCalls = [];
+  const wsOpenCalls = [];
+  const itemOpenCalls = [];
+  const baseProps = {
+    activeFocus: { type: 'session', sessionId: 's-1' },
+    activeTab: 'artifacts',
+    readerOpen: false,
+    readerItem: null,
+    artifacts: [
+      { id: 'i1', name: 'shot.png', type: 'PNG', size: '', path: '/out/shot.png', kind: 'image', previewUrl: 'data:image/png;base64,AA==' },
+      { id: 'v1', name: 'clip.mp4', type: 'MP4', size: '', path: '/out/clip.mp4', kind: 'video' },
+      { id: 'h1', name: 'page.html', type: 'HTML', size: '', path: '/out/page.html', kind: 'html' },
+      { id: 'd1', name: 'spec.pdf', type: 'PDF', size: '', path: '/out/spec.pdf', kind: 'document' },
+      { id: 'f1', name: 'inline-note.md', type: 'MD', size: '', content: '# raw note' },
+    ],
+    gitDiffs: [],
+    openFiles: [],
+    fileTreeState: {
+      status: 'ready',
+      source: 'gateway_api',
+      rootPath: '/out',
+      nodes: [{ name: 'clip.mp4', path: '/out/clip.mp4', kind: 'file', size: 2048 }],
+    },
+    fileTreeExpandedPaths: [],
+    fileTreeFilterQuery: '',
+    activeFilePath: '',
+    memories: [],
+    learningState: { status: 'idle', profile: 'default' },
+    learningDetail: { status: 'idle' },
+    groupMembers: [],
+    onSelectTab: () => {},
+    onOpenItem: (it) => itemOpenCalls.push(it),
+    onCloseReader: () => {},
+    onCopyText: () => {},
+    onLoadFileTree: () => {},
+    onToggleFileTreeDir: () => {},
+    onFilterFileTree: () => {},
+    onOpenWorkspaceFile: (p) => wsOpenCalls.push(p),
+    onOpenArtifactFile: (p, url) => artifactOpenCalls.push({ p, url }),
+    onDownloadInspectorFile: () => {},
+    onOpenMediaLightbox: (items, idx) => lightboxCalls.push({ items, idx }),
+  };
+
+  const d1 = createReactHookDriver();
+  const v1 = d1.mount(() => React.createElement(MobileInspectorScreen, baseProps));
+  const cards = collect(v1.tree, (n) => n.props?.['data-testid'] === 'mobile-artifact-card');
+  assert.equal(cards.length, 5);
+  cards[0].props.onClick();
+  assert.equal(lightboxCalls.length, 1);
+  assert.equal(lightboxCalls[0].items[0].path, '/out/shot.png');
+  cards[1].props.onClick();
+  assert.equal(artifactOpenCalls.at(-1)?.p, '/out/clip.mp4');
+  cards[4].props.onClick();
+  assert.equal(itemOpenCalls.length, 1);
+  assert.equal(itemOpenCalls[0].title, 'inline-note.md');
+  v1.unmount();
+
+  // 无 onOpenArtifactFile 时，有 path 走 onOpenWorkspaceFile
+  const d2 = createReactHookDriver();
+  const v2 = d2.mount(() =>
+    React.createElement(MobileInspectorScreen, {
+      ...baseProps,
+      onOpenArtifactFile: undefined,
+      activeTab: 'files',
+    }),
+  );
+  // 顺带验证 files Tab 对 .mp4 文件名渲染视频行
+  assert.ok(collect(v2.tree, (n) => n.props?.['data-testid'] === 'mobile-tree-file-/out/clip.mp4').length === 1);
+  v2.unmount();
+
+  const d2b = createReactHookDriver();
+  const v2b = d2b.mount(() =>
+    React.createElement(MobileInspectorScreen, {
+      ...baseProps,
+      onOpenArtifactFile: undefined,
+    }),
+  );
+  collect(v2b.tree, (n) => n.props?.['data-testid'] === 'mobile-artifact-card')[2].props.onClick();
+  assert.deepEqual(wsOpenCalls, ['/out/page.html']);
+  v2b.unmount();
+
+  // 2. Markdown 阅读器：默认 rendered，连续切换 rendered <-> raw 覆盖往返标签与状态翻转
+  const dMd = createReactHookDriver();
+  const vMd = dMd.mount(() =>
+    React.createElement(MobileInspectorScreen, {
+      ...baseProps,
+      readerOpen: true,
+      readerItem: { kind: 'artifacts', title: 'notes.md', filePath: '/out/notes.md', content: '# 标题', canDownload: true },
+    }),
+  );
+  assert.ok(collect(vMd.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-markdown').length === 1);
+  const toggleBtnRendered = collect(vMd.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-toggle-view')[0];
+  const labelWhenRendered = toggleBtnRendered.props['aria-label'];
+  toggleBtnRendered.props.onClick();
+  vMd.rerender();
+  assert.ok(collect(vMd.tree, (n) => n.props?.className === 'm-inspector__reader-code').length === 1);
+  const toggleBtnRaw = collect(vMd.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-toggle-view')[0];
+  assert.notEqual(toggleBtnRaw.props['aria-label'], labelWhenRendered);
+  toggleBtnRaw.props.onClick();
+  vMd.rerender();
+  assert.ok(collect(vMd.tree, (n) => n.props?.['data-testid'] === 'mobile-inspector-markdown').length === 1);
+  vMd.unmount();
+
+  // 3. 图片阅读器点击放大打开灯箱
+  const lbImgClicks = [];
+  const dImg = createReactHookDriver();
+  const vImg = dImg.mount(() =>
+    React.createElement(MobileInspectorScreen, {
+      ...baseProps,
+      onOpenMediaLightbox: (items, idx) => lbImgClicks.push({ items, idx }),
+      readerOpen: true,
+      readerItem: {
+        kind: 'files',
+        title: 'pic.png',
+        filePath: '/out/pic.png',
+        isImage: true,
+        content: 'data:image/png;base64,AA==',
+      },
+    }),
+  );
+  collect(vImg.tree, (n) => n.props?.className === 'm-inspector__reader-image-btn')[0].props.onClick();
+  assert.equal(lbImgClicks[0]?.items[0]?.filePath ?? lbImgClicks[0]?.items[0]?.path, '/out/pic.png');
+  vImg.unmount();
+
+  // 4. MobileWorkspaceShell: Android 系统返回键优先关闭 MediaLightbox
+  const { snapshot, actions } = createSampleData();
+  let closedLb = 0;
+  const shellSnap = {
+    ...snapshot,
+    mediaLightbox: {
+      items: [{ id: 'lb1', src: 'data:image/png;base64,AA==', name: 'lb.png' }],
+      initialIndex: 0,
+    },
+  };
+  const shellActions = {
+    ...actions,
+    onCloseMediaLightbox: () => {
+      closedLb += 1;
+    },
+  };
+  const prevWin = globalThis.window;
+  const winListeners = new Map();
+  globalThis.window = {
+    addEventListener(type, fn) {
+      winListeners.set(type, fn);
+    },
+    removeEventListener(type) {
+      winListeners.delete(type);
+    },
+  };
+  try {
+    const dShell = createReactHookDriver();
+    const vShell = dShell.mount(() => React.createElement(MobileWorkspaceShell, { snapshot: shellSnap, actions: shellActions }));
+    let prevented = false;
+    winListeners.get('hermes-mobile-back')?.({ preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(closedLb, 1);
+    vShell.unmount();
+  } finally {
+    globalThis.window = prevWin;
   }
 });

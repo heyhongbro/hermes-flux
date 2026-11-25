@@ -122,12 +122,22 @@ export function RailOrgContainerSection({
             aria-hidden="true"
             className="flux-grouped-section__chevron shrink-0 text-muted-foreground"
           />
-          {kind === 'project' ? (
-            <FolderGit2 size={13} aria-hidden="true" className="shrink-0 text-muted-foreground" />
-          ) : (
-            <Folder size={13} aria-hidden="true" className={`shrink-0 ${colorClass}`} />
-          )}
           <span className="truncate">{name}</span>
+          {kind === 'project' ? (
+            <FolderGit2
+              size={13}
+              aria-hidden="true"
+              data-container-icon="project"
+              className="shrink-0 text-muted-foreground opacity-75"
+            />
+          ) : (
+            <Folder
+              size={13}
+              aria-hidden="true"
+              data-container-icon="folder"
+              className={`shrink-0 ${colorClass}`}
+            />
+          )}
         </button>
 
         {onNewChat ? (

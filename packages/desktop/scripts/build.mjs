@@ -696,6 +696,16 @@ async function buildAll() {
     sourcemap: true,
   });
   await esbuild.build({
+    entryPoints: [path.join(rootDir, 'src/renderer/services/mediaResolver.ts')],
+    outfile: path.join(rootDir, 'dist/renderer/services/mediaResolver.mjs'),
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'esm',
+    external: ['@hermes-flux/core', '@hermes-flux/ui'],
+    sourcemap: true,
+  });
+  await esbuild.build({
     entryPoints: [path.join(rootDir, 'src/renderer/titlebarController.ts')],
     outfile: path.join(rootDir, 'dist/renderer/titlebarController.mjs'),
     bundle: true,

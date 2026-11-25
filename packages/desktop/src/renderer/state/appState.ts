@@ -196,6 +196,7 @@ export interface AppState {
     content: string;
     language?: string;
     isDiff?: boolean;
+    isVideo?: boolean;
     isBinary?: boolean;
     isTooLarge?: boolean;
     byteSize?: number;
@@ -210,6 +211,7 @@ export interface AppState {
   fileTreeState: FileTreeLoadState;
   fileTreeExpandedPaths: string[];
   fileTreeFilterQuery: string;
+  artifactsFilterQuery: string;
   fileTreeCollapsed: boolean;
   fileTreeLoadedCwd: string;
   attachments: InputAttachmentItem[];
@@ -291,7 +293,7 @@ export function createInitialState(params: InitialStateParams): AppState {
     leftRailCollapsed: params.leftRailCollapsedDefault ?? false,
     inspectorCollapsed: true,
     rightPodMode: { kind: 'closed' },
-    activeInspectorTab: 'artifacts',
+    activeInspectorTab: 'preview',
     activeSessionId: '',
     activeLiveSessionId: '',
     selectedModel: '',
@@ -398,6 +400,7 @@ export function createInitialState(params: InitialStateParams): AppState {
     fileTreeState: { status: 'idle' },
     fileTreeExpandedPaths: [],
     fileTreeFilterQuery: '',
+    artifactsFilterQuery: '',
     fileTreeCollapsed: false,
     fileTreeLoadedCwd: '',
     testStatus: undefined,

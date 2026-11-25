@@ -14,6 +14,11 @@ import {
   persistAgentsToCache as bridgePersistAgentsToCache, defaultIndexWriteQueue,
 } from './cache/desktopCacheBridge.js';
 import { createFileViewerService } from './services/fileViewerService.js';
+import {
+  createMediaResolver,
+  createSessionDeliverableCoordinator,
+  createSessionKnownFilesResolver,
+} from './services/mediaResolver.js';
 import { createLearningService } from './services/learningService.js';
 import { createConversationStreamController } from './events/conversationStreamController.js';
 import { createTokenStreamWriter } from './stream/tokenStreamWriter.js';
@@ -44,7 +49,7 @@ import {
   type PromptNavigatorActions, type ConversationMount, type ConversationSnapshot,
   type ConversationMessageVM, loadFontPreferences, applyFontPreferences,
   loadActivityIndicatorVariant, saveActivityIndicatorVariant, resolveActivityIndicatorVariant,
-  type ActivityIndicatorVariant, setLocale, collectTouchedFiles, type FontPreferences,
+  type ActivityIndicatorVariant, setLocale, type FontPreferences,
   renderToolCapsuleSlot, formatLeftRailTime,
 } from '@hermes-flux/ui';
 import { createToolPatchQueue } from './toolPatchQueue.js';
@@ -920,7 +925,7 @@ const gatewayEventDispatcher = createGatewayEventDispatcher({
   setTimedDockNotice: (msg, dur, opts) => turnExecutionService.setTimedDockNotice(msg, dur, opts), isStreamNearBottom: () => isStreamNearBottom(document.getElementById('conversation-stream')), setPendingScrollToBottom: (val) => renderCoordinator.setPendingScrollToBottom(val),
   render: () => render(), t,
   onStatusConnected: () => { void statusIntegration.onConnected(); },
-  onStatusDisconnected: () => statusIntegration.onDisconnected(),
+  onStatusDisconnected: () => { statusIntegration.onDisconnected(); deliverableCoordinator.clear(); },
   onReadyEnsureDoneSessions: () => { if (state.orgPrefs.showDoneSection && state.orgContainerCollapsed.done === false && !state.doneSessionsLoaded && !state.doneLoading) void conversationOrgCoordinator.ensureDoneSessionsLoaded(); },
   onStatusTurnAction: (a, fn) => statusIntegration.onGatewayTurnAction(a, fn),
 });
@@ -1100,16 +1105,10 @@ const getLeftRailSnapshot = (): LeftRailSnapshot => leftRailController.getLeftRa
 let reactMessageList: ConversationMount | null = null, reactMessageListHost: HTMLElement | null = null;
 let renderedMessageIds = new Set<string>(), lastSeenStreaming = false;
 
-let knownFilesToolsRef: readonly (MessageViewModel['toolCalls'])[] = [], knownFilesValue: readonly string[] = [];
-
-function resolveSessionKnownFiles(): readonly string[] {
-  const tools = state.messages.map((message) => message.toolCalls);
-  const unchanged = tools.length === knownFilesToolsRef.length && tools.every((tool, index) => tool === knownFilesToolsRef[index]);
-  if (unchanged) return knownFilesValue;
-  knownFilesToolsRef = tools;
-  knownFilesValue = collectTouchedFiles(state.messages.flatMap((message) => message.toolCalls ?? []));
-  return knownFilesValue;
-}
+const mediaResolver = createMediaResolver({ getState: () => state, getDesktopApi: () => desktopApi, getGatewayClient: () => gatewayClient });
+const resolveSessionKnownFiles = createSessionKnownFilesResolver(() => state.messages, {
+  getVerifiedPaths: () => deliverableCoordinator.getVerifiedPaths(), getSubagentWrittenPaths: () => deliverableCoordinator.getSubagentWrittenPaths(),
+});
 
 const statusIntegration = createStatusIntegration({
   getState: () => state, getGatewayClient: () => gatewayClient, getSessionHandleRegistry: () => defaultSessionHandleRegistry,
@@ -1122,11 +1121,18 @@ const statusIntegration = createStatusIntegration({
   onOpenConstellation: (profileName) => settingsDataService.openBotSettings(profileName, { tab: 'constellation' }),
   render: () => render(), t,
 });
+const deliverableCoordinator = createSessionDeliverableCoordinator({
+  getState: () => state, getDesktopApi: () => desktopApi, getSubagentWrittenPaths: () => statusIntegration.getActiveSubagentWrittenPaths(),
+  onVerifiedPathsUpdated: () => { renderCoordinator.syncReactMessageList(true); render(); },
+});
 
 const renderCoordinator = createRenderCoordinator({
   getState: () => state, messageWindowManager, modalInteractionController,
   isStreamingActiveForCurrentSession: () => isStreamingActiveForCurrentSession(),
   resolveSessionKnownFiles: () => resolveSessionKnownFiles(),
+  getVerifiedDeliverablePaths: deliverableCoordinator.getVerifiedPaths, getSubagentWrittenPaths: deliverableCoordinator.getSubagentWrittenPaths,
+  getSessionDeliverables: deliverableCoordinator.getSessionDeliverables, scheduleDeliverableVerification: deliverableCoordinator.scheduleVerification, clearDeliverables: deliverableCoordinator.clear,
+  resolveMediaUrl: mediaResolver.resolveMediaUrl, onOpenFile: (p, u) => { void handleOpenFilePreview(p, u); }, onDownloadMediaItem: (item) => { void fileViewerService.downloadMedia(item); },
   getTitlebarSnapshot: () => titlebarController.getTitlebarSnapshot(),
   onMinimizeWindow: () => titlebarController.onMinimizeWindow(), onMaximizeWindow: () => titlebarController.onMaximizeWindow(),
   onCloseWindow: () => titlebarController.onCloseWindow(),
@@ -1296,6 +1302,8 @@ const render = () => renderCoordinator.render();
 const fileViewerService = createFileViewerService({
   getState: renderCoordinator.getState, render, getDesktopApi: () => desktopApi, getGatewayClient: () => gatewayClient, safeCopyText, t,
   onBackFromFiles: () => statusIntegration.onBackFromFiles(), onInspectorStateChange: () => statusIntegration.onInspectorStateChange(),
+  onMobileOpenFile: async (p, u) => { if (!renderCoordinator.isMobileShellActive()) return false; await mobileShellCoordinator.openFileInReader(p, u); return true; },
+  onOpenMediaLightbox: renderCoordinator.openMediaLightbox, getSessionDeliverables: deliverableCoordinator.getSessionDeliverables,
 });
 const handleOpenFilePreview = fileViewerService.handleOpenFilePreview;
 const mobileShellCoordinator = createMobileShellCoordinator({
@@ -1307,8 +1315,9 @@ const mobileShellCoordinator = createMobileShellCoordinator({
   routeSend, sendGroupMessage, interruptTurn, switchModel,
   fetchModelOptions: () => fetchModelOptions({ clearNotice: false }), onFilesPicked: addInputAttachments,
   loadFileTree: fileViewerService.loadFileTree, toggleFileTreeDir: fileViewerService.toggleDirectory,
-  setFileTreeFilter: fileViewerService.setFileTreeFilter, openWorkspaceFile: fileViewerService.handleOpenFilePreview,
-  downloadFile: (filePath?: string) => fileViewerService.downloadFile(filePath),
+  setFileTreeFilter: fileViewerService.setFileTreeFilter, openWorkspaceFile: (p) => fileViewerService.handleOpenFilePreview(p, undefined, { skipMobileRedirect: true }),
+  downloadFile: (filePath?: string) => fileViewerService.downloadFile(filePath), downloadMediaItem: fileViewerService.downloadMedia, resolveMediaUrl: mediaResolver.resolveMediaUrl,
+  getVerifiedDeliverablePaths: deliverableCoordinator.getVerifiedPaths, getSubagentWrittenPaths: deliverableCoordinator.getSubagentWrittenPaths, getSessionDeliverables: deliverableCoordinator.getSessionDeliverables,
   loadLearningGraph: learningService.loadLearningGraph, loadLearningDetail: learningService.loadLearningDetail,
   editLearningNode: learningService.editLearningNode, deleteLearningNode: learningService.deleteLearningNode,
   getSettingsSnapshot, createSettingsActions, ensureSettingsSectionData,

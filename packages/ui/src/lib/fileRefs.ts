@@ -18,15 +18,30 @@
 
 import { isLikelyFilePath } from './text.js';
 
-/** 只有这些工具的参数/结果被视为「真实读写文件」。 */
-const FILE_TOOL_PATTERN = /(read|write|edit|patch|create|file|view|upload|apply)/i;
-const PATH_FIELDS = ['resolved_path', 'file_path', 'filePath', 'path', 'file', 'target'];
-const FILE_LIST_FIELDS = ['files_modified', 'files', 'changed_files', 'paths'];
+/** 只有这些工具的参数/结果被视为「真实读写或产出文件」。 */
+const FILE_TOOL_PATTERN = /(read|write|edit|patch|create|file|view|upload|apply|image|screenshot|export|render|save)/i;
+const PATH_FIELDS = [
+  'resolved_path',
+  'file_path',
+  'filePath',
+  'path',
+  'file',
+  'target',
+  'image_path',
+  'video_path',
+  'media_path',
+  'output_path',
+  'output_file',
+  'saved_to',
+  'screenshot_path',
+];
+const FILE_LIST_FIELDS = ['files_modified', 'files', 'changed_files', 'paths', 'artifacts', 'images', 'videos'];
 
 export interface ToolFileSource {
   name: string;
   args: string;
   output?: string;
+  imagePath?: string;
 }
 
 /** 统一路径写法：去引号、反斜杠、行号后缀与尾部斜杠。 */
@@ -96,7 +111,9 @@ function collectFromValue(value: unknown, out: Set<string>, depth = 0): void {
 export function collectTouchedFiles(tools: readonly ToolFileSource[]): string[] {
   const out = new Set<string>();
   for (const tool of tools) {
-    if (!tool || !FILE_TOOL_PATTERN.test(tool.name || '')) continue;
+    if (!tool) continue;
+    if (tool.imagePath) pushPath(out, tool.imagePath);
+    if (!FILE_TOOL_PATTERN.test(tool.name || '')) continue;
     collectFromValue(tool.args, out);
     if (tool.output) collectFromValue(tool.output, out);
   }

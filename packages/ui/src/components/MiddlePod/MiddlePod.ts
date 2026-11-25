@@ -43,6 +43,8 @@ export interface MessageViewModel {
     startTime?: number;
     subagentId?: string;
     delegationId?: string;
+    imagePath?: string;
+    inlineDiff?: string;
   }[];
   timestamp: string;
   rawTimestamp?: number;

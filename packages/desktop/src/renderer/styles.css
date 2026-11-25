@@ -1056,6 +1056,7 @@ html[data-rail-resizing="right"] .status-pod-window {
 }
 
 .vertical-tab-item {
+  position: relative;
   width: 32px;
   height: 32px;
   border-radius: var(--radius-card);
@@ -1082,6 +1083,26 @@ html[data-rail-resizing="right"] .status-pod-window {
   background: var(--card-active);
   color: var(--foreground);
   border-color: var(--border-subtle);
+}
+
+.vertical-tab-badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--panel);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  line-height: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* 悬浮四边框一体工具窗：嵌入一体化右侧画布中，四边完整 1px 发丝线描边、零黑色投影与 8px 圆角 */
@@ -1276,6 +1297,28 @@ html[data-rail-resizing="right"] .status-pod-window {
   font-size: var(--fs-caption);
   color: var(--muted-foreground);
   word-break: break-word;
+}
+
+.inspector-artifact-count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+  padding: 0 4px;
+  border-radius: var(--radius-inner);
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
+}
+
+.inspector-artifact-ext {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--muted-foreground);
+  padding: 0 4px;
+  border-radius: var(--radius-inner);
+  background: var(--background);
+  border: 1px solid var(--border-subtle);
 }
 
 .inspector-tree-retry-btn {

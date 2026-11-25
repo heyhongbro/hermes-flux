@@ -979,3 +979,219 @@ test('FileViewerService: 状态栏切 Files 保留 returnTo，绑定返回状态
     globalThis.window = savedWin;
   }
 });
+
+test('FileViewerService.downloadMedia: 不依赖 openFiles 直接保存 DataURL 与远端网关媒体', async () => {
+  const savedCalls = [];
+  const { deps } = createMockDeps({
+    state: {
+      openFiles: [],
+      gatewayUrl: 'https://gw.example.com',
+      profileName: 'coder',
+      activeSessionId: 'sess-1',
+    },
+    desktopApi: {
+      saveFile: async (opts) => {
+        savedCalls.push(opts);
+        return { success: true };
+      },
+    },
+  });
+  const srv = createFileViewerService(deps);
+
+  await srv.downloadMedia({
+    src: 'data:image/png;base64,iVBORw0KGgo=',
+    name: 'chart.png',
+  });
+  assert.equal(savedCalls.length, 1);
+  assert.equal(savedCalls[0].fileName, 'chart.png');
+  assert.equal(savedCalls[0].isBase64, true);
+  assert.equal(savedCalls[0].content, 'data:image/png;base64,iVBORw0KGgo=');
+
+  await srv.downloadMedia({
+    src: '/out/remote-shot.png',
+    path: '/out/remote-shot.png',
+    name: 'remote-shot.png',
+  });
+  assert.equal(savedCalls.length, 2);
+  assert.equal(savedCalls[1].isBase64, false);
+  assert.ok(savedCalls[1].remoteUrl.includes('/api/fs/download?path=%2Fout%2Fremote-shot.png'));
+});
+
+test('FileViewerService: onMobileOpenFile 跳转守卫与 downloadMedia 全媒体源/Capacitor/anchor兜底', async () => {
+  const mobileRedirects = [];
+  const anchorClicks = [];
+  const savedCalls = [];
+  const { deps, state } = createMockDeps({
+    state: {
+      openFiles: [{ path: '/ws/cached.ts', content: 'export const x = 1;' }],
+      gatewayUrl: '',
+    },
+    desktopApi: {
+      saveFile: async (opts) => {
+        if (opts.fileName === 'throw.png') throw new Error('dialog canceled');
+        savedCalls.push(opts);
+        return { success: true };
+      },
+    },
+  });
+  deps.onMobileOpenFile = async (target, previewUrl) => {
+    mobileRedirects.push({ target, previewUrl });
+    return true;
+  };
+  const srv = createFileViewerService(deps);
+
+  // 1. onMobileOpenFile 返回 true 时阻断桌面右栏展开；skipMobileRedirect=true 时跳过跳转直接打开
+  await srv.handleOpenFilePreview('/out/mobile-doc.md', 'data:text/plain,hi');
+  assert.deepEqual(mobileRedirects, [{ target: '/out/mobile-doc.md', previewUrl: 'data:text/plain,hi' }]);
+  assert.equal(state.inspectorCollapsed, true);
+  await srv.handleOpenFilePreview('/ws/cached.ts', undefined, { skipMobileRedirect: true });
+  assert.equal(state.inspectorCollapsed, false);
+
+  // 2. downloadMedia 空输入直接退出；命中 openFiles 走 downloadFile
+  await srv.downloadMedia({ src: '', path: '' });
+  await srv.downloadMedia({ src: '/ws/cached.ts', path: '/ws/cached.ts', name: 'cached.ts' });
+  assert.equal(savedCalls.length, 1);
+  assert.equal(savedCalls[0].fileName, 'cached.ts');
+
+  // 3. https / sourcePath(无 gatewayUrl) / 缺 name / 无 profile 的网关下载分支
+  await srv.downloadMedia({ src: 'data:image/png;base64,AA==' });
+  state.gatewayUrl = 'https://gw.example.com';
+  state.profileName = '';
+  state.activeSessionId = '';
+  await srv.downloadMedia({ src: '/out/x.png', path: '/out/x.png' });
+  assert.ok(savedCalls.at(-1)?.remoteUrl?.includes('/api/fs/download?path=%2Fout%2Fx.png'));
+  state.gatewayUrl = '';
+
+  await srv.downloadMedia({ src: 'https://cdn.example.com/clip.mp4', name: 'clip.mp4' });
+  assert.equal(savedCalls.at(-1)?.remoteUrl, 'https://cdn.example.com/clip.mp4');
+
+  await srv.downloadMedia({ src: '/out/local.mp4', path: '/out/local.mp4', name: 'local.mp4' });
+  assert.equal(savedCalls.at(-1)?.sourcePath, '/out/local.mp4');
+
+  // 4. Desktop blob: 不进 native saveFile 而走 <a download>；Capacitor blob: 则进 native saveFile
+  const savedDoc = globalThis.document;
+  const savedWin = globalThis.window;
+  const savedSetTimeout = globalThis.setTimeout;
+  const btnMock = { style: { color: '' } };
+  globalThis.document = {
+    getElementById: (id) => (id === 'btn-file-download' ? btnMock : null),
+    body: {
+      appendChild() {},
+      removeChild() {},
+    },
+    createElement(tag) {
+      if (tag !== 'a') return {};
+      const node = { href: '', download: '', click: () => anchorClicks.push({ href: node.href, download: node.download }) };
+      return node;
+    },
+  };
+  try {
+    globalThis.setTimeout = (fn) => {
+      if (typeof fn === 'function') fn();
+      return 0;
+    };
+    globalThis.window = {};
+    await srv.downloadMedia({ src: 'blob:https://app/desk-1', name: 'desk.png' });
+    assert.equal(anchorClicks.at(-1)?.href, 'blob:https://app/desk-1');
+
+    // native saveFile 抛错时回退 anchor 下载
+    await srv.downloadMedia({ src: 'https://cdn.example.com/throw.png', name: 'throw.png' });
+    assert.equal(anchorClicks.at(-1)?.download, 'throw.png');
+
+    // Capacitor 原生态下 blob: 走 native saveFile 并触发按钮高亮与计时归零
+    globalThis.window = { Capacitor: { isNativePlatform: () => true } };
+    await srv.downloadMedia({ src: 'blob:https://app/mob-1', name: 'mob.mp4' });
+    assert.equal(savedCalls.at(-1)?.content, 'blob:https://app/mob-1');
+    assert.equal(btnMock.style.color, '');
+  } finally {
+    globalThis.setTimeout = savedSetTimeout;
+    globalThis.document = savedDoc;
+    globalThis.window = savedWin;
+  }
+});
+
+test('FileViewerService: 成果物侧边栏 (artifacts) 开关对称、筛选与图片点击直达灯箱', async () => {
+  const lightboxCalls = [];
+  const savedDoc = globalThis.document;
+  const savedWin = globalThis.window;
+
+  const filterEl = { value: '', oninput: null, focus() {}, selectionStart: 0, selectionEnd: 0 };
+  const imgArtEl = { dataset: { artifactFile: '/opt/out/timeline.png', artifactKind: 'image' }, onclick: null };
+  const htmlArtEl = { dataset: { artifactFile: '/opt/out/report.html', artifactKind: 'html' }, onclick: null };
+  const railPreviewBtn = { dataset: { tab: 'preview' }, onclick: null };
+  const railArtifactsBtn = { dataset: { tab: 'artifacts' }, onclick: null };
+
+  globalThis.document = {
+    getElementById: (id) => (id === 'inspector-artifacts-filter-input' ? filterEl : null),
+    querySelectorAll: (sel) => {
+      if (sel === '[data-artifact-file]') return [imgArtEl, htmlArtEl];
+      if (sel === '.vertical-tab-item') return [railPreviewBtn, railArtifactsBtn];
+      return [];
+    },
+  };
+  globalThis.window = { innerWidth: 1280 };
+
+  try {
+    const { deps, state, getRenderCount } = createMockDeps({
+      state: {
+        inspectorCollapsed: true,
+        activeInspectorTab: 'preview',
+        artifactsFilterQuery: '',
+        openFiles: [],
+        fileTreeCollapsed: false,
+      },
+      desktopApi: {
+        readFile: async (p) => `<html>${p}</html>`,
+      },
+    });
+    deps.getSessionDeliverables = () => [
+      { id: 'd1', kind: 'image', path: '/opt/out/timeline.png', name: 'timeline.png', messageId: 'm1', source: 'turn_corroborated', previewUrl: 'data:image/png;base64,AA==' },
+      { id: 'd2', kind: 'html', path: '/opt/out/report.html', name: 'report.html', messageId: 'm1', source: 'tool_write' },
+    ];
+    deps.onOpenMediaLightbox = (items, initialIndex) => {
+      lightboxCalls.push({ items, initialIndex });
+    };
+
+    const srv = createFileViewerService(deps);
+    srv.bindEvents();
+
+    // 1. 点击竖栏成果物入口：展开并切到 artifacts；切到 preview 不关闭；再点 preview 才折叠
+    railArtifactsBtn.onclick();
+    assert.equal(state.inspectorCollapsed, false);
+    assert.equal(state.activeInspectorTab, 'artifacts');
+    railPreviewBtn.onclick();
+    assert.equal(state.inspectorCollapsed, false);
+    assert.equal(state.activeInspectorTab, 'preview');
+    railArtifactsBtn.onclick();
+    assert.equal(state.activeInspectorTab, 'artifacts');
+    railArtifactsBtn.onclick();
+    assert.equal(state.inspectorCollapsed, true, '再次点击当前激活成果物 Tab 应平滑收起面板');
+    railArtifactsBtn.onclick();
+    assert.equal(state.inspectorCollapsed, false);
+
+    // 2. 筛选框触发 setArtifactsFilter
+    const beforeRender = getRenderCount();
+    filterEl.value = 'timeline';
+    filterEl.oninput();
+    assert.equal(state.artifactsFilterQuery, 'timeline');
+    assert.ok(getRenderCount() > beforeRender);
+
+    // 3. 点击成果物图片走共享 MediaLightbox，点击 HTML 保持在 artifacts Tab 打开右侧预览
+    imgArtEl.onclick();
+    assert.equal(lightboxCalls.length, 1);
+    assert.equal(lightboxCalls[0].initialIndex, 0);
+    assert.equal(lightboxCalls[0].items[0].path, '/opt/out/timeline.png');
+
+    await htmlArtEl.onclick();
+    assert.equal(state.activeInspectorTab, 'artifacts', '从成果物栏打开文件预览应保留 artifacts Tab');
+    assert.equal(state.activeFilePath, '/opt/out/report.html');
+
+    // 4. 关闭最后一个打开文件 Tab 时，只要处于 artifacts 浏览态且左侧栏未收起，面板必须保持常开
+    srv.closeFileTab('/opt/out/report.html');
+    assert.equal(state.openFiles.length, 0);
+    assert.equal(state.inspectorCollapsed, false, '成果物栏处于打开浏览态时关完预览 Tab 不得自动折叠检查舱');
+  } finally {
+    globalThis.document = savedDoc;
+    globalThis.window = savedWin;
+  }
+});

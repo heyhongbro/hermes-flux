@@ -140,7 +140,7 @@ export type TurnAction =
   | { type: 'append-thought'; messageId: string; text: string }
   | { type: 'replace-content'; messageId: string; text: string }
   | { type: 'tool-start'; messageId: string; toolCall: { id: string; name: string; args: string; title?: string } }
-  | { type: 'tool-complete'; messageId: string; toolCallId: string; output?: string; durationMs?: number }
+  | { type: 'tool-complete'; messageId: string; toolCallId: string; output?: string; durationMs?: number; imagePath?: string; inlineDiff?: string }
   | {
       /**
        * message.complete 携带的网关持久行地址：把 rowId 绑定回本地乐观行，
@@ -604,9 +604,18 @@ export function reduceGatewayEvent(params: unknown, ctx: TurnEventContext): Turn
       // ToolCompletePayload 权威键同样是 tool_id，与 start 保持同一主键才能精确配对
       const toolCallId = asText(payload.tool_id) || asText(payload.id) || asText(payload.tool_call_id) || '';
       const output = formatEventToolOutput(payload.output ?? payload.result ?? payload.text ?? payload.error);
+      const imagePath = asText(payload.image_path).trim() || undefined;
+      const inlineDiff = asText(payload.inline_diff).trim() || undefined;
 
       if (messageId) {
-        actions.push({ type: 'tool-complete', messageId, toolCallId, output });
+        actions.push({
+          type: 'tool-complete',
+          messageId,
+          toolCallId,
+          output,
+          ...(imagePath ? { imagePath } : {}),
+          ...(inlineDiff ? { inlineDiff } : {}),
+        });
       }
       return actions;
     }

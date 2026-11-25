@@ -10,10 +10,22 @@ export { MarkdownBlock } from './MarkdownBlock.js';
 export { ToolCapsule, ToolSection, ToolBlocks, classifyTool } from './ToolCapsule.js';
 export { CompactTraceCapsule, isSubagentTool, partitionMobileTools } from './CompactTraceCapsule.js';
 export { TurnGroup, groupTurns } from './TurnGroup.js';
+export { TurnDeliverables, type TurnDeliverablesProps } from './TurnDeliverables.js';
+export {
+  MediaLightbox,
+  clampLightboxScale,
+  clampLightboxPan,
+  computeLightboxDragDelta,
+  computeLightboxSwipeResult,
+  LIGHTBOX_MIN_SCALE,
+  LIGHTBOX_MAX_SCALE,
+  type MediaLightboxItem,
+  type MediaLightboxProps,
+} from './MediaLightbox.js';
 export { selectVisibleMessages } from './visibility.js';
 export { useStreamFollow, STREAM_FOLLOW_THRESHOLD_PX } from './useStreamFollow.js';
 export { PromptNavigatorRail, type PromptNavigatorRailProps } from './PromptNavigatorRail.js';
-export { mountConversation, mountMessageList, mountPromptNavigator, mountAgentPresence, mountScrollToEndButton, type ConversationMount } from './mount.js';
+export { mountConversation, mountMessageList, mountPromptNavigator, mountAgentPresence, mountScrollToEndButton, mountMediaLightbox, type ConversationMount, type DesktopLightboxSnapshot } from './mount.js';
 export { ScrollToEndButton, type ScrollToEndButtonProps } from './ScrollToEndButton.js';
 export {
   AgentPresence,

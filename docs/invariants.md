@@ -25,7 +25,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `source` 为真实源码路径 | 违者 FAIL |
 | `source`+`symbol` 组合唯一 | 违者 FAIL |
 
-## 总览（70 条，覆盖 18 个领域）
+## 总览（74 条，覆盖 19 个领域）
 
 ### ATTACH（5 条）
 
@@ -65,6 +65,15 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-CONN-01` | 认证失效与手动断连在连接相位归约中的绝对支配律（unconfigured > manual/auth-offline > transient reconnect） | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase#auth-dominance` | `connection-phase-formal.test.mjs` | 401 密码失效或用户主动断开后界面仍虚假显示重连胶囊并死循环撞墙重试 |
 | `INV-CONN-02` | 7态连接相位全序覆盖与 sync 优先级单调律 | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase` | `connection-phase-formal.test.mjs` | HANDSHAKING 或 RECONNECTING 被错误归约为已连接或完全断网，导致标题栏与输入舱状态撕裂 |
 | `INV-CONN-03` | 冷启动退避重试时延有界且单调非降 | `packages/core/src/rpc/connectionPhase.ts` → `computeColdStartRetryDelayMs` | `connection-phase-formal.test.mjs` | 冷启动网络未就绪时退避越界卡死或零延迟风暴重试打爆电池与网关 |
+
+### DELIV（4 条）
+
+| 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
+|---|---|---|---|---|
+| `INV-DELIV-01` | 成果物提取去重幂等与非助手消息物理隔离 | `packages/core/src/session/deliverables.ts` → `extractTurnDeliverables` | `deliverables-formal.test.mjs` | 重复提取产生重复图片/卡片，或用户消息附件误混入 Agent 成果物画廊 |
+| `INV-DELIV-02` | MEDIA 标记剥离收敛且严格豁免围栏代码块 | `packages/core/src/session/deliverables.ts` → `stripMediaTags` | `deliverables-formal.test.mjs` | 对话正文残留 MEDIA:/path 原文，或代码示例中的 MEDIA 语法被误删 |
+| `INV-DELIV-03` | 只读工具与危险 URI 拦截守恒（cat/grep/javascript: 绝不渗入成果物） | `packages/core/src/session/deliverables.ts` → `extractSessionDeliverables` | `deliverables-formal.test.mjs` | cat /etc/hosts 等命令或 javascript:/data:text/html 注入进入可点击成果物列表 |
+| `INV-DELIV-04` | 读写分离与非循环存在性双锁守恒（只读排除、同回合Shell互证、父目录批探禁session_cache及正文原地去重） | `packages/core/src/fs/pathVerifier.ts` → `createDirectoryPathVerifier` | `deliverables-formal.test.mjs` | 未写先读的路径混入成果物、纯缓存自证循环复活幽灵文件，或正文小卡片与回合末卡片双份重复 |
 
 ### FS（6 条）
 

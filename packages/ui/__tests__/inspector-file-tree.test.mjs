@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { renderInspectionPod } from '../dist/components/InspectionPod/InspectionPod.js';
 import { detectFileLanguage, renderFileTab } from '../dist/lib/inspectorViewHelpers.js';
+import { buildDeliverableListItems } from '../dist/lib/deliverableViewModel.js';
 import { t, setLocale } from '../dist/i18n/index.js';
 
 const ROOT = path.resolve(import.meta.dirname, '../../..');
@@ -288,5 +289,80 @@ test('InspectionPod 右侧常驻竖栏与悬浮文件树分栏全状态渲染', 
       '.vertical-tab-item 不得保留已废弃的 --bg-card-hover 或 transition: all 规则',
     );
     assert.match(styles, /@media\s*\(max-width:\s*768px\)[\s\S]*min-width:\s*0\s*!important;/);
+  });
+
+  await tCtx.test('5. 视频 (.mp4) 在有效媒体 URL 下渲染播放器，异常载荷回退显式错误卡片', () => {
+    setLocale('zh-CN');
+    const readyVideo = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      previewFile: { path: '/out/demo.mp4', content: 'data:video/mp4;base64,AAAA', isVideo: true },
+    });
+    assert.ok(readyVideo.includes('<video '), '有效视频 DataURL 必须渲染原生 video 播放器');
+    assert.ok(readyVideo.includes('data:video/mp4;base64,AAAA'));
+
+    const httpVideo = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      previewFile: { path: 'https://cdn.example.com/clip.webm', content: 'https://cdn.example.com/clip.webm' },
+    });
+    assert.ok(httpVideo.includes('<video ') && httpVideo.includes('https://cdn.example.com/clip.webm'));
+
+    const brokenVideo = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      previewFile: { path: '/out/broken.mp4', content: 'Unable to load remote binary', isVideo: true },
+    });
+    assert.equal(brokenVideo.includes('<video '), false, '无效 video 内容不得强行挂载损坏播放器');
+    assert.ok(brokenVideo.includes('inspector-nonpreview-card') || brokenVideo.includes('btn-preview-download-file'));
+  });
+
+  await tCtx.test('6. 成果物侧边栏 (data-tab="artifacts")：计数徽标、纯文件名展示、短格式徽标、筛选与零内联边框', () => {
+    setLocale('zh-CN');
+    const items = buildDeliverableListItems([
+      {
+        id: 'd1',
+        kind: 'html',
+        path: '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-telemetry.html',
+        name: '2026-11-23-t3code-telemetry.html',
+        messageId: 'm1',
+        source: 'tool_write',
+      },
+      {
+        id: 'd2',
+        kind: 'image',
+        path: '/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png',
+        name: 't3-timeline.png',
+        messageId: 'm1',
+        source: 'turn_corroborated',
+      },
+    ]);
+
+    const artHtml = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      activeTab: 'artifacts',
+      deliverables: items,
+      artifactsFilterQuery: '',
+    });
+
+    assert.ok(artHtml.includes('data-tab="artifacts"'), '竖栏必须提供 data-tab="artifacts" 成果物入口');
+    assert.ok(artHtml.includes('data-testid="desktop-artifacts-badge"') && artHtml.includes('>2<'), '竖栏成果物按钮必须渲染数量角标');
+    assert.ok(artHtml.includes('data-testid="desktop-artifacts-pane"'), '选中 artifacts 时左侧应渲染成果物列表分栏');
+    assert.ok(artHtml.includes('<span class="inspector-tree-label">2026-11-23-t3code-telemetry.html</span>'));
+    assert.ok(artHtml.includes('<span class="inspector-tree-label">t3-timeline.png</span>'));
+    assert.equal(artHtml.includes('<span class="inspector-tree-label">/opt/data/'), false, '桌面端成果物侧边栏仅展示纯文件名');
+    assert.ok(artHtml.includes('title="/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png"'));
+    assert.ok(artHtml.includes('<span class="inspector-artifact-ext">PNG</span>'));
+    assert.equal(/border:\s*1px\s+solid\s+var\(--border/.test(artHtml), false, '成果物面板不得残留内联 1px 边框样式');
+
+    const filteredHtml = renderInspectionPod({
+      collapsed: false,
+      gatewayConnected: true,
+      activeTab: 'artifacts',
+      deliverables: items,
+      artifactsFilterQuery: 'timeline',
+    });
+    assert.ok(filteredHtml.includes('t3-timeline.png') && !filteredHtml.includes('2026-11-23-t3code-telemetry.html'));
   });
 });

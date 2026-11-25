@@ -81,6 +81,7 @@ interface NormalizedToolCall {
   args: string;
   rawArgs?: unknown;
   output?: string;
+  imagePath?: string;
   subagentId?: string;
   delegationId?: string;
 }
@@ -171,6 +172,9 @@ export function parseTranscriptRows(list: readonly unknown[], options: ParseTran
       );
       rawText = extracted.cleanText;
       extractedAttachments = extracted.attachments;
+    } else if (!isMachineRow && rawRole === 'assistant' && Array.isArray(row.content)) {
+      const extracted = extractMessageAttachments('', row.content);
+      extractedAttachments = extracted.attachments;
     }
 
     const thought = typeof row.thinking === 'string'
@@ -209,6 +213,8 @@ export function parseTranscriptRows(list: readonly unknown[], options: ParseTran
       const rawArgs = tc.args ?? tc.arguments ?? fn.arguments ?? tc.input ?? tc.parameters ?? {};
       const status = asString(tc.status);
       const output = formatRawOutput(tc.output ?? tc.result ?? tc.stdout);
+      const imagePath = asString(tc.image_path) || asString(tc.imagePath) || undefined;
+      const inlineDiff = asString(tc.inline_diff) || asString(tc.inlineDiff) || undefined;
       const delegMeta = enrichDelegationMeta(toolName, tc, rawArgs, output);
       return {
         id: asString(tc.id) || asString(tc.tool_call_id) || `tc-${idx}-${tIdx}`,
@@ -217,6 +223,8 @@ export function parseTranscriptRows(list: readonly unknown[], options: ParseTran
         args: extractToolTarget(rawArgs),
         rawArgs,
         output,
+        ...(imagePath ? { imagePath } : {}),
+        ...(inlineDiff ? { inlineDiff } : {}),
         ...delegMeta,
       };
     });

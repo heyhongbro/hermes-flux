@@ -15,7 +15,7 @@ import {
   renameWorkspaceDirectory,
   resolveSafeLocalSourceFile,
 } from './workspaceFs';
-import type { LogRecord } from '@hermes-flux/core';
+import { detectMediaMimeFromRequestPath, type LogRecord } from '@hermes-flux/core';
 
 /**
  * 读取标题栏应呈现的"还原"语义位。
@@ -425,14 +425,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     if (contentType.includes('application/json')) {
       return await res.json();
     }
-    // 图像二进制自动转换为 Base64 Data URL（排除 text/html SPA fallback 页误判）
-    if (
-      contentType.startsWith('image/') ||
-      (/\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i.test(options.path) && !contentType.includes('text/html'))
-    ) {
+    // 图像与可内联视频二进制自动转换为 Base64 Data URL（排除 text/html SPA fallback 页误判，上限 50MB）
+    const rawMime = contentType.split(';')[0].trim();
+    const isMediaContentType = rawMime.startsWith('image/') || rawMime.startsWith('video/');
+    const detectedExtMime = detectMediaMimeFromRequestPath(options.path);
+    if (isMediaContentType || (detectedExtMime !== null && !rawMime.includes('text/html'))) {
       const arrayBuffer = await res.arrayBuffer();
+      if (arrayBuffer.byteLength > 50 * 1024 * 1024) {
+        throw new Error('HTTP 413: Media file exceeds maximum 50MB inline preview limit');
+      }
       const base64 = Buffer.from(arrayBuffer).toString('base64');
-      const mime = contentType.split(';')[0] || 'image/png';
+      const mime = isMediaContentType ? rawMime : detectedExtMime!;
       return `data:${mime};base64,${base64}`;
     }
     return await res.text();
@@ -522,9 +525,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 限制单文件读取上限为 50MB，超出上限返回 null。
   const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
 
+  const hasEnvSecretSegment = (raw: string): boolean =>
+    raw
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter(Boolean)
+      .some((seg) => {
+        const lower = seg.trim().toLowerCase();
+        return lower === '.env' || (lower.startsWith('.env.') && lower !== '.env.example');
+      });
+
   const isSafeReadablePath = (targetFile: string): boolean => {
     try {
+      if (!targetFile || targetFile.includes('\0') || hasEnvSecretSegment(targetFile)) {
+        return false;
+      }
       const resolved = path.resolve(targetFile);
+      if (hasEnvSecretSegment(resolved)) {
+        return false;
+      }
+      const real = fs.existsSync(resolved) ? fs.realpathSync(resolved) : resolved;
+      if (hasEnvSecretSegment(real)) {
+        return false;
+      }
       const cwd = process.cwd();
       const tempDir = app.getPath('temp');
       const userDataDir = app.getPath('userData');
@@ -535,7 +558,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         return !rel.startsWith('..') && !path.isAbsolute(rel);
       };
 
-      if (isInside(cwd, resolved) || isInside(tempDir, resolved) || isInside(userDataDir, resolved)) {
+      if (isInside(cwd, real) || isInside(tempDir, real) || isInside(userDataDir, real)) {
         return true;
       }
       return false;
@@ -554,7 +577,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       }
 
       const ext = path.extname(absoluteFilePath).toLowerCase();
-      const imageMimeMap: Record<string, string> = {
+      const mediaMimeMap: Record<string, string> = {
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
         '.jpeg': 'image/jpeg',
@@ -563,11 +586,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         '.svg': 'image/svg+xml',
         '.ico': 'image/x-icon',
         '.bmp': 'image/bmp',
+        '.mp4': 'video/mp4',
+        '.m4v': 'video/mp4',
+        '.webm': 'video/webm',
+        '.mov': 'video/quicktime',
+        '.ogv': 'video/ogg',
       };
 
-      if (imageMimeMap[ext]) {
+      if (mediaMimeMap[ext]) {
         const buffer = fs.readFileSync(absoluteFilePath);
-        return `data:${imageMimeMap[ext]};base64,${buffer.toString('base64')}`;
+        return `data:${mediaMimeMap[ext]};base64,${buffer.toString('base64')}`;
       }
 
       return fs.readFileSync(absoluteFilePath, 'utf8');

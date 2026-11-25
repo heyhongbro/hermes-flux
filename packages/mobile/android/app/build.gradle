@@ -1,5 +1,21 @@
 apply plugin: 'com.android.application'
 
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file('keystore.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { stream ->
+        keystoreProps.load(stream)
+    }
+}
+def releaseStorePath = keystoreProps.getProperty('storeFile') ?: System.getenv('ANDROID_KEYSTORE_PATH')
+def releaseStorePassword = keystoreProps.getProperty('storePassword') ?: System.getenv('ANDROID_KEYSTORE_PASSWORD')
+def releaseKeyAlias = keystoreProps.getProperty('keyAlias') ?: System.getenv('ANDROID_KEY_ALIAS')
+def releaseKeyPassword = keystoreProps.getProperty('keyPassword') ?: System.getenv('ANDROID_KEY_PASSWORD')
+def resolvedStoreFile = releaseStorePath
+    ? (new File(releaseStorePath).isAbsolute() ? file(releaseStorePath) : rootProject.file(releaseStorePath))
+    : null
+def hasReleaseKeystore = resolvedStoreFile != null && resolvedStoreFile.exists() && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
 android {
     namespace = "com.hermesflux.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,9 +32,27 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            release {
+                storeFile resolvedStoreFile
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            def releaseSigningConfig = signingConfigs.findByName('release')
+            if (releaseSigningConfig != null) {
+                signingConfig releaseSigningConfig
+            } else {
+                logger.warn('[Hermes Flux] WARNING: Release keystore not configured (keystore.properties or ANDROID_KEYSTORE_* missing). Falling back to debug signing; Android will warn about unverified developer identity on install. See docs/testing/android-release-signing.md.')
+                signingConfig signingConfigs.debug
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

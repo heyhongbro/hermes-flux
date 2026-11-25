@@ -58,6 +58,31 @@ const ASSISTANT_ROW = {
   timestamp: 1700000004,
 };
 
+test('transcriptRows: assistant 多模态数组图片附件与 tool_calls.image_path/imagePath 完整保留', () => {
+  const result = parse([
+    {
+      role: 'assistant',
+      row_id: 21,
+      content: [
+        { type: 'text', text: '生成结果如下：' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
+      ],
+      tool_calls: [
+        { id: 'tc-1', function: { name: 'plot', arguments: '{}' }, output: 'ok', image_path: '/out/snake.png' },
+        { id: 'tc-2', name: 'render', status: 'done', output: 'ok', imagePath: '/out/camel.png' },
+      ],
+      timestamp: 1700000010,
+    },
+  ]);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].content, '生成结果如下：');
+  assert.equal(result[0].attachments?.length, 1);
+  assert.equal(result[0].attachments?.[0]?.previewUrl, 'data:image/png;base64,AA==');
+  assert.equal(result[0].toolCalls?.[0]?.imagePath, '/out/snake.png');
+  assert.equal(result[0].toolCalls?.[1]?.imagePath, '/out/camel.png');
+});
+
 test('parseTranscriptRows - 长度守恒（输入 N 行输出 N 行）', async (t) => {
   await t.test('真实样本混合列：六行进六行出，hidden 行不得被删', () => {
     const rows = [USER_TEXT_ROW, STEER_ROW, HIDDEN_ROW, PROCESS_ROW, MODEL_SWITCH_ROW, ASSISTANT_ROW];
@@ -310,4 +335,25 @@ test('parseTranscriptRows - compaction 压缩节点与顶层 tool 字段 + deleg
   assert.equal(parsed[1].toolCalls?.[0]?.subagentId, 'sub-99');
   assert.equal(parsed[1].toolCalls?.[0]?.status, 'completed');
   assert.match(parsed[1].toolCalls?.[0]?.output ?? '', /分析完成/);
+
+  // inline_diff 与 image_path 在 parseTranscriptRows 工具完成回放中必须无损透传
+  const diffRows = parse([
+    {
+      role: 'assistant',
+      row_id: 501,
+      content: '已应用补丁并生成预览图',
+      tool_calls: [
+        {
+          id: 'tc-patch-1',
+          name: 'patch_file',
+          arguments: { path: '/out/patched.ts' },
+          inline_diff: '--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y',
+          image_path: '/out/preview.png',
+        },
+      ],
+      timestamp: 1700000200,
+    },
+  ]);
+  assert.equal(diffRows[0].toolCalls?.[0]?.inlineDiff, '--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y');
+  assert.equal(diffRows[0].toolCalls?.[0]?.imagePath, '/out/preview.png');
 });

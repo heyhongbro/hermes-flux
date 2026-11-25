@@ -20,6 +20,7 @@ import { ConversationMessageList } from './ConversationMessageList.js';
 import { PromptNavigatorRail } from './PromptNavigatorRail.js';
 import { AgentPresence, type AgentPresenceSnapshot } from '../AgentPresence.js';
 import { ScrollToEndButton } from './ScrollToEndButton.js';
+import { MediaLightbox, type MediaLightboxItem } from './MediaLightbox.js';
 import type { ConversationActions, ConversationSnapshot } from './types.js';
 import type { PromptNavigatorActions, PromptNavigatorSnapshot } from '../../lib/promptNavigator.js';
 
@@ -159,6 +160,48 @@ export function mountScrollToEndButton(
 
   const update = (): void => {
     root.render(<ScrollToEndButton {...getSnapshot()} />);
+  };
+
+  update();
+  return {
+    update,
+    unmount: () => root.unmount(),
+  };
+}
+
+export interface DesktopLightboxSnapshot {
+  items: readonly MediaLightboxItem[];
+  initialIndex: number;
+  onClose: () => void;
+  onDownload?: (item: MediaLightboxItem) => void;
+  resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
+}
+
+/**
+ * 桌面端全屏媒体灯箱挂载桥（与对话流、右侧成果物侧边栏共用唯一灯箱实例）。
+ */
+export function mountMediaLightbox(
+  host: HTMLElement,
+  getSnapshot: () => DesktopLightboxSnapshot | null,
+): ConversationMount {
+  if (!host.isConnected) throw new Error('MediaLightbox host must be connected before mounting');
+  const root: Root = createRoot(host);
+
+  const update = (): void => {
+    const snap = getSnapshot();
+    if (!snap || snap.items.length === 0) {
+      root.render(null);
+      return;
+    }
+    root.render(
+      <MediaLightbox
+        items={snap.items}
+        initialIndex={snap.initialIndex}
+        onClose={snap.onClose}
+        onDownload={snap.onDownload}
+        resolveMediaUrl={snap.resolveMediaUrl}
+      />,
+    );
   };
 
   update();

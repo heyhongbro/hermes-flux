@@ -474,6 +474,7 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
 export interface MobileBackNavState {
   activePane: MobilePaneId;
   homeTab?: MobileHomeTab;
+  mediaLightboxOpen?: boolean;
   hasActionSheet: boolean;
   actionSheetStep?: MobileActionSheetStep;
   hasModelSheet: boolean;
@@ -490,6 +491,7 @@ export interface MobileBackNavState {
 }
 
 export type MobileBackAction =
+  | { handled: true; effect: 'closeMediaLightbox' }
   | { handled: true; effect: 'actionSheetBackToMenu' }
   | { handled: true; effect: 'closeActionSheet' }
   | { handled: true; effect: 'closeModelSheet' }
@@ -511,6 +513,9 @@ export type MobileBackAction =
  * 移动端多层返回栈纯状态机：统一服务于 Android 硬件返回键与手势返回。
  */
 export function reduceMobileBackAction(state: MobileBackNavState): MobileBackAction {
+  if (state.mediaLightboxOpen) {
+    return { handled: true, effect: 'closeMediaLightbox' };
+  }
   if (state.hasActionSheet) {
     if (state.actionSheetStep && state.actionSheetStep !== 'menu') {
       return { handled: true, effect: 'actionSheetBackToMenu' };

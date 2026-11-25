@@ -142,6 +142,142 @@ test('workspaceFs: 符号链接、stat 失败与 readdir 异常降级全分支�
   }
 });
 
+test('Main IPC fs:read-file 环境变量(.env)/空字节防线、视频 DataURL MIME 与 gateway:http-proxy 50MB 上限', async () => {
+  const req = createRequire(import.meta.url);
+  const origLoad = Module._load;
+  const origFetch = globalThis.fetch;
+  const handlers = new Map();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flux-ipc-media-'));
+
+  const envFile = path.join(tmpDir, '.env');
+  const envLocalFile = path.join(tmpDir, '.env.local');
+  const mp4File = path.join(tmpDir, 'demo.mp4');
+  const webmFile = path.join(tmpDir, 'demo.webm');
+  const movFile = path.join(tmpDir, 'demo.mov');
+  fs.writeFileSync(envFile, 'SECRET=123', 'utf8');
+  fs.writeFileSync(envLocalFile, 'SECRET=456', 'utf8');
+  fs.writeFileSync(mp4File, Buffer.from('mp4bytes'));
+  fs.writeFileSync(webmFile, Buffer.from('webmbytes'));
+  fs.writeFileSync(movFile, Buffer.from('movbytes'));
+
+  const electronMock = {
+    ipcMain: {
+      on() {},
+      handle(channel, fn) {
+        handlers.set(channel, fn);
+      },
+    },
+    BrowserWindow: class {},
+    shell: { openExternal: async () => {}, openPath: async () => '' },
+    dialog: { showOpenDialog: async () => ({ filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+    app: { getPath: () => os.tmpdir(), getVersion: () => '0.0.0-test' },
+    clipboard: { writeText() {}, readText: () => '' },
+    contextBridge: { exposeInMainWorld() {} },
+    ipcRenderer: { invoke: async () => null, on() {}, removeListener() {}, send() {} },
+  };
+
+  let ipcPath;
+  try {
+    Module._load = function patchedLoad(request, parent, isMain) {
+      if (request === 'electron') return electronMock;
+      return origLoad.apply(this, arguments);
+    };
+    ipcPath = req.resolve('../../dist/main/ipc.cjs');
+    delete req.cache[ipcPath];
+    const ipcMod = req(ipcPath);
+    const mockWin = {
+      isDestroyed: () => false,
+      isFullScreen: () => false,
+      isMaximized: () => false,
+      webContents: { send() {}, isDestroyed: () => false },
+      on() {},
+      minimize() {},
+      maximize() {},
+      unmaximize() {},
+      close() {},
+    };
+    ipcMod.registerIpcHandlers(mockWin);
+
+    const readFileHandler = handlers.get('fs:read-file');
+    assert.ok(readFileHandler, '必须注册 fs:read-file handler');
+
+    const assertDeniedOrEmpty = async (badPath) => {
+      let blocked = false;
+      try {
+        const res = await readFileHandler({}, badPath);
+        blocked = res == null || !String(res).includes('SECRET=');
+      } catch {
+        blocked = true;
+      }
+      assert.equal(blocked, true, `危险路径必须被拒绝或脱敏阻断: ${badPath}`);
+    };
+    await assertDeniedOrEmpty('');
+    await assertDeniedOrEmpty(`${tmpDir}\0/a.txt`);
+    await assertDeniedOrEmpty(envFile);
+    await assertDeniedOrEmpty(envLocalFile);
+
+    // 相对路径本身无 .env，但 path.resolve(cwd, rel) 落在 .env 目录内时必须拦截
+    const envDir = path.join(tmpDir, 'nested', '.env');
+    fs.mkdirSync(envDir, { recursive: true });
+    fs.writeFileSync(path.join(envDir, 'note.txt'), 'SECRET=789', 'utf8');
+    const prevCwd = process.cwd();
+    try {
+      process.chdir(envDir);
+      await assertDeniedOrEmpty('note.txt');
+    } finally {
+      process.chdir(prevCwd);
+    }
+
+    // realpathSync 解析真实目标指向 .env 敏感文件时必须拦截
+    const harmlessFile = path.join(tmpDir, 'harmless.txt');
+    fs.writeFileSync(harmlessFile, 'SECRET=symlink', 'utf8');
+    const nodeFsCjs = req('node:fs');
+    const origRealpath = nodeFsCjs.realpathSync;
+    nodeFsCjs.realpathSync = (targetPath, ...rest) => {
+      if (path.resolve(String(targetPath)) === path.resolve(harmlessFile)) {
+        return path.resolve(envFile);
+      }
+      return origRealpath.call(nodeFsCjs, targetPath, ...rest);
+    };
+    try {
+      await assertDeniedOrEmpty(harmlessFile);
+    } finally {
+      nodeFsCjs.realpathSync = origRealpath;
+    }
+
+    const ogvFile = path.join(tmpDir, 'demo.ogv');
+    fs.writeFileSync(ogvFile, Buffer.from('ogvbytes'));
+    const ogvRes = await readFileHandler({}, ogvFile);
+    assert.ok(String(ogvRes).startsWith('data:video/ogg;base64,'));
+
+    const mp4Res = await readFileHandler({}, mp4File);
+    assert.ok(String(mp4Res).startsWith('data:video/mp4;base64,'));
+    const webmRes = await readFileHandler({}, webmFile);
+    assert.ok(String(webmRes).startsWith('data:video/webm;base64,'));
+    const movRes = await readFileHandler({}, movFile);
+    assert.ok(String(movRes).startsWith('data:video/quicktime;base64,'));
+
+    // Mock fetch 返回 >50MB 视频载荷，断言 gateway:http-proxy 拒绝超大 inline 载荷
+    const proxyHandler = handlers.get('gateway:http-proxy');
+    assert.ok(proxyHandler, '必须注册 gateway:http-proxy handler');
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'video/mp4' }),
+      arrayBuffer: async () => ({ byteLength: 50 * 1024 * 1024 + 16 }),
+    });
+    await assert.rejects(
+      () => proxyHandler({}, { baseUrl: 'https://gw.example.com', path: '/api/fs/download?path=big.mp4', method: 'GET' }),
+      /413|50MB/,
+    );
+  } finally {
+    if (ipcPath) delete req.cache[ipcPath];
+    globalThis.fetch = origFetch;
+    Module._load = origLoad;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('Main IPC fs:list-directory 与 Preload listDirectory 真实链路覆盖', async () => {
   const req = createRequire(import.meta.url);
   const origLoad = Module._load;

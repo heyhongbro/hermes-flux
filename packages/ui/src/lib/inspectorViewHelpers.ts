@@ -15,12 +15,14 @@
 import {
   filterFileTree,
   formatFileSize,
+  isVideoExtension,
   normalizeWorkspacePath,
   type FileTreeLoadState,
   type FileTreeNode,
 } from '@hermes-flux/core';
 import { renderMarkdown, highlightCodeSyntax } from '../components/MiddlePod/MiddlePod.js';
 import { renderFileTypeIcon } from './fileTypeIcons.js';
+import type { DeliverableListRowVM } from './deliverableViewModel.js';
 import { t } from '../i18n/index.js';
 
 export type InspectorTab = 'artifacts' | 'browser' | 'git' | 'memory' | 'preview';
@@ -32,6 +34,7 @@ export interface OpenFileItem {
   content: string;
   language?: string;
   isDiff?: boolean;
+  isVideo?: boolean;
   isBinary?: boolean;
   isTooLarge?: boolean;
   byteSize?: number;
@@ -127,6 +130,33 @@ export function renderInspectorFileContent(
   const ext = (file.path.split('.').pop() || '').toLowerCase();
   const isMarkdown = ext === 'md' || ext === 'markdown';
   const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext);
+  const isVideo = Boolean(file.isVideo) || isVideoExtension(file.path);
+
+  if (isVideo) {
+    const trimmedContent = file.content.trim();
+    const isReadyVideo =
+      trimmedContent.startsWith('data:video/') ||
+      trimmedContent.startsWith('http://') ||
+      trimmedContent.startsWith('https://') ||
+      trimmedContent.startsWith('blob:');
+    if (!isReadyVideo) {
+      return `
+        <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--card); border-radius: var(--radius-panel); padding: 32px 20px; overflow: auto; text-align: center;">
+          <div style="font-size: var(--fs-body); font-weight: 600; color: var(--foreground); margin-bottom: 6px;">${escapeInspectorHtml(t('inspector.videoLoadError'))}</div>
+          <div style="font-size: var(--fs-aux); color: var(--muted-foreground); max-width: 320px; line-height: 1.5; margin-bottom: 16px;">${escapeInspectorHtml(t('inspector.videoLoadErrorSub'))}</div>
+          <button type="button" id="btn-preview-download-file" class="inspector-download-cta-btn">
+            <span>${escapeInspectorHtml(t('inspector.downloadFileBtn'))}</span>
+          </button>
+        </div>
+      `;
+    }
+    return `
+      <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--card); border-radius: var(--radius-panel); padding: 20px; overflow: auto;">
+        <video controls playsinline preload="metadata" src="${escapeInspectorHtml(trimmedContent)}" style="max-width: 100%; max-height: 100%; border-radius: var(--radius-inner); background: var(--background);"></video>
+        <div style="margin-top: 12px; font-size: var(--fs-caption); color: var(--muted-foreground); font-family: var(--font-mono);">${escapeInspectorHtml(file.path)}</div>
+      </div>
+    `;
+  }
 
   if (isImage) {
     const isReadyData =
@@ -418,6 +448,92 @@ export function renderInspectorFileTreePane(opts: FileTreePaneRenderOptions): st
 
       <div class="inspector-tree-list" role="tree" aria-label="${t('inspector.fileTreeTitle')}">
         ${listBodyHtml}
+      </div>
+    </div>
+  `;
+}
+
+export interface ArtifactsPaneRenderOptions {
+  deliverables: readonly DeliverableListRowVM[];
+  activeFilePath: string;
+  filterQuery: string;
+}
+
+/**
+ * 渲染桌面端同窗左侧「本会话成果物列表」分栏。
+ * 【规则】严格仅展示纯文件名 + 图标 + 短格式徽标，完整路径仅作 title 提示，逻辑与移动端 100% 一致。
+ */
+export function renderInspectorArtifactsPane(opts: ArtifactsPaneRenderOptions): string {
+  const normActive = normalizeWorkspacePath(opts.activeFilePath);
+  const query = opts.filterQuery || '';
+  const needle = query.trim().toLowerCase();
+  const visible = needle
+    ? opts.deliverables.filter(
+        (item) =>
+          item.name.toLowerCase().includes(needle) ||
+          item.path.toLowerCase().includes(needle) ||
+          item.extLabel.toLowerCase().includes(needle),
+      )
+    : opts.deliverables;
+
+  let listHtml = '';
+  if (opts.deliverables.length === 0) {
+    listHtml = `
+      <div class="inspector-tree-status" data-testid="desktop-artifacts-empty">
+        <div>${escapeInspectorHtml(t('inspector.artifactsEmpty'))}</div>
+        <div class="inspector-tree-error-detail">${escapeInspectorHtml(t('inspector.artifactsEmptySub'))}</div>
+      </div>
+    `;
+  } else if (visible.length === 0) {
+    listHtml = `<div class="inspector-tree-status">${escapeInspectorHtml(t('inspector.artifactsNoMatch'))}</div>`;
+  } else {
+    listHtml = visible
+      .map((item) => {
+        const normPath = normalizeWorkspacePath(item.path);
+        const isActive = Boolean(normActive) && (normActive === normPath || opts.activeFilePath === item.path);
+        const icon = renderFileTypeIcon(item.path, 'inspector-tree-file-icon');
+        return `
+          <button
+            type="button"
+            class="inspector-tree-row inspector-tree-file inspector-artifact-row ${isActive ? 'active' : ''}"
+            data-testid="desktop-artifact-row"
+            data-artifact-file="${escapeInspectorHtml(item.path)}"
+            data-artifact-kind="${escapeInspectorHtml(item.kind)}"
+            title="${escapeInspectorHtml(item.path)}"
+          >
+            ${icon}
+            <span class="inspector-tree-label">${escapeInspectorHtml(item.name)}</span>
+            <span class="inspector-artifact-ext">${escapeInspectorHtml(item.extLabel)}</span>
+          </button>
+        `;
+      })
+      .join('');
+  }
+
+  return `
+    <div class="inspector-file-tree-pane inspector-artifacts-pane" data-testid="desktop-artifacts-pane">
+      <div class="inspector-tree-header">
+        <div class="inspector-tree-title" title="${escapeInspectorHtml(t('inspector.artifactsTitle'))}">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0; opacity: 0.75;"><path d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"/></svg>
+          <span class="inspector-tree-title-text">${escapeInspectorHtml(t('inspector.artifactsTitle'))}</span>
+        </div>
+        <div class="inspector-tree-actions">
+          <span class="inspector-artifact-count">${opts.deliverables.length}</span>
+          <button type="button" id="btn-file-tree-toggle" class="icon-btn" title="${t('inspector.fileTreeCollapse')}">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="inspector-tree-search-wrap">
+        <div class="inspector-tree-search-box">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="inspector-tree-search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="inspector-artifacts-filter-input" class="inspector-tree-filter-input" type="text" placeholder="${escapeInspectorHtml(t('inspector.artifactsFilterPlaceholder'))}" value="${escapeInspectorHtml(query)}" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+
+      <div class="inspector-tree-list" role="list" data-testid="desktop-artifacts-list" aria-label="${escapeInspectorHtml(t('inspector.artifactsTitle'))}">
+        ${listHtml}
       </div>
     </div>
   `;

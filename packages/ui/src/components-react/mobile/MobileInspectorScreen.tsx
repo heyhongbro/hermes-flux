@@ -17,12 +17,17 @@ import * as React from 'react';
 import {
   ChevronDown,
   ChevronRight,
+  Code,
   Copy,
   Download,
+  Eye,
   FileCode2,
   FileDiff,
+  FileText,
+  Film,
   Folder,
   FolderOpen,
+  Globe,
   Image as ImageIcon,
   PanelRightClose,
   RotateCw,
@@ -34,6 +39,7 @@ import {
   filterFileTree,
   formatFileSize,
   isImageExtension,
+  isVideoExtension,
   normalizeWorkspacePath,
   type FileTreeLoadState,
   type FileTreeNode,
@@ -46,16 +52,19 @@ import type { SettingsActions } from '../settings/settingsModel.js';
 import type { MobileInspectorTab } from './mobileShellModel.js';
 import { MobileConstellationPanel } from './MobileConstellationPanel.js';
 import { MobileFloatingBackBar } from './MobileMenuPrimitives.js';
-import type { MobileInspectorReaderItem } from './types.js';
+import type { MobileInspectorArtifactItem, MobileInspectorReaderItem } from './types.js';
+import { MarkdownBlock } from '../conversation/MarkdownBlock.js';
+import type { MediaLightboxItem } from '../conversation/MediaLightbox.js';
+import { resolveDeliverableDisplayName } from '../../lib/deliverableViewModel.js';
 
 export interface MobileInspectorScreenProps {
   activeFocus: LeftRailActiveFocus;
   activeTab: MobileInspectorTab;
   readerOpen: boolean;
   readerItem: MobileInspectorReaderItem | null;
-  artifacts: Array<{ id: string; name: string; type: string; size: string; preview?: string }>;
+  artifacts: MobileInspectorArtifactItem[];
   gitDiffs: Array<{ file: string; additions: number; deletions: number; patch?: string }>;
-  openFiles: Array<{ id?: string; path: string; content: string; language?: string; isDiff?: boolean }>;
+  openFiles: Array<{ id?: string; path: string; content: string; language?: string; isDiff?: boolean; isVideo?: boolean }>;
   fileTreeState: FileTreeLoadState;
   fileTreeExpandedPaths: string[];
   fileTreeFilterQuery: string;
@@ -76,7 +85,9 @@ export interface MobileInspectorScreenProps {
   onToggleFileTreeDir: (dirPath: string) => void;
   onFilterFileTree: (query: string) => void;
   onOpenWorkspaceFile: (filePath: string) => void;
+  onOpenArtifactFile?: (filePath: string, previewUrl?: string) => void;
   onDownloadInspectorFile: () => void;
+  onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
   onEnsureLearning?: (profile: string) => void;
   onRefreshLearning: (profile?: string) => void;
   onLoadLearningDetail: (id: string, profile?: string) => void;
@@ -113,7 +124,9 @@ export function MobileInspectorScreen({
   onToggleFileTreeDir,
   onFilterFileTree,
   onOpenWorkspaceFile,
+  onOpenArtifactFile,
   onDownloadInspectorFile,
+  onOpenMediaLightbox,
   onEnsureLearning,
   onRefreshLearning,
   onLoadLearningDetail,
@@ -122,6 +135,12 @@ export function MobileInspectorScreen({
   onInspectSkill,
   onNotify,
 }: MobileInspectorScreenProps): React.ReactElement {
+  const [readerViewMode, setReaderViewMode] = React.useState<'rendered' | 'raw'>('rendered');
+  const readerItemKey = `${readerItem?.kind ?? ''}:${readerItem?.filePath ?? ''}:${readerItem?.title ?? ''}`;
+  React.useEffect(() => {
+    setReaderViewMode('rendered');
+  }, [readerItemKey]);
+
   const isGroup = activeFocus.type === 'group';
   const tabs: Array<{ id: MobileInspectorTab; label: string }> = [
     { id: 'artifacts', label: t('mobile.inspector.tabArtifacts') },
@@ -170,7 +189,11 @@ export function MobileInspectorScreen({
       }
 
       const isActive = Boolean(normActiveFile) && normActiveFile === normPath;
-      const FileGlyph = isImageExtension(node.path) ? ImageIcon : FileCode2;
+      const FileGlyph = isImageExtension(node.path)
+        ? ImageIcon
+        : isVideoExtension(node.path)
+          ? Film
+          : FileCode2;
       const sizeText = formatFileSize(node.size);
       return (
         <button
@@ -244,6 +267,7 @@ export function MobileInspectorScreen({
                   content: file.content,
                   language: file.language,
                   isDiff: file.isDiff,
+                  isVideo: file.isVideo,
                   filePath: file.path,
                   canDownload: true,
                 })
@@ -303,29 +327,74 @@ export function MobileInspectorScreen({
         return <div className="m-inspector__empty">{t('mobile.inspector.emptyArtifacts')}</div>;
       }
       return (
-        <div className="m-inspector__cards">
-          {artifacts.map((art) => (
-            <button
-              key={art.id}
-              type="button"
-              className="m-inspector-card"
-              onClick={() =>
-                onOpenItem({
-                  kind: 'artifacts',
-                  title: art.name,
-                  subtitle: `${art.type} · ${art.size}`,
-                  content: art.preview || '',
-                })
-              }
-            >
-              <Sparkles size={16} className="m-inspector-card__icon" aria-hidden="true" />
-              <span className="m-inspector-card__body">
-                <span className="m-inspector-card__title">{art.name}</span>
-                <span className="m-inspector-card__meta">{art.type} · {art.size}</span>
-              </span>
-              <ChevronRight size={15} className="m-inspector-card__chevron" aria-hidden="true" />
-            </button>
-          ))}
+        <div className="m-inspector__cards" data-testid="mobile-artifacts-list">
+          {artifacts.map((art) => {
+            const targetPath = art.path || art.name;
+            const displayName = resolveDeliverableDisplayName(art.path || art.name, art.name);
+            const kind = art.kind;
+            const ArtifactIcon =
+              kind === 'image'
+                ? ImageIcon
+                : kind === 'video'
+                  ? Film
+                  : kind === 'html'
+                    ? Globe
+                    : kind === 'markdown' || kind === 'document'
+                      ? FileText
+                      : Sparkles;
+            const metaParts = [art.type, art.size].filter(Boolean);
+            return (
+              <button
+                key={art.id}
+                type="button"
+                className="m-inspector-card"
+                data-testid="mobile-artifact-card"
+                title={targetPath}
+                onClick={() => {
+                  if (kind === 'image' && onOpenMediaLightbox && (art.previewUrl || art.path)) {
+                    const imageArts = artifacts
+                      .filter((a) => a.kind === 'image' && Boolean(a.previewUrl || a.path))
+                      .map((a) => ({
+                        id: a.id,
+                        src: a.previewUrl || a.path || a.name,
+                        path: a.path,
+                        name: resolveDeliverableDisplayName(a.path || a.name, a.name),
+                      }));
+                    const clickedIdx = imageArts.findIndex((i) => i.id === art.id);
+                    onOpenMediaLightbox(imageArts, Math.max(0, clickedIdx));
+                    return;
+                  }
+                  if (art.path) {
+                    if (onOpenArtifactFile) {
+                      onOpenArtifactFile(art.path, art.previewUrl);
+                    } else {
+                      onOpenWorkspaceFile(art.path);
+                    }
+                    return;
+                  }
+                  onOpenItem({
+                    kind: 'artifacts',
+                    title: displayName,
+                    subtitle: metaParts.join(' · '),
+                    content: art.preview || '',
+                    filePath: targetPath,
+                    isImage: kind === 'image' || isImageExtension(targetPath),
+                    isVideo: kind === 'video' || isVideoExtension(targetPath),
+                    canDownload: true,
+                  });
+                }}
+              >
+                <ArtifactIcon size={16} className="m-inspector-card__icon" aria-hidden="true" />
+                <span className="m-inspector-card__body">
+                  <span className="m-inspector-card__title">{displayName}</span>
+                  {metaParts.length > 0 ? (
+                    <span className="m-inspector-card__meta">{metaParts.join(' · ')}</span>
+                  ) : null}
+                </span>
+                <ChevronRight size={15} className="m-inspector-card__chevron" aria-hidden="true" />
+              </button>
+            );
+          })}
         </div>
       );
     }
@@ -434,6 +503,30 @@ export function MobileInspectorScreen({
       );
     }
     const lowerContent = item.content.trim().toLowerCase();
+    const targetRef = (item.filePath || item.title || '').split(/[?#]/)[0];
+    const ext = (targetRef.split('.').pop() || '').toLowerCase();
+    const isHtmlFile = !item.isDiff && (ext === 'html' || ext === 'htm');
+    const isMarkdownFile = !item.isDiff && (ext === 'md' || ext === 'markdown');
+
+    const isSafeVideoSrc =
+      lowerContent.startsWith('data:video/') ||
+      lowerContent.startsWith('https://') ||
+      lowerContent.startsWith('http://') ||
+      lowerContent.startsWith('blob:');
+    if ((item.isVideo || isVideoExtension(targetRef) || lowerContent.startsWith('data:video/')) && isSafeVideoSrc) {
+      return (
+        <div className="m-inspector__reader-video-wrap m-no-swipe" data-testid="mobile-inspector-video">
+          <video
+            className="m-inspector__reader-video"
+            controls
+            playsInline
+            preload="metadata"
+            src={item.content}
+          />
+        </div>
+      );
+    }
+
     const isSafeImageSrc =
       lowerContent.startsWith('data:image/') ||
       lowerContent.startsWith('https://') ||
@@ -442,16 +535,71 @@ export function MobileInspectorScreen({
     if ((item.isImage && isSafeImageSrc) || lowerContent.startsWith('data:image/')) {
       return (
         <div className="m-inspector__reader-image-wrap">
-          <img className="m-inspector__reader-image" src={item.content} alt={item.title} />
+          <button
+            type="button"
+            className="m-inspector__reader-image-btn"
+            aria-label={t('mobile.inspector.tapToZoom')}
+            onClick={() =>
+              onOpenMediaLightbox?.(
+                [
+                  {
+                    id: item.filePath || item.title,
+                    src: item.content,
+                    path: item.filePath,
+                    name: item.title,
+                    alt: item.title,
+                  },
+                ],
+                0,
+              )
+            }
+          >
+            <img className="m-inspector__reader-image" src={item.content} alt={item.title} />
+          </button>
         </div>
       );
     }
+
+    if (isHtmlFile && readerViewMode === 'rendered') {
+      return (
+        <div className="m-inspector__reader-html-wrap m-no-swipe" data-gesture-ignore="pan-x">
+          <iframe
+            className="m-inspector__reader-iframe"
+            data-testid="mobile-inspector-html-frame"
+            sandbox="allow-scripts"
+            srcDoc={item.content}
+            title={item.title}
+          />
+        </div>
+      );
+    }
+
+    if (isMarkdownFile && readerViewMode === 'rendered') {
+      return (
+        <div className="m-inspector__reader-code-wrap" data-gesture-ignore="pan-x">
+          <div className="m-inspector__reader-markdown" data-testid="mobile-inspector-markdown">
+            <MarkdownBlock content={item.content} onOpenMediaLightbox={onOpenMediaLightbox} />
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="m-inspector__reader-code-wrap" data-gesture-ignore="pan-x">
         <pre className="m-inspector__reader-code">{item.content}</pre>
       </div>
     );
   };
+
+  const readerExt = ((readerItem?.filePath || readerItem?.title || '').split(/[?#]/)[0].split('.').pop() || '').toLowerCase();
+  const canToggleRichMode =
+    Boolean(readerItem) &&
+    !readerItem?.isBinary &&
+    !readerItem?.isTooLarge &&
+    !readerItem?.isImage &&
+    !readerItem?.isVideo &&
+    !readerItem?.isDiff &&
+    (readerExt === 'html' || readerExt === 'htm' || readerExt === 'md' || readerExt === 'markdown');
 
   return (
     <section
@@ -503,6 +651,21 @@ export function MobileInspectorScreen({
               backAriaLabel={t('mobile.inspector.backToList')}
               rightAction={
                 <>
+                  {canToggleRichMode ? (
+                    <button
+                      type="button"
+                      className="m-float-circle-btn"
+                      data-testid="mobile-inspector-toggle-view"
+                      aria-label={
+                        readerViewMode === 'rendered'
+                          ? t('mobile.inspector.viewRaw')
+                          : t('mobile.inspector.viewRendered')
+                      }
+                      onClick={() => setReaderViewMode((m) => (m === 'rendered' ? 'raw' : 'rendered'))}
+                    >
+                      {readerViewMode === 'rendered' ? <Code size={16} /> : <Eye size={16} />}
+                    </button>
+                  ) : null}
                   {readerItem.canDownload ? (
                     <button
                       type="button"
@@ -514,7 +677,7 @@ export function MobileInspectorScreen({
                       <Download size={16} />
                     </button>
                   ) : null}
-                  {!readerItem.isImage && !readerItem.isBinary && !readerItem.isTooLarge ? (
+                  {!readerItem.isImage && !readerItem.isVideo && !readerItem.isBinary && !readerItem.isTooLarge ? (
                     <button
                       type="button"
                       className="m-float-circle-btn"

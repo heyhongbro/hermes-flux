@@ -107,4 +107,101 @@ test('File references - 只有会话真实读写过的文件才可点击', async
     assert.ok(labelBlock[1].includes('text-decoration: none'), '文件引用默认不得常显下划线');
     assert.ok(css.includes('.md-file-ref--linked'), '必须存在可点击文件引用样式');
   });
+
+  await t.test('11. 安全隔离：未命中文件图片不渲染可点链 + 危险链接协议被阻断', async () => {
+    const renderMarkdown = await loadMarkdown();
+    const unlinkedImg = renderMarkdown('![cfg](/secret/config.json)');
+    assert.equal(unlinkedImg.includes('data-preview-file'), false, '未命中 knownFiles 的本地图片路径不得生成可点探针链');
+
+    const linkedImg = renderMarkdown('![chart](/out/arch.png)', { knownFiles: ['/out/arch.png'] });
+    assert.ok(linkedImg.includes('data-preview-file="/out/arch.png"'));
+
+    const xssLink = renderMarkdown('[click](javascript:alert(1))');
+    assert.equal(xssLink.includes('javascript:'), false, 'Markdown 链接不得放行 javascript: 协议');
+  });
+
+  await t.test('12. collectTouchedFiles 提取 imagePath 忽略空项 + Markdown 直链图片与非路径回退', async () => {
+    const touched = collectTouchedFiles([
+      null,
+      { name: 'draw_chart', imagePath: '/out/tool-chart.png', args: '{}' },
+    ]);
+    assert.deepEqual(touched, ['/out/tool-chart.png']);
+
+    const renderMarkdown = await loadMarkdown();
+    const mdDirect = renderMarkdown(
+      [
+        '![ext](https://cdn.example.com/fig.png "图题")',
+        '![inline](data:image/png;base64,AA==)',
+        '![badJs](javascript:alert(1))',
+        '![notPath](just_a_label)',
+      ].join('\n\n'),
+    );
+    assert.ok(mdDirect.includes('class="md-inline-image"'));
+    assert.ok(mdDirect.includes('data-media-src="https://cdn.example.com/fig.png"'));
+    assert.ok(mdDirect.includes('data-media-src="data:image/png;base64,AA=="'));
+    assert.equal(mdDirect.includes('javascript:'), false);
+    assert.ok(mdDirect.includes('notPath') && !mdDirect.includes('data-preview-file="just_a_label"'));
+  });
+
+  await t.test('13. deliverableFiles 原地渲染紧凑成果物小卡片（反引号、裸路径、图片缩略槽位、代码块免疫、纯文件名展示）', async () => {
+    const renderMarkdown = await loadMarkdown();
+    const htmlPath = '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-telemetry.html';
+    const mdPath = '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-xiaohongshu.md';
+    const pngPath = '/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png';
+    const html = renderMarkdown(
+      [
+        `- 公众号：\`${htmlPath}\``,
+        `- 小红书：${mdPath}`,
+        `- 信息图：\`${pngPath}\``,
+        '只读源码参考 `/repo/src/readonly.ts`',
+        '',
+        '```sh',
+        `echo ${htmlPath}`,
+        '```',
+      ].join('\n'),
+      {
+        knownFiles: ['/repo/src/readonly.ts', htmlPath, mdPath, pngPath],
+        deliverableFiles: [htmlPath, mdPath, pngPath],
+      },
+    );
+
+    assert.equal((html.match(/data-deliverable-card="true"/g) || []).length, 3, '正文中 3 个成果物（含裸路径）应原地渲染 3 张卡片，代码块不误替');
+    assert.ok(html.includes('<span class="conv-inline-deliverable__name">2026-11-23-t3code-telemetry.html</span>'));
+    assert.ok(html.includes('<span class="conv-inline-deliverable__name">2026-11-23-t3code-xiaohongshu.md</span>'));
+    assert.ok(html.includes('<span class="conv-inline-deliverable__name">t3-timeline.png</span>'));
+    assert.ok(html.includes('<span class="conv-inline-deliverable__ext">HTML</span>'));
+    assert.ok(html.includes('<span class="conv-inline-deliverable__ext">MD</span>'));
+    assert.ok(html.includes('<span class="conv-inline-deliverable__ext">PNG</span>'));
+    assert.ok(html.includes(`data-deliverable-thumb="${pngPath}"`), '图片小卡片必须包含 24x24 缩略图槽位');
+    assert.equal(html.includes('md-file-ref--linked'), true, '只有普通只读文件引用保留 md-file-ref--linked');
+    const inlineCardMatch = html.match(/<button[^>]*data-deliverable-card="true"[^>]*>/)?.[0] || '';
+    assert.equal(inlineCardMatch.includes('md-file-ref--linked'), false, '原地卡片禁止挂 md-file-ref--linked 以防悬停下划线');
+    assert.equal(inlineCardMatch.includes('tool-file-link'), false, '原地卡片禁止挂 tool-file-link 以免主题变色漂移');
+    assert.equal(html.includes('<span class="conv-inline-deliverable__name">/opt/data/'), false, '小卡片可见文本仅显示文件名，不显示完整目录前缀');
+    assert.ok(html.includes(`data-file-ref="/repo/src/readonly.ts"`) && html.includes('md-file-ref--linked'), '普通已读文件保留传统可点药丸而不误变成成果物卡片');
+
+    // XSS 协议阻断优先于路径扩展名匹配，raw HTML 属性不被 wrapBareDeliverablePaths 误包反引号，图片小卡不含 data-preview-file
+    const xssAndRaw = renderMarkdown(
+      [
+        '[bad](javascript:alert(1)//out.html)',
+        '`javascript:alert(1)//out.html`',
+        `看图 \`t3-timeline.png\``,
+        `<a href="${htmlPath}">raw-link</a>`,
+      ].join('\n\n'),
+      { deliverableFiles: [htmlPath, pngPath] },
+    );
+    assert.ok(xssAndRaw.includes('<p>bad</p>'), '含扩展名的 javascript: Markdown 链接必须剥离为纯文本');
+    assert.equal(
+      /href="javascript:|data-preview-file="javascript:|data-file-ref="javascript:/i.test(xssAndRaw),
+      false,
+      'javascript: 含扩展名后缀绝不得生成可点击属性或链接',
+    );
+    assert.ok(
+      xssAndRaw.includes('<code class="md-code">javascript:alert(1)//out.html</code>'),
+      '反引号内危险协议文本仅保留为惰性普通代码展示',
+    );
+    assert.ok(xssAndRaw.includes('<span class="conv-inline-deliverable__name">t3-timeline.png</span>'), '唯一纯文件名引用也应原地渲染卡片');
+    assert.equal(xssAndRaw.includes('data-deliverable-kind="image" data-deliverable-path="/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png" data-deliverable-name="t3-timeline.png" data-preview-file='), false, '图片成果物卡片不挂 data-preview-file，确保点击专走灯箱');
+    assert.equal(xssAndRaw.includes(`href="\`${htmlPath}\`"`), false, 'HTML 属性内部路径不得被裸路径扫描篡改');
+  });
 });

@@ -24,15 +24,23 @@ import {
   collectAncestorDirectoryPaths,
   mergeDirectoryChildren,
   normalizeWorkspacePath,
+  normalizeDeliverableKey,
   reduceRightPodMode,
   resolveFileContent,
   resolveWorkspaceDirectory,
+  type DeliverableItem,
   type FileTreeNode,
   type HermesGatewayClient,
   type IRpcCaller,
   type RightPodMode,
 } from '@hermes-flux/core';
-import { collectTouchedFiles, type InspectorTab, type I18nKey } from '@hermes-flux/ui';
+import {
+  collectTouchedFiles,
+  resolveDeliverableDisplayName,
+  type InspectorTab,
+  type I18nKey,
+  type MediaLightboxItem,
+} from '@hermes-flux/ui';
 import { resolveActiveWorkspaceCwd, type AppState } from '../state/appState.js';
 import type { HermesDesktopBridge } from '../../preload/index.js';
 
@@ -45,10 +53,17 @@ export interface FileViewerServiceDeps {
   t: (key: I18nKey) => string;
   onBackFromFiles?: () => void;
   onInspectorStateChange?: () => void;
+  onMobileOpenFile?: (filePath: string, previewUrl?: string) => Promise<boolean>;
+  onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
+  getSessionDeliverables?: () => readonly DeliverableItem[];
 }
 
 export interface FileViewerService {
-  handleOpenFilePreview(filePath: string, previewUrl?: string): Promise<void>;
+  handleOpenFilePreview(
+    filePath: string,
+    previewUrl?: string,
+    options?: { skipMobileRedirect?: boolean },
+  ): Promise<void>;
   switchFileTab(targetPath: string): void;
   closeFileTab(targetPath: string): void;
   toggleViewMode(): void;
@@ -60,6 +75,7 @@ export interface FileViewerService {
   copyFileContent(): Promise<void>;
   copyFilePath(): Promise<void>;
   downloadFile(targetPath?: string): Promise<void>;
+  downloadMedia(item: { src: string; path?: string; name?: string }): Promise<void>;
   closeInspector(): void;
   toggleInspectorFullscreen(): void;
   switchInspectorTab(tab: InspectorTab): void;
@@ -67,6 +83,7 @@ export interface FileViewerService {
   loadFileTree(force?: boolean): Promise<void>;
   toggleDirectory(dirPath: string): Promise<void>;
   setFileTreeFilter(query: string): void;
+  setArtifactsFilter(query: string): void;
   toggleFileTreePane(): void;
   bindEvents(): void;
 }
@@ -262,6 +279,19 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     }
   }
 
+  function setArtifactsFilter(query: string): void {
+    const state = getState();
+    state.artifactsFilterQuery = query;
+    render();
+    if (typeof document !== 'undefined') {
+      const freshInput = document.getElementById('inspector-artifacts-filter-input') as HTMLInputElement | null;
+      if (freshInput) {
+        freshInput.focus();
+        freshInput.selectionStart = freshInput.selectionEnd = freshInput.value.length;
+      }
+    }
+  }
+
   function toggleFileTreePane(): void {
     const state = getState();
     state.fileTreeCollapsed = !state.fileTreeCollapsed;
@@ -271,9 +301,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
   function toggleInspectorRailTab(tab: InspectorTab): void {
     const state = getState();
     const current = readPodMode(state);
-    const isSameTab =
-      state.activeInspectorTab === tab ||
-      (tab === 'preview' && state.activeInspectorTab === 'artifacts');
+    const isSameTab = state.activeInspectorTab === tab;
     if (current.kind !== 'files') {
       state.rightPodMode = reduceRightPodMode(current, {
         type: 'open-files',
@@ -281,17 +309,26 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
       });
       state.inspectorCollapsed = false;
       state.activeInspectorTab = tab;
+      state.fileTreeCollapsed = false;
       deps.onInspectorStateChange?.();
       render();
-      void loadFileTree();
+      if (tab === 'preview') {
+        void loadFileTree();
+      }
       return;
     }
-    if (isSameTab) {
+    if (isSameTab && !state.inspectorCollapsed) {
       closeInspector();
       return;
     }
+    state.inspectorCollapsed = false;
     state.activeInspectorTab = tab;
+    state.fileTreeCollapsed = false;
+    deps.onInspectorStateChange?.();
     render();
+    if (tab === 'preview') {
+      void loadFileTree();
+    }
   }
 
   function revealDirectoryFromPreview(dirPath: string): void {
@@ -315,9 +352,18 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     render();
   }
 
-  async function handleOpenFilePreview(filePath: string, previewUrl?: string): Promise<void> {
+  async function handleOpenFilePreview(
+    filePath: string,
+    previewUrl?: string,
+    options?: { skipMobileRedirect?: boolean },
+  ): Promise<void> {
     const target = (filePath || previewUrl || '').trim();
     if (!target) return;
+
+    if (!options?.skipMobileRedirect && deps.onMobileOpenFile) {
+      const handled = await deps.onMobileOpenFile(target, previewUrl);
+      if (handled) return;
+    }
 
     const state = getState();
     const desktopApi = getDesktopApi();
@@ -340,11 +386,15 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     // 1. 自动展开右侧 Inspection Pod 并同步设置激活文件，确认为目录时自动回滚并切换目录展开
     const prevActiveFilePath = state.activeFilePath;
     const current = readPodMode(state);
+    const wasOpenInArtifacts =
+      !state.inspectorCollapsed && current.kind === 'files' && state.activeInspectorTab === 'artifacts';
     if (current.kind !== 'files') {
       state.rightPodMode = reduceRightPodMode(current, { type: 'open-files' });
     }
     state.inspectorCollapsed = false;
-    state.activeInspectorTab = 'preview';
+    if (!wasOpenInArtifacts) {
+      state.activeInspectorTab = 'preview';
+    }
     state.activeFilePath = target;
     if (typeof window !== 'undefined' && window.innerWidth <= 768) {
       state.fileTreeCollapsed = true;
@@ -390,6 +440,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
         id: `file-${Date.now()}`,
         path: target,
         content: resolved.content,
+        isVideo: resolved.isVideo,
         isBinary: resolved.isBinary,
         isTooLarge: resolved.isTooLarge,
         byteSize: resolved.byteSize,
@@ -398,6 +449,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
       state.openFiles.push(existingOpenFile);
     } else {
       existingOpenFile.content = resolved.content;
+      existingOpenFile.isVideo = resolved.isVideo;
       existingOpenFile.isBinary = resolved.isBinary;
       existingOpenFile.isTooLarge = resolved.isTooLarge;
       existingOpenFile.byteSize = resolved.byteSize;
@@ -448,7 +500,8 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
         state.activeFilePath = state.openFiles[0]?.path || '';
       }
       const keepTreeOpen =
-        state.fileTreeState?.status === 'ready' && !state.fileTreeCollapsed;
+        (state.fileTreeState?.status === 'ready' || state.activeInspectorTab === 'artifacts') &&
+        !state.fileTreeCollapsed;
       if (state.openFiles.length === 0 && !keepTreeOpen) {
         state.rightPodMode = reduceRightPodMode(readPodMode(state), { type: 'close' });
         state.inspectorCollapsed = true;
@@ -561,9 +614,81 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     }
   }
 
+  async function executeSaveDownload(opts: {
+    fileName: string;
+    content: string;
+    isBase64: boolean;
+    sourcePath?: string;
+    remoteUrl?: string;
+  }): Promise<void> {
+    const desktopApi = getDesktopApi();
+    const isBlobContent = !opts.remoteUrl && opts.content.startsWith('blob:');
+    const isCapacitorRuntime =
+      typeof window !== 'undefined' &&
+      Boolean((window as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.());
+    if (desktopApi?.saveFile && (!isBlobContent || isCapacitorRuntime)) {
+      try {
+        const res = await desktopApi.saveFile({
+          fileName: opts.fileName,
+          content: opts.remoteUrl || opts.content,
+          isBase64: opts.isBase64,
+          sourcePath: opts.sourcePath,
+          remoteUrl: opts.remoteUrl || undefined,
+        });
+        if (res.success && typeof document !== 'undefined') {
+          const btnDownload = document.getElementById('btn-file-download');
+          if (btnDownload) {
+            btnDownload.style.color = 'var(--accent)';
+            setTimeout(() => {
+              btnDownload.style.color = '';
+            }, 1200);
+          }
+        }
+        return;
+      } catch (e) {
+        console.warn('[Desktop Save] Native save dialog failed, fallback to blob:', e);
+      }
+    }
+
+    if (typeof document !== 'undefined') {
+      if (opts.isBase64 || opts.remoteUrl || opts.content.startsWith('blob:')) {
+        const a = document.createElement('a');
+        a.href = opts.remoteUrl || opts.content;
+        a.download = opts.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        if (!opts.content) return;
+        const ext = (opts.fileName.split('.').pop() || '').toLowerCase();
+        let mime = 'text/plain;charset=utf-8';
+        if (ext === 'html' || ext === 'htm') mime = 'text/html;charset=utf-8';
+        else if (ext === 'json') mime = 'application/json;charset=utf-8';
+        else if (ext === 'md' || ext === 'markdown') mime = 'text/markdown;charset=utf-8';
+
+        const blob = new Blob([opts.content], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = opts.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      const btnDownload = document.getElementById('btn-file-download');
+      if (btnDownload) {
+        btnDownload.style.color = 'var(--accent)';
+        setTimeout(() => {
+          btnDownload.style.color = '';
+        }, 1200);
+      }
+    }
+  }
+
   async function downloadFile(targetPath?: string): Promise<void> {
     const state = getState();
-    const desktopApi = getDesktopApi();
     const activeFile = targetPath
       ? state.openFiles.find((f) => f.path === targetPath)
       : (state.openFiles.find((f) => f.path === state.activeFilePath) || state.openFiles[0]);
@@ -593,69 +718,82 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
 
     const localSourcePath = isLocalFile && !isHttp && !remoteUrl ? activeFile.path : undefined;
 
-    if (desktopApi?.saveFile) {
-      try {
-        const res = await desktopApi.saveFile({
-          fileName: rawFileName,
-          content: remoteUrl || activeFile.content,
-          isBase64: isDataUrl,
-          sourcePath: localSourcePath,
-          remoteUrl: remoteUrl || undefined,
-        });
-        if (res.success) {
-          if (typeof document !== 'undefined') {
-            const btnDownload = document.getElementById('btn-file-download');
-            if (btnDownload) {
-              btnDownload.style.color = 'var(--accent)';
-              setTimeout(() => {
-                btnDownload.style.color = '';
-              }, 1200);
-            }
-          }
-          return;
-        }
-        return;
-      } catch (e) {
-        console.warn('[Desktop Save] Native save dialog failed, fallback to blob:', e);
-      }
+    await executeSaveDownload({
+      fileName: rawFileName,
+      content: activeFile.isBinary || activeFile.isTooLarge ? (remoteUrl || '') : activeFile.content,
+      isBase64: isDataUrl,
+      sourcePath: localSourcePath,
+      remoteUrl: remoteUrl || undefined,
+    });
+  }
+
+  async function downloadMedia(item: { src: string; path?: string; name?: string }): Promise<void> {
+    const state = getState();
+    const targetPath = (item.path || '').trim();
+    if (targetPath && state.openFiles.some((f) => f.path === targetPath)) {
+      await downloadFile(targetPath);
+      return;
     }
 
-    if (typeof document !== 'undefined') {
-      if (isDataUrl || remoteUrl) {
-        const a = document.createElement('a');
-        a.href = remoteUrl || activeFile.content;
-        a.download = rawFileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      } else {
-        if (!activeFile.content && (activeFile.isBinary || activeFile.isTooLarge)) {
-          return;
-        }
-        const ext = (rawFileName.split('.').pop() || '').toLowerCase();
-        let mime = 'text/plain;charset=utf-8';
-        if (ext === 'html' || ext === 'htm') mime = 'text/html;charset=utf-8';
-        else if (ext === 'json') mime = 'application/json;charset=utf-8';
-        else if (ext === 'md' || ext === 'markdown') mime = 'text/markdown;charset=utf-8';
+    const src = (item.src || '').trim();
+    if (!src && !targetPath) return;
 
-        const blob = new Blob([activeFile.content], { type: mime });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = rawFileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }
+    const rawFileName =
+      (item.name || '').trim() ||
+      (targetPath || src).split('?')[0].split(/[/\\]/).pop() ||
+      'media';
 
-      const btnDownload = document.getElementById('btn-file-download');
-      if (btnDownload) {
-        btnDownload.style.color = 'var(--accent)';
-        setTimeout(() => {
-          btnDownload.style.color = '';
-        }, 1200);
-      }
+    if (src.startsWith('data:')) {
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: src,
+        isBase64: true,
+      });
+      return;
+    }
+
+    if (src.startsWith('http://') || src.startsWith('https://')) {
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: src,
+        isBase64: false,
+        remoteUrl: src,
+      });
+      return;
+    }
+
+    if (src.startsWith('blob:')) {
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: src,
+        isBase64: false,
+      });
+      return;
+    }
+
+    if (targetPath && state.gatewayUrl) {
+      const remoteUrl = buildGatewayDownloadUrl(
+        state.gatewayUrl,
+        targetPath,
+        state.profileName || undefined,
+        state.activeSessionId || undefined,
+      );
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: remoteUrl,
+        isBase64: false,
+        remoteUrl,
+      });
+      return;
+    }
+
+    if (targetPath) {
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: '',
+        isBase64: false,
+        sourcePath: targetPath,
+      });
     }
   }
 
@@ -727,6 +865,40 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     if (treeFilterInput) {
       treeFilterInput.oninput = () => setFileTreeFilter(treeFilterInput.value);
     }
+
+    const artifactsFilterInput = document.getElementById('inspector-artifacts-filter-input') as HTMLInputElement | null;
+    if (artifactsFilterInput) {
+      artifactsFilterInput.oninput = () => setArtifactsFilter(artifactsFilterInput.value);
+    }
+
+    document.querySelectorAll<HTMLElement>('[data-artifact-file]').forEach((artEl) => {
+      artEl.onclick = () => {
+        const filePath = artEl.dataset.artifactFile || '';
+        const kind = artEl.dataset.artifactKind || '';
+        if (!filePath) return;
+        if (kind === 'image' && deps.onOpenMediaLightbox) {
+          const allImages = (deps.getSessionDeliverables?.() ?? [])
+            .filter((d) => d.kind === 'image')
+            .map((d) => ({
+              id: d.id,
+              src: d.previewUrl || d.path,
+              path: d.path,
+              name: resolveDeliverableDisplayName(d.path, d.name),
+              alt: resolveDeliverableDisplayName(d.path, d.name),
+            }));
+          const fallbackName = resolveDeliverableDisplayName(filePath);
+          const list: MediaLightboxItem[] =
+            allImages.length > 0
+              ? allImages
+              : [{ id: `art-img-${filePath}`, src: filePath, path: filePath, name: fallbackName, alt: fallbackName }];
+          const key = normalizeDeliverableKey(filePath);
+          const idx = list.findIndex((it) => normalizeDeliverableKey(it.path || it.src) === key);
+          deps.onOpenMediaLightbox(list, Math.max(0, idx));
+          return;
+        }
+        void handleOpenFilePreview(filePath);
+      };
+    });
 
     document.querySelectorAll<HTMLElement>('[data-tree-dir]').forEach((dirEl) => {
       dirEl.onclick = () => {
@@ -838,6 +1010,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     copyFileContent,
     copyFilePath,
     downloadFile,
+    downloadMedia,
     closeInspector,
     toggleInspectorFullscreen,
     switchInspectorTab,
@@ -845,6 +1018,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     loadFileTree,
     toggleDirectory,
     setFileTreeFilter,
+    setArtifactsFilter,
     toggleFileTreePane,
     bindEvents,
   };
