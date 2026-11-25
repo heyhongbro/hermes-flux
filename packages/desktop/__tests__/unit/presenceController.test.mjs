@@ -387,3 +387,88 @@ test('PresenceController: 宿主的挂载、切 Bot 头像更新、重建与生�
   });
 });
 
+
+test('PresenceController: getTurnStartedSessionId 必须将回合归属锚点同步至 AgentPresenceManager', () => {
+  let activeStreaming = true;
+  let anchorSessionId = 'sess-live';
+  const state = {
+    activeFocus: { type: 'session', sessionId: 'sess-live' },
+    activeSessionId: 'sess-live',
+    messages: [{ id: 'ast-1', role: 'assistant', content: '' }],
+    sideAgentCapsules: [],
+    presenceTerminal: undefined,
+    turnStartedAt: Date.now() - 45_000,
+    profiles: [{ name: 'default', displayName: 'Default' }],
+    sessions: [{ id: 'sess-live', title: 'Live', botName: 'default' }],
+    groupRooms: [],
+    profileName: 'default',
+    lang: 'zh',
+    presenceLayout: 'stage',
+    activeGroupSpeaker: null,
+  };
+  let pushedSnapshots = [];
+  let ensureHostCalls = 0;
+  let hostToReturn = { isConnected: true };
+
+  const ctrl = createPresenceController({
+    getState: () => state,
+    resolveAgentAvatar: () => 'av://default',
+    isGroupConversationActive: () => false,
+    isStreamingActiveForCurrentSession: () => activeStreaming,
+    getTurnStartedSessionId: () => anchorSessionId,
+    activeRunningGroupRoomIds: new Set(),
+    mountAgentPresence: (_host, getSnapshot) => ({
+      update: () => { pushedSnapshots.push(getSnapshot()); },
+      unmount: () => {},
+    }),
+    ensureAgentPresenceHost: () => {
+      ensureHostCalls += 1;
+      return hostToReturn;
+    },
+  });
+
+  ctrl.syncAgentPresenceHost();
+  try {
+    assert.equal(ensureHostCalls, 1);
+    const snap = ctrl.getSnapshot();
+    assert.equal(snap.presence.kind, 'thinking', '流式活跃期内在场头像必须保持活跃 thinking 态');
+    assert.ok(snap.presence.sinceMs >= 44_000, '同步 turnStartedSessionId 后必须在 presence 中保留真实运行耗时');
+
+    // syncAgentPresence 在已连接宿主上不得重复触发 ensureAgentPresenceHost（L142）
+    ctrl.syncAgentPresence();
+    assert.equal(ensureHostCalls, 1);
+
+    // 动态变更 anchorSessionId：先改为 sess-other 再给 undefined（不得覆盖），然后切回 sess-live 验证 syncAgentPresence & getSnapshot 都会同步（L94, L100, L140）
+    anchorSessionId = 'sess-other';
+    ctrl.syncAgentPresence();
+    assert.equal(pushedSnapshots.at(-1).presence.sinceMs, 0);
+    anchorSessionId = undefined;
+    assert.equal(ctrl.getSnapshot().presence.sinceMs, 0, 'getTurnStartedSessionId 返回 undefined 时不得覆盖旧锚点');
+    anchorSessionId = 'sess-live';
+    ctrl.syncAgentPresence();
+    assert.ok(pushedSnapshots.at(-1).presence.sinceMs >= 44_000);
+    assert.ok(ctrl.getSnapshot().presence.sinceMs >= 44_000);
+
+    // ensureGroupTurnClock 转发到 manager 且群聊激活时生效（L104-105）
+    ctrl.ensureGroupTurnClock('room-live', true);
+    const origGroupCheck = ctrl.ensureGroupTurnClock;
+    assert.equal(typeof origGroupCheck, 'function');
+
+    // 宿主失连且重建返回 null 时安全早退（L144）
+    const pushCountBeforeDisconnect = pushedSnapshots.length;
+    hostToReturn.isConnected = false;
+    hostToReturn = null;
+    ctrl.syncAgentPresence();
+    assert.equal(pushedSnapshots.length, pushCountBeforeDisconnect);
+
+    // 切走会话但 anchorSessionId 仍指代原会话时，不应把旧 turnStartedAt 泄露给另一空闲会话
+    state.activeSessionId = 'sess-other';
+    state.activeFocus = { type: 'session', sessionId: 'sess-other' };
+    activeStreaming = false;
+    ctrl.syncAgentPresence();
+    const idleSnap = ctrl.getSnapshot();
+    assert.equal(idleSnap.presence.kind, 'idle');
+  } finally {
+    ctrl.resetPresenceHost();
+  }
+});

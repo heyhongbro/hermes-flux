@@ -137,6 +137,7 @@ export interface MobileShellCoordinatorDeps {
   syncReactMessageList?: (force?: boolean) => void;
   syncAgentPresenceHost?: () => void;
   syncAgentPresence?: () => void;
+  onEnterStage?: () => void;
   onRetryConnect?: () => Promise<void> | void;
   syncStatusBarAppearance?: (appearance: 'dark' | 'light') => void;
   getSystemPrefersDark?: () => boolean;
@@ -484,12 +485,16 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
 
   const actions: MobileWorkspaceActions = {
     onSelectPane: (pane) => {
+      const prevPane = activePane;
       activePane = pane;
       inspectorReaderOpen = false;
       if (pane === 'inspector') {
         ensureInspectorTabData(inspectorTab);
       } else {
         openFileGen += 1;
+        if (pane === 'stage' && prevPane !== 'stage') {
+          deps.onEnterStage?.();
+        }
       }
       deps.render();
     },

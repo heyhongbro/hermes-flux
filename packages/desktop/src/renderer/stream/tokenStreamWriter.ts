@@ -34,6 +34,8 @@ export interface TokenStreamWriterDeps {
   sessionMessagesCache: Map<string, MessageViewModel[]>;
   botActivityStore: { updateLatestActivity: (botName: string, content: string, ts: number) => void };
   getActiveStreamingStoredSessionId: () => string | null;
+  resolveSessionIdForMessage?: (messageId: string) => string | null;
+  resolveBotNameForSession?: (storedSessionId: string) => string | null;
   isStreamNearBottom: (stream: HTMLElement | null) => boolean;
   markProgrammaticScroll: (stream: HTMLElement) => void;
   logStream?: { trace: (msg: string, meta?: unknown) => void };
@@ -67,15 +69,16 @@ export function createTokenStreamWriter(deps: TokenStreamWriterDeps): TokenStrea
     let anchorsMissing = 0;
 
     for (const [msgId, entry] of flushedMap.entries()) {
-      const isCurrentSessionActive = activeStreamingStoredSessionId === state.activeSessionId;
+      const ownerSessionId = deps.resolveSessionIdForMessage?.(msgId) ?? activeStreamingStoredSessionId;
+      const isCurrentSessionActive = Boolean(ownerSessionId && ownerSessionId === state.activeSessionId);
       let targetMsg: MessageViewModel | undefined;
       let cachedTarget: MessageViewModel | undefined;
 
-      if (activeStreamingStoredSessionId) {
-        let cached = sessionMessagesCache.get(activeStreamingStoredSessionId);
+      if (ownerSessionId) {
+        let cached = sessionMessagesCache.get(ownerSessionId);
         if (!cached) {
           cached = [];
-          sessionMessagesCache.set(activeStreamingStoredSessionId, cached);
+          sessionMessagesCache.set(ownerSessionId, cached);
         }
         cachedTarget = cached.find((m) => m.id === msgId);
         if (!cachedTarget) {
@@ -92,14 +95,18 @@ export function createTokenStreamWriter(deps: TokenStreamWriterDeps): TokenStrea
         }
         if (entry.content) {
           cachedTarget.content += entry.content;
-          const sess = state.sessions.find((s) => s.id === activeStreamingStoredSessionId);
+          const sess = state.sessions.find((s) => s.id === ownerSessionId);
           if (sess) {
             sess.preview = cachedTarget.content;
             sess.timestamp = Date.now();
           }
           const curFocus = state.activeFocus;
-          if (curFocus.type === 'bot') {
-            botActivityStore.updateLatestActivity(curFocus.botName, cachedTarget.content, Date.now());
+          const foreverBotName =
+            isCurrentSessionActive && curFocus.type === 'bot'
+              ? curFocus.botName
+              : deps.resolveBotNameForSession?.(ownerSessionId);
+          if (foreverBotName) {
+            botActivityStore.updateLatestActivity(foreverBotName, cachedTarget.content, Date.now());
           }
         }
         if (entry.thought) cachedTarget.thought = (cachedTarget.thought || '') + entry.thought;
@@ -107,8 +114,8 @@ export function createTokenStreamWriter(deps: TokenStreamWriterDeps): TokenStrea
 
       if (isCurrentSessionActive) {
         targetMsg = state.messages.find((m) => m.id === msgId);
-        if (!targetMsg && activeStreamingStoredSessionId) {
-          const cached = sessionMessagesCache.get(activeStreamingStoredSessionId);
+        if (!targetMsg && ownerSessionId) {
+          const cached = sessionMessagesCache.get(ownerSessionId);
           targetMsg = cached?.find((m) => m.id === msgId);
           if (targetMsg && !state.messages.some((m) => m.id === msgId)) {
             state.messages.push(targetMsg);

@@ -35,6 +35,7 @@ import {
   type CacheChannelRef,
   type CacheService,
   type AgentProfile,
+  type LiveStreamRegistry,
   SessionLifecycleService,
   RpcErrorCode,
   readSessionHandles,
@@ -117,8 +118,11 @@ export interface SessionOperationDeps {
   // 流式管理相关
   readonly getActiveStreamingStoredSessionId: () => string | null;
   readonly getActiveStreamingMessageId?: () => string | null;
+  readonly getLiveStreamRegistry?: () => LiveStreamRegistry;
   readonly scheduleToolPatch?: (messageId: string) => void;
   readonly resetActiveStreamingState: () => void;
+  readonly onReenterSameSession?: (sessionId: string) => void;
+  readonly onSyncFocusedStream?: (sessionId: string) => void;
 
   // 视口与滚动控制
   readonly setPendingScrollToBottom: (val: boolean) => void;
@@ -404,6 +408,7 @@ export class SessionOperationService {
       this.deps.persistSessionsToCache(state.sessions);
 
       // 如果被删除的会话正在流式运行，安全重置流式看门狗与标志，彻底杜绝输入框被全局 isStreaming 锁死
+      this.deps.getLiveStreamRegistry?.().removeSession(id);
       if (this.deps.getActiveStreamingStoredSessionId() === id) {
         this.deps.resetActiveStreamingState();
       }
@@ -440,6 +445,7 @@ export class SessionOperationService {
         this.deps.activityTransitionTracker.clear('session', id);
         this.deps.sessionHandleRegistry.unregister(id);
         this.deps.onSessionDeleted?.(id, targetSession?.botName);
+        this.deps.getLiveStreamRegistry?.().removeSession(id);
         if (this.deps.getActiveStreamingStoredSessionId() === id) {
           this.deps.resetActiveStreamingState();
         }
@@ -739,6 +745,7 @@ export class SessionOperationService {
       state.activeLiveSessionId &&
       state.messages.length > 0
     ) {
+      this.deps.onReenterSameSession?.(id);
       return;
     }
 
@@ -769,8 +776,9 @@ export class SessionOperationService {
       }
     }
 
+    const existingLiveStream = this.deps.getLiveStreamRegistry?.().getBySession(id);
     state.activeSessionId = id;
-    state.activeLiveSessionId = ''; // must be re-resolved through session.resume
+    state.activeLiveSessionId = existingLiveStream?.liveSessionId || ''; // must be re-resolved through session.resume
     // 【规则】进入计划必须在 activeSessionId 已切、DOM 尚未替换时锁存：
     // 它只读 SessionScrollMemory，不读 DOM，因此不受 React 异步提交时序影响。
     this.deps.beginSessionEnter?.(id);
@@ -785,7 +793,7 @@ export class SessionOperationService {
     }
 
     // Sync isStreaming with the target session
-    state.isStreaming = this.deps.getActiveStreamingStoredSessionId() === id;
+    state.isStreaming = Boolean(existingLiveStream) || this.deps.getActiveStreamingStoredSessionId() === id;
 
     const matchTarget = (s: NormalizedSession): boolean =>
       s.id === id && (!normalizedOptBot || normalizeOrgProfileName(s.botName) === normalizedOptBot);
@@ -815,7 +823,12 @@ export class SessionOperationService {
     // 【流式切回工具补刷 (Why)】流式态的 ToolSection 渲染空壳把 DOM 所有权交给 toolPatchQueue；
     // 若用户切离后再切回仍在流式运行的会话，需要补排一次 toolPatch，把已存在的 toolCalls 刷进新挂载的空壳。
     if (state.isStreaming) {
-      const streamingMsgId = this.deps.getActiveStreamingMessageId?.();
+      if (this.deps.getLiveStreamRegistry?.().hasSession(id)) {
+        this.deps.onSyncFocusedStream?.(id);
+      }
+      const streamingMsgId =
+        this.deps.getLiveStreamRegistry?.().getBySession(id)?.messageId ??
+        this.deps.getActiveStreamingMessageId?.();
       if (streamingMsgId) {
         const streamingMsg = state.messages.find((m) => m.id === streamingMsgId);
         if (streamingMsg?.toolCalls && streamingMsg.toolCalls.length > 0) {

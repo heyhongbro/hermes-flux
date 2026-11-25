@@ -113,9 +113,11 @@ export async function launchLiveApp({ rootDir = path.resolve('.') } = {}) {
     if (url.pathname === '/' || url.pathname === '/app.html') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(`<!DOCTYPE html><html lang="zh-CN" data-theme="obsidian-gold"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <link rel="stylesheet" href="/packages/desktop/dist/renderer/styles.css">
 <link rel="stylesheet" href="/packages/desktop/dist/renderer/conversation.css">
 <link rel="stylesheet" href="/packages/desktop/dist/renderer/status-pod.css">
+<link rel="stylesheet" href="/packages/desktop/dist/renderer/mobile-shell.css">
 <link rel="stylesheet" href="/packages/desktop/dist/renderer/tailwind.css"></head>
 <body><div id="flux-app-root"></div>
 <script src="/inject.js"></script>
