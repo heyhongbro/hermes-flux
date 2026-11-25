@@ -10,6 +10,8 @@
  */
 
 import * as React from 'react';
+import { createPortal } from 'react-dom';
+import { extractSessionDeliverables } from '@hermes-flux/core';
 import { t } from '../../i18n/index.js';
 import type { ConversationSnapshot } from './types.js';
 import { ConversationSkeleton } from './ConversationSkeleton.js';
@@ -17,6 +19,7 @@ import { TurnGroup, groupTurns } from './TurnGroup.js';
 import { selectVisibleMessages } from './visibility.js';
 import { collectTouchedFiles } from '../../lib/fileRefs.js';
 import { BrandSwiftMark } from '../../icons/BrandMark.js';
+import { MediaLightbox, type MediaLightboxItem } from './MediaLightbox.js';
 
 export interface ConversationMessageListProps {
   snapshot: ConversationSnapshot;
@@ -43,19 +46,71 @@ export function ConversationMessageList({
   //   真正跳过 Markdown 重算；否则每次快照都返回新数组，已挂载消息会整屏重算。
   // 【约束与规则 (Rules)】仅在工具调用数组引用变化时重算。流式末条的 toolCalls 会随回合收敛重建，
   //   此时 knownFiles 换引用并触发一次全量校正是必要成本——工具输出可能新增文件，不能沿用旧集合。
-  const knownFilesRef = React.useRef<{ tools: ReadonlyArray<unknown>; files: readonly string[] }>({ tools: [], files: [] });
+  const knownFilesRef = React.useRef<{
+    messages: ReadonlyArray<unknown>;
+    tools: ReadonlyArray<unknown>;
+    verified?: ReadonlyArray<string>;
+    subagent?: ReadonlyArray<string>;
+    files: readonly string[];
+  }>({
+    messages: [],
+    tools: [],
+    verified: undefined,
+    subagent: undefined,
+    files: [],
+  });
   const computedKnownFiles = React.useMemo(() => {
     const tools = snapshot.messages.map((message) => message.toolCalls);
     const previous = knownFilesRef.current;
-    const unchanged = tools.length === previous.tools.length
-      && tools.every((tool, index) => tool === previous.tools[index]);
+    const unchanged =
+      (snapshot.messages === previous.messages ||
+        (tools.length === previous.tools.length &&
+          tools.every((tool, index) => tool === previous.tools[index]) &&
+          snapshot.messages.every((m, idx) => m.content === (previous.messages[idx] as typeof m | undefined)?.content))) &&
+      snapshot.verifiedDeliverablePaths === previous.verified &&
+      snapshot.subagentWrittenPaths === previous.subagent;
     if (unchanged) return previous.files;
-    const files = collectTouchedFiles(snapshot.messages.flatMap((message) => message.toolCalls ?? []));
-    knownFilesRef.current = { tools, files };
+    const touched = collectTouchedFiles(snapshot.messages.flatMap((message) => message.toolCalls ?? []));
+    const delivered = extractSessionDeliverables(
+      snapshot.messages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        toolCalls: m.toolCalls,
+        attachments: m.attachments,
+      })),
+      {
+        verifiedExistingPaths: snapshot.verifiedDeliverablePaths,
+        subagentWrittenPaths: snapshot.subagentWrittenPaths,
+      },
+    ).map((d) => d.path);
+    const files = Array.from(new Set([...touched, ...delivered]));
+    knownFilesRef.current = {
+      messages: snapshot.messages,
+      tools,
+      verified: snapshot.verifiedDeliverablePaths,
+      subagent: snapshot.subagentWrittenPaths,
+      files,
+    };
     return files;
-  }, [snapshot.messages]);
+  }, [snapshot.messages, snapshot.verifiedDeliverablePaths, snapshot.subagentWrittenPaths]);
   // 宿主按完整会话计算 knownFiles（窗口外工具也会影响可点击性）；旧调用方无此字段时回退到窗口内自算。
   const knownFiles = snapshot.knownFiles ?? computedKnownFiles;
+
+  const [localLightbox, setLocalLightbox] = React.useState<{
+    items: readonly MediaLightboxItem[];
+    initialIndex: number;
+  } | null>(null);
+  const openLightbox = React.useCallback(
+    (items: readonly MediaLightboxItem[], initialIndex: number) => {
+      if (snapshot.onOpenMediaLightbox) {
+        snapshot.onOpenMediaLightbox(items, initialIndex);
+        return;
+      }
+      setLocalLightbox({ items, initialIndex });
+    },
+    [snapshot.onOpenMediaLightbox],
+  );
 
   // 【加载提示延迟出现 (Why)】桌面端单页往返 600~900ms，若每轮都立刻闪出转圈，
   // 用户看到的是持续闪烁的"正在加载"，观感等同于卡死。
@@ -162,13 +217,30 @@ export function ConversationMessageList({
           isLastTurn={index === turns.length - 1}
           isStreaming={!readOnly && snapshot.isStreaming && index === turns.length - 1}
           knownFiles={knownFiles}
+          verifiedDeliverablePaths={snapshot.verifiedDeliverablePaths}
+          subagentWrittenPaths={snapshot.subagentWrittenPaths}
           readOnly={readOnly}
           onOpenSubagent={onOpenSubagent}
           onCopyMessage={onCopyMessage}
           compactTrace={snapshot.compactTrace}
           onOpenSubagentDetail={snapshot.onOpenSubagentDetail}
+          resolveMediaUrl={snapshot.resolveMediaUrl}
+          onOpenFile={snapshot.onOpenFile}
+          onOpenMediaLightbox={openLightbox}
         />
       ))}
+      {!snapshot.onOpenMediaLightbox && localLightbox && typeof document !== 'undefined' && document.body
+        ? createPortal(
+            <MediaLightbox
+              items={localLightbox.items}
+              initialIndex={localLightbox.initialIndex}
+              onClose={() => setLocalLightbox(null)}
+              onDownload={snapshot.onDownloadMediaItem}
+              resolveMediaUrl={snapshot.resolveMediaUrl}
+            />,
+            document.body,
+          )
+        : null}
     </>
   );
 

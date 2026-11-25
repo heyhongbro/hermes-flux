@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isImageExtension,
+  isVideoExtension,
+  isDirectVideoStreamUrl,
+  detectMediaMimeFromRequestPath,
   isBinaryExtension,
   hasBinaryNullBytes,
   formatFileSize,
@@ -11,6 +14,7 @@ import {
   evaluateFilePreviewGuard,
   MAX_PREVIEW_FILE_BYTES,
   MAX_PREVIEW_IMAGE_BYTES,
+  MAX_PREVIEW_VIDEO_BYTES,
   isSpaFallbackHtml,
   extractFileContentFromSessionTools,
   resolveFileContent,
@@ -516,6 +520,110 @@ test('Unified File Service (packages/core/src/fs/fileService.ts)', async (t) => 
         },
       });
       assert.equal(fallbackTextEndpoint.content, 'downloaded plain body');
+
+      // 9. 视频扩展名识别、50MB 体积守卫与网关/远程视频解析
+      assert.equal(isVideoExtension('/out/demo.mp4'), true);
+      assert.equal(isVideoExtension('https://cdn.example.com/clip.webm?v=1'), true);
+      assert.equal(isVideoExtension('/out/demo.mov'), true);
+      assert.equal(isVideoExtension('/out/archive.zip'), false);
+      assert.equal(isBinaryExtension('/out/demo.mp4'), false);
+      assert.equal(isBinaryExtension('/out/archive.zip'), true);
+
+      assert.equal(
+        evaluateFilePreviewGuard({ filePath: '/out/demo.mp4', isImage: false, isVideo: true, byteSize: 1024 }).status,
+        'ok',
+      );
+      assert.equal(
+        evaluateFilePreviewGuard({
+          filePath: '/out/giant.mp4',
+          isImage: false,
+          isVideo: true,
+          byteSize: MAX_PREVIEW_VIDEO_BYTES + 1,
+        }).status,
+        'too_large',
+      );
+
+      const remoteHttpVideo = await resolveFileContent('https://cdn.example.com/demo.mp4');
+      assert.equal(remoteHttpVideo.isVideo, true);
+      assert.equal(remoteHttpVideo.source, 'remote_http');
+      assert.equal(remoteHttpVideo.content, 'https://cdn.example.com/demo.mp4');
+
+      const gwVideo = await resolveFileContent('/opt/data/workspace/demo.mp4', {
+        gatewayUrl: 'https://gw.example.com',
+        platformBridge: {
+          httpProxy: async ({ path: ep }) => {
+            if (ep.startsWith('/api/fs/download')) return 'data:video/mp4;base64,AAAA';
+            return null;
+          },
+        },
+      });
+      assert.equal(gwVideo.isVideo, true);
+      assert.equal(gwVideo.isImage, false);
+      assert.equal(gwVideo.content, 'data:video/mp4;base64,AAAA');
+
+      // 10. HTTP 代理查询参数与 pathname 媒体 MIME 识别（覆盖 ?path=...&profile=... 场景）
+      assert.equal(
+        detectMediaMimeFromRequestPath('/api/fs/download?path=%2Ftmp%2Fdemo.mp4&profile=default&session_id=s1'),
+        'video/mp4',
+      );
+      assert.equal(
+        detectMediaMimeFromRequestPath('/api/fs/read-data-url?path=charts%2Fout.png&profile=default'),
+        'image/png',
+      );
+      assert.equal(detectMediaMimeFromRequestPath('/api/files/download?path=/a/clip.mov'), 'video/quicktime');
+      assert.equal(detectMediaMimeFromRequestPath('/a/preview.webp?v=2'), 'image/webp');
+      assert.equal(detectMediaMimeFromRequestPath('/api/fs/download?path=index.html&profile=default'), null);
+      assert.equal(detectMediaMimeFromRequestPath('/api/fs/download?profile=default'), null);
+      assert.equal(detectMediaMimeFromRequestPath('/api/fs/download?path=%2Fws%2FREADME&profile=default'), null);
+      assert.equal(detectMediaMimeFromRequestPath('http://[/invalid/clip.mp4'), 'video/mp4');
+      assert.equal(isBinaryExtension('/ws/.gitignore'), false);
+      assert.equal(isBinaryExtension('/ws/Makefile'), false);
+
+      // 视频 fallback 与 preGuard 50MB 拦截分支
+      const largeVideoBridge = await resolveFileContent('/ws/too-big.mp4', {
+        knownSize: MAX_PREVIEW_VIDEO_BYTES + 10,
+      });
+      assert.equal(largeVideoBridge.isVideo, true);
+      assert.equal(largeVideoBridge.isTooLarge, true);
+
+      const fallbackVideo = await resolveFileContent('/remote/missing.mp4', {
+        fallbackNotice: 'VIDEO_UNAVAILABLE',
+      });
+      assert.equal(fallbackVideo.source, 'fallback');
+      assert.equal(fallbackVideo.isVideo, true);
+      assert.equal(fallbackVideo.isImage, false);
+
+      // 11. 桌面端 resolveMediaStreamUrl 直出零缓冲流式协议，豁免 50MB Base64 上限且不经过 httpProxy
+      let proxyInvoked = false;
+      const streamedLargeVideo = await resolveFileContent('/opt/data/workspace/huge-render.mp4', {
+        gatewayUrl: 'https://gw.example.com:9119',
+        profile: 'coder',
+        sessionId: 'sess-9',
+        knownSize: MAX_PREVIEW_VIDEO_BYTES + 2048,
+        platformBridge: {
+          resolveMediaStreamUrl: async (req) =>
+            `hermes-media://gateway/?base=${encodeURIComponent(req.gatewayUrl || '')}&path=${encodeURIComponent(req.sourcePath)}&profile=${encodeURIComponent(req.profile || '')}&sessionId=${encodeURIComponent(req.sessionId || '')}&token=tok`,
+          httpProxy: async () => {
+            proxyInvoked = true;
+            return null;
+          },
+        },
+      });
+      assert.equal(proxyInvoked, false, '命中 resolveMediaStreamUrl 后严禁再经由 httpProxy 拉取整文件缓冲');
+      assert.equal(streamedLargeVideo.isVideo, true);
+      assert.equal(Boolean(streamedLargeVideo.isTooLarge), false);
+      assert.equal(streamedLargeVideo.source, 'gateway_api');
+      assert.ok(streamedLargeVideo.content.startsWith('hermes-media://gateway/'));
+
+      const streamedNullFallback = await resolveFileContent('/ws/huge-fallback.mp4', {
+        knownSize: MAX_PREVIEW_VIDEO_BYTES + 2048,
+        platformBridge: {
+          resolveMediaStreamUrl: async () => null,
+        },
+      });
+      assert.equal(isDirectVideoStreamUrl(''), false);
+      assert.equal(isDirectVideoStreamUrl(null), false);
+      assert.equal(streamedNullFallback.isTooLarge, true, 'resolveMediaStreamUrl 返回 null 时应正确退回原有守卫');
     } finally {
       console.warn = savedWarn;
     }

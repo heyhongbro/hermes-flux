@@ -23,9 +23,16 @@ export {
 export type { LeftRailProject } from './components/LeftRail/types.js';
 export * from './components/MiddlePod/MiddlePod.js';
 export { mountFileTypeSprite, renderFileTypeIcon, resolveFileTypeIcon } from './lib/fileTypeIcons.js';
+export { handleCodeBlockCopyClick } from './lib/codeCopy.js';
 export { warmUpHighlighting, isHighlightReady } from './lib/highlight.js';
 export { extractToolTarget, isLikelyFilePath } from './lib/text.js';
 export { collectTouchedFiles } from './lib/fileRefs.js';
+export {
+  buildDeliverableListItems,
+  formatDeliverableExtLabel,
+  resolveDeliverableDisplayName,
+  type DeliverableListRowVM,
+} from './lib/deliverableViewModel.js';
 export * from './lib/promptNavigator.js';
 export {
   UI_FONT_OPTIONS,

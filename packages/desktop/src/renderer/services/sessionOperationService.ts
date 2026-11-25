@@ -38,6 +38,7 @@ import {
   type LiveStreamRegistry,
   SessionLifecycleService,
   RpcErrorCode,
+  normalizeWorkspacePath,
   readSessionHandles,
   toPendingSession,
   upsertSession,
@@ -301,13 +302,17 @@ export class SessionOperationService {
         state.pendingSessionIds = [handles.storedId, ...state.pendingSessionIds];
       }
       const matchingProfile = state.profiles.find((p) => p.name === targetProfile);
+      const normTargetCwd = targetCwd ? normalizeWorkspacePath(targetCwd) : '';
+      if (normTargetCwd) {
+        state.sessionCwds = { ...(state.sessionCwds ?? {}), [handles.storedId]: normTargetCwd };
+      }
       const newSessionEntry: NormalizedSession = {
         ...toPendingSession(handles, targetTitle),
         botName: targetProfile,
         botDisplayName: matchingProfile?.displayName || targetProfile,
         botAvatar: matchingProfile?.avatar || '',
         projectId: targetProjectId,
-        cwd: targetCwd,
+        cwd: normTargetCwd || targetCwd,
       };
       state.sessions = upsertSession(state.sessions, newSessionEntry);
       const rawInfo: Record<string, unknown> | null =

@@ -225,6 +225,41 @@ export const MUTATION_DOMAINS = {
       'node scripts/gates/build-desktop-unit.mjs src/renderer/learningRest.ts src/renderer/services/learningService.ts',
     minScore: 80,
   },
+  deliverables: {
+    // 实测 (deliverables :134-620): 761 mutant / 614 killed / 2 timeout / 140 survived / 5 noCov = 80.95%
+    title: '回合与会话成果物提取与 MEDIA 标签剥离 (Deliverables Engine)',
+    mutate: ['packages/core/src/session/deliverables.ts:134-620'],
+    testFiles: ['packages/core/__tests__/session/deliverables.test.mjs'],
+    buildCommand: 'npm run build:core',
+    minScore: 75,
+  },
+  mediaResolver: {
+    // 实测 (mediaResolver): 121 mutant / 98 killed / 22 survived / 1 noCov = 80.99%
+    title: '媒体 URL 代理解析、LRU 缓存与已知文件推导 (Media Resolver)',
+    mutate: ['packages/desktop/src/renderer/services/mediaResolver.ts'],
+    testFiles: ['packages/desktop/__tests__/unit/mediaResolver.test.mjs'],
+    buildCommand: 'node scripts/gates/build-desktop-unit.mjs src/renderer/services/mediaResolver.ts',
+    minScore: 80,
+  },
+  mediaLightbox: {
+    // 实测 (mediaLightbox MediaLightbox:50-128 + TurnDeliverables:47-142): 278 mutant / 228 killed / 50 survived / 0 noCov = 82.01%
+    title: '浮动媒体灯箱手势与回合交付物画廊 (MediaLightbox & TurnDeliverables)',
+    mutate: [
+      'packages/ui/src/components-react/conversation/MediaLightbox.tsx:50-128',
+      'packages/ui/src/components-react/conversation/TurnDeliverables.tsx:47-142',
+    ],
+    testFiles: ['packages/ui/__tests__/media-lightbox.test.mjs'],
+    buildCommand: 'npm run build:ui',
+    minScore: 80,
+  },
+  androidSigning: {
+    // 实测 (androidSigning): 116 mutant / 103 killed / 13 survived / 0 noCov = 88.79%
+    title: 'Android Release 签名配置解析与密钥隔离守卫 (Android Release Signing)',
+    mutate: ['packages/mobile/scripts/android-signing-config.mjs'],
+    testFiles: ['packages/mobile/__tests__/unit/android-signing-config.test.mjs'],
+    buildCommand: 'node -e ""',
+    minScore: 80,
+  },
   liveStreamSync: {
     title: '多端实时流式同步纯内核 (Live Stream Registry & Sync)',
     mutate: ['packages/core/src/session/liveStreamSync.ts'],

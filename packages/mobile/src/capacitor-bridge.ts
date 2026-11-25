@@ -34,6 +34,7 @@ import { Keyboard } from '@capacitor/keyboard';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { Haptics } from '@capacitor/haptics';
 import { Network } from '@capacitor/network';
+import { detectMediaMimeFromRequestPath } from '@hermes-flux/core';
 
 export type PlatformType = 'windows' | 'macos' | 'linux' | 'ios' | 'android' | 'web';
 
@@ -546,7 +547,12 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         fetchOptions.body = JSON.stringify(options.body);
       }
 
-      const res = await fetchWithTimeout(fullUrl, fetchOptions, httpProxyTimeoutMs);
+      const requestedMediaMime =
+        detectMediaMimeFromRequestPath(fullUrl) ?? detectMediaMimeFromRequestPath(options.path);
+      const effectiveTimeoutMs =
+        overrides?.httpProxyTimeoutMs ??
+        (requestedMediaMime?.startsWith('video/') ? 120_000 : httpProxyTimeoutMs);
+      const res = await fetchWithTimeout(fullUrl, fetchOptions, effectiveTimeoutMs);
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
@@ -556,14 +562,35 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         return (await res.json()) as unknown;
       }
 
-      // 图像二进制安全转 Base64 Data URL (WebView 内 FileReader 标准转换)
-      if (contentType.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i.test(options.path)) {
+      // 图像与可播放视频二进制安全转 Base64 Data URL（上限 50MB，排除 HTML SPA fallback）
+      const rawMime = contentType.split(';')[0].trim();
+      const isMediaType = rawMime.startsWith('image/') || rawMime.startsWith('video/');
+      const detectedExtMime = detectMediaMimeFromRequestPath(options.path);
+      if (isMediaType || (detectedExtMime !== null && !rawMime.includes('text/html'))) {
         const blob = await res.blob();
+        if (blob.size > 50 * 1024 * 1024) {
+          throw new Error('HTTP 413: Media file exceeds maximum 50MB inline preview limit');
+        }
+        const resolvedMime = isMediaType ? rawMime : detectedExtMime!;
+        const blobType = (blob.type || '').toLowerCase();
+        const typedBlob =
+          blobType.startsWith('image/') || blobType.startsWith('video/')
+            ? blob
+            : blob.slice(0, blob.size, resolvedMime);
+        // Why: >2MB 的视频若转 Base64 Data URL 会膨胀 ~33% 并长时间阻塞 JS 主线程，优先创建零拷贝 blob: URL 供 <video> 流式播放。
+        if (
+          resolvedMime.startsWith('video/') &&
+          typedBlob.size > 2 * 1024 * 1024 &&
+          typeof URL !== 'undefined' &&
+          typeof URL.createObjectURL === 'function'
+        ) {
+          return URL.createObjectURL(typedBlob);
+        }
         return await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onloadend = () => resolve(reader.result as string);
           reader.onerror = reject;
-          reader.readAsDataURL(blob);
+          reader.readAsDataURL(typedBlob);
         });
       }
 
@@ -699,6 +726,18 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         } else if (!options.content && options.sourcePath) {
           const readRes = await filesystemApi.readFile({ path: options.sourcePath });
           writeData = String(readRes.data);
+          isRawBase64 = true;
+        } else if (options.content.startsWith('blob:')) {
+          const resp = await fetch(options.content);
+          const blob = await resp.blob();
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(String(reader.result || ''));
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          const commaIdx = dataUrl.indexOf(',');
+          writeData = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
           isRawBase64 = true;
         } else if (options.content.startsWith('data:')) {
           const commaIdx = options.content.indexOf(',');

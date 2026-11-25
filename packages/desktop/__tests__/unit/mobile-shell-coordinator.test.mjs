@@ -136,6 +136,71 @@ function createHarness(overrides = {}) {
   return { state, deps, calls, coordinator };
 }
 
+test('MobileShellCoordinator: 成果物卡片、图片灯箱、onOpenArtifactFile 竞态与媒体下载回退', async () => {
+  let openResolve;
+  const downloadCalls = [];
+  const h = createHarness({
+    state: {
+      messages: [
+        {
+          id: 'm1',
+          role: 'assistant',
+          content: 'MEDIA:data:image/png;base64,AA==\nMEDIA:/out/page.html',
+        },
+      ],
+      openFiles: [
+        { path: '/out/page.html', content: '<h1>hi</h1>', byteSize: 11 },
+        { path: '/out/stale.md', content: '# stale' },
+      ],
+    },
+    downloadFile: async (p) => {
+      downloadCalls.push(p);
+    },
+    openWorkspaceFile: async () => {
+      if (openResolve) {
+        await openResolve();
+      }
+    },
+  });
+
+  // 1. 构建产物扩展名提取 + onCloseMediaLightbox 空态安全返回
+  const snap0 = h.coordinator.buildSnapshot();
+  assert.ok(snap0.artifacts.some((a) => a.path === '/out/page.html' && a.type === 'HTML'));
+  assert.ok(snap0.artifacts.some((a) => a.kind === 'image' && a.type === 'IMG'));
+  const actions = h.coordinator.getActions();
+  actions.onCloseMediaLightbox();
+
+  // 2. onDownloadMediaItem 无专用依赖时回退 deps.downloadFile
+  actions.onDownloadMediaItem({ id: 'm1', src: '', path: '/out/page.html', name: 'page.html' });
+  assert.deepEqual(downloadCalls, ['/out/page.html']);
+
+  // 3. onOpenArtifactFile：空串忽略；图片走灯箱；HTML 走阅读器
+  await actions.onOpenArtifactFile('');
+  await actions.onOpenArtifactFile('/out/shot.png', 'data:image/png;base64,AA==');
+  assert.equal(h.coordinator.buildSnapshot().mediaLightbox?.items[0]?.path, '/out/shot.png');
+  actions.onCloseMediaLightbox();
+  assert.equal(h.coordinator.buildSnapshot().mediaLightbox, null);
+
+  await actions.onOpenArtifactFile('/out/page.html');
+  const snapReader = h.coordinator.buildSnapshot();
+  assert.equal(snapReader.inspectorReaderOpen, true);
+  assert.equal(snapReader.inspectorReaderItem?.filePath, '/out/page.html');
+
+  // 4. 在 memory/diffs 等非 files/artifacts Tab 下调用 openFileInReader 自动切到 files；异步期间切走 Tab 则丢弃过期打开
+  actions.onSelectInspectorTab('memory');
+  await h.coordinator.openFileInReader('/out/page.html');
+  assert.equal(h.coordinator.buildSnapshot().inspectorTab, 'files');
+
+  let releaseStale;
+  openResolve = () => new Promise((r) => { releaseStale = r; });
+  actions.onCloseInspectorReader();
+  const pendingStale = h.coordinator.openFileInReader('/out/stale.md');
+  actions.onSelectInspectorTab('memory');
+  releaseStale();
+  await pendingStale;
+  assert.equal(h.coordinator.buildSnapshot().inspectorReaderOpen, false, '异步加载期间切到非授权 Tab 不得弹出过期阅读器');
+});
+
 test('MobileShellCoordinator 存储容错、皮肤归一化、统计计数与群成员解析', () => {
   // 损坏 JSON 折叠缓存 + 明亮皮肤初始状态 + 抛错存储容错
   const brokenStorage = createMemoryStorage({
@@ -1023,6 +1088,196 @@ test('mobileShellCoordinator: onActionDisband 回退 home 屏与异常处理', a
     ['s-outside-folder'],
     '关联项目但处于自定义文件夹的会话应正常显示在自定义文件夹中',
   );
+});
+
+test('移动端检查舱成果物自动聚合与正文路径唤起阅读器/灯箱', async () => {
+  const openedFilesLog = [];
+  const h = createHarness({
+    state: {
+      messages: [
+        {
+          id: 'u-upload',
+          role: 'user',
+          content: '参考图',
+          attachments: [{ id: 'ua-1', name: 'ref.png', type: 'image', previewUrl: 'data:image/png;base64,REF' }],
+        },
+        {
+          id: 'ast-deliver',
+          role: 'assistant',
+          content: '已输出三张图与网页原型：\nMEDIA:/out/img-1.png\n![img-2](/out/img-2.png)\n[原型](/out/report.html)',
+          toolCalls: [
+            {
+              id: 'tc-img-3',
+              name: 'image_generate',
+              status: 'completed',
+              args: '{}',
+              imagePath: '/out/img-3.png',
+            },
+            {
+              id: 'tc-term-readonly',
+              name: 'terminal',
+              status: 'completed',
+              args: 'cat /etc/hosts',
+              output: '{"output":"127.0.0.1 localhost"}',
+            },
+          ],
+        },
+      ],
+    },
+    openWorkspaceFile: async (filePath) => {
+      openedFilesLog.push(filePath);
+      h.state.openFiles.push({
+        path: filePath,
+        content: '<h1>Prototype</h1>',
+      });
+    },
+  });
+
+  const snap = h.coordinator.buildSnapshot();
+  const artifactPaths = snap.artifacts.map((a) => a.path);
+  assert.ok(artifactPaths.includes('/out/img-1.png'), '必须汇总 MEDIA 成果物');
+  assert.ok(artifactPaths.includes('/out/img-2.png'), '必须汇总 Markdown 图片成果物');
+  assert.ok(artifactPaths.includes('/out/img-3.png'), '必须汇总 tool.imagePath 成果物');
+  assert.ok(artifactPaths.includes('/out/report.html'), '必须汇总 HTML 成果物');
+  assert.equal(artifactPaths.includes('/etc/hosts'), false, '只读命令行路径绝不可进入成果物');
+  assert.equal(artifactPaths.some((p) => p?.includes('ref.png')), false, '用户上传附件不得混入成果物');
+
+  // 点击文档路径直接切换检查舱并滑入富阅读器
+  await h.coordinator.openFileInReader('/out/report.html');
+  const afterDocSnap = h.coordinator.buildSnapshot();
+  assert.deepEqual(openedFilesLog, ['/out/report.html']);
+  assert.equal(afterDocSnap.activePane, 'inspector');
+  assert.equal(afterDocSnap.inspectorReaderOpen, true);
+  assert.equal(afterDocSnap.inspectorReaderItem?.filePath, '/out/report.html');
+
+  // 点击成果物 Tab 中的 HTML 卡片也必须正常唤起阅读器
+  h.coordinator.getActions().onSelectInspectorTab('artifacts');
+  h.coordinator.getActions().onOpenArtifactFile?.('/out/report.html');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(h.coordinator.buildSnapshot().inspectorTab, 'artifacts');
+  assert.equal(h.coordinator.buildSnapshot().inspectorReaderOpen, true);
+
+  // 点击图片路径直接打开全屏悬浮灯箱
+  await h.coordinator.openFileInReader('/out/img-3.png');
+  const afterImgSnap = h.coordinator.buildSnapshot();
+  assert.equal(afterImgSnap.mediaLightbox?.items.length, 1);
+  assert.equal(afterImgSnap.mediaLightbox?.items[0].path, '/out/img-3.png');
+
+  // 灯箱直接下载未打开进 state.openFiles 的图片产物
+  const downloadedItems = [];
+  const dlHost = createHarness({
+    downloadMediaItem: async (item) => {
+      downloadedItems.push(item);
+    },
+  });
+  dlHost.coordinator.getActions().onDownloadMediaItem?.({
+    id: 'dl-1',
+    src: 'data:image/png;base64,AA==',
+    path: '/out/img-3.png',
+    name: 'img-3.png',
+  });
+  assert.equal(downloadedItems.length, 1);
+  assert.equal(downloadedItems[0].src, 'data:image/png;base64,AA==');
+
+  h.coordinator.closeMediaLightbox();
+  assert.equal(h.coordinator.buildSnapshot().mediaLightbox, null);
+
+  // 触发 openWorkspaceFile 抛错时，必须显式落地非 loading 错误态（而非持续转圈或静默关闭阅读器）
+  const savedWarnErr = console.warn;
+  console.warn = () => {};
+  try {
+    const errHost = createHarness({
+      openWorkspaceFile: async () => {
+        throw new Error('network timeout');
+      },
+      state: {
+        activeFocus: { type: 'group', roomId: 'room-fallback' },
+        activeSessionId: '',
+        sessions: [],
+        fileTreeState: { status: 'ready', rootPath: '/opt/fallback-tree', nodes: [], source: 'gateway_api' },
+      },
+    });
+    assert.equal(errHost.coordinator.buildSnapshot().workspaceRootName, 'fallback-tree');
+    const errActs = errHost.coordinator.getActions();
+    errActs.onOpenArtifactFile?.('/out/timeout-clip.mp4');
+    await new Promise((r) => setTimeout(r, 15));
+    const errSnap = errHost.coordinator.buildSnapshot();
+    assert.equal(errSnap.activePane, 'inspector');
+    assert.equal(errSnap.inspectorReaderOpen, true);
+    assert.equal(errSnap.inspectorReaderItem?.isLoading, false);
+    assert.equal(errSnap.inspectorReaderItem?.isVideo, true);
+    assert.equal(errSnap.inspectorReaderItem?.content, '');
+
+    // 非视频文件打开失败同样展示显式提示而非卡死 loading
+    errActs.onOpenArtifactFile?.('/out/readme.md');
+    await new Promise((r) => setTimeout(r, 15));
+    const mdErrSnap = errHost.coordinator.buildSnapshot();
+    assert.equal(mdErrSnap.inspectorReaderOpen, true);
+    assert.equal(mdErrSnap.inspectorReaderItem?.isLoading, false);
+    assert.equal(mdErrSnap.inspectorReaderItem?.isVideo, false);
+    assert.ok(mdErrSnap.inspectorReaderItem?.content.startsWith('// /out/readme.md\n\n'));
+    assert.ok((mdErrSnap.inspectorReaderItem?.content.length ?? 0) > '// /out/readme.md\n\n'.length);
+
+    // onSelectPane('inspector') 期间也必须作废在途打开请求
+    let releaseLateFile;
+    const stalePaneHost = createHarness({
+      openWorkspaceFile: async () => {
+        await new Promise((r) => {
+          releaseLateFile = r;
+        });
+      },
+      state: {
+        activeSessionId: 's1',
+        openFiles: [{ path: '/out/late.txt', content: 'ok' }],
+      },
+    });
+    const staleActs = stalePaneHost.coordinator.getActions();
+    staleActs.onOpenArtifactFile?.('/out/late.txt');
+    staleActs.onSelectPane('inspector');
+    releaseLateFile?.();
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(stalePaneHost.coordinator.buildSnapshot().inspectorReaderOpen, false);
+
+    // cachedReady 命中 isBinary / isTooLarge（content 为空）立即非 loading 打开，以及 files tab 打开失败显式提示
+    const cachedBinHost = createHarness({
+      openWorkspaceFile: async () => {},
+      state: {
+        activeSessionId: 's-cache',
+        openFiles: [
+          { path: '/out/archive.zip', content: '', isBinary: true, source: 'gateway_api', byteSize: 4096 },
+          { path: '/out/huge.log', content: '', isTooLarge: true, source: 'gateway_api', byteSize: 9999999 },
+        ],
+      },
+    });
+    const binActs = cachedBinHost.coordinator.getActions();
+    binActs.onSelectPane('inspector');
+    binActs.onSelectInspectorTab('files');
+    binActs.onOpenWorkspaceFile('/out/archive.zip');
+    assert.equal(cachedBinHost.coordinator.buildSnapshot().inspectorReaderItem?.isBinary, true);
+    assert.equal(cachedBinHost.coordinator.buildSnapshot().inspectorReaderItem?.isLoading, false);
+    binActs.onOpenWorkspaceFile('/out/huge.log');
+    assert.equal(cachedBinHost.coordinator.buildSnapshot().inspectorReaderItem?.isTooLarge, true);
+    assert.equal(cachedBinHost.coordinator.buildSnapshot().inspectorReaderItem?.isLoading, false);
+
+    const filesFailHost = createHarness({
+      openWorkspaceFile: async () => {
+        throw new Error('files tab read fail');
+      },
+      state: { activeSessionId: 's-fail', openFiles: [] },
+    });
+    const failActs = filesFailHost.coordinator.getActions();
+    failActs.onSelectPane('inspector');
+    failActs.onSelectInspectorTab('files');
+    failActs.onOpenWorkspaceFile('/out/files-tab-broken.txt');
+    await new Promise((r) => setTimeout(r, 15));
+    const failFilesSnap = filesFailHost.coordinator.buildSnapshot();
+    assert.equal(failFilesSnap.inspectorReaderOpen, true);
+    assert.equal(failFilesSnap.inspectorReaderItem?.kind, 'files');
+    assert.equal(failFilesSnap.inspectorReaderItem?.isLoading, false);
+    assert.ok(failFilesSnap.inspectorReaderItem?.content.startsWith('// /out/files-tab-broken.txt\n\n'));
+  } finally {
+    console.warn = savedWarnErr;
+  }
 });
 
 test('MobileShellCoordinator: 仅在切入 stage 屏且从非 stage 迁入时触发 onEnterStage 拉取最新消息/流', () => {

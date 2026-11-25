@@ -83,6 +83,7 @@ test('ipc fetchWithTimeout & gateway:authenticate 3-hop flow pass abort signal a
   const ipcMod = loadCjsWithElectronMock(path.join(desktopDir, 'dist/main/ipc.cjs'), {
     ipcMain: {
       handle: (ch, fn) => handlers.set(ch, fn),
+      removeHandler: (ch) => handlers.delete(ch),
       on: () => {},
     },
     BrowserWindow: class {},
@@ -219,7 +220,14 @@ test('main/index wires powerMonitor into registerPowerEvents inside app.whenRead
   }
 
   try {
+    const registeredSchemes = [];
     loadCjsWithElectronMock(path.join(desktopDir, 'dist/main/index.js'), {
+      protocol: {
+        registerSchemesAsPrivileged: (schemes) => {
+          registeredSchemes.push(...schemes);
+        },
+        handle: () => {},
+      },
       app: {
         getPath: () => tempUserData,
         getVersion: () => '0.1.0',
@@ -237,7 +245,7 @@ test('main/index wires powerMonitor into registerPowerEvents inside app.whenRead
           if (powerListeners.get(ev) === fn) powerListeners.delete(ev);
         },
       },
-      ipcMain: { handle: () => {}, on: () => {} },
+      ipcMain: { handle: () => {}, removeHandler: () => {}, on: () => {} },
       shell: {},
       dialog: {},
       clipboard: {},
@@ -261,6 +269,8 @@ test('main/index wires powerMonitor into registerPowerEvents inside app.whenRead
     });
 
     await new Promise((r) => setTimeout(r, 20));
+    assert.equal(registeredSchemes[0]?.scheme, 'hermes-media');
+    assert.equal(registeredSchemes[0]?.privileges?.stream, true);
     powerListeners.get('resume')?.();
     assert.deepEqual(sentToWindow, [{ ch: 'system:power-event', payload: 'resume' }]);
     appListeners.get('before-quit')?.();

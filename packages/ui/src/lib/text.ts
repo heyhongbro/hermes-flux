@@ -28,6 +28,7 @@ export function isLikelyFilePath(str: string): boolean {
   const trimmed = str.trim();
   if (trimmed.length < 2 || trimmed.length > 500 || /\s/.test(trimmed)) return false;
   if (trimmed.startsWith('-')) return false;
+  if (/^(?:javascript|vbscript|data):/i.test(trimmed)) return false;
 
   if (
     trimmed.startsWith('/') &&

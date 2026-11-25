@@ -196,6 +196,118 @@ test('MessageLoadingService - 消息加载与游标管理测试', async (t) => {
     assert.equal(rpcCalls.length, 0, '群聊研讨室绝对禁止发起单会话向早分页 REST');
     assert.equal(state.isLoadingOlder, false, '加载状态必须同步关闭');
   });
+
+  await t.test('7. loadMessages: fastLoaded=true 时 onLiveSessionReady 预写 sessionCwds 仍须触发 render', async () => {
+    let liveReadyCalls = 0;
+    let countAtLiveReady = 0;
+    const { deps, state, sessionMessagesCache, rendered } = createMockDeps({
+      state: {
+        activeSessionId: 'bot-coder-main',
+        profileName: 'coder',
+        sessions: [],
+        sessionCwds: {},
+      },
+      gatewayClient: {
+        call: async (method) => {
+          if (method === 'session.resume') {
+            return {
+              session_id: 'bot-coder-main',
+              live_session_id: 'live-coder-1',
+              info: { cwd: 'E:\\bots\\coder\\' },
+            };
+          }
+          return {};
+        },
+        fetchSessionMessages: async () => ({
+          status: 'success',
+          messages: [{ id: 'm-1', row_id: 1, role: 'assistant', content: 'ready' }],
+          pagination: { returned: 1, total: 1 },
+        }),
+      },
+    });
+    deps.onLiveSessionReady = (storedId, _liveId, info) => {
+      liveReadyCalls += 1;
+      const rec = info && typeof info === 'object' ? info : {};
+      const cwd = typeof rec.cwd === 'string' ? rec.cwd.replace(/\\/g, '/').replace(/\/+$/, '') : '';
+      if (cwd) {
+        state.sessionCwds = { ...(state.sessionCwds ?? {}), [storedId]: cwd };
+      }
+      countAtLiveReady = rendered.length;
+    };
+    sessionMessagesCache.set('bot-coder-main', [
+      { id: 'm-1', rowId: 1, role: 'assistant', content: 'ready' },
+    ]);
+    const service = createMessageLoadingService(deps);
+    await service.loadMessages('bot-coder-main');
+    assert.equal(liveReadyCalls, 1);
+    assert.equal(state.sessionCwds['bot-coder-main'], 'E:/bots/coder');
+    assert.ok(rendered.length > countAtLiveReady, '即使 fastLoaded=true 且 onLiveSessionReady 预写了 sessionCwds，仍须触发 render 刷新工作区树');
+  });
+
+  await t.test('8. loadMessages: session.resume 从 archivedSessions 与 info.path 直接补全 cwd/project 并刷新', async () => {
+    const { deps, state, rendered } = createMockDeps({
+      state: {
+        activeSessionId: 'arch-1',
+        profileName: 'coder',
+        sessions: [],
+        archivedSessions: [{ id: 'arch-1', title: 'Archived', botName: 'coder' }],
+        sessionCwds: {},
+      },
+      gatewayClient: {
+        call: async (method) => {
+          if (method === 'session.resume') {
+            return {
+              session_id: 'arch-1',
+              live_session_id: 'live-arch-1',
+              info: { path: '/opt/archived/ws', project_id: 'prj-arch', project_name: 'ArchProj' },
+            };
+          }
+          return {};
+        },
+        fetchSessionMessages: async () => ({ status: 'success', messages: [], pagination: { returned: 0, total: 0 } }),
+      },
+    });
+    const service = createMessageLoadingService(deps);
+    await service.loadMessages('arch-1');
+    assert.equal(state.sessionCwds['arch-1'], '/opt/archived/ws');
+    assert.equal(state.archivedSessions[0].cwd, '/opt/archived/ws');
+    assert.equal(state.archivedSessions[0].projectId, 'prj-arch');
+    assert.equal(state.archivedSessions[0].projectName, 'ArchProj');
+    assert.ok(rendered.length >= 1);
+
+    // sessionCwds 缺失时初始化，且分别覆盖仅 prevRecordedCwd 相等 / 仅 prevSessionCwd 相等两种差量组合
+    const { deps: depsDiffA, state: stateDiffA, rendered: rendA } = createMockDeps({
+      state: {
+        activeSessionId: 's-diff-a',
+        profileName: 'coder',
+        sessions: [{ id: 's-diff-a', title: 'A', botName: 'coder', cwd: '/opt/new' }],
+        sessionCwds: undefined,
+      },
+      gatewayClient: {
+        call: async (m) => (m === 'session.resume' ? { session_id: 's-diff-a', live_session_id: 'l-a', info: { cwd: '/opt/new' } } : {}),
+        fetchSessionMessages: async () => ({ status: 'success', messages: [], pagination: { returned: 0, total: 0 } }),
+      },
+    });
+    await createMessageLoadingService(depsDiffA).loadMessages('s-diff-a');
+    assert.equal(stateDiffA.sessionCwds['s-diff-a'], '/opt/new');
+    assert.ok(rendA.length >= 1);
+
+    const { deps: depsDiffB, state: stateDiffB, rendered: rendB } = createMockDeps({
+      state: {
+        activeSessionId: 's-diff-b',
+        profileName: 'coder',
+        sessions: [{ id: 's-diff-b', title: 'B', botName: 'coder', cwd: '/opt/stale' }],
+        sessionCwds: { 's-diff-b': '/opt/new' },
+      },
+      gatewayClient: {
+        call: async (m) => (m === 'session.resume' ? { session_id: 's-diff-b', live_session_id: 'l-b', info: { cwd: '/opt/new' } } : {}),
+        fetchSessionMessages: async () => ({ status: 'success', messages: [], pagination: { returned: 0, total: 0 } }),
+      },
+    });
+    await createMessageLoadingService(depsDiffB).loadMessages('s-diff-b');
+    assert.equal(stateDiffB.sessions[0].cwd, '/opt/new');
+    assert.ok(rendB.length >= 1);
+  });
 });
 
 test('MessageLoadingService - 长任务重进发现/续流、omit_messages 兼容降级与静默无变更不重绘', async (t) => {

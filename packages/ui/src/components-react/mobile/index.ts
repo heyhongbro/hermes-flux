@@ -99,6 +99,8 @@ export {
 export type {
   MobileModelOption,
   MobileInspectorReaderItem,
+  MobileInspectorArtifactItem,
+  MobileMediaLightboxState,
   MobileSubagentSheetState,
   MobileActionSheetState,
   MobileWorkspaceSnapshot,

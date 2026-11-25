@@ -3,6 +3,7 @@
  */
 
 import type {
+  DeliverableKind,
   FileTreeLoadState,
   GatewayConnectionPhase,
   LearningDetailState,
@@ -11,6 +12,7 @@ import type {
 import type { InputAttachmentItem } from '../../components/InputDock/InputDock.js';
 import type { LeftRailActiveFocus, LeftRailFolder, LeftRailGroupRoom, LeftRailProfile, LeftRailProject } from '../leftRailModel.js';
 import type { ConversationToolVM } from '../conversation/types.js';
+import type { MediaLightboxItem } from '../conversation/MediaLightbox.js';
 import type { SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
 import type { ConversationOrgPrefs } from '../../tokens/conversationOrgPrefs.js';
 import type { SkinId } from '../../tokens/skins.js';
@@ -44,10 +46,28 @@ export interface MobileInspectorReaderItem {
   isDiff?: boolean;
   filePath?: string;
   isImage?: boolean;
+  isVideo?: boolean;
+  isLoading?: boolean;
   isBinary?: boolean;
   isTooLarge?: boolean;
   byteSize?: number;
   canDownload?: boolean;
+}
+
+export interface MobileInspectorArtifactItem {
+  id: string;
+  name: string;
+  type: string;
+  size: string;
+  preview?: string;
+  path?: string;
+  kind?: DeliverableKind;
+  previewUrl?: string;
+}
+
+export interface MobileMediaLightboxState {
+  items: readonly MediaLightboxItem[];
+  initialIndex: number;
 }
 
 export interface MobileSubagentSheetState {
@@ -132,9 +152,10 @@ export interface MobileWorkspaceSnapshot {
   inspectorTab: MobileInspectorTab;
   inspectorReaderOpen: boolean;
   inspectorReaderItem: MobileInspectorReaderItem | null;
-  artifacts: Array<{ id: string; name: string; type: string; size: string; preview?: string }>;
+  artifacts: MobileInspectorArtifactItem[];
   gitDiffs: Array<{ file: string; additions: number; deletions: number; patch?: string }>;
-  openFiles: Array<{ id?: string; path: string; content: string; language?: string; isDiff?: boolean }>;
+  openFiles: Array<{ id?: string; path: string; content: string; language?: string; isDiff?: boolean; isVideo?: boolean }>;
+  mediaLightbox?: MobileMediaLightboxState | null;
   fileTreeState: FileTreeLoadState;
   fileTreeExpandedPaths: string[];
   fileTreeFilterQuery: string;
@@ -214,7 +235,12 @@ export interface MobileWorkspaceActions {
   onToggleFileTreeDir: (dirPath: string) => void;
   onFilterFileTree: (query: string) => void;
   onOpenWorkspaceFile: (filePath: string) => void;
+  onOpenArtifactFile?: (filePath: string, previewUrl?: string) => void;
   onDownloadInspectorFile: () => void;
+  onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
+  onCloseMediaLightbox?: () => void;
+  onDownloadMediaItem?: (item: MediaLightboxItem) => void;
+  resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   onEnsureLearning?: (profile: string) => void;
   onRefreshLearning: (profile?: string) => void;
   onLoadLearningDetail: (id: string, profile?: string) => void;

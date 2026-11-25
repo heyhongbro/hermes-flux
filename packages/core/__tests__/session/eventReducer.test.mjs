@@ -400,6 +400,24 @@ test('Gateway event reducer - subagent delegation events', async (t) => {
     assert.equal(errActions[0].type, 'tool-complete');
     assert.equal(errActions[0].toolCallId, 'tc-err-1');
     assert.ok(errActions[0].output?.includes('Command timed out'));
+
+    // 3. tool.complete 携带 image_path 与 inline_diff 时完整透传 imagePath 与 inlineDiff
+    const imgFrame = {
+      type: 'tool.complete',
+      session_id: 'live-42',
+      payload: {
+        tool_id: 'tc-img-1',
+        result_text: 'rendered',
+        image_path: '/out/shot.png',
+        inline_diff: '@@ -1 +1 @@\n-old\n+new',
+      },
+    };
+    const imgActions = reduceGatewayEvent(imgFrame, CTX);
+    assert.equal(imgActions.length, 1);
+    assert.equal(imgActions[0].type, 'tool-complete');
+    assert.equal(imgActions[0].toolCallId, 'tc-img-1');
+    assert.equal(imgActions[0].imagePath, '/out/shot.png');
+    assert.equal(imgActions[0].inlineDiff, '@@ -1 +1 @@\n-old\n+new');
   });
 });
 

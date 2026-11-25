@@ -68,6 +68,39 @@ function extractGatewayPayloadPath(raw: unknown): string {
   return typeof p === 'string' ? normalizeWorkspacePath(p) : '';
 }
 
+/**
+ * 当目标目录为空且指定了 Bot profile 时，向网关探询该 profile 的默认工作区目录（`/api/fs/default-cwd`）。
+ * 【设计意图 (Why)】不同专职 Bot 可拥有独立默认目录，避免退回全局根目录或前一次项目路径。
+ */
+async function resolveGatewayProfileDefaultCwd(
+  httpProxy: NonNullable<NonNullable<ResolveWorkspaceDirectoryOptions['platformBridge']>['httpProxy']>,
+  gatewayUrl: string,
+  profile: string,
+): Promise<string> {
+  try {
+    const raw = await httpProxy({
+      baseUrl: gatewayUrl,
+      path: `/api/fs/default-cwd?profile=${encodeURIComponent(profile)}`,
+      method: 'GET',
+    });
+    let parsed: unknown = raw;
+    if (typeof raw === 'string') {
+      if (isSpaFallbackHtml(raw, 'default-cwd.json')) return '';
+      parsed = JSON.parse(raw);
+    }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const cwd = (parsed as Record<string, unknown>).cwd;
+      if (typeof cwd === 'string' && cwd.trim()) {
+        return normalizeWorkspacePath(cwd);
+      }
+    }
+  // gate-degrade: default-cwd 仅作 profile 默认目录增强，不可用或非 JSON 时安全回落默认列举
+  } catch {
+    return '';
+  }
+  return '';
+}
+
 const IGNORED_TREE_NAMES = new Set(['.', '..', '.git', '.DS_Store', 'Thumbs.db']);
 
 function compareCodePoint(a: string, b: string): number {
@@ -505,10 +538,18 @@ export async function resolveWorkspaceDirectory(
 
   // Tier 2: Gateway REST (/api/files 优先，超界或 SSH 专职配置自动回退 /api/fs/list)
   if (options.platformBridge?.httpProxy && options.gatewayUrl) {
+    const profileDefaultCwd = !normDir && options.profile
+      ? await resolveGatewayProfileDefaultCwd(
+          options.platformBridge.httpProxy,
+          options.gatewayUrl,
+          options.profile,
+        )
+      : '';
+    const effectiveDir = normDir || profileDefaultCwd;
     const profileSuffix = options.profile ? `&profile=${encodeURIComponent(options.profile)}` : '';
     const endpoints = [
-      normDir ? `/api/files?path=${encodeURIComponent(normDir)}` : '/api/files',
-      `/api/fs/list?path=${encodeURIComponent(normDir || '.')}${profileSuffix}`,
+      effectiveDir ? `/api/files?path=${encodeURIComponent(effectiveDir)}` : '/api/files',
+      `/api/fs/list?path=${encodeURIComponent(effectiveDir || '.')}${profileSuffix}`,
     ];
     for (const endpoint of endpoints) {
       try {
@@ -517,7 +558,7 @@ export async function resolveWorkspaceDirectory(
           path: endpoint,
           method: 'GET',
         });
-        const resolvedRoot = normDir || extractGatewayPayloadPath(raw);
+        const resolvedRoot = effectiveDir || extractGatewayPayloadPath(raw);
         const parsed = parseGatewayFilesPayload(raw, resolvedRoot);
         if (parsed) {
           return {

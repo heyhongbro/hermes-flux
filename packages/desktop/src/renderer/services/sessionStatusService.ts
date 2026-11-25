@@ -20,6 +20,7 @@ import {
   isSyntheticSubagentId,
   isTerminalLifecycleStatus,
   matchSubagentForToolCall,
+  normalizeWorkspacePath,
   reduceRightPodMode,
   resolveEffectiveCompressionRatio,
   SessionStatusStore,
@@ -572,6 +573,32 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
     }
   };
 
+  const recordSessionCwd = (
+    state: {
+      sessionCwds?: Record<string, string>;
+      sessions?: Array<{ id: string; cwd?: string }>;
+      archivedSessions?: Array<{ id: string; cwd?: string }>;
+    },
+    sessionId: string,
+    info: unknown,
+  ): void => {
+    if (!sessionId || !info || typeof info !== 'object') return;
+    const rec = info as Record<string, unknown>;
+    const rawCwd =
+      typeof rec.cwd === 'string' ? rec.cwd : typeof rec.path === 'string' ? rec.path : '';
+    const normCwd = rawCwd ? normalizeWorkspacePath(rawCwd) : '';
+    if (!normCwd) return;
+    if (state.sessionCwds?.[sessionId] !== normCwd) {
+      state.sessionCwds = { ...(state.sessionCwds ?? {}), [sessionId]: normCwd };
+    }
+    const matched =
+      (state.sessions ?? []).find((s) => s.id === sessionId) ??
+      (state.archivedSessions ?? []).find((s) => s.id === sessionId);
+    if (matched && matched.cwd !== normCwd) {
+      matched.cwd = normCwd;
+    }
+  };
+
   const onLiveSessionReady = (
     storedSessionId: string,
     liveSessionId: string,
@@ -584,6 +611,7 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
       const rec = info as Record<string, unknown>;
       const resolvedInfo = (rec.info && typeof rec.info === 'object' ? rec.info : info) as SessionLiveInfo;
       statusStore.applySessionInfo(buildSessionScopeKey(storedSessionId), resolvedInfo);
+      recordSessionCwd(state, storedSessionId, resolvedInfo);
     }
     if (state.activeFocus.type !== 'group' && state.activeSessionId === storedSessionId) {
       void refreshLiveSessionTelemetry(
@@ -620,7 +648,13 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
     if (!storedSessionId) return;
     subagentStore.clearSession(storedSessionId);
     statusStore.deleteScope(buildSessionScopeKey(storedSessionId));
-    if (deps.getState().activeSessionId === storedSessionId) {
+    const state = deps.getState();
+    if (state.sessionCwds && storedSessionId in state.sessionCwds) {
+      const nextCwds = { ...state.sessionCwds };
+      delete nextCwds[storedSessionId];
+      state.sessionCwds = nextCwds;
+    }
+    if (state.activeSessionId === storedSessionId) {
       stopDetailPolling();
     }
     deps.syncRightPod();
@@ -643,6 +677,7 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
     if (action.type === 'session-info') {
       const storedId = toStoredSessionId(action.sessionId) || action.sessionId;
       statusStore.applySessionInfo(buildSessionScopeKey(storedId), action.info);
+      recordSessionCwd(state, storedId, action.info);
       deps.syncRightPod();
       return;
     }

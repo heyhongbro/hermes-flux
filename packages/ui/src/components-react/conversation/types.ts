@@ -12,6 +12,7 @@
 
 import type { MessageAttachmentItem, MessageDisplayKind, MessageDisplayMetadata } from '@hermes-flux/core';
 import type { DataPhase } from '../loadPhase.js';
+import type { MediaLightboxItem } from './MediaLightbox.js';
 
 export type ConversationMode = 'scratchpad' | 'foreground' | 'group';
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
@@ -29,6 +30,8 @@ export interface ConversationToolVM {
   startedAt?: number;
   subagentId?: string;
   delegationId?: string;
+  imagePath?: string;
+  inlineDiff?: string;
 }
 
 export interface ConversationMessageVM {
@@ -100,6 +103,10 @@ export interface ConversationSnapshot {
   virtualWindowAtTail?: boolean;
   /** 整个会话真实读写过的文件；必须由宿主按完整消息集合计算，不能随窗口收缩。 */
   knownFiles?: readonly string[];
+  /** 经网关/本地目录列表物理核验真实存在的文件路径集合，驱动正文反引号成果物原地升级小卡片。 */
+  verifiedDeliverablePaths?: readonly string[];
+  /** 来自 SubagentStore (`subagent.*.files_written`) 的显式写入路径集合。 */
+  subagentWrittenPaths?: readonly string[];
   /** 当前语言标识；纳入行组件比较，切换语言后已挂载消息也要重新渲染。 */
   locale?: string;
   isStreaming: boolean;
@@ -122,6 +129,14 @@ export interface ConversationSnapshot {
   compactTrace?: boolean;
   /** 移动端点击子代理条时唤起详情抽屉 */
   onOpenSubagentDetail?: (payload: { messageId: string; tools: ConversationToolVM[] }) => void;
+  /** 解析远端或本地媒体路径为可直接渲染的 Data URL / HTTP URL */
+  resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
+  /** 点击成果物文档 / 文件路径时打开预览 */
+  onOpenFile?: (filePath: string, previewUrl?: string) => void;
+  /** 点击对话内图片时唤起共享悬浮灯箱（未提供时由消息列表自身挂载兜底灯箱） */
+  onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
+  /** 下载灯箱中预览的媒体图片 */
+  onDownloadMediaItem?: (item: MediaLightboxItem) => void;
 }
 
 export interface ConversationActions {

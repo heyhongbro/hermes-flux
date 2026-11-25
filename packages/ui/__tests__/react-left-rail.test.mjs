@@ -13,6 +13,7 @@ import path from 'node:path';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { LeftRail } from '../dist/components-react/LeftRail.js';
+import { RailOrgContainerSection } from '../dist/components-react/RailOrgContainers.js';
 import {
   ActivityIndicator,
   ACTIVITY_INDICATOR_VARIANTS,
@@ -737,4 +738,33 @@ test('反密集点阵与六变体结构守卫：三套重制彻底清零密点�
   const matrixDone = unreadOf('matrix');
   assert.ok(matrixDone.includes('flux-vortex-done-outer'));
   assert.ok(matrixDone.includes('flux-vortex-done-ring'));
+});
+
+test('容器标题渲染干净：移除项目与自定义文件夹标题后的文件夹图标并保持左栏排版结构', () => {
+  const projectHtml = renderToStaticMarkup(React.createElement(RailOrgContainerSection, {
+    kind: 'project',
+    id: 'p-flux',
+    containerId: 'prj:p-flux',
+    name: 'FluxWorkspace',
+    expanded: true,
+    isSearching: false,
+    isEmpty: false,
+    children: React.createElement('div', null, 'child'),
+  }));
+  assert.ok(projectHtml.includes('FluxWorkspace'), '项目分节必须渲染名称');
+  assert.equal(projectHtml.includes('data-container-icon="project"'), false, '项目名称后不得渲染文件夹图标');
+
+  const folderHtml = renderToStaticMarkup(React.createElement(RailOrgContainerSection, {
+    kind: 'folder',
+    id: 'fld-1',
+    containerId: 'fld-1',
+    name: 'MyCustomFolder',
+    color: 'primary',
+    expanded: true,
+    isSearching: false,
+    isEmpty: false,
+    children: React.createElement('div', null, 'child'),
+  }));
+  assert.ok(folderHtml.includes('MyCustomFolder'), '文件夹分节必须渲染名称');
+  assert.equal(folderHtml.includes('data-container-icon="folder"'), false, '自定义文件夹名称后不得渲染文件夹图标');
 });

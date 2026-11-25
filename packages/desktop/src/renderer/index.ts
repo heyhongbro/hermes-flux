@@ -14,6 +14,11 @@ import {
   persistAgentsToCache as bridgePersistAgentsToCache, defaultIndexWriteQueue,
 } from './cache/desktopCacheBridge.js';
 import { createFileViewerService } from './services/fileViewerService.js';
+import {
+  createMediaResolver,
+  createSessionDeliverableCoordinator,
+  createSessionKnownFilesResolver,
+} from './services/mediaResolver.js';
 import { createLearningService } from './services/learningService.js';
 import { createConversationStreamController } from './events/conversationStreamController.js';
 import { createTokenStreamWriter } from './stream/tokenStreamWriter.js';
@@ -44,14 +49,14 @@ import {
   type PromptNavigatorActions, type ConversationMount, type ConversationSnapshot,
   type ConversationMessageVM, loadFontPreferences, applyFontPreferences,
   loadActivityIndicatorVariant, saveActivityIndicatorVariant, resolveActivityIndicatorVariant,
-  type ActivityIndicatorVariant, setLocale, collectTouchedFiles, type FontPreferences,
+  type ActivityIndicatorVariant, setLocale, type FontPreferences,
   renderToolCapsuleSlot, formatLeftRailTime,
 } from '@hermes-flux/ui';
 import { createToolPatchQueue } from './toolPatchQueue.js';
 import { resolveColdStartFocus } from './coldStartFocus.js';
 import { createModalInteractionController } from './events/modalInteractionController.js';
 import { createInputDockController } from './events/inputDockController.js';
-import { type AppState, createInitialState, resolveActiveViewportKey } from './state/appState.js';
+import { type AppState, createInitialState, resolveActiveViewportKey, resolveActiveWorkspaceCwd } from './state/appState.js';
 import { createTurnExecutionService } from './services/turnExecutionService.js';
 import { createGatewayEventDispatcher, resolveBotNameForSession as resolveForeverBotNameForSession } from './gateway/gatewayEventDispatcher.js';
 import { createActiveViewSyncAdapters, createForegroundSyncCoordinator } from './services/foregroundSyncCoordinator.js';
@@ -129,24 +134,13 @@ function persistAgentsToCache(profiles: AgentProfile[]): void { bridgePersistAge
 declare global {
   interface Window {
     hermesDesktop?: HermesDesktopBridge;
-    hermesMobile?: {
-      syncStatusBarAppearance?: (appearance: 'dark' | 'light') => Promise<void> | void;
-      hapticSelection?: () => Promise<void> | void;
-    };
+    hermesMobile?: { syncStatusBarAppearance?: (appearance: 'dark' | 'light') => Promise<void> | void; hapticSelection?: () => Promise<void> | void };
     __fluxState?: AppState;
     __fluxRender?: () => void;
     __fluxConnect?: (url?: string) => Promise<void> | void;
     __fluxSelectSession?: (id: string, o?: { preserveFocus?: boolean; botName?: string }) => Promise<void> | void;
-    __fluxLog?: {
-      readonly level: LogLevel;
-      setLevel(next: string): LogLevel;
-      getSinkCount(): number;
-    };
-    __fluxMessageActions?: {
-      handleCopyMessage: (btn: HTMLElement) => Promise<void>;
-      handleRollbackMessage: (btn: HTMLElement) => void;
-      handleForkMessage: (btn: HTMLElement) => Promise<void>;
-    };
+    __fluxLog?: { readonly level: LogLevel; setLevel(next: string): LogLevel; getSinkCount(): number };
+    __fluxMessageActions?: { handleCopyMessage: (btn: HTMLElement) => Promise<void>; handleRollbackMessage: (btn: HTMLElement) => void; handleForkMessage: (btn: HTMLElement) => Promise<void> };
   }
 }
 
@@ -156,18 +150,13 @@ const desktopApi: HermesDesktopBridge | undefined =
 const bootLog = createLogger('boot');
 const LOG_SINKS = { error: console.error, warn: console.warn, debug: console.debug, trace: console.debug, info: console.log } as const;
 addLogSink((entry) => LOG_SINKS[entry.level](`[Flux ${entry.scope}]`, entry.message, entry.data ?? ''));
-
 const LOG_LEVEL_STORAGE_KEY = 'hermes_flux_log_level';
 
 function resolveInitialLogLevel(): LogLevel {
   try {
     const raw = localStorage.getItem(LOG_LEVEL_STORAGE_KEY);
-    if (!raw) return 'info';
-    const parsed = parseLogLevel(raw);
-    return parsed ?? 'info';
-  } catch {
-    return 'info';
-  }
+    return (raw ? parseLogLevel(raw) : null) ?? 'info';
+  } catch { return 'info'; }
 }
 
 const initialLogLevel = resolveInitialLogLevel();
@@ -771,12 +760,7 @@ const inputCompletion = createInputCompletion(
   {
     activeSessionId: () => state.activeSessionId, profileName: () => state.profileName,
     sessionKind: () => deriveSessionKind(state.activeFocus),
-    activeCwd: () => {
-      const sess = state.sessions.find((s) => s.id === state.activeSessionId);
-      if (sess?.cwd) return sess.cwd;
-      const proj = state.projects.find((p) => p.id === sess?.projectId || (sess?.projectName && p.name === sess.projectName));
-      return proj?.path || '';
-    },
+    activeCwd: () => resolveActiveWorkspaceCwd(state),
     openFiles: () => state.openFiles, agentMentionItems: () => state.mentionItems.filter((m) => m.type === 'agent'),
     inputText: () => {
       const el = document.getElementById('dock-prompt-input') as HTMLTextAreaElement | null;
@@ -928,7 +912,7 @@ const gatewayEventDispatcher = createGatewayEventDispatcher({
   refreshActiveSession: (o) => messageLoadingService.refreshActiveSession(o), onForceSyncMessageList: (f) => syncReactMessageList(f), ensureMessageWindow: (n) => ensureMessageWindow(n), setMessageWindowUserExpanded: (v) => messageWindowManager.setMessageWindowUserExpanded(v),
   render: () => render(), t,
   onStatusConnected: () => { void statusIntegration.onConnected(); },
-  onStatusDisconnected: () => statusIntegration.onDisconnected(),
+  onStatusDisconnected: () => { statusIntegration.onDisconnected(); deliverableCoordinator.clear(); },
   onReadyEnsureDoneSessions: () => { if (state.orgPrefs.showDoneSection && state.orgContainerCollapsed.done === false && !state.doneSessionsLoaded && !state.doneLoading) void conversationOrgCoordinator.ensureDoneSessionsLoaded(); },
   onStatusTurnAction: (a, fn) => statusIntegration.onGatewayTurnAction(a, fn),
 });
@@ -1108,16 +1092,10 @@ const getLeftRailSnapshot = (): LeftRailSnapshot => leftRailController.getLeftRa
 let reactMessageList: ConversationMount | null = null, reactMessageListHost: HTMLElement | null = null;
 let renderedMessageIds = new Set<string>(), lastSeenStreaming = false;
 
-let knownFilesToolsRef: readonly (MessageViewModel['toolCalls'])[] = [], knownFilesValue: readonly string[] = [];
-
-function resolveSessionKnownFiles(): readonly string[] {
-  const tools = state.messages.map((message) => message.toolCalls);
-  const unchanged = tools.length === knownFilesToolsRef.length && tools.every((tool, index) => tool === knownFilesToolsRef[index]);
-  if (unchanged) return knownFilesValue;
-  knownFilesToolsRef = tools;
-  knownFilesValue = collectTouchedFiles(state.messages.flatMap((message) => message.toolCalls ?? []));
-  return knownFilesValue;
-}
+const mediaResolver = createMediaResolver({ getState: () => state, getDesktopApi: () => desktopApi, getGatewayClient: () => gatewayClient });
+const resolveSessionKnownFiles = createSessionKnownFilesResolver(() => state.messages, {
+  getVerifiedPaths: () => deliverableCoordinator.getVerifiedPaths(), getSubagentWrittenPaths: () => deliverableCoordinator.getSubagentWrittenPaths(),
+});
 
 const statusIntegration = createStatusIntegration({
   getState: () => state, getGatewayClient: () => gatewayClient, getSessionHandleRegistry: () => defaultSessionHandleRegistry,
@@ -1130,11 +1108,18 @@ const statusIntegration = createStatusIntegration({
   onOpenConstellation: (profileName) => settingsDataService.openBotSettings(profileName, { tab: 'constellation' }),
   render: () => render(), t,
 });
+const deliverableCoordinator = createSessionDeliverableCoordinator({
+  getState: () => state, getDesktopApi: () => desktopApi, getSubagentWrittenPaths: () => statusIntegration.getActiveSubagentWrittenPaths(),
+  onVerifiedPathsUpdated: () => { renderCoordinator.syncReactMessageList(true); render(); },
+});
 
 const renderCoordinator = createRenderCoordinator({
   getState: () => state, messageWindowManager, modalInteractionController,
   isStreamingActiveForCurrentSession: () => isStreamingActiveForCurrentSession(),
   resolveSessionKnownFiles: () => resolveSessionKnownFiles(),
+  getVerifiedDeliverablePaths: deliverableCoordinator.getVerifiedPaths, getSubagentWrittenPaths: deliverableCoordinator.getSubagentWrittenPaths,
+  getSessionDeliverables: deliverableCoordinator.getSessionDeliverables, scheduleDeliverableVerification: deliverableCoordinator.scheduleVerification, clearDeliverables: deliverableCoordinator.clear,
+  resolveMediaUrl: mediaResolver.resolveMediaUrl, onOpenFile: (p, u) => { void handleOpenFilePreview(p, u); }, onDownloadMediaItem: (item) => { void fileViewerService.downloadMedia(item); },
   getTitlebarSnapshot: () => titlebarController.getTitlebarSnapshot(),
   onMinimizeWindow: () => titlebarController.onMinimizeWindow(), onMaximizeWindow: () => titlebarController.onMaximizeWindow(),
   onCloseWindow: () => titlebarController.onCloseWindow(),
@@ -1305,6 +1290,8 @@ const render = () => renderCoordinator.render();
 const fileViewerService = createFileViewerService({
   getState: renderCoordinator.getState, render, getDesktopApi: () => desktopApi, getGatewayClient: () => gatewayClient, safeCopyText, t,
   onBackFromFiles: () => statusIntegration.onBackFromFiles(), onInspectorStateChange: () => statusIntegration.onInspectorStateChange(),
+  onMobileOpenFile: async (p, u) => { if (!renderCoordinator.isMobileShellActive()) return false; await mobileShellCoordinator.openFileInReader(p, u); return true; },
+  onOpenMediaLightbox: renderCoordinator.openMediaLightbox, getSessionDeliverables: deliverableCoordinator.getSessionDeliverables,
 });
 const handleOpenFilePreview = fileViewerService.handleOpenFilePreview;
 const mobileShellCoordinator = createMobileShellCoordinator({
@@ -1316,8 +1303,9 @@ const mobileShellCoordinator = createMobileShellCoordinator({
   routeSend, sendGroupMessage, interruptTurn, switchModel,
   fetchModelOptions: () => fetchModelOptions({ clearNotice: false }), onFilesPicked: addInputAttachments,
   loadFileTree: fileViewerService.loadFileTree, toggleFileTreeDir: fileViewerService.toggleDirectory,
-  setFileTreeFilter: fileViewerService.setFileTreeFilter, openWorkspaceFile: fileViewerService.handleOpenFilePreview,
-  downloadFile: (filePath?: string) => fileViewerService.downloadFile(filePath),
+  setFileTreeFilter: fileViewerService.setFileTreeFilter, openWorkspaceFile: (p) => fileViewerService.handleOpenFilePreview(p, undefined, { skipMobileRedirect: true }),
+  downloadFile: (filePath?: string) => fileViewerService.downloadFile(filePath), downloadMediaItem: fileViewerService.downloadMedia, resolveMediaUrl: mediaResolver.resolveMediaUrl,
+  getVerifiedDeliverablePaths: deliverableCoordinator.getVerifiedPaths, getSubagentWrittenPaths: deliverableCoordinator.getSubagentWrittenPaths, getSessionDeliverables: deliverableCoordinator.getSessionDeliverables,
   loadLearningGraph: learningService.loadLearningGraph, loadLearningDetail: learningService.loadLearningDetail,
   editLearningNode: learningService.editLearningNode, deleteLearningNode: learningService.deleteLearningNode,
   getSettingsSnapshot, createSettingsActions, ensureSettingsSectionData,
@@ -1424,7 +1412,6 @@ if (typeof window !== 'undefined') {
 
 const stopRunningToolTimers = () => conversationStreamController.stopRunningToolTimers();
 const updateRunningToolTimers = () => conversationStreamController.updateRunningToolTimers();
-
 
 const dropdownKeybindController = createDropdownKeybindController({
   getState: () => state, render: () => render(),

@@ -12,10 +12,12 @@
 
 import type { FileTreeLoadState, RightPodMode } from '@hermes-flux/core';
 import { t } from '../../i18n/index.js';
+import type { DeliverableListRowVM } from '../../lib/deliverableViewModel.js';
 import {
   detectFileLanguage,
   escapeInspectorHtml,
   renderFileTab,
+  renderInspectorArtifactsPane,
   renderInspectorFileContent,
   renderInspectorFileTreePane,
   type FileViewMode,
@@ -48,21 +50,39 @@ export interface InspectionPodProps {
   fileTreeFilterQuery?: string;
   fileTreeCollapsed?: boolean;
   workspaceRootName?: string;
+  // Session deliverables sidebar
+  deliverables?: readonly DeliverableListRowVM[];
+  artifactsFilterQuery?: string;
   // Extensible functional tabs (kept for backward prop compatibility; future features added one by one)
-  previewFile?: { path: string; content: string; language?: string; isDiff?: boolean };
+  previewFile?: OpenFileItem;
   artifacts?: Array<{ id: string; name: string; type: string; size: string; preview?: string }>;
   browserFrame?: { url: string; title: string; screenshotUrl?: string };
   gitDiffs?: Array<{ file: string; additions: number; deletions: number; patch?: string }>;
   memories?: Array<{ category: string; content: string; updated?: string }>;
 }
 
-function renderVerticalRail(_activeTab: InspectorTab, collapsed: boolean, podMode?: RightPodMode['kind']): string {
+function renderVerticalRail(
+  activeTab: InspectorTab,
+  collapsed: boolean,
+  podMode?: RightPodMode['kind'],
+  deliverablesCount = 0,
+): string {
   const effectiveMode = podMode ?? (collapsed ? 'closed' : 'files');
-  const isFilesActive = !collapsed && effectiveMode === 'files';
+  const isPodFilesOpen = !collapsed && effectiveMode === 'files';
+  const isFilesActive = isPodFilesOpen && activeTab !== 'artifacts';
+  const isArtifactsActive = isPodFilesOpen && activeTab === 'artifacts';
+  const countBadge =
+    deliverablesCount > 0
+      ? `<span class="vertical-tab-badge" data-testid="desktop-artifacts-badge">${deliverablesCount > 99 ? '99+' : deliverablesCount}</span>`
+      : '';
   return `
     <nav id="flux-inspector-rail" class="inspector-vertical-rail" aria-label="${t('inspector.filesRailTitle')}">
       <button type="button" class="vertical-tab-item ${isFilesActive ? 'active-tab' : ''}" data-tab="preview" title="${t('inspector.filesRailTitle')}" aria-pressed="${isFilesActive ? 'true' : 'false'}">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      </button>
+      <button type="button" class="vertical-tab-item ${isArtifactsActive ? 'active-tab' : ''}" data-tab="artifacts" title="${t('inspector.artifactsRailTitle')}" aria-pressed="${isArtifactsActive ? 'true' : 'false'}">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"/></svg>
+        ${countBadge}
       </button>
     </nav>
   `;
@@ -71,7 +91,8 @@ function renderVerticalRail(_activeTab: InspectorTab, collapsed: boolean, podMod
 export function renderInspectionPod(props: InspectionPodProps): string {
   const activeTab: InspectorTab = props.activeTab || 'preview';
   const podMode: RightPodMode['kind'] = props.podMode ?? (props.collapsed ? 'closed' : 'files');
-  const railHtml = renderVerticalRail(activeTab, props.collapsed, podMode);
+  const deliverables = props.deliverables ?? [];
+  const railHtml = renderVerticalRail(activeTab, props.collapsed, podMode, deliverables.length);
   const isFullscreen = Boolean(props.isFullscreen) && podMode !== 'closed';
 
   const resizeHandleHtml = `<!-- Draggable Resize Handle (Inspection Pod Left Edge) -->
@@ -98,10 +119,8 @@ export function renderInspectionPod(props: InspectionPodProps): string {
       }));
     } else if (props.previewFile) {
       files = [{
-        path: props.previewFile.path,
-        content: props.previewFile.content,
+        ...props.previewFile,
         language: props.previewFile.language || detectFileLanguage(props.previewFile.path),
-        isDiff: props.previewFile.isDiff,
       }];
     }
 
@@ -120,17 +139,23 @@ export function renderInspectionPod(props: InspectionPodProps): string {
     const searchQuery = props.searchQuery || '';
     const treeCollapsed = Boolean(props.fileTreeCollapsed);
     const fileTreeState: FileTreeLoadState = props.fileTreeState ?? { status: 'idle' };
-    const isNonPreview = Boolean(currentFile?.isBinary || currentFile?.isTooLarge);
+    const isNonPreview = Boolean(currentFile?.isBinary || currentFile?.isTooLarge || currentFile?.isLoading);
     const textToolDisabledAttr = isNonPreview ? 'disabled' : '';
 
     const treePaneHtml = !treeCollapsed
-      ? renderInspectorFileTreePane({
-          fileTreeState,
-          expandedPaths: props.fileTreeExpandedPaths ?? [],
-          activeFilePath: currentFile?.path || props.activeFilePath || '',
-          filterQuery: props.fileTreeFilterQuery || '',
-          workspaceRootName: props.workspaceRootName,
-        })
+      ? activeTab === 'artifacts'
+        ? renderInspectorArtifactsPane({
+            deliverables,
+            activeFilePath: currentFile?.path || props.activeFilePath || '',
+            filterQuery: props.artifactsFilterQuery || '',
+          })
+        : renderInspectorFileTreePane({
+            fileTreeState,
+            expandedPaths: props.fileTreeExpandedPaths ?? [],
+            activeFilePath: currentFile?.path || props.activeFilePath || '',
+            filterQuery: props.fileTreeFilterQuery || '',
+            workspaceRootName: props.workspaceRootName,
+          })
       : '';
 
     const backStatusBtnHtml = props.canReturnToStatus

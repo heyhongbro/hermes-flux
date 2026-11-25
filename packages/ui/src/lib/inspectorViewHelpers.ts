@@ -15,12 +15,15 @@
 import {
   filterFileTree,
   formatFileSize,
+  isVideoExtension,
   normalizeWorkspacePath,
+  splitSkillMarkdownFrontmatter,
   type FileTreeLoadState,
   type FileTreeNode,
 } from '@hermes-flux/core';
 import { renderMarkdown, highlightCodeSyntax } from '../components/MiddlePod/MiddlePod.js';
 import { renderFileTypeIcon } from './fileTypeIcons.js';
+import type { DeliverableListRowVM } from './deliverableViewModel.js';
 import { t } from '../i18n/index.js';
 
 export type InspectorTab = 'artifacts' | 'browser' | 'git' | 'memory' | 'preview';
@@ -32,8 +35,10 @@ export interface OpenFileItem {
   content: string;
   language?: string;
   isDiff?: boolean;
+  isVideo?: boolean;
   isBinary?: boolean;
   isTooLarge?: boolean;
+  isLoading?: boolean;
   byteSize?: number;
   source?: 'session_tool' | 'local_fs' | 'remote_http' | 'gateway_api' | 'fallback';
 }
@@ -89,44 +94,93 @@ export function renderFileTab(file: OpenFileItem, isActive: boolean): string {
   `;
 }
 
+function renderInspectorStatusCard(opts: {
+  file: OpenFileItem;
+  kindBadge: string;
+  title: string;
+  sub: string;
+  testId?: string;
+}): string {
+  const fileName = opts.file.path.split(/[/\\]/).pop() || opts.file.path;
+  const dotIdx = fileName.lastIndexOf('.');
+  const extLabel = dotIdx > 0 ? fileName.slice(dotIdx + 1).toUpperCase() : '';
+  const sizeText = formatFileSize(opts.file.byteSize);
+  const fileIcon = renderFileTypeIcon(opts.file.path, 'inspector-nonpreview-icon');
+  const testAttr = opts.testId ? ` data-testid="${escapeInspectorHtml(opts.testId)}"` : '';
+
+  return `
+    <div class="inspector-nonpreview-card"${testAttr}>
+      <div class="inspector-nonpreview-icon-wrap">
+        ${fileIcon}
+      </div>
+      <div class="inspector-nonpreview-filename" title="${escapeInspectorHtml(opts.file.path)}">${escapeInspectorHtml(fileName)}</div>
+      <div class="inspector-nonpreview-badges">
+        <span class="inspector-nonpreview-badge">${escapeInspectorHtml(opts.kindBadge)}</span>
+        ${extLabel ? `<span class="inspector-nonpreview-badge">${escapeInspectorHtml(extLabel)}</span>` : ''}
+        ${sizeText ? `<span class="inspector-nonpreview-badge">${escapeInspectorHtml(sizeText)}</span>` : ''}
+      </div>
+      <div class="inspector-nonpreview-title">${escapeInspectorHtml(opts.title)}</div>
+      ${opts.sub ? `<div class="inspector-nonpreview-sub">${escapeInspectorHtml(opts.sub)}</div>` : ''}
+      <button type="button" id="btn-preview-download-file" class="inspector-download-cta-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>${escapeInspectorHtml(t('inspector.downloadFileBtn'))}</span>
+      </button>
+    </div>
+  `;
+}
+
 export function renderInspectorFileContent(
   file: OpenFileItem,
   opts: { viewMode: FileViewMode; showLineNumbers: boolean; wordWrap: boolean; searchQuery: string },
 ): string {
-  if (file.isBinary || file.isTooLarge) {
-    const fileName = file.path.split(/[/\\]/).pop() || file.path;
-    const dotIdx = fileName.lastIndexOf('.');
-    const extLabel = dotIdx > 0 ? fileName.slice(dotIdx + 1).toUpperCase() : '';
-    const sizeText = formatFileSize(file.byteSize);
-    const kindBadge = file.isBinary ? t('inspector.binaryBadge') : t('inspector.largeFileBadge');
-    const title = file.isBinary ? t('inspector.binaryFileTitle') : t('inspector.largeFileTitle');
-    const sub = file.isBinary ? t('inspector.binaryFileSub') : t('inspector.largeFileSub');
-    const fileIcon = renderFileTypeIcon(file.path, 'inspector-nonpreview-icon');
-
-    return `
-      <div class="inspector-nonpreview-card">
-        <div class="inspector-nonpreview-icon-wrap">
-          ${fileIcon}
-        </div>
-        <div class="inspector-nonpreview-filename" title="${escapeInspectorHtml(file.path)}">${escapeInspectorHtml(fileName)}</div>
-        <div class="inspector-nonpreview-badges">
-          <span class="inspector-nonpreview-badge">${escapeInspectorHtml(kindBadge)}</span>
-          ${extLabel ? `<span class="inspector-nonpreview-badge">${escapeInspectorHtml(extLabel)}</span>` : ''}
-          ${sizeText ? `<span class="inspector-nonpreview-badge">${escapeInspectorHtml(sizeText)}</span>` : ''}
-        </div>
-        <div class="inspector-nonpreview-title">${escapeInspectorHtml(title)}</div>
-        <div class="inspector-nonpreview-sub">${escapeInspectorHtml(sub)}</div>
-        <button type="button" id="btn-preview-download-file" class="inspector-download-cta-btn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span>${escapeInspectorHtml(t('inspector.downloadFileBtn'))}</span>
-        </button>
-      </div>
-    `;
-  }
-
   const ext = (file.path.split('.').pop() || '').toLowerCase();
   const isMarkdown = ext === 'md' || ext === 'markdown';
   const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext);
+  const isVideo = Boolean(file.isVideo) || isVideoExtension(file.path);
+
+  if (file.isLoading) {
+    return renderInspectorStatusCard({
+      file,
+      kindBadge: isVideo ? t('inspector.largeFileBadge') : t('inspector.fileLoading'),
+      title: isVideo ? t('inspector.videoLoading') : t('inspector.fileLoading'),
+      sub: isVideo ? t('inspector.videoLoadingSub') : '',
+      testId: 'inspector-file-loading',
+    });
+  }
+
+  if (file.isBinary || file.isTooLarge) {
+    return renderInspectorStatusCard({
+      file,
+      kindBadge: file.isBinary ? t('inspector.binaryBadge') : t('inspector.largeFileBadge'),
+      title: file.isBinary ? t('inspector.binaryFileTitle') : t('inspector.largeFileTitle'),
+      sub: file.isBinary ? t('inspector.binaryFileSub') : t('inspector.largeFileSub'),
+    });
+  }
+
+  if (isVideo) {
+    const trimmedContent = file.content.trim();
+    const isReadyVideo =
+      trimmedContent.startsWith('data:video/') ||
+      trimmedContent.startsWith('http://') ||
+      trimmedContent.startsWith('https://') ||
+      trimmedContent.startsWith('blob:') ||
+      trimmedContent.startsWith('hermes-media://');
+    if (!isReadyVideo) {
+      return renderInspectorStatusCard({
+        file,
+        kindBadge: t('inspector.largeFileBadge'),
+        title: t('inspector.videoLoadError'),
+        sub: t('inspector.videoLoadErrorSub'),
+        testId: 'inspector-video-error',
+      });
+    }
+    return `
+      <div class="inspector-video-stage">
+        <video controls playsinline preload="metadata" data-video-player="true" src="${escapeInspectorHtml(trimmedContent)}" class="inspector-video-player"></video>
+        <div class="inspector-video-caption">${escapeInspectorHtml(file.path)}</div>
+      </div>
+    `;
+  }
 
   if (isImage) {
     const isReadyData =
@@ -157,19 +211,21 @@ export function renderInspectorFileContent(
   }
 
   if (isMarkdown && opts.viewMode === 'rendered') {
+    const { frontmatter, body } = splitSkillMarkdownFrontmatter(file.content);
+    const frontmatterHtml =
+      frontmatter.length > 0
+        ? `<dl class="flux-doc-frontmatter">${frontmatter
+            .map(
+              ({ key, value }) =>
+                `<div class="flux-doc-frontmatter__item"><dt class="flux-doc-frontmatter__key">${escapeInspectorHtml(key)}</dt><dd class="flux-doc-frontmatter__val">${escapeInspectorHtml(value)}</dd></div>`,
+            )
+            .join('')}</dl>`
+        : '';
     return `
-      <div class="inspector-rendered-markdown" style="
-        flex: 1;
-        background: var(--card);
-        border-radius: var(--radius-panel);
-        padding: 16px 20px;
-        overflow-y: auto;
-        font-size: var(--fs-body);
-        line-height: 1.6;
-        color: var(--foreground);
-        user-select: text;
-      ">
-        ${renderMarkdown(file.content)}
+      <div class="inspector-rendered-markdown">
+        <div class="flux-doc-markdown__inner conv-markdown flux-doc-markdown">
+          ${frontmatterHtml}${renderMarkdown(body)}
+        </div>
       </div>
     `;
   }
@@ -418,6 +474,92 @@ export function renderInspectorFileTreePane(opts: FileTreePaneRenderOptions): st
 
       <div class="inspector-tree-list" role="tree" aria-label="${t('inspector.fileTreeTitle')}">
         ${listBodyHtml}
+      </div>
+    </div>
+  `;
+}
+
+export interface ArtifactsPaneRenderOptions {
+  deliverables: readonly DeliverableListRowVM[];
+  activeFilePath: string;
+  filterQuery: string;
+}
+
+/**
+ * 渲染桌面端同窗左侧「本会话成果物列表」分栏。
+ * 【规则】严格仅展示纯文件名 + 图标 + 短格式徽标，完整路径仅作 title 提示，逻辑与移动端 100% 一致。
+ */
+export function renderInspectorArtifactsPane(opts: ArtifactsPaneRenderOptions): string {
+  const normActive = normalizeWorkspacePath(opts.activeFilePath);
+  const query = opts.filterQuery || '';
+  const needle = query.trim().toLowerCase();
+  const visible = needle
+    ? opts.deliverables.filter(
+        (item) =>
+          item.name.toLowerCase().includes(needle) ||
+          item.path.toLowerCase().includes(needle) ||
+          item.extLabel.toLowerCase().includes(needle),
+      )
+    : opts.deliverables;
+
+  let listHtml = '';
+  if (opts.deliverables.length === 0) {
+    listHtml = `
+      <div class="inspector-tree-status" data-testid="desktop-artifacts-empty">
+        <div>${escapeInspectorHtml(t('inspector.artifactsEmpty'))}</div>
+        <div class="inspector-tree-error-detail">${escapeInspectorHtml(t('inspector.artifactsEmptySub'))}</div>
+      </div>
+    `;
+  } else if (visible.length === 0) {
+    listHtml = `<div class="inspector-tree-status">${escapeInspectorHtml(t('inspector.artifactsNoMatch'))}</div>`;
+  } else {
+    listHtml = visible
+      .map((item) => {
+        const normPath = normalizeWorkspacePath(item.path);
+        const isActive = Boolean(normActive) && (normActive === normPath || opts.activeFilePath === item.path);
+        const icon = renderFileTypeIcon(item.path, 'inspector-tree-file-icon');
+        return `
+          <button
+            type="button"
+            class="inspector-tree-row inspector-tree-file inspector-artifact-row ${isActive ? 'active' : ''}"
+            data-testid="desktop-artifact-row"
+            data-artifact-file="${escapeInspectorHtml(item.path)}"
+            data-artifact-kind="${escapeInspectorHtml(item.kind)}"
+            title="${escapeInspectorHtml(item.path)}"
+          >
+            ${icon}
+            <span class="inspector-tree-label">${escapeInspectorHtml(item.name)}</span>
+            <span class="inspector-artifact-ext">${escapeInspectorHtml(item.extLabel)}</span>
+          </button>
+        `;
+      })
+      .join('');
+  }
+
+  return `
+    <div class="inspector-file-tree-pane inspector-artifacts-pane" data-testid="desktop-artifacts-pane">
+      <div class="inspector-tree-header">
+        <div class="inspector-tree-title" title="${escapeInspectorHtml(t('inspector.artifactsTitle'))}">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0; opacity: 0.75;"><path d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z"/></svg>
+          <span class="inspector-tree-title-text">${escapeInspectorHtml(t('inspector.artifactsTitle'))}</span>
+        </div>
+        <div class="inspector-tree-actions">
+          <span class="inspector-artifact-count">${opts.deliverables.length}</span>
+          <button type="button" id="btn-file-tree-toggle" class="icon-btn" title="${t('inspector.fileTreeCollapse')}">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="inspector-tree-search-wrap">
+        <div class="inspector-tree-search-box">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="inspector-tree-search-icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="inspector-artifacts-filter-input" class="inspector-tree-filter-input" type="text" placeholder="${escapeInspectorHtml(t('inspector.artifactsFilterPlaceholder'))}" value="${escapeInspectorHtml(query)}" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+
+      <div class="inspector-tree-list" role="list" data-testid="desktop-artifacts-list" aria-label="${escapeInspectorHtml(t('inspector.artifactsTitle'))}">
+        ${listHtml}
       </div>
     </div>
   `;

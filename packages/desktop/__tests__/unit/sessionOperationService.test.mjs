@@ -751,6 +751,23 @@ test('跨 Profile 同 ID 归档隔离、恢复及 fetchArchivedSessions 部分 P
   await createSessionOperationService(crossHarness.deps).selectSession('s-dup', { botName: 'arch' });
   assert.equal(crossHarness.state.profileName, 'arch', '跨 Profile 同 ID 切换必须刷新 state.profileName');
   assert.deepEqual(crossLoadCalls, [{ sid: 's-dup', bot: 'arch' }]);
+
+  // 5. createNewSession 指定 projectId 时规范化并登记 sessionCwds[storedId]，无 projectId 时不污染 sessionCwds
+  const projHarness = createMockDeps({
+    state: {
+      projects: [{ id: 'proj-win', name: 'WinRepo', path: 'D:\\repos\\my-proj\\' }],
+      sessionCwds: undefined,
+    },
+  });
+  const projSvc = createSessionOperationService(projHarness.deps);
+  await projSvc.createNewSession({ projectId: 'proj-win' });
+  assert.equal(projHarness.state.sessionCwds['sess-new'], 'D:/repos/my-proj');
+  const createdEntry = projHarness.state.sessions.find((s) => s.id === 'sess-new');
+  assert.equal(createdEntry?.cwd, 'D:/repos/my-proj');
+
+  const noProjHarness = createMockDeps({ state: { sessionCwds: {} } });
+  await createSessionOperationService(noProjHarness.deps).createNewSession({});
+  assert.equal(noProjHarness.state.sessionCwds['sess-new'], undefined);
 });
 
 test('SessionOperationService - 同会话重进探活、后台流切回恢复与删除仅清理单会话流', async () => {

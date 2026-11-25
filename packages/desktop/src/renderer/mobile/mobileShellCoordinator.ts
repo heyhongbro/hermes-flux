@@ -25,6 +25,7 @@
 import {
   DEFAULT_MOBILE_SECTIONS_COLLAPSED,
   buildMobileHomeModel,
+  buildDeliverableListItems,
   inferMobileAppearanceFromTheme,
   mountMobileWorkspaceShell,
   resolveMobileSkinId,
@@ -32,12 +33,15 @@ import {
   type ConversationToolVM,
   type ConversationOrgPrefs,
   type LeftRailProfile,
+  type MediaLightboxItem,
   type MobileActionSheetState,
   type MobileAppearancePreference,
   type MobileBotSubpage,
   type MobileHomeTab,
+  type MobileInspectorArtifactItem,
   type MobileInspectorReaderItem,
   type MobileInspectorTab,
+  type MobileMediaLightboxState,
   type MobileNewChatStep,
   type MobilePaneId,
   type MobileSectionCollapsedState,
@@ -50,7 +54,15 @@ import {
   type SettingsSectionId,
   type SettingsSnapshot,
 } from '@hermes-flux/ui';
-import { extractPathBasename, formatFileSize, isImageExtension, normalizeOrgProfileName } from '@hermes-flux/core';
+import {
+  extractPathBasename,
+  extractSessionDeliverables,
+  formatFileSize,
+  isImageExtension,
+  isVideoExtension,
+  normalizeOrgProfileName,
+  type DeliverableItem,
+} from '@hermes-flux/core';
 import type { LeftRailController } from '../events/leftRailController.js';
 import { openBrowserAttachmentPicker } from '../events/inputAttachmentPicker.js';
 import { resolveActiveWorkspaceCwd, type AppState } from '../state/appState.js';
@@ -119,6 +131,11 @@ export interface MobileShellCoordinatorDeps {
   setFileTreeFilter?: (query: string) => void;
   openWorkspaceFile?: (filePath: string) => Promise<void> | void;
   downloadFile?: (filePath?: string) => Promise<void> | void;
+  downloadMediaItem?: (item: MediaLightboxItem) => Promise<void> | void;
+  resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
+  getVerifiedDeliverablePaths?: () => readonly string[];
+  getSubagentWrittenPaths?: () => readonly string[];
+  getSessionDeliverables?: () => readonly DeliverableItem[];
   loadLearningGraph?: (
     forceOrOptions?: boolean | { profile?: string; force?: boolean },
     profile?: string,
@@ -155,6 +172,9 @@ export interface MobileShellCoordinator {
   buildSnapshot(): MobileWorkspaceSnapshot;
   getActions(): MobileWorkspaceActions;
   openSubagentDetail(payload: { messageId: string; tools: ConversationToolVM[] }): void;
+  openFileInReader(filePath: string, previewUrl?: string): Promise<void>;
+  openMediaLightbox(items: readonly MediaLightboxItem[], initialIndex: number): void;
+  closeMediaLightbox(): void;
   getActivePane(): MobilePaneId;
   getActiveViewContext(): ActiveViewContext;
   dispose(): void;
@@ -231,6 +251,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
   let openFileGen = 0;
   let subagentSheet: MobileSubagentSheetState | null = null;
   let actionSheet: MobileActionSheetState | null = null;
+  let mediaLightbox: MobileMediaLightboxState | null = null;
 
   let mountHandle: MobileWorkspaceMount | null = null;
   let mountedHost: HTMLElement | null = null;
@@ -300,6 +321,39 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
         avatar: profile?.avatar || deps.resolveAgentAvatar(memberName),
       };
     });
+  };
+
+  const buildArtifactsList = (state: AppState): MobileInspectorArtifactItem[] => {
+    const derived = deps.getSessionDeliverables
+      ? deps.getSessionDeliverables()
+      : extractSessionDeliverables(
+          state.messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            toolCalls: m.toolCalls?.map((tc) => ({
+              id: tc.id,
+              name: tc.name,
+              status: tc.status,
+              args: tc.args,
+              rawArgs: tc.rawArgs,
+              output: tc.output,
+              imagePath: tc.imagePath,
+              inlineDiff: tc.inlineDiff,
+            })),
+            attachments: m.attachments?.map((att) => ({
+              id: att.id,
+              name: att.name,
+              type: att.type,
+              previewUrl: att.previewUrl,
+            })),
+          })),
+          {
+            verifiedExistingPaths: deps.getVerifiedDeliverablePaths?.(),
+            subagentWrittenPaths: deps.getSubagentWrittenPaths?.(),
+          },
+        );
+    return buildDeliverableListItems(derived);
   };
 
   const resolveNewChatStats = (state: AppState): MobileWorkspaceSnapshot['newChatStats'] => {
@@ -426,14 +480,20 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       inspectorTab,
       inspectorReaderOpen,
       inspectorReaderItem,
-      artifacts: state.artifacts,
+      artifacts: buildArtifactsList(state),
       gitDiffs: state.gitDiffs,
       openFiles: state.openFiles,
+      mediaLightbox,
       fileTreeState: state.fileTreeState,
       fileTreeExpandedPaths: Array.from(state.fileTreeExpandedPaths),
       fileTreeFilterQuery: state.fileTreeFilterQuery,
       activeFilePath: state.activeFilePath,
-      workspaceRootName: extractPathBasename(resolveActiveWorkspaceCwd(state) || '') || undefined,
+      workspaceRootName:
+        extractPathBasename(
+          resolveActiveWorkspaceCwd(state) ||
+            (state.fileTreeState?.status === 'ready' ? state.fileTreeState.rootPath : '') ||
+            '',
+        ) || undefined,
       memories: state.memories,
       learningState: state.learningState,
       learningDetail: state.learningDetail,
@@ -488,13 +548,11 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       const prevPane = activePane;
       activePane = pane;
       inspectorReaderOpen = false;
+      openFileGen += 1;
       if (pane === 'inspector') {
         ensureInspectorTabData(inspectorTab);
-      } else {
-        openFileGen += 1;
-        if (pane === 'stage' && prevPane !== 'stage') {
-          deps.onEnterStage?.();
-        }
+      } else if (pane === 'stage' && prevPane !== 'stage') {
+        deps.onEnterStage?.();
       }
       deps.render();
     },
@@ -848,41 +906,30 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       deps.setFileTreeFilter?.(query);
     },
     onOpenWorkspaceFile: (filePath) => {
-      const expectedGen = ++openFileGen;
-      void (async () => {
-        await deps.openWorkspaceFile?.(filePath);
-        // 规则: 若在异步加载文件期间切换面板、Tab 或发起了更新的文件打开请求，丢弃过期结果，严禁回退 activeFilePath 错开别的文件
-        if (expectedGen !== openFileGen || activePane !== 'inspector' || inspectorTab !== 'files') {
-          return;
-        }
-        const state = deps.getState();
-        const normalized = filePath.replace(/\\/g, '/');
-        const target = state.openFiles.find(
-          (f) => f.path === filePath || f.path.replace(/\\/g, '/') === normalized,
-        );
-        if (target) {
-          const title = extractPathBasename(target.path) || target.path;
-          inspectorReaderItem = {
-            kind: 'files',
-            title,
-            subtitle: typeof target.byteSize === 'number' ? formatFileSize(target.byteSize) : target.path,
-            content: target.content,
-            filePath: target.path,
-            isImage: isImageExtension(target.path),
-            isBinary: target.isBinary,
-            isTooLarge: target.isTooLarge,
-            byteSize: target.byteSize,
-            canDownload: true,
-          };
-          inspectorReaderOpen = true;
-          deps.render();
-        }
-      })();
+      void loadAndOpenReader(filePath, { switchToInspector: false, allowArtifactsTab: false });
+    },
+    onOpenArtifactFile: (filePath, previewUrl) => {
+      void openFileInReader(filePath, previewUrl);
     },
     onDownloadInspectorFile: () => {
       if (!inspectorReaderItem?.filePath) return;
       void deps.downloadFile?.(inspectorReaderItem.filePath);
     },
+    onOpenMediaLightbox: (items, initialIndex) => {
+      openMediaLightbox(items, initialIndex);
+    },
+    onCloseMediaLightbox: () => {
+      closeMediaLightbox();
+    },
+    onDownloadMediaItem: (item) => {
+      if (deps.downloadMediaItem) {
+        void deps.downloadMediaItem(item);
+        return;
+      }
+      const target = item.path || item.src;
+      if (target) void deps.downloadFile?.(target);
+    },
+    resolveMediaUrl: deps.resolveMediaUrl,
     onEnsureLearning: (profile) => {
       void deps.loadLearningGraph?.({ profile: resolveActiveLearningProfile(profile), force: false });
     },
@@ -959,6 +1006,149 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     },
   };
 
+  async function loadAndOpenReader(
+    filePath: string,
+    opts: { switchToInspector: boolean; allowArtifactsTab: boolean },
+  ): Promise<void> {
+    const cleanPath = (filePath || '').trim();
+    if (!cleanPath) return;
+    const expectedGen = ++openFileGen;
+    const initialState = deps.getState();
+    const initialNorm = cleanPath.replace(/\\/g, '/');
+    const cachedReady = initialState.openFiles.find(
+      (f) =>
+        (f.path === cleanPath || f.path.replace(/\\/g, '/') === initialNorm) &&
+        !f.isLoading &&
+        f.source !== 'fallback' &&
+        (Boolean(f.content) || Boolean(f.isBinary) || Boolean(f.isTooLarge)),
+    );
+    if (opts.switchToInspector) {
+      activePane = 'inspector';
+      if (inspectorTab !== 'artifacts' && inspectorTab !== 'files') {
+        inspectorTab = 'files';
+      }
+    }
+    const tabAllowedBeforeAwait =
+      inspectorTab === 'files' || (opts.allowArtifactsTab && inspectorTab === 'artifacts');
+    if (activePane !== 'inspector' || !tabAllowedBeforeAwait) {
+      return;
+    }
+    const title = extractPathBasename(cleanPath);
+    inspectorReaderItem = cachedReady
+      ? {
+          kind: inspectorTab === 'artifacts' ? 'artifacts' : 'files',
+          title: extractPathBasename(cachedReady.path),
+          subtitle:
+            typeof cachedReady.byteSize === 'number'
+              ? formatFileSize(cachedReady.byteSize)
+              : cachedReady.path,
+          content: cachedReady.content,
+          filePath: cachedReady.path,
+          isImage: isImageExtension(cachedReady.path),
+          isVideo: cachedReady.isVideo ?? isVideoExtension(cachedReady.path),
+          isBinary: cachedReady.isBinary,
+          isTooLarge: cachedReady.isTooLarge,
+          isLoading: false,
+          byteSize: cachedReady.byteSize,
+          canDownload: true,
+        }
+      : {
+          kind: inspectorTab === 'artifacts' ? 'artifacts' : 'files',
+          title,
+          subtitle: cleanPath,
+          content: '',
+          filePath: cleanPath,
+          isImage: isImageExtension(cleanPath),
+          isVideo: isVideoExtension(cleanPath),
+          isLoading: true,
+          canDownload: true,
+        };
+    inspectorReaderOpen = true;
+    deps.render();
+
+    let openFailed = false;
+    try {
+      await deps.openWorkspaceFile?.(cleanPath);
+    } catch (err) {
+      openFailed = true;
+      console.warn('[MobileShellCoordinator] openWorkspaceFile failed:', err);
+    }
+    const tabAllowed = inspectorTab === 'files' || (opts.allowArtifactsTab && inspectorTab === 'artifacts');
+    // 规则: 若异步加载期间离开了检查舱、切换了非授权 Tab 或发起更新的文件请求，丢弃过期结果
+    if (expectedGen !== openFileGen || activePane !== 'inspector' || !tabAllowed) {
+      return;
+    }
+    const state = deps.getState();
+    const normalized = cleanPath.replace(/\\/g, '/');
+    const target = state.openFiles.find(
+      (f) => f.path === cleanPath || f.path.replace(/\\/g, '/') === normalized,
+    );
+    if (target) {
+      const targetTitle = extractPathBasename(target.path);
+      inspectorReaderItem = {
+        kind: inspectorTab === 'artifacts' ? 'artifacts' : 'files',
+        title: targetTitle,
+        subtitle: typeof target.byteSize === 'number' ? formatFileSize(target.byteSize) : target.path,
+        content: target.content,
+        filePath: target.path,
+        isImage: isImageExtension(target.path),
+        isVideo: target.isVideo ?? isVideoExtension(target.path),
+        isBinary: target.isBinary,
+        isTooLarge: target.isTooLarge,
+        isLoading: target.isLoading,
+        byteSize: target.byteSize,
+        canDownload: true,
+      };
+      inspectorReaderOpen = true;
+      deps.render();
+    } else if (openFailed) {
+      const isVideoTarget = isVideoExtension(cleanPath);
+      inspectorReaderItem = {
+        kind: inspectorTab === 'artifacts' ? 'artifacts' : 'files',
+        title,
+        subtitle: cleanPath,
+        content: isVideoTarget ? '' : `// ${cleanPath}\n\n${t('inspector.remoteNotice')}`,
+        filePath: cleanPath,
+        isImage: isImageExtension(cleanPath),
+        isVideo: isVideoTarget,
+        isLoading: false,
+        canDownload: true,
+      };
+      inspectorReaderOpen = true;
+      deps.render();
+    } else {
+      inspectorReaderItem = null;
+      inspectorReaderOpen = false;
+      deps.render();
+    }
+  }
+
+  async function openFileInReader(filePath: string, previewUrl?: string): Promise<void> {
+    const clean = (filePath || previewUrl || '').trim();
+    if (!clean) return;
+    if (isImageExtension(clean)) {
+      const title = extractPathBasename(clean) || clean;
+      openMediaLightbox(
+        [{ id: `mobile-img-${clean}`, src: previewUrl || clean, path: clean, name: title, alt: title }],
+        0,
+      );
+      return;
+    }
+    await loadAndOpenReader(clean, { switchToInspector: true, allowArtifactsTab: true });
+  }
+
+  function openMediaLightbox(items: readonly MediaLightboxItem[], initialIndex: number): void {
+    if (!items || items.length === 0) return;
+    mediaLightbox = { items, initialIndex };
+    deps.render();
+  }
+
+  function closeMediaLightbox(): void {
+    if (!mediaLightbox) return;
+    mediaLightbox = null;
+    deps.render();
+  }
+
   function renderMobileShell(host: HTMLElement): void {
     const mounter = deps.mountShell ?? mountMobileWorkspaceShell;
     if (!mountHandle || mountedHost !== host) {
@@ -985,6 +1175,9 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     buildSnapshot,
     getActions: () => actions,
     openSubagentDetail,
+    openFileInReader,
+    openMediaLightbox,
+    closeMediaLightbox,
     getActivePane: () => activePane,
     getActiveViewContext: () => ({
       isMobile: true,

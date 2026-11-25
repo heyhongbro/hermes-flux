@@ -25,6 +25,7 @@ import { CompactTraceCapsule } from './CompactTraceCapsule.js';
 import { MessageAttachments } from './MessageAttachments.js';
 import { ConversationMessageFooter } from './MessageFooter.js';
 import type { ConversationMode, ConversationMessageVM, ConversationToolVM } from './types.js';
+import type { MediaLightboxItem } from './MediaLightbox.js';
 import { sanitizeCompactedMessage, isTimelineKind } from '@hermes-flux/core';
 
 /**
@@ -48,11 +49,20 @@ export interface MessageRowProps {
   isStreaming: boolean;
   /** 会话内 Agent 真实读写过的文件（决定正文里的文件引用是否可点击） */
   knownFiles?: readonly string[];
+  /** 当前回合成果物文件（命中引用原地替换为紧凑小卡片） */
+  deliverableFiles?: readonly string[];
+  /** 当前回合所有图片成果物（供行内图片小卡片点击后唤起灯箱翻页） */
+  turnImages?: readonly MediaLightboxItem[];
+  /** 仅挂在回合最后一条助手消息时间页脚正上方的隐式成果物区 */
+  beforeFooterSlot?: React.ReactNode;
   readOnly?: boolean;
   onOpenSubagent?: (subagentId: string) => void;
   onCopyMessage?: (content: string) => void;
   compactTrace?: boolean;
   onOpenSubagentDetail?: (payload: { messageId: string; tools: ConversationToolVM[] }) => void;
+  resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
+  onOpenFile?: (filePath: string, previewUrl?: string) => void;
+  onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
 }
 
 export const MessageRow = React.memo(function MessageRow({
@@ -63,11 +73,17 @@ export const MessageRow = React.memo(function MessageRow({
   locale,
   isStreaming,
   knownFiles,
+  deliverableFiles,
+  turnImages,
+  beforeFooterSlot,
   readOnly = false,
   onOpenSubagent,
   onCopyMessage,
   compactTrace,
   onOpenSubagentDetail,
+  resolveMediaUrl,
+  onOpenFile,
+  onOpenMediaLightbox,
 }: MessageRowProps): React.ReactElement | null {
   const isUser = message.role === 'user';
   const displayKind = message.displayKind ?? 'user';
@@ -165,7 +181,8 @@ export const MessageRow = React.memo(function MessageRow({
   const hasContent = Boolean(message.content && message.content.trim());
   const hasThought = Boolean(message.thought && message.thought.trim());
   const hasTools = Boolean(message.toolCalls && message.toolCalls.length > 0);
-  if (!isUser && !hasContent && !hasThought && !hasTools && !isStreaming) {
+  const hasBeforeFooter = Boolean(isLastInTurn && beforeFooterSlot);
+  if (!isUser && !hasContent && !hasThought && !hasBeforeFooter && !hasTools && !isStreaming) {
     return null;
   }
 
@@ -203,7 +220,11 @@ export const MessageRow = React.memo(function MessageRow({
         ) : null}
 
         {message.attachments && message.attachments.length > 0 ? (
-          <MessageAttachments attachments={message.attachments} variant="bubble" />
+          <MessageAttachments
+            attachments={message.attachments}
+            variant="bubble"
+            onOpenMediaLightbox={onOpenMediaLightbox}
+          />
         ) : null}
 
         {displayContent ? (
@@ -284,7 +305,14 @@ export const MessageRow = React.memo(function MessageRow({
         anchorId={readOnly ? undefined : `msg-content-${message.id}`}
         className="conv-message__body"
         knownFiles={knownFiles}
+        deliverableFiles={deliverableFiles}
+        turnImages={turnImages}
+        resolveMediaUrl={resolveMediaUrl}
+        onOpenFile={onOpenFile}
+        onOpenMediaLightbox={onOpenMediaLightbox}
       />
+
+      {isLastInTurn && beforeFooterSlot ? beforeFooterSlot : null}
 
       {isLastInTurn && !isStreaming ? (
         <ConversationMessageFooter

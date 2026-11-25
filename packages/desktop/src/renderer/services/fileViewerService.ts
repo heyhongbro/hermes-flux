@@ -22,18 +22,32 @@ import {
   InteractiveService,
   buildGatewayDownloadUrl,
   collectAncestorDirectoryPaths,
+  isVideoExtension,
   mergeDirectoryChildren,
   normalizeWorkspacePath,
+  normalizeDeliverableKey,
   reduceRightPodMode,
   resolveFileContent,
   resolveWorkspaceDirectory,
+  type DeliverableItem,
   type FileTreeNode,
   type HermesGatewayClient,
   type IRpcCaller,
   type RightPodMode,
 } from '@hermes-flux/core';
-import { collectTouchedFiles, type InspectorTab, type I18nKey } from '@hermes-flux/ui';
-import { resolveActiveWorkspaceCwd, type AppState } from '../state/appState.js';
+import {
+  collectTouchedFiles,
+  handleCodeBlockCopyClick,
+  resolveDeliverableDisplayName,
+  type InspectorTab,
+  type I18nKey,
+  type MediaLightboxItem,
+} from '@hermes-flux/ui';
+import {
+  resolveActiveViewportKey,
+  resolveActiveWorkspaceCwd,
+  type AppState,
+} from '../state/appState.js';
 import type { HermesDesktopBridge } from '../../preload/index.js';
 
 export interface FileViewerServiceDeps {
@@ -45,10 +59,17 @@ export interface FileViewerServiceDeps {
   t: (key: I18nKey) => string;
   onBackFromFiles?: () => void;
   onInspectorStateChange?: () => void;
+  onMobileOpenFile?: (filePath: string, previewUrl?: string) => Promise<boolean>;
+  onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
+  getSessionDeliverables?: () => readonly DeliverableItem[];
 }
 
 export interface FileViewerService {
-  handleOpenFilePreview(filePath: string, previewUrl?: string): Promise<void>;
+  handleOpenFilePreview(
+    filePath: string,
+    previewUrl?: string,
+    options?: { skipMobileRedirect?: boolean },
+  ): Promise<void>;
   switchFileTab(targetPath: string): void;
   closeFileTab(targetPath: string): void;
   toggleViewMode(): void;
@@ -60,6 +81,7 @@ export interface FileViewerService {
   copyFileContent(): Promise<void>;
   copyFilePath(): Promise<void>;
   downloadFile(targetPath?: string): Promise<void>;
+  downloadMedia(item: { src: string; path?: string; name?: string }): Promise<void>;
   closeInspector(): void;
   toggleInspectorFullscreen(): void;
   switchInspectorTab(tab: InspectorTab): void;
@@ -67,6 +89,7 @@ export interface FileViewerService {
   loadFileTree(force?: boolean): Promise<void>;
   toggleDirectory(dirPath: string): Promise<void>;
   setFileTreeFilter(query: string): void;
+  setArtifactsFilter(query: string): void;
   toggleFileTreePane(): void;
   bindEvents(): void;
 }
@@ -88,6 +111,22 @@ function findTreeNodeByPath(nodes: readonly FileTreeNode[], targetDir: string): 
 export function createFileViewerService(deps: FileViewerServiceDeps): FileViewerService {
   const { getState, render, getDesktopApi, getGatewayClient, safeCopyText, t } = deps;
   let treeLoadGeneration = 0;
+  let loadedTreeScopeKey = '';
+  const fileOpenGenerations = new Map<string, number>();
+
+  const readEffectiveProfile = (s: AppState): string | undefined =>
+    s.activeFocus?.type === 'group' ? undefined : s.profileName || undefined;
+
+  /**
+   * 组合文件树缓存作用域键：CWD 相同但 profile / 激活会话（空 CWD）不同视为不同作用域。
+   */
+  const computeFileTreeScopeKey = (s: AppState, targetCwd: string): string => {
+    const normProfile = (readEffectiveProfile(s) || '').trim().toLowerCase();
+    if (targetCwd) {
+      return `cwd:${targetCwd}|profile:${normProfile}`;
+    }
+    return `empty|profile:${normProfile}|vp:${resolveActiveViewportKey(s)}`;
+  };
 
   const readPodMode = (s: AppState): RightPodMode =>
     s.rightPodMode ?? (s.inspectorCollapsed ? { kind: 'closed' } : { kind: 'files', returnTo: 'closed' });
@@ -129,27 +168,34 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
   async function loadFileTree(force = false): Promise<void> {
     const state = getState();
     const targetCwd = resolveActiveWorkspaceCwd(state);
+    const targetScopeKey = computeFileTreeScopeKey(state, targetCwd);
     const currentTree = state.fileTreeState ?? { status: 'idle' };
 
-    if (!force && currentTree.status === 'ready' && (state.fileTreeLoadedCwd ?? '') === targetCwd) {
-      return;
-    }
-    if (!force && currentTree.status === 'loading' && (state.fileTreeLoadedCwd ?? '') === targetCwd) {
+    const sameScope =
+      loadedTreeScopeKey === targetScopeKey ||
+      (loadedTreeScopeKey === '' && targetCwd !== '' && (state.fileTreeLoadedCwd ?? '') === targetCwd);
+    if (!force && (currentTree.status === 'ready' || currentTree.status === 'loading') && sameScope) {
       return;
     }
 
+    const scopeChanged = Boolean(loadedTreeScopeKey && loadedTreeScopeKey !== targetScopeKey);
     const expectedGen = ++treeLoadGeneration;
+    loadedTreeScopeKey = targetScopeKey;
     state.fileTreeLoadedCwd = targetCwd;
+    if (scopeChanged) {
+      state.fileTreeExpandedPaths = [];
+    }
     state.fileTreeState = { status: 'loading' };
     render();
 
     const desktopApi = getDesktopApi();
     const rpc = createRpcAdapter(getGatewayClient());
+    const effectiveProfile = readEffectiveProfile(state);
 
     const res = await resolveWorkspaceDirectory(targetCwd, {
       platformBridge: desktopApi ?? null,
       gatewayUrl: state.gatewayUrl,
-      profile: state.profileName || undefined,
+      profile: effectiveProfile,
       completePath: rpc
         ? async (dir) => {
             const completion = await interactiveService.getPathCompletions(
@@ -157,7 +203,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
               '',
               dir,
               state.activeSessionId || undefined,
-              state.profileName || undefined,
+              effectiveProfile,
             );
             return (completion?.items ?? []).map((it) => it.text).filter(Boolean);
           }
@@ -210,10 +256,12 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     const desktopApi = getDesktopApi();
     const rpc = createRpcAdapter(getGatewayClient());
 
+    const effectiveProfile = readEffectiveProfile(state);
+
     const subRes = await resolveWorkspaceDirectory(normDir, {
       platformBridge: desktopApi ?? null,
       gatewayUrl: state.gatewayUrl,
-      profile: state.profileName || undefined,
+      profile: effectiveProfile,
       completePath: rpc
         ? async (dir) => {
             const completion = await interactiveService.getPathCompletions(
@@ -221,7 +269,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
               '',
               dir,
               state.activeSessionId || undefined,
-              state.profileName || undefined,
+              effectiveProfile,
             );
             return (completion?.items ?? []).map((it) => it.text).filter(Boolean);
           }
@@ -262,6 +310,19 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     }
   }
 
+  function setArtifactsFilter(query: string): void {
+    const state = getState();
+    state.artifactsFilterQuery = query;
+    render();
+    if (typeof document !== 'undefined') {
+      const freshInput = document.getElementById('inspector-artifacts-filter-input') as HTMLInputElement | null;
+      if (freshInput) {
+        freshInput.focus();
+        freshInput.selectionStart = freshInput.selectionEnd = freshInput.value.length;
+      }
+    }
+  }
+
   function toggleFileTreePane(): void {
     const state = getState();
     state.fileTreeCollapsed = !state.fileTreeCollapsed;
@@ -271,9 +332,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
   function toggleInspectorRailTab(tab: InspectorTab): void {
     const state = getState();
     const current = readPodMode(state);
-    const isSameTab =
-      state.activeInspectorTab === tab ||
-      (tab === 'preview' && state.activeInspectorTab === 'artifacts');
+    const isSameTab = state.activeInspectorTab === tab;
     if (current.kind !== 'files') {
       state.rightPodMode = reduceRightPodMode(current, {
         type: 'open-files',
@@ -281,17 +340,26 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
       });
       state.inspectorCollapsed = false;
       state.activeInspectorTab = tab;
+      state.fileTreeCollapsed = false;
       deps.onInspectorStateChange?.();
       render();
-      void loadFileTree();
+      if (tab === 'preview') {
+        void loadFileTree();
+      }
       return;
     }
-    if (isSameTab) {
+    if (isSameTab && !state.inspectorCollapsed) {
       closeInspector();
       return;
     }
+    state.inspectorCollapsed = false;
     state.activeInspectorTab = tab;
+    state.fileTreeCollapsed = false;
+    deps.onInspectorStateChange?.();
     render();
+    if (tab === 'preview') {
+      void loadFileTree();
+    }
   }
 
   function revealDirectoryFromPreview(dirPath: string): void {
@@ -315,9 +383,18 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     render();
   }
 
-  async function handleOpenFilePreview(filePath: string, previewUrl?: string): Promise<void> {
+  async function handleOpenFilePreview(
+    filePath: string,
+    previewUrl?: string,
+    options?: { skipMobileRedirect?: boolean },
+  ): Promise<void> {
     const target = (filePath || previewUrl || '').trim();
     if (!target) return;
+
+    if (!options?.skipMobileRedirect && deps.onMobileOpenFile) {
+      const handled = await deps.onMobileOpenFile(target, previewUrl);
+      if (handled) return;
+    }
 
     const state = getState();
     const desktopApi = getDesktopApi();
@@ -326,6 +403,8 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     const isHttp = target.startsWith('http://') || target.startsWith('https://');
     const ext = (target.split(/[?#]/)[0].split('.').pop() || '').toLowerCase();
     const isHtml = ext === 'html' || ext === 'htm';
+    const isMarkdown = ext === 'md' || ext === 'markdown';
+    const isTargetVideo = isVideoExtension(target);
 
     // 0. 若目标在已加载文件树中证实为目录，转为展开目录而不误当文件打开
     const knownNode =
@@ -337,45 +416,108 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
       return;
     }
 
-    // 1. 自动展开右侧 Inspection Pod 并同步设置激活文件，确认为目录时自动回滚并切换目录展开
+    // 1. 立即展开检查舱并写入加载占位，确保点击大视频/慢文件 0ms 给出现场反馈（无“点击没反应”错觉）
     const prevActiveFilePath = state.activeFilePath;
     const current = readPodMode(state);
+    const wasOpenInArtifacts =
+      !state.inspectorCollapsed && current.kind === 'files' && state.activeInspectorTab === 'artifacts';
     if (current.kind !== 'files') {
       state.rightPodMode = reduceRightPodMode(current, { type: 'open-files' });
     }
     state.inspectorCollapsed = false;
-    state.activeInspectorTab = 'preview';
+    if (!wasOpenInArtifacts) {
+      state.activeInspectorTab = 'preview';
+    }
     state.activeFilePath = target;
     if (typeof window !== 'undefined' && window.innerWidth <= 768) {
       state.fileTreeCollapsed = true;
     }
-    deps.onInspectorStateChange?.();
+    if (isHtml || isMarkdown) {
+      state.fileViewMode = 'rendered';
+    }
 
-    // 2. 统一调用底层通用文件解析服务组件 (resolveFileContent，带二进制与超大文件前置守卫)
-    const resolved = await resolveFileContent(target, {
-      platformBridge: desktopApi,
-      gatewayClient,
-      gatewayUrl: state.gatewayUrl,
-      profile: state.profileName || undefined,
-      sessionId: state.activeSessionId || undefined,
-      knownSize: knownNode?.size,
-      messages: state.messages,
-      fallbackNotice: `// ${target}\n\n${t('inspector.remoteNotice')}`,
-    });
+    const nextOpenGen = (fileOpenGenerations.get(target) ?? 0) + 1;
+    fileOpenGenerations.set(target, nextOpenGen);
+
+    const treeSource =
+      state.fileTreeState?.status === 'ready' ? state.fileTreeState.source : undefined;
+    let existingOpenFile = state.openFiles.find((f) => f.path === target);
+    let insertedLoadingPlaceholder = false;
+    if (!existingOpenFile) {
+      existingOpenFile = {
+        id: `file-${Date.now()}`,
+        path: target,
+        content: '',
+        isVideo: isTargetVideo,
+        isBinary: false,
+        isTooLarge: false,
+        isLoading: true,
+        byteSize: knownNode?.size,
+        source: treeSource === 'local_fs' && knownNode ? 'local_fs' : undefined,
+      };
+      state.openFiles.push(existingOpenFile);
+      insertedLoadingPlaceholder = true;
+    } else if (
+      !existingOpenFile.content ||
+      existingOpenFile.isLoading ||
+      existingOpenFile.source === 'fallback'
+    ) {
+      existingOpenFile.isLoading = true;
+      existingOpenFile.isBinary = false;
+      existingOpenFile.isTooLarge = false;
+      existingOpenFile.isVideo = existingOpenFile.isVideo ?? isTargetVideo;
+      if (typeof knownNode?.size === 'number') {
+        existingOpenFile.byteSize = knownNode.size;
+      }
+    }
+
+    deps.onInspectorStateChange?.();
+    render();
+
+    // 2. 统一调用底层通用文件解析服务组件 (resolveFileContent，带二进制、超大文件与视频流式地址守卫)
+    let resolved: Awaited<ReturnType<typeof resolveFileContent>>;
+    try {
+      resolved = await resolveFileContent(target, {
+        platformBridge: desktopApi,
+        gatewayClient,
+        gatewayUrl: state.gatewayUrl,
+        profile: readEffectiveProfile(state),
+        sessionId: state.activeSessionId || undefined,
+        knownSize: knownNode?.size,
+        messages: state.messages,
+        fallbackNotice: `// ${target}\n\n${t('inspector.remoteNotice')}`,
+      });
+    } catch {
+      if (fileOpenGenerations.get(target) !== nextOpenGen) return;
+      const targetEntry = state.openFiles.find((f) => f.path === target);
+      if (targetEntry) {
+        targetEntry.isLoading = false;
+        targetEntry.isVideo = isTargetVideo;
+        targetEntry.source = 'fallback';
+        targetEntry.content = isTargetVideo ? '' : `// ${target}\n\n${t('inspector.remoteNotice')}`;
+      }
+      render();
+      return;
+    }
+
+    if (fileOpenGenerations.get(target) !== nextOpenGen) {
+      return;
+    }
 
     if (resolved.isDirectory) {
+      if (insertedLoadingPlaceholder) {
+        state.openFiles = state.openFiles.filter((f) => f.path !== target);
+      }
       state.activeFilePath = prevActiveFilePath;
       revealDirectoryFromPreview(target);
       return;
     }
 
-    // HTML 单文件原型默认开启富渲染模式（仅非二进制/超大截断态）
-    if (isHtml && !resolved.isBinary && !resolved.isTooLarge) {
+    // HTML / Markdown 单文件默认开启富渲染模式（仅非二进制/超大截断态）
+    if ((isHtml || isMarkdown) && !resolved.isBinary && !resolved.isTooLarge) {
       state.fileViewMode = 'rendered';
     }
 
-    const treeSource =
-      state.fileTreeState?.status === 'ready' ? state.fileTreeState.source : undefined;
     const isLocalTreeHit =
       resolved.source === 'local_fs' ||
       (resolved.source === 'fallback' &&
@@ -383,23 +525,27 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
         (Boolean(knownNode) || !state.gatewayConnected));
     const effectiveSource = isLocalTreeHit ? ('local_fs' as const) : resolved.source;
 
-    // 3. 挂载到 state.openFiles
-    let existingOpenFile = state.openFiles.find((f) => f.path === target);
+    // 3. 挂载到 state.openFiles（就地回填加载占位，不追加重复 Tab）
+    existingOpenFile = state.openFiles.find((f) => f.path === target);
     if (!existingOpenFile) {
       existingOpenFile = {
         id: `file-${Date.now()}`,
         path: target,
         content: resolved.content,
+        isVideo: resolved.isVideo,
         isBinary: resolved.isBinary,
         isTooLarge: resolved.isTooLarge,
+        isLoading: false,
         byteSize: resolved.byteSize,
         source: effectiveSource,
       };
       state.openFiles.push(existingOpenFile);
     } else {
       existingOpenFile.content = resolved.content;
+      existingOpenFile.isVideo = resolved.isVideo;
       existingOpenFile.isBinary = resolved.isBinary;
       existingOpenFile.isTooLarge = resolved.isTooLarge;
+      existingOpenFile.isLoading = false;
       existingOpenFile.byteSize = resolved.byteSize;
       existingOpenFile.source = effectiveSource;
     }
@@ -438,6 +584,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
   function closeFileTab(targetPath: string): void {
     const state = getState();
     if (!targetPath) return;
+    fileOpenGenerations.set(targetPath, (fileOpenGenerations.get(targetPath) ?? 0) + 1);
 
     const idx = state.openFiles.findIndex((f) => f.path === targetPath);
     if (idx !== -1) {
@@ -448,7 +595,8 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
         state.activeFilePath = state.openFiles[0]?.path || '';
       }
       const keepTreeOpen =
-        state.fileTreeState?.status === 'ready' && !state.fileTreeCollapsed;
+        (state.fileTreeState?.status === 'ready' || state.activeInspectorTab === 'artifacts') &&
+        !state.fileTreeCollapsed;
       if (state.openFiles.length === 0 && !keepTreeOpen) {
         state.rightPodMode = reduceRightPodMode(readPodMode(state), { type: 'close' });
         state.inspectorCollapsed = true;
@@ -561,58 +709,35 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     }
   }
 
-  async function downloadFile(targetPath?: string): Promise<void> {
-    const state = getState();
+  async function executeSaveDownload(opts: {
+    fileName: string;
+    content: string;
+    isBase64: boolean;
+    sourcePath?: string;
+    remoteUrl?: string;
+  }): Promise<void> {
     const desktopApi = getDesktopApi();
-    const activeFile = targetPath
-      ? state.openFiles.find((f) => f.path === targetPath)
-      : (state.openFiles.find((f) => f.path === state.activeFilePath) || state.openFiles[0]);
-    if (!activeFile) return;
-
-    const rawFileName = activeFile.path.split(/[/\\]/).pop() || 'download.txt';
-    const isDataUrl = activeFile.content.startsWith('data:');
-    const isHttp = activeFile.path.startsWith('http://') || activeFile.path.startsWith('https://');
-    const isLocalFile = activeFile.source === 'local_fs';
-    const isRemoteOrUnloaded =
-      !isLocalFile &&
-      Boolean(
-        activeFile.isBinary ||
-          activeFile.isTooLarge ||
-          activeFile.content.includes(t('inspector.remoteNotice')),
-      );
-    const remoteUrl = isHttp
-      ? activeFile.path
-      : isRemoteOrUnloaded && state.gatewayUrl
-        ? buildGatewayDownloadUrl(
-            state.gatewayUrl,
-            activeFile.path,
-            state.profileName || undefined,
-            state.activeSessionId || undefined,
-          )
-        : '';
-
-    const localSourcePath = isLocalFile && !isHttp && !remoteUrl ? activeFile.path : undefined;
-
-    if (desktopApi?.saveFile) {
+    const isBlobContent = !opts.remoteUrl && opts.content.startsWith('blob:');
+    const isCapacitorRuntime =
+      typeof window !== 'undefined' &&
+      Boolean((window as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.());
+    if (desktopApi?.saveFile && (!isBlobContent || isCapacitorRuntime)) {
       try {
         const res = await desktopApi.saveFile({
-          fileName: rawFileName,
-          content: remoteUrl || activeFile.content,
-          isBase64: isDataUrl,
-          sourcePath: localSourcePath,
-          remoteUrl: remoteUrl || undefined,
+          fileName: opts.fileName,
+          content: opts.remoteUrl || opts.content,
+          isBase64: opts.isBase64,
+          sourcePath: opts.sourcePath,
+          remoteUrl: opts.remoteUrl || undefined,
         });
-        if (res.success) {
-          if (typeof document !== 'undefined') {
-            const btnDownload = document.getElementById('btn-file-download');
-            if (btnDownload) {
-              btnDownload.style.color = 'var(--accent)';
-              setTimeout(() => {
-                btnDownload.style.color = '';
-              }, 1200);
-            }
+        if (res.success && typeof document !== 'undefined') {
+          const btnDownload = document.getElementById('btn-file-download');
+          if (btnDownload) {
+            btnDownload.style.color = 'var(--accent)';
+            setTimeout(() => {
+              btnDownload.style.color = '';
+            }, 1200);
           }
-          return;
         }
         return;
       } catch (e) {
@@ -621,28 +746,26 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     }
 
     if (typeof document !== 'undefined') {
-      if (isDataUrl || remoteUrl) {
+      if (opts.isBase64 || opts.remoteUrl || opts.content.startsWith('blob:')) {
         const a = document.createElement('a');
-        a.href = remoteUrl || activeFile.content;
-        a.download = rawFileName;
+        a.href = opts.remoteUrl || opts.content;
+        a.download = opts.fileName;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
       } else {
-        if (!activeFile.content && (activeFile.isBinary || activeFile.isTooLarge)) {
-          return;
-        }
-        const ext = (rawFileName.split('.').pop() || '').toLowerCase();
+        if (!opts.content) return;
+        const ext = (opts.fileName.split('.').pop() || '').toLowerCase();
         let mime = 'text/plain;charset=utf-8';
         if (ext === 'html' || ext === 'htm') mime = 'text/html;charset=utf-8';
         else if (ext === 'json') mime = 'application/json;charset=utf-8';
         else if (ext === 'md' || ext === 'markdown') mime = 'text/markdown;charset=utf-8';
 
-        const blob = new Blob([activeFile.content], { type: mime });
+        const blob = new Blob([opts.content], { type: mime });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = rawFileName;
+        a.download = opts.fileName;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -656,6 +779,126 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
           btnDownload.style.color = '';
         }, 1200);
       }
+    }
+  }
+
+  async function downloadFile(targetPath?: string): Promise<void> {
+    const state = getState();
+    const activeFile = targetPath
+      ? state.openFiles.find((f) => f.path === targetPath)
+      : (state.openFiles.find((f) => f.path === state.activeFilePath) || state.openFiles[0]);
+    if (!activeFile) return;
+
+    const rawFileName = activeFile.path.split(/[/\\]/).pop() || 'download.txt';
+    const isDataUrl = activeFile.content.startsWith('data:');
+    const isHttp = activeFile.path.startsWith('http://') || activeFile.path.startsWith('https://');
+    const isLocalFile = activeFile.source === 'local_fs';
+    const isBlobUrl = activeFile.content.startsWith('blob:');
+    const isStreamProtocolUrl = activeFile.content.startsWith('hermes-media://');
+    const isRemoteOrUnloaded =
+      !isLocalFile &&
+      !isBlobUrl &&
+      Boolean(
+        activeFile.isLoading ||
+          activeFile.isBinary ||
+          activeFile.isTooLarge ||
+          isStreamProtocolUrl ||
+          !activeFile.content.trim() ||
+          activeFile.content.includes(t('inspector.remoteNotice')),
+      );
+    const remoteUrl = isHttp
+      ? activeFile.path
+      : isRemoteOrUnloaded && state.gatewayUrl
+        ? buildGatewayDownloadUrl(
+            state.gatewayUrl,
+            activeFile.path,
+            readEffectiveProfile(state),
+            state.activeSessionId || undefined,
+          )
+        : '';
+
+    const localSourcePath = isLocalFile && !isHttp && !remoteUrl ? activeFile.path : undefined;
+
+    await executeSaveDownload({
+      fileName: rawFileName,
+      content: isBlobUrl
+        ? activeFile.content
+        : activeFile.isLoading || activeFile.isBinary || activeFile.isTooLarge || isStreamProtocolUrl
+          ? remoteUrl || ''
+          : activeFile.content,
+      isBase64: isDataUrl,
+      sourcePath: localSourcePath,
+      remoteUrl: remoteUrl || undefined,
+    });
+  }
+
+  async function downloadMedia(item: { src: string; path?: string; name?: string }): Promise<void> {
+    const state = getState();
+    const targetPath = (item.path || '').trim();
+    if (targetPath && state.openFiles.some((f) => f.path === targetPath)) {
+      await downloadFile(targetPath);
+      return;
+    }
+
+    const src = (item.src || '').trim();
+    if (!src && !targetPath) return;
+
+    const rawFileName =
+      (item.name || '').trim() ||
+      (targetPath || src).split('?')[0].split(/[/\\]/).pop() ||
+      'media';
+
+    if (src.startsWith('data:')) {
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: src,
+        isBase64: true,
+      });
+      return;
+    }
+
+    if (src.startsWith('http://') || src.startsWith('https://')) {
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: src,
+        isBase64: false,
+        remoteUrl: src,
+      });
+      return;
+    }
+
+    if (src.startsWith('blob:')) {
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: src,
+        isBase64: false,
+      });
+      return;
+    }
+
+    if (targetPath && state.gatewayUrl) {
+      const remoteUrl = buildGatewayDownloadUrl(
+        state.gatewayUrl,
+        targetPath,
+        readEffectiveProfile(state),
+        state.activeSessionId || undefined,
+      );
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: remoteUrl,
+        isBase64: false,
+        remoteUrl,
+      });
+      return;
+    }
+
+    if (targetPath) {
+      await executeSaveDownload({
+        fileName: rawFileName,
+        content: '',
+        isBase64: false,
+        sourcePath: targetPath,
+      });
     }
   }
 
@@ -688,11 +931,14 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     // 任一入口（顶栏开关 / Ctrl+\ / 链接点击）打开检查舱时自动按需懒加载工作区文件树
     const state = getState();
     const activeCwd = resolveActiveWorkspaceCwd(state);
+    const activeScopeKey = computeFileTreeScopeKey(state, activeCwd);
     const treePhase = state.fileTreeState?.status ?? 'idle';
     if (
       readPodMode(state).kind === 'files' &&
       treePhase !== 'loading' &&
-      (treePhase === 'idle' || (state.fileTreeLoadedCwd ?? '') !== activeCwd)
+      (treePhase === 'idle' ||
+        (state.fileTreeLoadedCwd ?? '') !== activeCwd ||
+        (loadedTreeScopeKey !== '' && loadedTreeScopeKey !== activeScopeKey))
     ) {
       void loadFileTree();
     }
@@ -727,6 +973,40 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     if (treeFilterInput) {
       treeFilterInput.oninput = () => setFileTreeFilter(treeFilterInput.value);
     }
+
+    const artifactsFilterInput = document.getElementById('inspector-artifacts-filter-input') as HTMLInputElement | null;
+    if (artifactsFilterInput) {
+      artifactsFilterInput.oninput = () => setArtifactsFilter(artifactsFilterInput.value);
+    }
+
+    document.querySelectorAll<HTMLElement>('[data-artifact-file]').forEach((artEl) => {
+      artEl.onclick = () => {
+        const filePath = artEl.dataset.artifactFile || '';
+        const kind = artEl.dataset.artifactKind || '';
+        if (!filePath) return;
+        if (kind === 'image' && deps.onOpenMediaLightbox) {
+          const allImages = (deps.getSessionDeliverables?.() ?? [])
+            .filter((d) => d.kind === 'image')
+            .map((d) => ({
+              id: d.id,
+              src: d.previewUrl || d.path,
+              path: d.path,
+              name: resolveDeliverableDisplayName(d.path, d.name),
+              alt: resolveDeliverableDisplayName(d.path, d.name),
+            }));
+          const fallbackName = resolveDeliverableDisplayName(filePath);
+          const list: MediaLightboxItem[] =
+            allImages.length > 0
+              ? allImages
+              : [{ id: `art-img-${filePath}`, src: filePath, path: filePath, name: fallbackName, alt: fallbackName }];
+          const key = normalizeDeliverableKey(filePath);
+          const idx = list.findIndex((it) => normalizeDeliverableKey(it.path || it.src) === key);
+          deps.onOpenMediaLightbox(list, Math.max(0, idx));
+          return;
+        }
+        void handleOpenFilePreview(filePath);
+      };
+    });
 
     document.querySelectorAll<HTMLElement>('[data-tree-dir]').forEach((dirEl) => {
       dirEl.onclick = () => {
@@ -809,6 +1089,30 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
       btnPreviewDownload.onclick = () => { void downloadFile(); };
     }
 
+    document.querySelectorAll<HTMLElement>('.inspector-rendered-markdown').forEach((mdEl) => {
+      mdEl.onclick = (e) => {
+        void handleCodeBlockCopyClick(e.target);
+      };
+    });
+
+    document.querySelectorAll<HTMLVideoElement>('[data-video-player="true"]').forEach((videoEl) => {
+      videoEl.onerror = () => {
+        const currentState = getState();
+        const activeTarget =
+          currentState.openFiles.find((f) => f.path === currentState.activeFilePath) ||
+          currentState.openFiles[0];
+        if (
+          activeTarget &&
+          !activeTarget.isLoading &&
+          (activeTarget.isVideo || isVideoExtension(activeTarget.path))
+        ) {
+          activeTarget.content = '';
+          activeTarget.isVideo = true;
+          render();
+        }
+      };
+    });
+
     const btnBackFromFiles = document.getElementById('btn-inspector-back-status');
     if (btnBackFromFiles) {
       btnBackFromFiles.onclick = () => {
@@ -838,6 +1142,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     copyFileContent,
     copyFilePath,
     downloadFile,
+    downloadMedia,
     closeInspector,
     toggleInspectorFullscreen,
     switchInspectorTab,
@@ -845,6 +1150,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     loadFileTree,
     toggleDirectory,
     setFileTreeFilter,
+    setArtifactsFilter,
     toggleFileTreePane,
     bindEvents,
   };

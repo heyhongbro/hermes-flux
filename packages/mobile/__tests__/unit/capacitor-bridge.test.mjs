@@ -767,6 +767,109 @@ test('hapticSelection 与 saveFile remoteUrl 下载导出契约', async () => {
     assert.deepEqual(readCalls, [{ path: '/cache/src.bin' }]);
     assert.equal(writeCalls[0]?.data, 'SGk=');
     assert.equal(shareCalls[0]?.url, 'file:///docs/src.bin');
+
+    // 注入 FileReader Mock：覆盖 httpProxy 字节流 MIME 回退(.mp4)、>50MB 413 守卫、text/html 放行与 saveFile(blob:)
+    const origFileReader = globalThis.FileReader;
+    globalThis.FileReader = class MockFileReader {
+      readAsDataURL(blob) {
+        blob.arrayBuffer().then((buf) => {
+          const b64 = Buffer.from(buf).toString('base64');
+          const mime = blob.type || 'application/octet-stream';
+          this.result = `data:${mime};base64,${b64}`;
+          this.onloadend?.();
+        }).catch((err) => this.onerror?.(err));
+      }
+    };
+    try {
+      let fetchMode = 'mp4-octet';
+      globalThis.fetch = async (url) => {
+        if (String(url).startsWith('blob:')) {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'video/mp4' }),
+            blob: async () => new Blob([Uint8Array.from([1, 2, 3, 4])], { type: 'video/mp4' }),
+          };
+        }
+        if (fetchMode === 'too-large') {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'video/mp4' }),
+            blob: async () => ({ size: 50 * 1024 * 1024 + 1, type: 'video/mp4', slice() { return this; } }),
+          };
+        }
+        if (fetchMode === 'html') {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
+            text: async () => '<html><body>SPA</body></html>',
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'application/octet-stream' }),
+          blob: async () => new Blob([Uint8Array.from([9, 8, 7])], { type: 'application/octet-stream' }),
+        };
+      };
+
+      const dataVideo = await mockFsBridge.httpProxy({
+        baseUrl: 'https://gw.example.com',
+        path: '/api/fs/download?path=%2Ftmp%2Fclip.mp4&profile=default',
+        method: 'GET',
+      });
+      assert.ok(String(dataVideo).startsWith('data:video/mp4;base64,'));
+
+      // >2MB 视频优先通过 URL.createObjectURL 返回零拷贝 blob: URL，避免 Base64 膨胀阻塞主线程
+      const origCreateObjectUrl = URL.createObjectURL;
+      URL.createObjectURL = (blobObj) => `blob:https://localhost/video-${blobObj.size}`;
+      const prevFetchBig = globalThis.fetch;
+      try {
+        globalThis.fetch = async () => ({
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'video/mp4' }),
+          blob: async () => ({ size: 3 * 1024 * 1024, type: 'video/mp4', slice() { return this; } }),
+        });
+        const streamBlobUrl = await mockFsBridge.httpProxy({
+          baseUrl: 'https://gw.example.com',
+          path: '/api/fs/download?path=%2Ftmp%2Fbig.mp4',
+          method: 'GET',
+        });
+        assert.equal(streamBlobUrl, `blob:https://localhost/video-${3 * 1024 * 1024}`);
+      } finally {
+        globalThis.fetch = prevFetchBig;
+        if (origCreateObjectUrl) URL.createObjectURL = origCreateObjectUrl;
+        else delete URL.createObjectURL;
+      }
+
+      fetchMode = 'too-large';
+      await assert.rejects(
+        () => mockFsBridge.httpProxy({ baseUrl: 'https://gw.example.com', path: '/tmp/huge.mp4', method: 'GET' }),
+        /413|50MB/,
+      );
+
+      fetchMode = 'html';
+      const htmlFallback = await mockFsBridge.httpProxy({
+        baseUrl: 'https://gw.example.com',
+        path: '/api/fs/download?path=clip.mp4',
+        method: 'GET',
+      });
+      assert.equal(htmlFallback, '<html><body>SPA</body></html>');
+
+      const blobSaved = await mockFsBridge.saveFile({
+        fileName: 'clip.mp4',
+        content: 'blob:https://localhost/clip-1',
+        isBase64: false,
+      });
+      assert.equal(blobSaved.success, true);
+      assert.equal(writeCalls.at(-1)?.path, 'clip.mp4');
+      assert.equal(writeCalls.at(-1)?.data, Buffer.from([1, 2, 3, 4]).toString('base64'));
+    } finally {
+      globalThis.FileReader = origFileReader;
+    }
   } finally {
     globalThis.fetch = prevFetch;
   }
@@ -897,6 +1000,52 @@ test('Capacitor Network 原生网络切换监听、getNetworkStatus 降级与鉴
       await proxyTimeoutBridge.httpProxy({ baseUrl: 'https://gw.example', path: '/api/sessions' }),
       { ok: true },
     );
+
+    // 默认未覆盖 httpProxyTimeoutMs 时：视频请求放宽至 120_000ms，普通 JSON 维持默认 25_000ms
+    const defaultTimeoutBridge = createCapacitorPlatformBridge({
+      platform: 'ios',
+      isPluginAvailable: () => false,
+    });
+    const recordedTimeouts = [];
+    const prevSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms, ...args) => {
+      recordedTimeouts.push(ms);
+      return prevSetTimeout(fn, ms, ...args);
+    };
+    try {
+      globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ ok: true }),
+      });
+      await defaultTimeoutBridge.httpProxy({ baseUrl: 'https://gw.example', path: '/api/sessions' });
+      globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'video/mp4' }),
+        blob: async () => new Blob([Uint8Array.from([1, 2])], { type: 'video/mp4' }),
+      });
+      const prevFr = globalThis.FileReader;
+      globalThis.FileReader = class {
+        readAsDataURL() {
+          this.result = 'data:video/mp4;base64,AQI=';
+          this.onloadend?.();
+        }
+      };
+      try {
+        await defaultTimeoutBridge.httpProxy({
+          baseUrl: 'https://gw.example',
+          path: '/api/fs/download?path=%2Fout%2Fclip.mp4',
+        });
+      } finally {
+        globalThis.FileReader = prevFr;
+      }
+      assert.ok(recordedTimeouts.includes(30_000));
+      assert.ok(recordedTimeouts.includes(120_000));
+    } finally {
+      globalThis.setTimeout = prevSetTimeout;
+    }
   } finally {
     globalThis.fetch = prevFetch;
     env.restore();

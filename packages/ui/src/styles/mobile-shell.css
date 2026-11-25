@@ -550,6 +550,36 @@
 
 .m-section__title {
   color: var(--secondary-foreground);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-section__folder-icon {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  opacity: 0.78;
+}
+
+.m-section__folder-icon--primary {
+  color: var(--primary);
+  opacity: 0.9;
+}
+
+.m-section__folder-icon--success {
+  color: var(--success);
+  opacity: 0.9;
+}
+
+.m-section__folder-icon--warning {
+  color: var(--warning);
+  opacity: 0.9;
+}
+
+.m-section__folder-icon--destructive {
+  color: var(--destructive);
+  opacity: 0.9;
 }
 
 .m-section__tail {
@@ -606,10 +636,6 @@
 .m-entity-row:active {
   background: var(--card);
   transform: scale(0.985);
-}
-
-.m-entity-row[data-active="true"] {
-  background: var(--card-active);
 }
 
 .m-entity-row__avatar {
@@ -2029,6 +2055,14 @@ html[data-page-hidden="true"] .m-trace-dot {
   justify-content: center;
 }
 
+.m-inspector__reader-image-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: zoom-in;
+  max-width: 100%;
+}
+
 .m-inspector__reader-image {
   max-width: 100%;
   height: auto;
@@ -2036,8 +2070,78 @@ html[data-page-hidden="true"] .m-trace-dot {
   border: 1px solid var(--border-subtle);
 }
 
+.m-inspector__reader-video-wrap {
+  flex: 1;
+  min-height: 0;
+  padding: 0 12px calc(var(--m-bottom-inset) + 16px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.m-inspector__reader-video {
+  width: 100%;
+  max-height: 100%;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border-subtle);
+  background: var(--card);
+}
+
+.m-inspector__reader-html-wrap {
+  flex: 1;
+  min-height: 0;
+  padding: 0 12px calc(var(--m-bottom-inset) + 16px);
+  display: flex;
+}
+
+.m-inspector__reader-iframe {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  color-scheme: light;
+  background: Canvas;
+}
+
+.m-inspector__reader-markdown {
+  padding: 16px;
+  border-radius: var(--radius-panel);
+  background: var(--card);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--fs-body);
+  line-height: 1.72;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .m-inspector__reader-notice {
+  margin: 0;
+  padding: 0;
   max-width: 340px;
+  font-size: var(--fs-aux);
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+
+.m-inspector__reader-loading {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.m-inspector__reader-loading-title {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--foreground);
 }
 
 /* ---------------- 全屏分层设置页与 Bot 子页 ---------------- */
@@ -2792,11 +2896,6 @@ html[data-page-hidden="true"] .m-trace-dot {
 }
 
 /* ---------------- 会话组织、已完成区与新建项目选择器 ---------------- */
-.m-section__folder-icon {
-  color: var(--muted-foreground);
-  flex-shrink: 0;
-}
-
 .m-section--done {
   margin-top: 8px;
 }

@@ -258,6 +258,16 @@ async function buildAll() {
     sourcemap: true,
   });
   await esbuild.build({
+    entryPoints: [path.join(rootDir, 'src/main/mediaStreamProtocol.ts')],
+    outfile: path.join(rootDir, 'dist/main/mediaStreamProtocol.mjs'),
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'esm',
+    external: ['@hermes-flux/core'],
+    sourcemap: true,
+  });
+  await esbuild.build({
     entryPoints: [path.join(rootDir, 'src/main/powerEvents.ts')],
     outfile: path.join(rootDir, 'dist/main/powerEvents.mjs'),
     bundle: true,
@@ -688,6 +698,16 @@ async function buildAll() {
   await esbuild.build({
     entryPoints: [path.join(rootDir, 'src/renderer/services/fileViewerService.ts')],
     outfile: path.join(rootDir, 'dist/renderer/services/fileViewerService.mjs'),
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'esm',
+    external: ['@hermes-flux/core', '@hermes-flux/ui'],
+    sourcemap: true,
+  });
+  await esbuild.build({
+    entryPoints: [path.join(rootDir, 'src/renderer/services/mediaResolver.ts')],
+    outfile: path.join(rootDir, 'dist/renderer/services/mediaResolver.mjs'),
     bundle: true,
     platform: 'node',
     target: 'node20',

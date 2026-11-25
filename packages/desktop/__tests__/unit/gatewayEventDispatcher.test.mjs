@@ -171,8 +171,49 @@ function createMockDispatcherDeps(overrides = {}) {
     presenceEvents,
     activeStreamingContext: () => activeStreamingContext,
     getRegistryClearCount: () => registryClearCount,
+    getSessionMessagesCache: () => sessionMessagesCache,
   };
 }
+
+test('D6: gatewayEventDispatcher - tool-complete 同步更新 state 与缓存中的 imagePath', () => {
+  const { deps, state, patchedTools, getSessionMessagesCache } = createMockDispatcherDeps({
+    state: {
+      messages: [
+        { id: 'usr-1', role: 'user', content: 'draw' },
+        {
+          id: 'ast-1',
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'tc-1', name: 'draw_chart', status: 'running' }],
+        },
+      ],
+    },
+  });
+  getSessionMessagesCache().set('sess-1', [
+    { id: 'usr-1', role: 'user', content: 'draw' },
+    {
+      id: 'ast-1',
+      role: 'assistant',
+      content: '',
+      toolCalls: [{ id: 'tc-1', name: 'draw_chart', status: 'running' }],
+    },
+  ]);
+
+  const dispatcher = createGatewayEventDispatcher(deps);
+  dispatcher.applyTurnActions([
+    {
+      type: 'tool-complete',
+      messageId: 'ast-1',
+      toolCallId: 'tc-1',
+      output: 'saved chart',
+      imagePath: '/out/rendered.png',
+    },
+  ]);
+
+  assert.equal(state.messages[1].toolCalls[0].imagePath, '/out/rendered.png');
+  assert.equal(getSessionMessagesCache().get('sess-1')[1].toolCalls[0].imagePath, '/out/rendered.png');
+  assert.ok(patchedTools.includes('ast-1'));
+});
 
 test('D6: gatewayEventDispatcher - 隐私模式下连接回写配置失败不得中断连接流程（P-032）', async () => {
   // 【杀伤力】把 safeSetItem 换回裸 localStorage.setItem，connect() 会抛 SecurityError 且跳过 render。

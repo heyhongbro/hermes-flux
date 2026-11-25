@@ -13,30 +13,86 @@
 import { marked, type Tokens } from 'marked';
 import remend from 'remend';
 import DOMPurify from 'dompurify';
+import { classifyDeliverableKind, stripMediaTags } from '@hermes-flux/core';
 import { t } from '../i18n/index.js';
 import { escapeHtml, isLikelyFilePath, isLikelyHttpUrl } from './text.js';
 import { renderFileTypeIcon } from './fileTypeIcons.js';
-import { isTouchedFileRef } from './fileRefs.js';
+import { isTouchedFileRef, normalizeFileRef } from './fileRefs.js';
+import { formatDeliverableExtLabel, resolveDeliverableDisplayName } from './deliverableViewModel.js';
 import { highlightCode, isHighlightReady } from './highlight.js';
 
 /**
- * 当前渲染批次内「会话真实读写过的文件」。
+ * 当前渲染批次内「会话真实读写过的文件」与「本回合确认的成果物文件」。
  * 【设计意图 (Why)】marked 的 renderer 在模块初始化时绑定，拿不到每次调用的参数；
  *   解析是同步的，用一次性的活动上下文传递上下文比给每个 renderer 再造一套实例更轻。
  * 【约束与规则 (Rules)】只在 renderMarkdownCore 内同步设置，finally 必须恢复原值。
  */
 let activeKnownFiles: readonly string[] = [];
+let activeDeliverableFiles: readonly string[] = [];
 
 function fileRefLinked(ref: string): boolean {
   return isTouchedFileRef(ref, activeKnownFiles);
 }
 
+function matchDeliverableTarget(ref: string): string | null {
+  if (!activeDeliverableFiles.length) return null;
+  const target = normalizeFileRef(ref);
+  if (!target) return null;
+
+  const absolute = target.startsWith('/') || /^[a-zA-Z]:\//.test(target);
+  const targetBase = target.split('/').pop() || target;
+  const basenameMatches: string[] = [];
+
+  for (const raw of activeDeliverableFiles) {
+    const known = normalizeFileRef(raw);
+    if (!known) continue;
+    if (known === target) return raw;
+    if (absolute && known.endsWith(target)) return raw;
+    if (!absolute && target.includes('/') && known.endsWith(`/${target}`)) return raw;
+    if (!absolute && !target.includes('/') && (known.split('/').pop() || known) === targetBase) {
+      basenameMatches.push(raw);
+    }
+  }
+
+  return basenameMatches.length === 1 ? basenameMatches[0] : null;
+}
+
 /**
- * 文件引用只有两种形态：
- *   1. 会话里真实读写过 → 代码药丸 + 文件图标 + 点击预览；
- *   2. 只是正文里提到 → 普通代码药丸，不画下划线、不给指针光标。
+ * 将正文中命中的成果物路径原地替换为紧凑小卡片（桌面与移动端完全同构）。
+ * 仅展示纯文件名 + 类型图标（图片预留 24px 缩略图槽位） + 短格式徽标，完整路径收进 hover tooltip。
+ */
+function renderInlineDeliverableCard(resolvedPath: string): string {
+  const kind = classifyDeliverableKind(resolvedPath);
+  const fileName = resolveDeliverableDisplayName(resolvedPath);
+  const extLabel = formatDeliverableExtLabel(fileName, kind);
+  const escapedPath = escapeHtml(resolvedPath);
+  const escapedName = escapeHtml(fileName);
+  const escapedExt = escapeHtml(extLabel);
+  const leading =
+    kind === 'image'
+      ? `<span class="conv-inline-deliverable__thumb" data-deliverable-thumb="${escapedPath}">${renderFileTypeIcon(
+          resolvedPath,
+          'conv-inline-deliverable__thumb-fallback',
+        )}</span>`
+      : renderFileTypeIcon(resolvedPath, 'conv-inline-deliverable__icon');
+
+  const previewAttr = kind === 'image' ? '' : ` data-preview-file="${escapedPath}"`;
+  return `<button type="button" class="conv-inline-deliverable md-file-ref" data-deliverable-card="true" data-deliverable-kind="${escapeHtml(
+    kind,
+  )}" data-deliverable-path="${escapedPath}" data-deliverable-name="${escapedName}"${previewAttr} data-file-ref="${escapedPath}" title="${escapedPath}">${leading}<span class="conv-inline-deliverable__name">${escapedName}</span><span class="conv-inline-deliverable__ext">${escapedExt}</span><span class="conv-inline-deliverable__chevron" aria-hidden="true">›</span></button>`;
+}
+
+/**
+ * 文件引用三种形态：
+ *   1. 命中本回合成果物 → 原地紧凑小卡片；
+ *   2. 会话里真实读写过（非成果物）→ 代码药丸 + 文件图标 + 点击预览；
+ *   3. 只是正文里提到 → 普通代码药丸，不画下划线、不给指针光标。
  */
 function renderFileRef(text: string, rawText: string): string {
+  const deliverableTarget = matchDeliverableTarget(text);
+  if (deliverableTarget) {
+    return renderInlineDeliverableCard(deliverableTarget);
+  }
   if (!fileRefLinked(text)) {
     return `<code class="md-code md-file-ref" data-file-ref="${escapeHtml(text)}">${escapeHtml(rawText)}</code>`;
   }
@@ -158,6 +214,14 @@ const parser = marked.use({
       const target = href ?? '';
       const label = this.parser.parseInline(tokens);
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+      const lowerHref = target.trim().toLowerCase();
+      if (
+        lowerHref.startsWith('javascript:') ||
+        lowerHref.startsWith('vbscript:') ||
+        lowerHref.startsWith('data:')
+      ) {
+        return label;
+      }
 
       if (isLikelyHttpUrl(target)) {
         return `<a class="md-link md-link--url tool-file-link content-interactive-link" data-preview-url="${escapeHtml(
@@ -165,6 +229,10 @@ const parser = marked.use({
         )}" href="${escapeHtml(target)}" target="_blank" rel="noopener noreferrer"${titleAttr}>${label}</a>`;
       }
       if (isLikelyFilePath(target)) {
+        const deliverableTarget = matchDeliverableTarget(target);
+        if (deliverableTarget) {
+          return renderInlineDeliverableCard(deliverableTarget);
+        }
         if (!fileRefLinked(target)) {
           return `<span class="md-link md-link--file md-file-ref" data-file-ref="${escapeHtml(target)}"${titleAttr}>${label}</span>`;
         }
@@ -175,6 +243,43 @@ const parser = marked.use({
         )}<span class="md-link__label">${label}</span></a>`;
       }
       return `<a class="md-link" href="${escapeHtml(target)}" target="_blank" rel="noopener noreferrer"${titleAttr}>${label}</a>`;
+    },
+    image({ href, title, text }: Tokens.Image) {
+      const target = (href ?? '').trim();
+      const lower = target.toLowerCase();
+      if (!target || lower.startsWith('javascript:') || lower.startsWith('vbscript:') || lower.startsWith('data:text/html')) {
+        return escapeHtml(text || '');
+      }
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+      const isDirectMedia =
+        lower.startsWith('https://') ||
+        lower.startsWith('http://') ||
+        lower.startsWith('data:image/') ||
+        lower.startsWith('blob:');
+      if (isDirectMedia) {
+        return `<img class="md-inline-image" src="${escapeHtml(target)}" alt="${escapeHtml(
+          text || ''
+        )}" loading="lazy" data-media-src="${escapeHtml(target)}" data-media-name="${escapeHtml(
+          text || ''
+        )}"${titleAttr} />`;
+      }
+      if (isLikelyFilePath(target)) {
+        const deliverableTarget = matchDeliverableTarget(target);
+        if (deliverableTarget) {
+          return renderInlineDeliverableCard(deliverableTarget);
+        }
+        if (!fileRefLinked(target)) {
+          return `<span class="md-link md-link--file md-file-ref" data-file-ref="${escapeHtml(target)}"${titleAttr}>${escapeHtml(text || target)}</span>`;
+        }
+        return `<a class="md-link md-link--file md-file-ref md-file-ref--linked tool-file-link content-interactive-link" data-preview-file="${escapeHtml(
+          target
+        )}" data-file-ref="${escapeHtml(target)}" href="${escapeHtml(
+          target
+        )}" target="_blank" rel="noopener noreferrer"${titleAttr}>${renderFileTypeIcon(
+          target
+        )}<span class="md-link__label">${escapeHtml(text || target)}</span></a>`;
+      }
+      return escapeHtml(text || '');
     },
   },
 });
@@ -252,10 +357,94 @@ function healStreamingMarkdown(md: string): string {
 const SANITIZE_CONFIG = {
   USE_PROFILES: { html: true, svg: true, svgFilters: true },
   ADD_TAGS: ['use'],
-  ADD_ATTR: ['href', 'xlink:href', 'target', 'data-preview-file', 'data-preview-url', 'data-icon'],
+  ADD_ATTR: [
+    'href',
+    'xlink:href',
+    'target',
+    'src',
+    'alt',
+    'loading',
+    'type',
+    'title',
+    'aria-label',
+    'data-preview-file',
+    'data-preview-url',
+    'data-file-ref',
+    'data-icon',
+    'data-media-src',
+    'data-media-name',
+    'data-deliverable-card',
+    'data-deliverable-kind',
+    'data-deliverable-path',
+    'data-deliverable-name',
+    'data-deliverable-thumb',
+  ],
   FORBID_TAGS: ['script', 'style'],
   FORBID_CONTENTS: ['script'],
 };
+
+function escapeRegExp(val: string): string {
+  return val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 将正文中未包裹反引号的裸路径（必须包含路径分隔符且位于围栏代码块/链接之外）自动包成 inline code，
+ * 交给统一的 `codespan` 渲染为原地紧凑成果物小卡片。
+ */
+function wrapBareDeliverablePaths(md: string, deliverableFiles: readonly string[]): string {
+  if (!md || deliverableFiles.length === 0) return md;
+  const variants = new Set<string>();
+  for (const raw of deliverableFiles) {
+    const clean = (raw || '').trim();
+    if (!clean) continue;
+    const lower = clean.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('data:') || lower.startsWith('blob:')) {
+      continue;
+    }
+    const norm = clean.replace(/\\/g, '/');
+    if (norm.includes('/')) {
+      variants.add(clean);
+      variants.add(norm);
+    }
+  }
+  if (variants.size === 0) return md;
+
+  const sorted = Array.from(variants).sort((a, b) => b.length - a.length);
+  const pathAlt = sorted.map(escapeRegExp).join('|');
+  const bareRe = new RegExp(
+    `(^|[\\s(>\\[{"'：:，,;；、])(${pathAlt})(?=$|[\\s.,;:!?)'"\\]}。，；：、])`,
+    'g',
+  );
+  const protectedRe = /(``+[^`\r\n]*``+|`[^`\r\n]+`|!?\[[^\]]*\]\([^)\r\n]*\)|<[^>\r\n]+>|(?:https?|ftp|blob|mailto|tel|javascript|vbscript|data):[^\s`"'<>()]+)/gi;
+
+  const lines = md.split('\n');
+  let inFence = false;
+  const out = lines.map((line) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      return line;
+    }
+    if (inFence) return line;
+
+    let result = '';
+    let lastIdx = 0;
+    let match: RegExpExecArray | null;
+    protectedRe.lastIndex = 0;
+    while ((match = protectedRe.exec(line)) !== null) {
+      if (match.index > lastIdx) {
+        result += line.slice(lastIdx, match.index).replace(bareRe, '$1`$2`');
+      }
+      result += match[0];
+      lastIdx = protectedRe.lastIndex;
+    }
+    if (lastIdx < line.length) {
+      result += line.slice(lastIdx).replace(bareRe, '$1`$2`');
+    }
+    return result;
+  });
+
+  return out.join('\n');
+}
 
 /**
  * 清洗解析结果。
@@ -275,25 +464,36 @@ const MARKDOWN_CACHE_MAX = 500;
 export interface RenderMarkdownOptions {
   /** 会话内 Agent 真实读写过的文件；只有命中集合的引用才渲染为可点击 */
   knownFiles?: readonly string[];
+  /** 当前回合已证实的成果物文件；命中引用原地替换为紧凑小卡片 */
+  deliverableFiles?: readonly string[];
 }
 
 export function renderMarkdownCore(md: string, options?: RenderMarkdownOptions): string {
   if (!md) return '';
 
   const knownFiles = options?.knownFiles ?? [];
-  // 同一段正文在不同会话里可点击的引用不同，缓存键必须带上文件集合
-  const cacheKey = knownFiles.length ? `${md}\u0000${[...knownFiles].sort().join('\u0001')}` : md;
+  const deliverableFiles = options?.deliverableFiles ?? [];
+  // 同一段正文在不同会话或不同成果物集合下渲染形态不同，缓存键必须同时带上两者
+  const knownKey = knownFiles.length ? [...knownFiles].sort().join('\u0001') : '';
+  const delivKey = deliverableFiles.length ? [...deliverableFiles].sort().join('\u0001') : '';
+  const cacheKey = knownKey || delivKey ? `${md}\u0000${knownKey}\u0002${delivKey}` : md;
   const cached = markdownRenderCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
-  const normalized = convertTsvTables(healStreamingMarkdown(md));
+  const strippedMd = stripMediaTags(md).cleanText;
+  if (!strippedMd) return '';
+  const prelinkedMd = deliverableFiles.length > 0 ? wrapBareDeliverablePaths(strippedMd, deliverableFiles) : strippedMd;
+  const normalized = convertTsvTables(healStreamingMarkdown(prelinkedMd));
   const previousKnownFiles = activeKnownFiles;
+  const previousDeliverableFiles = activeDeliverableFiles;
   activeKnownFiles = knownFiles;
+  activeDeliverableFiles = deliverableFiles;
   let parsed: string;
   try {
     parsed = parser.parse(normalized) as string;
   } finally {
     activeKnownFiles = previousKnownFiles;
+    activeDeliverableFiles = previousDeliverableFiles;
   }
   const withClasses = parsed
     .replace(/<table>/g, '<div class="md-table-wrap"><table class="md-table">')

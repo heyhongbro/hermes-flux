@@ -568,6 +568,38 @@
       "failure": "冷启动网络未就绪时退避越界卡死或零延迟风暴重试打爆电池与网关"
     },
     {
+      "id": "INV-DELIV-01",
+      "topic": "成果物提取去重幂等与非助手消息物理隔离",
+      "source": "packages/core/src/session/deliverables.ts",
+      "symbol": "extractTurnDeliverables",
+      "test": "packages/core/__tests__/formal/deliverables-formal.test.mjs",
+      "failure": "重复提取产生重复图片/卡片，或用户消息附件误混入 Agent 成果物画廊"
+    },
+    {
+      "id": "INV-DELIV-02",
+      "topic": "MEDIA 标记剥离收敛且严格豁免围栏代码块",
+      "source": "packages/core/src/session/deliverables.ts",
+      "symbol": "stripMediaTags",
+      "test": "packages/core/__tests__/formal/deliverables-formal.test.mjs",
+      "failure": "对话正文残留 MEDIA:/path 原文，或代码示例中的 MEDIA 语法被误删"
+    },
+    {
+      "id": "INV-DELIV-03",
+      "topic": "只读工具与危险 URI 拦截守恒（cat/grep/javascript: 绝不渗入成果物）",
+      "source": "packages/core/src/session/deliverables.ts",
+      "symbol": "extractSessionDeliverables",
+      "test": "packages/core/__tests__/formal/deliverables-formal.test.mjs",
+      "failure": "cat /etc/hosts 等命令或 javascript:/data:text/html 注入进入可点击成果物列表"
+    },
+    {
+      "id": "INV-DELIV-04",
+      "topic": "读写分离与非循环存在性双锁守恒（只读排除、同回合Shell互证、父目录批探禁session_cache及正文原地去重）",
+      "source": "packages/core/src/fs/pathVerifier.ts",
+      "symbol": "createDirectoryPathVerifier",
+      "test": "packages/core/__tests__/formal/deliverables-formal.test.mjs",
+      "failure": "未写先读的路径混入成果物、纯缓存自证循环复活幽灵文件，或正文小卡片与回合末卡片双份重复"
+    },
+    {
       "id": "INV-TURN-02",
       "topic": "看门狗权威续期不得复活 idle/disarmed，且绝对受 hardLimitMs 封顶",
       "source": "packages/core/src/turn/slidingWatchdog.ts",

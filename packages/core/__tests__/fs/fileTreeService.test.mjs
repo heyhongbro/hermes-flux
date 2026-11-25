@@ -359,7 +359,8 @@ test('远程网关真实契约适配：is_directory 目录识别、/api/fs/list 
       },
     });
     assert.equal(localCalled, false, '远程非回环网关空目录不得回落读取本机目录');
-    assert.equal(proxyCalls[0], '/api/files');
+    assert.equal(proxyCalls[0], '/api/fs/default-cwd?profile=coder');
+    assert.equal(proxyCalls[1], '/api/files');
     assert.ok('nodes' in remoteDefault);
     assert.equal(remoteDefault.rootPath, '/opt/data/workspace');
     assert.equal(remoteDefault.nodes[0].name, 'memory');
@@ -424,6 +425,95 @@ test('远程网关真实契约适配：is_directory 目录识别、/api/fs/list 
     });
     assert.ok('nodes' in arrayRootList && arrayRootList.rootPath === '');
     assert.equal(arrayRootList.nodes[0].name, 'arr-item.ts');
+
+    // 6. 空目标目录且携带 profile 时，Tier 2 优先探测 /api/fs/default-cwd?profile=... 获取各 Bot 专属工作区
+    const probedUrls = [];
+    const botDefaultTree = await resolveWorkspaceDirectory('', {
+      gatewayUrl: 'https://remote-gw.example.com:9119',
+      profile: 'botB',
+      platformBridge: {
+        httpProxy: async ({ path: ep }) => {
+          probedUrls.push(ep);
+          if (ep.startsWith('/api/fs/default-cwd?')) {
+            return { cwd: '/opt/bots/botB/workspace' };
+          }
+          if (ep.includes('path=%2Fopt%2Fbots%2FbotB%2Fworkspace')) {
+            return {
+              path: '/opt/bots/botB/workspace',
+              entries: [{ name: 'MEMORY.md', path: '/opt/bots/botB/workspace/MEMORY.md', is_directory: false }],
+            };
+          }
+          return null;
+        },
+      },
+    });
+    assert.ok(probedUrls.some((u) => u === '/api/fs/default-cwd?profile=botB'));
+    assert.ok('nodes' in botDefaultTree && botDefaultTree.rootPath === '/opt/bots/botB/workspace');
+    assert.equal(botDefaultTree.nodes[0].name, 'MEMORY.md');
+
+    const defaultCwdRejects = await resolveWorkspaceDirectory('', {
+      gatewayUrl: 'https://remote-gw.example.com:9119',
+      profile: 'botC',
+      platformBridge: {
+        httpProxy: async ({ path: ep }) => {
+          if (ep.startsWith('/api/fs/default-cwd')) throw new Error('404 not found');
+          return {
+            path: '/opt/fallback',
+            entries: [{ name: 'ok.txt', path: '/opt/fallback/ok.txt', is_directory: false }],
+          };
+        },
+      },
+    });
+    assert.ok('nodes' in defaultCwdRejects && defaultCwdRejects.rootPath === '/opt/fallback');
+
+    // default-cwd 返回 JSON 字符串、SPA HTML 回退、损坏 JSON 与无有效 cwd 对象全分支覆盖
+    const strPayloadTree = await resolveWorkspaceDirectory('', {
+      gatewayUrl: 'https://remote-gw.example.com:9119',
+      profile: 'botStr',
+      platformBridge: {
+        httpProxy: async ({ path: ep }) => {
+          if (ep.startsWith('/api/fs/default-cwd?')) {
+            return JSON.stringify({ cwd: 'E:\\bots\\botStr\\' });
+          }
+          if (ep.includes('path=E%3A%2Fbots%2FbotStr')) {
+            return {
+              path: 'E:/bots/botStr',
+              entries: [{ name: 'ok.md', path: 'E:/bots/botStr/ok.md', is_directory: false }],
+            };
+          }
+          return null;
+        },
+      },
+    });
+    assert.ok('nodes' in strPayloadTree && strPayloadTree.rootPath === 'E:/bots/botStr');
+
+    const spaFallbackCwd = await resolveWorkspaceDirectory('', {
+      gatewayUrl: 'https://remote-gw.example.com:9119',
+      profile: 'botSpa',
+      platformBridge: {
+        httpProxy: async ({ path: ep }) => {
+          if (ep.startsWith('/api/fs/default-cwd?')) {
+            return '<!DOCTYPE html><html><body><div id="root"></div></body></html>';
+          }
+          return { path: '/opt/spa-fb', entries: [{ name: 'a.txt', isDirectory: false }] };
+        },
+      },
+    });
+    assert.ok('nodes' in spaFallbackCwd && spaFallbackCwd.rootPath === '/opt/spa-fb');
+
+    const emptyCwdObj = await resolveWorkspaceDirectory('', {
+      gatewayUrl: 'https://remote-gw.example.com:9119',
+      profile: 'botEmpty',
+      platformBridge: {
+        httpProxy: async ({ path: ep }) => {
+          if (ep.startsWith('/api/fs/default-cwd?')) {
+            return { cwd: '   ' };
+          }
+          return { path: '/opt/empty-fb', entries: [{ name: 'b.txt', isDirectory: false }] };
+        },
+      },
+    });
+    assert.ok('nodes' in emptyCwdObj && emptyCwdObj.rootPath === '/opt/empty-fb');
   } finally {
     console.warn = savedWarn;
   }

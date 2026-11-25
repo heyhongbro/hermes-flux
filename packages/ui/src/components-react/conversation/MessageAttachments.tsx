@@ -17,18 +17,34 @@ import { FileText, Image as ImageIcon, Paperclip, X } from 'lucide-react';
 import { formatFileSize, type MessageAttachmentItem } from '@hermes-flux/core';
 import { t } from '../../i18n/index.js';
 
+import type { MediaLightboxItem } from './MediaLightbox.js';
+
 export interface MessageAttachmentsProps {
   attachments: readonly MessageAttachmentItem[];
   variant: 'bubble' | 'composer';
   onRemove?: (id: string) => void;
+  onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
 }
 
 export function MessageAttachments({
   attachments,
   variant,
   onRemove,
+  onOpenMediaLightbox,
 }: MessageAttachmentsProps): React.ReactElement | null {
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
+  const bubbleImages = React.useMemo<MediaLightboxItem[]>(
+    () =>
+      attachments
+        .filter((item) => item.type === 'image' && Boolean(item.previewUrl))
+        .map((item) => ({
+          id: item.id,
+          src: item.previewUrl as string,
+          name: item.name,
+          alt: item.name,
+        })),
+    [attachments],
+  );
   if (attachments.length === 0) return null;
 
   return (
@@ -43,6 +59,7 @@ export function MessageAttachments({
         const expanded = variant === 'bubble' && expandedId === att.id;
 
         if (isImg && att.previewUrl) {
+          const imgIdx = bubbleImages.findIndex((b) => b.id === att.id);
           return (
             <div
               key={att.id}
@@ -54,7 +71,13 @@ export function MessageAttachments({
                   type="button"
                   className="conv-att-image-btn"
                   aria-label={t('conversation.attachmentPreview', { name: att.name })}
-                  onClick={() => setExpandedId((prev) => (prev === att.id ? null : att.id))}
+                  onClick={() => {
+                    if (onOpenMediaLightbox && bubbleImages.length > 0) {
+                      onOpenMediaLightbox(bubbleImages, Math.max(0, imgIdx));
+                      return;
+                    }
+                    setExpandedId((prev) => (prev === att.id ? null : att.id));
+                  }}
                 >
                   <img className="conv-att-thumb__img" src={att.previewUrl} alt={att.name} />
                 </button>

@@ -190,14 +190,17 @@ export interface AppState {
   presenceTerminal?: { kind: 'failed'; message: string } | { kind: 'interrupted' };
   activeGroupSpeaker?: string | null;
   inspectorFullscreen?: boolean;
+  sessionCwds: Record<string, string>;
   openFiles: Array<{
     id?: string;
     path: string;
     content: string;
     language?: string;
     isDiff?: boolean;
+    isVideo?: boolean;
     isBinary?: boolean;
     isTooLarge?: boolean;
+    isLoading?: boolean;
     byteSize?: number;
     source?: 'session_tool' | 'local_fs' | 'remote_http' | 'gateway_api' | 'fallback';
   }>;
@@ -210,6 +213,7 @@ export interface AppState {
   fileTreeState: FileTreeLoadState;
   fileTreeExpandedPaths: string[];
   fileTreeFilterQuery: string;
+  artifactsFilterQuery: string;
   fileTreeCollapsed: boolean;
   fileTreeLoadedCwd: string;
   attachments: InputAttachmentItem[];
@@ -291,7 +295,7 @@ export function createInitialState(params: InitialStateParams): AppState {
     leftRailCollapsed: params.leftRailCollapsedDefault ?? false,
     inspectorCollapsed: true,
     rightPodMode: { kind: 'closed' },
-    activeInspectorTab: 'artifacts',
+    activeInspectorTab: 'preview',
     activeSessionId: '',
     activeLiveSessionId: '',
     selectedModel: '',
@@ -398,8 +402,10 @@ export function createInitialState(params: InitialStateParams): AppState {
     fileTreeState: { status: 'idle' },
     fileTreeExpandedPaths: [],
     fileTreeFilterQuery: '',
+    artifactsFilterQuery: '',
     fileTreeCollapsed: false,
     fileTreeLoadedCwd: '',
+    sessionCwds: {},
     testStatus: undefined,
     artifacts: [],
     browserFrame: undefined,
@@ -444,17 +450,45 @@ export function resolveActiveViewportKey(
 
 /**
  * 推导当前激活会话或工程所属的工作区根目录路径（作为文件树加载的单一真值口径）。
+ *
+ * @why 解析当前激活会话/Bot 的真实工作区 CWD；用于文件树浏览与本地相对路径解析。
+ * @pitfall 历史上 fallback 到 selectedNewTaskProjectId 和 projects[0]，导致新建了任意本地 Project 后，
+ *          打开无 CWD 的普通会话或专职 Bot Forever Chat 的文件树被劫持显示成该 Project 目录。
+ * @rules 1) 群聊 focus 无单一工作区，直接返回空；2) 仅查当前激活 session 的 sessionCwds / session.cwd / 归属 project.path；
+ *        3) 严禁跨会话 fallback 到新建任务选中的项目或项目列表首项。
  */
 export function resolveActiveWorkspaceCwd(
   state:
-    | Pick<AppState, 'activeSessionId' | 'sessions' | 'projects' | 'selectedNewTaskProjectId'>
-    | { activeSessionId?: string; sessions?: AppState['sessions']; projects?: AppState['projects']; selectedNewTaskProjectId?: string }
+    | Pick<AppState, 'activeSessionId' | 'activeFocus' | 'sessions' | 'archivedSessions' | 'sessionCwds' | 'projects'>
+    | {
+        activeSessionId?: string;
+        activeFocus?: AppState['activeFocus'];
+        sessions?: AppState['sessions'];
+        archivedSessions?: AppState['archivedSessions'];
+        sessionCwds?: AppState['sessionCwds'];
+        projects?: AppState['projects'];
+        selectedNewTaskProjectId?: string;
+      }
     | undefined
     | null,
 ): string {
+  if (state?.activeFocus?.type === 'group') {
+    return '';
+  }
+  const activeSessionId = (state?.activeSessionId || '').trim();
+  if (!activeSessionId) {
+    return '';
+  }
+  const recordedCwd = state?.sessionCwds?.[activeSessionId];
+  if (recordedCwd) {
+    return normalizeWorkspacePath(recordedCwd);
+  }
   const sessions = state?.sessions ?? [];
+  const archivedSessions = state?.archivedSessions ?? [];
   const projects = state?.projects ?? [];
-  const activeSession = sessions.find((s) => s.id === state?.activeSessionId);
+  const activeSession =
+    sessions.find((s) => s.id === activeSessionId) ??
+    archivedSessions.find((s) => s.id === activeSessionId);
   if (activeSession?.cwd) {
     return normalizeWorkspacePath(activeSession.cwd);
   }
@@ -467,16 +501,6 @@ export function resolveActiveWorkspaceCwd(
     : undefined;
   if (matchedProject?.path) {
     return normalizeWorkspacePath(matchedProject.path);
-  }
-  if (state?.selectedNewTaskProjectId) {
-    const selectedProj = projects.find((p) => p.id === state.selectedNewTaskProjectId);
-    if (selectedProj?.path) {
-      return normalizeWorkspacePath(selectedProj.path);
-    }
-  }
-  const firstProjWithPath = projects.find((p) => Boolean(p.path));
-  if (firstProjWithPath?.path) {
-    return normalizeWorkspacePath(firstProjWithPath.path);
   }
   return '';
 }

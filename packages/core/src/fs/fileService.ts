@@ -40,6 +40,7 @@ export interface ResolveFileOptions {
 export interface ResolvedFileResult {
   content: string;
   isImage: boolean;
+  isVideo?: boolean;
   isHtml: boolean;
   isBinary?: boolean;
   isTooLarge?: boolean;
@@ -51,16 +52,35 @@ export interface ResolvedFileResult {
 
 export const MAX_PREVIEW_FILE_BYTES = 1024 * 1024;
 export const MAX_PREVIEW_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_PREVIEW_VIDEO_BYTES = 50 * 1024 * 1024;
 
 const BINARY_EXTENSIONS = new Set([
   'exe', 'dll', 'so', 'dylib', 'msi', 'bin', 'dat', 'com', 'deb', 'rpm', 'apk', 'ipa', 'dmg', 'iso', 'img', 'wasm',
   'o', 'a', 'lib', 'obj', 'pdb', 'pyc', 'pyo', 'class', 'jar', 'war', 'whl',
   'zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'zst', '7z', 'rar', 'lz4', 'cab',
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'epub',
-  'mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'mp4', 'mkv', 'mov', 'avi', 'webm', 'wmv', 'flv',
+  'mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'mkv', 'avi', 'wmv', 'flv',
   'ttf', 'otf', 'woff', 'woff2', 'eot', 'sqlite', 'sqlite3', 'db', 'parquet', 'arrow', 'npy', 'npz',
   'pt', 'pth', 'onnx', 'safetensors', 'gguf',
 ]);
+
+const PLAYABLE_VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v', 'ogv']);
+
+const MEDIA_EXT_MIME: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  ico: 'image/x-icon',
+  bmp: 'image/bmp',
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  ogv: 'video/ogg',
+};
 
 /**
  * 校验目标路径是否为图片格式扩展名
@@ -73,12 +93,57 @@ export function isImageExtension(filePath: string): boolean {
 }
 
 /**
- * 判断扩展名是否属于不可直接按文本预览的二进制格式（可执行程序、压缩包、音视频、字体、数据库等）。
+ * 校验目标路径是否为浏览器/WebView 可内联播放的视频格式扩展名。
+ */
+export function isVideoExtension(filePath: string): boolean {
+  if (!filePath || typeof filePath !== 'string') return false;
+  const clean = filePath.split(/[?#]/)[0];
+  const ext = (clean.split('.').pop() || '').toLowerCase();
+  return PLAYABLE_VIDEO_EXTENSIONS.has(ext);
+}
+
+const DIRECT_VIDEO_STREAM_RE = /^(?:hermes-media:\/\/|data:video\/|https?:\/\/|blob:)/i;
+
+/**
+ * 判断 URL 是否为可直接挂载到 `<video src>` 的流式/直连媒体地址。
+ */
+export function isDirectVideoStreamUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  return DIRECT_VIDEO_STREAM_RE.test(url.trim());
+}
+
+/**
+ * 从 HTTP 代理请求路径（含 `?path=...&profile=...` 查询参数或纯 pathname）提取媒体 MIME 类型。
+ */
+export function detectMediaMimeFromRequestPath(requestPath: string): string | null {
+  if (!requestPath || typeof requestPath !== 'string') return null;
+  const extractExt = (candidate: string): string => {
+    const clean = candidate.split(/[?#]/)[0];
+    const dotIdx = clean.lastIndexOf('.');
+    if (dotIdx < 0) return '';
+    return clean.slice(dotIdx + 1).toLowerCase();
+  };
+  try {
+    const parsed = new URL(requestPath, 'https://localhost');
+    const queryTarget = parsed.searchParams.get('path');
+    if (queryTarget) {
+      const qMime = MEDIA_EXT_MIME[extractExt(queryTarget)];
+      if (qMime) return qMime;
+    }
+    return MEDIA_EXT_MIME[extractExt(parsed.pathname)] ?? null;
+  // gate-degrade: 非标准相对路径解析失败时按原始后缀兜底
+  } catch {
+    return MEDIA_EXT_MIME[extractExt(requestPath)] ?? null;
+  }
+}
+
+/**
+ * 判断扩展名是否属于不可直接按文本预览的二进制格式（可执行程序、压缩包、不可直接播放音视频、字体、数据库等）。
  */
 export function isBinaryExtension(filePath: string): boolean {
   if (!filePath || typeof filePath !== 'string') return false;
   const clean = filePath.split(/[?#]/)[0];
-  if (isImageExtension(clean)) return false;
+  if (isImageExtension(clean) || isVideoExtension(clean)) return false;
   const base = clean.split(/[/\\]/).pop() || '';
   const dotIdx = base.lastIndexOf('.');
   if (dotIdx <= 0) return false;
@@ -175,6 +240,7 @@ export function buildGatewayDownloadUrl(
 export interface FilePreviewGuardInput {
   filePath: string;
   isImage: boolean;
+  isVideo?: boolean;
   byteSize?: number;
   serverBinary?: boolean;
   serverTruncated?: boolean;
@@ -188,11 +254,13 @@ export interface FilePreviewGuardResult {
 
 /**
  * 文件预览安全守卫（INV-FS-05 单一真值裁决）：
- *   1. 非图片文件只要命中二进制扩展名、服务端 `binary` 标记或 NUL 字节，一律优先裁定为 `binary`；
- *   2. 体积超过渲染上限（文本 1 MiB / 图片 10 MiB）或服务端已截断，裁定为 `too_large`；
+ *   1. 非图片/可播放视频文件只要命中二进制扩展名、服务端 `binary` 标记或 NUL 字节，一律优先裁定为 `binary`；
+ *   2. 体积超过渲染上限（文本 1 MiB / 图片 10 MiB / 视频 50 MiB）或服务端已截断，裁定为 `too_large`；
  *   3. 杜绝把 `.exe` / 压缩包或数十 MB 大文件强行灌入前端源码表格。
  */
 export function evaluateFilePreviewGuard(input: FilePreviewGuardInput): FilePreviewGuardResult {
+  const isVideo = input.isVideo === true;
+  const isVisualMedia = input.isImage || isVideo;
   const knownSize =
     typeof input.byteSize === 'number' && Number.isFinite(input.byteSize) && input.byteSize >= 0
       ? input.byteSize
@@ -200,12 +268,12 @@ export function evaluateFilePreviewGuard(input: FilePreviewGuardInput): FilePrev
   const measuredBytes =
     knownSize !== undefined
       ? knownSize
-      : !input.isImage && typeof input.sampleText === 'string'
+      : !isVisualMedia && typeof input.sampleText === 'string'
         ? new TextEncoder().encode(input.sampleText).byteLength
         : undefined;
 
   if (
-    !input.isImage &&
+    !isVisualMedia &&
     (input.serverBinary === true ||
       isBinaryExtension(input.filePath) ||
       (typeof input.sampleText === 'string' && hasBinaryNullBytes(input.sampleText)))
@@ -216,7 +284,11 @@ export function evaluateFilePreviewGuard(input: FilePreviewGuardInput): FilePrev
     };
   }
 
-  const maxBytes = input.isImage ? MAX_PREVIEW_IMAGE_BYTES : MAX_PREVIEW_FILE_BYTES;
+  const maxBytes = input.isImage
+    ? MAX_PREVIEW_IMAGE_BYTES
+    : isVideo
+      ? MAX_PREVIEW_VIDEO_BYTES
+      : MAX_PREVIEW_FILE_BYTES;
   if ((measuredBytes !== undefined && measuredBytes > maxBytes) || input.serverTruncated === true) {
     return {
       status: 'too_large',
@@ -472,6 +544,7 @@ function buildGuardedResult(
   meta: {
     filePath: string;
     isImage: boolean;
+    isVideo?: boolean;
     isHtml: boolean;
     fromCache: boolean;
     source: ResolvedFileResult['source'];
@@ -480,9 +553,11 @@ function buildGuardedResult(
     serverTruncated?: boolean;
   },
 ): ResolvedFileResult {
+  const isVideo = meta.isVideo === true;
   const guard = evaluateFilePreviewGuard({
     filePath: meta.filePath,
     isImage: meta.isImage,
+    isVideo,
     byteSize: meta.byteSize,
     serverBinary: meta.serverBinary,
     serverTruncated: meta.serverTruncated,
@@ -492,6 +567,7 @@ function buildGuardedResult(
     return {
       content: '',
       isImage: false,
+      isVideo: false,
       isHtml: false,
       isBinary: true,
       ...(guard.byteSize !== undefined ? { byteSize: guard.byteSize } : {}),
@@ -503,6 +579,7 @@ function buildGuardedResult(
     return {
       content: '',
       isImage: meta.isImage,
+      ...(isVideo ? { isVideo: true } : {}),
       isHtml: false,
       isTooLarge: true,
       ...(guard.byteSize !== undefined ? { byteSize: guard.byteSize } : {}),
@@ -513,6 +590,7 @@ function buildGuardedResult(
   return {
     content,
     isImage: meta.isImage,
+    ...(isVideo ? { isVideo: true } : {}),
     isHtml: meta.isHtml,
     ...(guard.byteSize !== undefined ? { byteSize: guard.byteSize } : {}),
     fromCache: meta.fromCache,
@@ -522,7 +600,7 @@ function buildGuardedResult(
 
 /**
  * 统一通用文件读取公共服务
- * 应用层调用本接口即可自动完成：二进制/体积守卫 -> 历史提取 -> 本地/图片Base64探测 -> HTTP代理 -> 网关REST降级
+ * 应用层调用本接口即可自动完成：二进制/体积守卫 -> 历史提取 -> 本地/图片视频Base64探测 -> HTTP代理 -> 网关REST降级
  */
 export async function resolveFileContent(
   target: string,
@@ -531,19 +609,49 @@ export async function resolveFileContent(
   const cleanTarget = (target || '').trim();
   const ext = (cleanTarget.split(/[?#]/)[0].split('.').pop() || '').toLowerCase();
   const isImage = isImageExtension(cleanTarget);
+  const isVideo = !isImage && isVideoExtension(cleanTarget);
   const isHtml = ext === 'html' || ext === 'htm';
   const isHttp = cleanTarget.startsWith('http://') || cleanTarget.startsWith('https://');
+
+  // -1. 优先尝试零缓冲流式媒体通道（桌面 Electron hermes-media:// 原生 HTTP Range 透传，免全量拉取与 Base64 膨胀）
+  if (isVideo && !isHttp && options.platformBridge?.resolveMediaStreamUrl) {
+    try {
+      const streamUrl = await options.platformBridge.resolveMediaStreamUrl({
+        filePath: cleanTarget,
+        gatewayUrl: options.gatewayUrl,
+        profile: options.profile,
+        sessionId: options.sessionId,
+      });
+      if (streamUrl && isDirectVideoStreamUrl(streamUrl)) {
+        return {
+          content: streamUrl,
+          isImage: false,
+          isVideo: true,
+          isHtml: false,
+          ...(options.knownSize !== undefined ? { byteSize: options.knownSize } : {}),
+          fromCache: false,
+          source:
+            streamUrl.startsWith('hermes-media://local/') || !options.gatewayUrl
+              ? 'local_fs'
+              : 'gateway_api',
+        };
+      }
+    // gate-degrade: 流式媒体通道失败时自动回退标准媒体拉取链
+    } catch {}
+  }
 
   // 0. 前置二进制/超大文件阻断：已知为二进制或超限文件时直接返回下载卡片态，绝不消耗带宽与渲染节点
   const preGuard = evaluateFilePreviewGuard({
     filePath: cleanTarget,
     isImage,
+    isVideo,
     byteSize: options.knownSize,
   });
   if (preGuard.status !== 'ok') {
     return {
       content: '',
       isImage: preGuard.status === 'binary' ? false : isImage,
+      ...(preGuard.status !== 'binary' && isVideo ? { isVideo: true } : {}),
       isHtml: false,
       ...(preGuard.status === 'binary' ? { isBinary: true } : { isTooLarge: true }),
       ...(preGuard.byteSize !== undefined ? { byteSize: preGuard.byteSize } : {}),
@@ -553,12 +661,12 @@ export async function resolveFileContent(
   }
 
   // 1. 尝试从会话消息的工具调用记录中瞬间秒出内容 (0ms 白屏)
-  if (options.messages && options.messages.length > 0) {
+  if (!isImage && !isVideo && options.messages && options.messages.length > 0) {
     const cached = extractFileContentFromSessionTools(cleanTarget, options.messages);
     if (cached) {
       return buildGuardedResult(cached, {
         filePath: cleanTarget,
-        isImage,
+        isImage: false,
         isHtml,
         fromCache: true,
         source: 'session_tool',
@@ -566,18 +674,19 @@ export async function resolveFileContent(
     }
   }
 
-  // 针对在线图片 URL，若已经为 http 且为图片类型，直接以 URL 作为 preview 内容供 img 标签使用
-  if (isHttp && isImage) {
+  // 针对在线图片 / 视频 URL，直接以 URL 作为 preview 内容供 <img> / <video> 使用
+  if (isHttp && (isImage || isVideo)) {
     return {
       content: cleanTarget,
-      isImage: true,
+      isImage,
+      ...(isVideo ? { isVideo: true } : {}),
       isHtml: false,
       fromCache: true,
       source: 'remote_http',
     };
   }
 
-  // 2. 本地物理文件与图片 Base64 探测 (Local PAL Bridge)
+  // 2. 本地物理文件与图片/视频 Base64 探测 (Local PAL Bridge)
   if (options.platformBridge?.readFile && !isHttp) {
     try {
       const localContent = await options.platformBridge.readFile(cleanTarget);
@@ -585,10 +694,11 @@ export async function resolveFileContent(
         return buildGuardedResult(localContent, {
           filePath: cleanTarget,
           isImage,
+          isVideo,
           isHtml,
           fromCache: false,
           source: 'local_fs',
-          byteSize: isImage ? options.knownSize : undefined,
+          byteSize: isImage || isVideo ? options.knownSize : undefined,
         });
       }
     // gate-degrade: 本地文件读取是四级回退链的一级，失败必须继续下一级
@@ -596,7 +706,7 @@ export async function resolveFileContent(
   }
 
   // 3. 在线 HTTP/HTTPS 链接内容抓取 (若是文本/网页代码)
-  if (isHttp && !isImage && options.platformBridge?.httpProxy) {
+  if (isHttp && !isImage && !isVideo && options.platformBridge?.httpProxy) {
     try {
       const text = await options.platformBridge.httpProxy({
         baseUrl: cleanTarget,
@@ -625,13 +735,20 @@ export async function resolveFileContent(
     const fsQuery = fsParams.toString();
     const encTarget = encodeURIComponent(cleanTarget);
 
-    if (isImage) {
-      const imageEndpoints = [
-        `/api/fs/read-data-url?${fsQuery}`,
-        `/api/files/read?path=${encTarget}`,
-        `/api/files/download?path=${encTarget}`,
-      ];
-      for (const endpoint of imageEndpoints) {
+    if (isImage || isVideo) {
+      const expectedDataPrefix = isImage ? 'data:image/' : 'data:video/';
+      const mediaEndpoints = isImage
+        ? [
+            `/api/fs/read-data-url?${fsQuery}`,
+            `/api/files/read?path=${encTarget}`,
+            `/api/files/download?path=${encTarget}`,
+          ]
+        : [
+            `/api/fs/download?${fsQuery}`,
+            `/api/fs/read-data-url?${fsQuery}`,
+            `/api/files/download?path=${encTarget}`,
+          ];
+      for (const endpoint of mediaEndpoints) {
         try {
           const res = await options.platformBridge.httpProxy({
             baseUrl: options.gatewayUrl,
@@ -639,21 +756,25 @@ export async function resolveFileContent(
             method: 'GET',
           });
           const rec = res && typeof res === 'object' ? (res as Record<string, unknown>) : null;
-          const dataUrl =
+          const candidateUrl =
             rec && typeof rec.dataUrl === 'string'
               ? rec.dataUrl
               : rec && typeof rec.data_url === 'string'
                 ? rec.data_url
-                : typeof res === 'string' && res.startsWith('data:image/')
+                : typeof res === 'string'
                   ? res
                   : '';
+          const dataUrl = candidateUrl.startsWith(expectedDataPrefix) || candidateUrl.startsWith('blob:')
+            ? candidateUrl
+            : '';
           const rawSize = rec ? (rec.size ?? rec.byteSize) : undefined;
           const byteSize =
             typeof rawSize === 'number' && Number.isFinite(rawSize) ? rawSize : options.knownSize;
           if (dataUrl) {
             return buildGuardedResult(dataUrl, {
               filePath: cleanTarget,
-              isImage: true,
+              isImage,
+              isVideo,
               isHtml: false,
               fromCache: false,
               source: 'gateway_api',
@@ -661,7 +782,7 @@ export async function resolveFileContent(
             });
           }
         } catch (err) {
-          console.warn('[fileService] gateway image endpoint failed:', endpoint, err);
+          console.warn('[fileService] gateway media endpoint failed:', endpoint, err);
         }
       }
     } else {
@@ -799,6 +920,7 @@ export async function resolveFileContent(
   return {
     content: fallback,
     isImage,
+    ...(isVideo ? { isVideo: true } : {}),
     isHtml,
     fromCache: false,
     source: 'fallback',
