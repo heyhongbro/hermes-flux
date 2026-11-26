@@ -450,6 +450,14 @@ test('ClarifyCard 选项、Other、锁定、快捷键与草稿重置全交互驱
   await flushMicrotasks();
   assert.deepEqual(locked.at(-1), ['0', 'fallback ans']);
 
+  prompt = { ...prompt, lockedAnswers: { '0': 'fallback ans' } };
+  m.rerender();
+  findAll(m.tree, (n) => n?.props?.role === 'tab')[0].props.onClick();
+  m.rerender();
+  const lockedBox = findAll(m.tree, (n) => n?.props?.className === 'flux-interact__locked-answer')[0];
+  assert.ok(lockedBox);
+  assert.equal(lockedBox.props.children, 'fallback ans');
+
   // Empty questions fallback (!currentQ) + submitting=true guard
   prompt = { ...prompt, canonicalKey: 'cl-3', questions: [] };
   submitting = true;

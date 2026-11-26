@@ -273,7 +273,7 @@ export function ClarifyCard({
 
           {isCurrentLocked ? (
             <div className="flux-interact__locked-answer">
-              {prompt.lockedAnswers[currentQ.qid]}
+              {prompt.lockedAnswers[qKey]}
             </div>
           ) : (
             <>
