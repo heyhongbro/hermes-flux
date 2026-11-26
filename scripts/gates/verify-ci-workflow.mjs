@@ -72,79 +72,84 @@ export function parseSteps(source) {
   const lines = source.split(/\r?\n/);
   const steps = [];
 
-  /** 每个 step 起点所在行号（0-based 索引） */
-  const starts = [];
-  let stepsIndent = -1;
-
+  /** 逐个扫描全部 job 的 steps: 块，防止遗漏后续 job 的步骤 */
+  const stepBlocks = [];
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     if (!/^\s*steps:\s*$/.test(line)) continue;
-    stepsIndent = indentOf(line);
+    const stepsIndent = indentOf(line);
 
-    // 收集该 steps: 块下的所有条目起点
+    const starts = [];
     let itemIndent = -1;
+    let sectionEnd = lines.length;
     for (let j = i + 1; j < lines.length; j += 1) {
       const cur = lines[j];
       if (cur.trim() === '' || cur.trim().startsWith('#')) continue;
       const curIndent = indentOf(cur);
       // 回到 steps: 同级或更外层，块结束
-      if (curIndent <= stepsIndent) break;
+      if (curIndent <= stepsIndent) {
+        sectionEnd = j;
+        break;
+      }
       const isItem = /^\s*-\s+\S/.test(cur) || /^\s*-\s*$/.test(cur);
       if (!isItem) continue;
       if (itemIndent === -1) itemIndent = curIndent;
       if (curIndent === itemIndent) starts.push(j);
     }
-    break;
+    stepBlocks.push({ starts, sectionEnd });
+    i = sectionEnd - 1;
   }
 
-  for (let s = 0; s < starts.length; s += 1) {
-    const from = starts[s];
-    const to = s + 1 < starts.length ? starts[s + 1] : lines.length;
-    const block = lines.slice(from, to).map((l) => (l === undefined ? '' : l));
+  for (const { starts, sectionEnd } of stepBlocks) {
+    for (let s = 0; s < starts.length; s += 1) {
+      const from = starts[s];
+      const to = s + 1 < starts.length ? starts[s + 1] : sectionEnd;
+      const block = lines.slice(from, to).map((l) => (l === undefined ? '' : l));
 
-    // job 归属：向上找最近的、缩进为 2 且形如 `name:` 的行
-    let job = '';
-    for (let k = from - 1; k >= 0; k -= 1) {
-      const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(lines[k]);
-      if (m) { job = m[1]; break; }
-    }
-
-    const step = { job, name: '', run: '', shell: null, uses: '', startLine: from + 1 };
-
-    // 第一段（`- key: value`）
-    const head = block[0].replace(/^\s*-\s*/, '');
-    const bodyLines = [head, ...block.slice(1)];
-
-    for (let k = 0; k < bodyLines.length; k += 1) {
-      const line = bodyLines[k];
-      if (line.trim() === '' || line.trim().startsWith('#')) continue;
-      const m = /^(\s*)([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
-      if (!m) continue;
-      const key = m[2];
-      const val = m[3].trim();
-
-      if (key === 'run') {
-        if (val === '|' || val === '>' || val.startsWith('|') || val.startsWith('>')) {
-          const keyIndent = indentOf(line);
-          const collected = [];
-          for (let q = k + 1; q < bodyLines.length; q += 1) {
-            const inner = bodyLines[q];
-            if (inner.trim() === '') { collected.push(''); continue; }
-            if (indentOf(inner) <= keyIndent) break;
-            collected.push(inner);
-          }
-          step.run = collected.join('\n');
-        } else {
-          step.run = val;
-        }
-        continue;
+      // job 归属：向上找最近的、缩进为 2 且形如 `name:` 的行
+      let job = '';
+      for (let k = from - 1; k >= 0; k -= 1) {
+        const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(lines[k]);
+        if (m) { job = m[1]; break; }
       }
-      if (key === 'name') { step.name = val; continue; }
-      if (key === 'shell') { step.shell = val; continue; }
-      if (key === 'uses') { step.uses = val; continue; }
-    }
 
-    steps.push(step);
+      const step = { job, name: '', run: '', shell: null, uses: '', startLine: from + 1 };
+
+      // 第一段（`- key: value`）
+      const head = block[0].replace(/^\s*-\s*/, '');
+      const bodyLines = [head, ...block.slice(1)];
+
+      for (let k = 0; k < bodyLines.length; k += 1) {
+        const line = bodyLines[k];
+        if (line.trim() === '' || line.trim().startsWith('#')) continue;
+        const m = /^(\s*)([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+        if (!m) continue;
+        const key = m[2];
+        const val = m[3].trim();
+
+        if (key === 'run') {
+          if (val === '|' || val === '>' || val.startsWith('|') || val.startsWith('>')) {
+            const keyIndent = indentOf(line);
+            const collected = [];
+            for (let q = k + 1; q < bodyLines.length; q += 1) {
+              const inner = bodyLines[q];
+              if (inner.trim() === '') { collected.push(''); continue; }
+              if (indentOf(inner) <= keyIndent) break;
+              collected.push(inner);
+            }
+            step.run = collected.join('\n');
+          } else {
+            step.run = val;
+          }
+          continue;
+        }
+        if (key === 'name') { step.name = val; continue; }
+        if (key === 'shell') { step.shell = val; continue; }
+        if (key === 'uses') { step.uses = val; continue; }
+      }
+
+      steps.push(step);
+    }
   }
 
   return steps;
@@ -186,19 +191,28 @@ export function findMaskedCommands(step) {
 }
 
 /**
- * 规则 3：构建之前不得 require workspace 包的产物。
+ * 规则 3：构建之前不得 require workspace 包的产物（按 job 内部隔离判定，避免 job 1 的构建掩盖 job 2 缺陷）。
  *
- * 判据：run 中出现 `require.resolve('@hermes-flux/...')`，而该 step 位于首个构建 step 之前。
+ * 判据：run 中出现 `require.resolve('@hermes-flux/...')`，而该 step 位于所在 job 首个构建 step 之前。
  */
 export function findPreBuildArtifactRead(steps) {
-  const buildIdx = steps.findIndex((s) => /npm\s+run\s+build|scripts\/build\.mjs/.test(s.run));
+  const byJob = new Map();
+  for (const s of steps) {
+    const key = s.job || '';
+    if (!byJob.has(key)) byJob.set(key, []);
+    byJob.get(key).push(s);
+  }
+
   const problems = [];
-  steps.forEach((s, i) => {
-    if (buildIdx !== -1 && i >= buildIdx) return;
-    if (/require\.resolve\(\s*['"]@hermes-flux\//.test(s.run)) {
-      problems.push({ step: s, pattern: 'require.resolve(@hermes-flux/*)', line: s.startLine });
-    }
-  });
+  for (const jobSteps of byJob.values()) {
+    const buildIdx = jobSteps.findIndex((s) => /npm\s+run\s+build|scripts\/build\.mjs/.test(s.run));
+    jobSteps.forEach((s, i) => {
+      if (buildIdx !== -1 && i >= buildIdx) return;
+      if (/require\.resolve\(\s*['"]@hermes-flux\//.test(s.run)) {
+        problems.push({ step: s, pattern: 'require.resolve(@hermes-flux/*)', line: s.startLine });
+      }
+    });
+  }
   return problems;
 }
 
@@ -263,6 +277,10 @@ export const SELF_PROOF_SAMPLES = {
     bad: 'jobs:\n  g:\n    steps:\n      - name: link\n        run: node -e "require.resolve(\'@hermes-flux/core\')"\n      - name: build\n        run: npm run build\n',
     good: 'jobs:\n  g:\n    steps:\n      - name: build\n        run: npm run build\n      - name: smoke\n        run: node -e "require.resolve(\'@hermes-flux/core\')"\n',
   },
+  multiJob: {
+    bad: 'jobs:\n  g1:\n    steps:\n      - name: ok\n        run: npm run gates\n  g2:\n    steps:\n      - name: bad-second\n        run: |\n          for p in a b; do\n            echo $p\n          done\n',
+    good: 'jobs:\n  g1:\n    steps:\n      - name: ok1\n        run: npm run gates\n  g2:\n    steps:\n      - name: ok2\n        run: node scripts/gates/mutation-stryker-changed.mjs --ci\n',
+  },
 };
 
 function main() {
@@ -287,6 +305,8 @@ function main() {
   check('masked.good', SELF_PROOF_SAMPLES.masked.good, false);
   check('prebuild.bad', SELF_PROOF_SAMPLES.prebuild.bad, true);
   check('prebuild.good', SELF_PROOF_SAMPLES.prebuild.good, false);
+  check('multiJob.bad', SELF_PROOF_SAMPLES.multiJob.bad, true);
+  check('multiJob.good', SELF_PROOF_SAMPLES.multiJob.good, false);
 
   const badProof = selfProof.filter((p) => !p.ok);
   if (badProof.length > 0) {

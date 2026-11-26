@@ -28,6 +28,7 @@
  *   - 输出必须逐条列出「文件:行」，否则无法定位。
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -82,35 +83,41 @@ function resolveBase() {
   const arg = process.argv.find((a) => a.startsWith('--base='));
   if (arg) return arg.slice('--base='.length);
 
-  // GitHub Actions PR 环境变量
+  // GitHub Actions PR 环境变量：优先取 merge-base，避免主干并行合入引发反向 diff 假红
   if (process.env.GITHUB_BASE_REF) {
-    return `origin/${process.env.GITHUB_BASE_REF}`;
+    const remoteBase = `origin/${process.env.GITHUB_BASE_REF}`;
+    const mbRes = spawnSync('git', ['merge-base', 'HEAD', remoteBase], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const mb = mbRes.status === 0 ? mbRes.stdout.trim() : '';
+    return mb || remoteBase;
   }
 
-  try {
-    const mb = execFileSync('git', ['merge-base', 'HEAD', 'origin/dev/v0.1'], {
+  const headRes = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  const head = headRes.status === 0 ? headRes.stdout.trim() : '';
+
+  for (const ref of ['origin/dev/v0.1', 'origin/main', 'main']) {
+    const mbRes = spawnSync('git', ['merge-base', 'HEAD', ref], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+    });
+    if (mbRes.status !== 0) continue;
+    const mb = mbRes.stdout.trim();
+    if (!mb) continue;
+    if (mb !== head) return mb;
+    const dirtyRes = spawnSync('git', ['status', '--porcelain', '--', 'packages/', 'scripts/'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    // 防范历史坑：当 mb === head 时说明分支与基准已对齐无领先 commit：
-    //   若工作区有未提交改动，必须比对 HEAD（否则会拉入上一笔无关提交）；仅工作区干净时退回 HEAD~1。
-    if (mb && mb !== head) return mb;
-    if (mb && mb === head) {
-      const dirty = execFileSync('git', ['status', '--porcelain', '--', 'packages/'], {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (dirty) return 'HEAD';
-    }
-  } catch {
-    // 没有远端分支时退回到 HEAD~1，保证本地可跑
+    });
+    if (dirtyRes.status === 0 && dirtyRes.stdout.trim()) return 'HEAD';
   }
   return 'HEAD~1';
 }
@@ -197,7 +204,8 @@ function collectAddedLines(base) {
  *   多一个依赖就多一处"装了但没用上"的风险，而内置能力已经够用。
  */
 async function collectLcov(suite, targetFiles = []) {
-  const outFile = path.join(os.tmpdir(), `flux-lcov-${Date.now()}.info`);
+  const rand = crypto.randomBytes(4).toString('hex');
+  const outFile = path.join(os.tmpdir(), `flux-lcov-${process.pid}-${Date.now()}-${rand}.info`);
   const files = await listTestFilesForSuite(suite, targetFiles);
   if (files.length === 0) return { path: null, files: 0 };
 
@@ -207,10 +215,28 @@ async function collectLcov(suite, targetFiles = []) {
   const r = spawnSync(
     process.execPath,
     ['--test', '--experimental-test-coverage', '--test-reporter=lcov', `--test-reporter-destination=${outFile}`, ...files],
-    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 120 * 1000, env },
+    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 300 * 1000, env },
   );
-  if (!fs.existsSync(outFile)) return { path: null, files: files.length, status: r.status };
-  return { path: outFile, files: files.length, status: r.status };
+  if (r.error || r.signal) {
+    if (fs.existsSync(outFile)) {
+      try {
+        fs.rmSync(outFile, { force: true });
+      } catch (err) {
+        console.warn(`${C.yellow}! 清理异常临时 lcov 文件失败 (${outFile}): ${err.message}${C.reset}`);
+      }
+    }
+    return {
+      path: null,
+      files: files.length,
+      status: r.status,
+      signal: r.signal ?? null,
+      error: r.error ? r.error.message : `测试子进程被信号 ${r.signal} 中止`,
+    };
+  }
+  if (!fs.existsSync(outFile)) {
+    return { path: null, files: files.length, status: r.status, signal: null, error: null };
+  }
+  return { path: outFile, files: files.length, status: r.status, signal: null, error: null };
 }
 
 async function listTestFilesForSuite(suite, targetFiles = []) {
@@ -612,137 +638,165 @@ async function main() {
     return;
   }
 
-  const lcov = await collectLcov('unit', Array.from(added.keys()));
-  if (!lcov.path) {
-    console.error(`${C.red}✘ 未产出覆盖率数据（测试进程可能崩溃），无法判定新增行${C.reset}`);
-    process.exitCode = 1;
-    return;
-  }
-
-  const records = parseLcov(lcov.path);
-  /**
-   * 【失败不可静默】必须断言真的采到了数据。
-   * lcov 为空时"没有任何未覆盖行"会伪装成"全部覆盖"，这是最危险的一类假绿。
-   */
-  if (records.size === 0) {
-    console.error(`${C.red}✘ lcov 为空：没有任何文件被记录，判定不可信${C.reset}`);
-    process.exitCode = 1;
-    return;
-  }
-
-  const { srcCovered, srcMapped, srcBranchTotal, srcBranchHit, srcBranchUncovered, mappedRecords } = buildSrcLineCoverage(records);
-  console.log(
-    `${C.dim}  覆盖率采样：${records.size} 个产物记录，其中 ${mappedRecords} 个可反解 sourcemap；` +
-      `${srcMapped.size} 个源文件有可映射行${C.reset}\n`,
-  );
-
-  /* ---------------- 判定 ---------------- */
-  const failures = [];
-  let countedLinesTotal = 0;
-  let coveredLinesTotal = 0;
-  let countedBranchesTotal = 0;
-  let coveredBranchesTotal = 0;
+  // 先做静态可执行行预过滤：纯类型声明/注释文件（如 IPlatformBridge.ts）无需启动昂贵的全量 V8 覆盖率子进程。
+  const preFiltered = new Map();
+  const countableFiles = [];
   const skipped = [];
-
   for (const [file, lines] of added) {
     const abs = path.join(REPO_ROOT, file);
     if (!fs.existsSync(abs)) continue;
     const rawLines = fs.readFileSync(abs, 'utf8').split('\n');
-    const covered = srcCovered.get(file) ?? new Set();
-    const mapped = srcMapped.get(file) ?? new Set();
-    const branchTotal = srcBranchTotal.get(file) ?? new Map();
-    const branchHit = srcBranchHit.get(file) ?? new Map();
-    const branchUncovered = srcBranchUncovered.get(file) ?? new Set();
-
     const tsExecLines = (file.endsWith('.ts') || file.endsWith('.tsx'))
       ? computeExecutableTsLines(file, rawLines.join('\n'))
       : null;
     const countable = lines.filter(
       (ln) => isCountableLine(rawLines[ln - 1] ?? '') && (!tsExecLines || tsExecLines.has(ln)),
     );
-
     if (countable.length === 0) {
       skipped.push(file);
       continue;
     }
-
-    /**
-     * 若该文件完全没有可映射行，必须区分两种完全不同的原因：
-     *
-     *   a) 文件根本没有构建产物 —— 说明 esbuild 入口清单里没有它，
-     *      测试即使写了 import 也跑不起来。修法是把它加进建构建清单。
-     *   b) 有产物但测试从未 import —— 说明缺测试。
-     *
-     * 【防范的历史坑 (Pitfall)】原先两者共用一句"不在覆盖率数据中"，
-     * 实测中真正的原因是 (a)，但文案把人引向"补测试"，
-     * 于是补了测试仍然红，而根因（没构建）始终没被指出来。
-     */
-    if (mapped.size === 0) {
-      const distCandidates = findDistArtifacts(file);
-      const reason = distCandidates.length === 0
-        ? `没有构建产物：该模块未登记进 esbuild 入口清单（packages/desktop/scripts/build.mjs），测试无法导入它`
-        : `有构建产物（${distCandidates[0]}）但没有任何测试 import 它`;
-      failures.push({ file, reason, lines: countable });
-      countedLinesTotal += countable.length;
-      continue;
-    }
-
-    // 1. 行覆盖判定
-    const uncoveredLines = countable.filter((ln) => !covered.has(ln));
-    countedLinesTotal += countable.length;
-    coveredLinesTotal += countable.length - uncoveredLines.length;
-    if (uncoveredLines.length > 0) {
-      failures.push({ file, reason: `${uncoveredLines.length} 行新增代码未被任何测试执行 (Line Coverage < 100%)`, lines: uncoveredLines });
-    }
-
-    // 2. 分支覆盖判定（只对已执行的代码行判定其分支是否双向闭环）
-    const branchUncoveredLines = [];
-    for (const ln of countable) {
-      const total = branchTotal.get(ln) ?? 0;
-      const hit = branchHit.get(ln) ?? 0;
-      if (total > 0) {
-        countedBranchesTotal += total;
-        coveredBranchesTotal += hit;
-        if (covered.has(ln) && branchUncovered.has(ln)) {
-          branchUncoveredLines.push(ln);
-        }
-      }
-    }
-
-    if (branchUncoveredLines.length > 0) {
-      failures.push({
-        file,
-        reason: `${branchUncoveredLines.length} 处新增分支未全路径覆盖 (Branch Coverage < 100%)`,
-        lines: branchUncoveredLines,
-      });
-    }
+    countableFiles.push(file);
+    preFiltered.set(file, countable);
   }
 
-  /* ---------------- 报告 ---------------- */
-  const linePct = countedLinesTotal === 0 ? 100 : Math.round((coveredLinesTotal / countedLinesTotal) * 1000) / 10;
-  const branchPct = countedBranchesTotal === 0 ? 100 : Math.round((coveredBranchesTotal / countedBranchesTotal) * 1000) / 10;
-
-  console.log(`新增可执行行：${countedLinesTotal} · 已覆盖 ${coveredLinesTotal} · 行覆盖率 ${linePct}%`);
-  console.log(`新增条件分支：${countedBranchesTotal} · 已命中 ${coveredBranchesTotal} · 分支覆盖率 ${branchPct}%`);
-  if (skipped.length > 0) {
-    console.log(`${C.dim}  跳过 ${skipped.length} 个无新增可执行行的文件${C.reset}`);
-  }
-
-  if (failures.length === 0) {
+  if (countableFiles.length === 0) {
+    console.log('新增可执行行：0 · 已覆盖 0 · 行覆盖率 100%');
+    console.log('新增条件分支：0 · 已命中 0 · 分支覆盖率 100%');
+    if (skipped.length > 0) {
+      console.log(`${C.dim}  跳过 ${skipped.length} 个无新增可执行行的文件${C.reset}`);
+    }
     console.log(`\n${C.green}${C.bold}✔ 增量覆盖达标：新增代码行与分支覆盖率均为 100%${C.reset}`);
     process.exitCode = 0;
-    fs.rmSync(lcov.path, { force: true });
     return;
   }
 
-  console.log(`\n${C.red}${C.bold}✘ 增量覆盖不达标 (必须达到 100% 行覆盖 + 100% 分支覆盖)${C.reset}`);
-  for (const f of failures) {
-    console.log(`  ${C.red}·${C.reset} ${f.file}  ${f.reason}`);
-    console.log(`    ${C.dim}行：${f.lines.join(', ')}${C.reset}`);
+  let lcovPath = null;
+  try {
+    const lcov = await collectLcov('unit', countableFiles);
+    lcovPath = lcov.path;
+    if (!lcovPath) {
+      const detail = lcov.error || (lcov.signal ? `signal=${lcov.signal}` : `exitCode=${lcov.status}`);
+      console.error(`${C.red}✘ 未产出覆盖率数据（${detail}），无法判定新增行${C.reset}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const records = parseLcov(lcovPath);
+    /**
+     * 【失败不可静默】必须断言真的采到了数据。
+     * lcov 为空时"没有任何未覆盖行"会伪装成"全部覆盖"，这是最危险的一类假绿。
+     */
+    if (records.size === 0) {
+      console.error(`${C.red}✘ lcov 为空：没有任何文件被记录，判定不可信${C.reset}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const { srcCovered, srcMapped, srcBranchTotal, srcBranchHit, srcBranchUncovered, mappedRecords } = buildSrcLineCoverage(records);
+    console.log(
+      `${C.dim}  覆盖率采样：${records.size} 个产物记录，其中 ${mappedRecords} 个可反解 sourcemap；` +
+        `${srcMapped.size} 个源文件有可映射行${C.reset}\n`,
+    );
+
+    /* ---------------- 判定 ---------------- */
+    const failures = [];
+    let countedLinesTotal = 0;
+    let coveredLinesTotal = 0;
+    let countedBranchesTotal = 0;
+    let coveredBranchesTotal = 0;
+
+    for (const [file, countable] of preFiltered) {
+      const covered = srcCovered.get(file) ?? new Set();
+      const mapped = srcMapped.get(file) ?? new Set();
+      const branchTotal = srcBranchTotal.get(file) ?? new Map();
+      const branchHit = srcBranchHit.get(file) ?? new Map();
+      const branchUncovered = srcBranchUncovered.get(file) ?? new Set();
+
+      /**
+       * 若该文件完全没有可映射行，必须区分两种完全不同的原因：
+       *
+       *   a) 文件根本没有构建产物 —— 说明 esbuild 入口清单里没有它，
+       *      测试即使写了 import 也跑不起来。修法是把它加进建构建清单。
+       *   b) 有产物但测试从未 import —— 说明缺测试。
+       *
+       * 【防范的历史坑 (Pitfall)】原先两者共用一句"不在覆盖率数据中"，
+       * 实测中真正的原因是 (a)，但文案把人引向"补测试"，
+       * 于是补了测试仍然红，而根因（没构建）始终没被指出来。
+       */
+      if (mapped.size === 0) {
+        const distCandidates = findDistArtifacts(file);
+        const reason = distCandidates.length === 0
+          ? `没有构建产物：该模块未登记进 esbuild 入口清单（packages/desktop/scripts/build.mjs），测试无法导入它`
+          : `有构建产物（${distCandidates[0]}）但没有任何测试 import 它`;
+        failures.push({ file, reason, lines: countable });
+        countedLinesTotal += countable.length;
+        continue;
+      }
+
+      // 1. 行覆盖判定
+      const uncoveredLines = countable.filter((ln) => !covered.has(ln));
+      countedLinesTotal += countable.length;
+      coveredLinesTotal += countable.length - uncoveredLines.length;
+      if (uncoveredLines.length > 0) {
+        failures.push({ file, reason: `${uncoveredLines.length} 行新增代码未被任何测试执行 (Line Coverage < 100%)`, lines: uncoveredLines });
+      }
+
+      // 2. 分支覆盖判定（只对已执行的代码行判定其分支是否双向闭环）
+      const branchUncoveredLines = [];
+      for (const ln of countable) {
+        const total = branchTotal.get(ln) ?? 0;
+        const hit = branchHit.get(ln) ?? 0;
+        if (total > 0) {
+          countedBranchesTotal += total;
+          coveredBranchesTotal += hit;
+          if (covered.has(ln) && branchUncovered.has(ln)) {
+            branchUncoveredLines.push(ln);
+          }
+        }
+      }
+
+      if (branchUncoveredLines.length > 0) {
+        failures.push({
+          file,
+          reason: `${branchUncoveredLines.length} 处新增分支未全路径覆盖 (Branch Coverage < 100%)`,
+          lines: branchUncoveredLines,
+        });
+      }
+    }
+
+    /* ---------------- 报告 ---------------- */
+    const linePct = countedLinesTotal === 0 ? 100 : Math.round((coveredLinesTotal / countedLinesTotal) * 1000) / 10;
+    const branchPct = countedBranchesTotal === 0 ? 100 : Math.round((coveredBranchesTotal / countedBranchesTotal) * 1000) / 10;
+
+    console.log(`新增可执行行：${countedLinesTotal} · 已覆盖 ${coveredLinesTotal} · 行覆盖率 ${linePct}%`);
+    console.log(`新增条件分支：${countedBranchesTotal} · 已命中 ${coveredBranchesTotal} · 分支覆盖率 ${branchPct}%`);
+    if (skipped.length > 0) {
+      console.log(`${C.dim}  跳过 ${skipped.length} 个无新增可执行行的文件${C.reset}`);
+    }
+
+    if (failures.length === 0) {
+      console.log(`\n${C.green}${C.bold}✔ 增量覆盖达标：新增代码行与分支覆盖率均为 100%${C.reset}`);
+      process.exitCode = 0;
+      return;
+    }
+
+    console.log(`\n${C.red}${C.bold}✘ 增量覆盖不达标 (必须达到 100% 行覆盖 + 100% 分支覆盖)${C.reset}`);
+    for (const f of failures) {
+      console.log(`  ${C.red}·${C.reset} ${f.file}  ${f.reason}`);
+      console.log(`    ${C.dim}行：${f.lines.join(', ')}${C.reset}`);
+    }
+    console.log(`${C.dim}  补齐单测覆盖未执行行及未覆盖条件分支。${C.reset}`);
+    process.exitCode = 1;
+  } finally {
+    if (lcovPath && fs.existsSync(lcovPath)) {
+      try {
+        fs.rmSync(lcovPath, { force: true });
+      } catch (err) {
+        console.warn(`${C.yellow}! 清理临时 lcov 文件失败 (${lcovPath}): ${err.message}${C.reset}`);
+      }
+    }
   }
-  console.log(`${C.dim}  补齐单测覆盖未执行行及未覆盖条件分支。${C.reset}`);
-  process.exitCode = 1;
-  fs.rmSync(lcov.path, { force: true });
 }
 
 main().catch((err) => {

@@ -353,7 +353,7 @@
 | 根因 | ① `SlidingActiveWatchdog` 60s 无 delta 即无条件调用 `settleWatchdogTimeout()` 误杀在途回合，且 `tool.progress`、`status.update`、`session.info(running)`、`subagent.*`、`message.interim` 未喂狗；② `PresenceController` 未将 `turnStartedSessionId` 同步到 `AgentPresenceManager`，时长档锚点恒为空；③ `MessageLoadingService` 重进会话仅做孤儿清理，未解析 `session.resume` 返回的 `inflight` 快照与挂接实时流，且同会话重点击早退未探活 |
 | 识别特征 | 长工具期间出现 `watchdogTimeoutNotice` 或状态指示器变灰；重进同一运行中会话时 `state.isStreaming === false` 且 `activeStreamingMessageId === null` |
 | 守卫 | ① `SlidingActiveWatchdog.renewIdle()` 受 `hardLimitMs` 封顶且禁复活 `idle/disarmed`（`INV-TURN-02`）；② `turnExecutionService` 超时先调 `session.resume` 经 `decideWatchdogProbeAction` 裁决续期或收口（`INV-STREAM-06`）；③ `eventReducer` 派发 `stream-activity` 喂狗保活；④ `MessageLoadingService` + `liveStreamCoordinator.attachLiveTurnFromResume` 在重进/切回时恢复 `activeLiveSessionId` 与 `inflight` 并继续接收后续 delta |
-| 复现命令 | `node --test packages/core/__tests__/formal/live-stream-sync-formal.test.mjs packages/desktop/__tests__/unit/turnExecutionService.test.mjs packages/desktop/__tests__/unit/messageLoadingService.test.mjs` |
+| 复现命令 | `node --test packages/core/__tests__/formal/live-stream-sync-formal.test.mjs packages/desktop/__tests__/unit/turnExecutionService.watchdog.test.mjs packages/desktop/__tests__/unit/turnExecutionService.submit.test.mjs packages/desktop/__tests__/unit/turnExecutionService.interrupt.test.mjs packages/desktop/__tests__/unit/messageLoadingService.test.mjs` |
 
 ## P-036 多端/多会话协同观察端丢流、跨会话串台与提交竞态
 
@@ -363,7 +363,17 @@
 | 根因 | ① 全局单槽 `activeStreamingMessageId` 导致观察端（`null`）直接丢弃全部 `message.delta`，并发会话（非空）把 B 会话分片拼接到 A 会话气泡且 B 完成误关全局 `isStreaming`；② `sessions.changed` 只刷左栏不刷新空闲聚焦会话；③ 并发 `prompt.submit` 返回 `queued/steered/redirected` 未撤下本地乐观占位气泡 |
 | 识别特征 | 观察端需手动刷新才见消息；多会话并流文本混杂；出现“发送中…”空泡与排队胶囊重叠 |
 | 守卫 | ① `LiveStreamRegistry` 按 `storedSessionId <-> messageId` 1:1 隔离追踪并基于 `(turnId, segment, offset)` 去重、`reconcileInflightText` 单调防倒流（`INV-STREAM-02..04`）；② `gatewayEventDispatcher` + `liveStreamCoordinator` 为远端回合自动挂载 `origin='remote'` 观察流并幂等补齐用户气泡（`INV-STREAM-05`），按 `ownerSessionId` 定向写入 `tokenStreamWriter` 与工具栏；③ `turnExecutionService` 识别 `queued/steered/redirected` 竞态清理占位气泡并续接远端流 |
-| 复现命令 | `node --test packages/core/__tests__/session/liveStreamSync.test.mjs packages/desktop/__tests__/unit/gatewayEventDispatcher.test.mjs packages/desktop/__tests__/unit/tokenStreamWriter.test.mjs` |
+| 复现命令 | `node --test packages/core/__tests__/session/liveStreamSync.test.mjs packages/desktop/__tests__/unit/gatewayEventDispatcher.dispatch.test.mjs packages/desktop/__tests__/unit/gatewayEventDispatcher.settlement.test.mjs packages/desktop/__tests__/unit/gatewayEventDispatcher.reconnect.test.mjs packages/desktop/__tests__/unit/tokenStreamWriter.test.mjs` |
+
+## P-037 巨型单测文件 + 真实 setTimeout 空等导致 Stryker 变异测试放大至 10+ 分钟
+
+| 项目 | 内容 |
+|---|---|
+| 症状 | 普通 `npm test` 约 2~3 分钟，但单个 Stryker 变异域（如 `turnExecutionWatchdog` 12.2 分钟、`turnSettlement` 8.6 分钟）耗时畸高，修改一处逻辑后变异回归极慢 |
+| 根因 | ① `@stryker-mutator/tap-runner` 以**整文件**为最小执行粒度，将多子域用例堆在 2000~2900 行巨型单测中，使每个变异体都重跑全部无关用例（耗时长乘数级放大）；② 单测内大量使用真实 `setTimeout` 与轮询（非 I/O 仅计时等待），且默认 Stryker 仅 2 并发、沙盒未裁剪无关资产 |
+| 识别特征 | 单测文件物理行数逼近或超过 1500 行；非 e2e/cdp/真 I/O 单元测试中出现 `new Promise(r => setTimeout(r, 50))`、`timers/promises` 或未 `reset()` 的 `mock.timers.enable()` |
+| 守卫 | ① `npm run gates` 通过 `testAware` 通道全量/增量扫描所有 unit/formal 测试与 `unit/helpers/*.mjs`：执行 `size`（≤ 1500 行，5 个存量冻结）与 `test-perf/no-real-sleep`（21 个存量冻结）、`test-perf/mock-timers-cleanup`、`test-perf/no-helper-dist-import`、`test-perf/no-helper-global-patch`；② `scripts/__tests__/gate-maintainability.test.mjs` 与 `npm run gates:self-proof` 双向证伪；③ `.agents/agents/flux-code-reviewer.md` §4.5 将拆分上限（Stryker 域 ≤ 1100 行）与虚拟时钟规范列为审查必查项 |
+| 复现命令 | `node scripts/gates/run.mjs --json` 观察 `scannedTestFiles`；`npm run gates:self-proof` |
 
 ## 守卫总览
 
@@ -399,5 +409,6 @@
 | 存储写入降级守卫 | `npm test`（safe-storage 五路径 + 三服务抛错注入） | P-032 |
 | 拖拽高亮单线贯穿守卫 | `npm test`（titlebar-geometry：左把手边框恒透明 + 顶栏续接规则）+ 真机像素列取样 | P-033 |
 | 移动端软键盘双重避让与裁切滚动守卫 | `capacitor-bridge.test`（`resolveCssKeyboardHeight` / `resolveVisualViewportKeyboardHeight` + Manifest/Config 契约）+ `mobile-workspace-shell.test`（CSS `--m-bottom-inset` / `overflow: clip` + `ResizeObserver`）+ `cdp-mobile-bridge.test` | P-034 |
-| 长耗时任务权威探活续期与退出重进续流守卫 | `npm run verify:formal`（`INV-TURN-02` / `INV-STREAM-04` / `INV-STREAM-06`）+ `turnExecutionService.test` / `messageLoadingService.test` / `presenceController.test` | P-035 |
-| 多端/多会话流式物理隔离、观察端补流与幂等增量守卫 | `npm run verify:formal`（`INV-STREAM-02` / `INV-STREAM-03` / `INV-STREAM-05`）+ `liveStreamSync.test` / `gatewayEventDispatcher.test` / `tokenStreamWriter.test` | P-036 |
+| 长耗时任务权威探活续期与退出重进续流守卫 | `npm run verify:formal`（`INV-TURN-02` / `INV-STREAM-04` / `INV-STREAM-06`）+ `turnExecutionService.{watchdog,submit,interrupt}.test` / `messageLoadingService.test` / `presenceController.test` | P-035 |
+| 多端/多会话流式物理隔离、观察端补流与幂等增量守卫 | `npm run verify:formal`（`INV-STREAM-02` / `INV-STREAM-03` / `INV-STREAM-05`）+ `liveStreamSync.test` / `gatewayEventDispatcher.{dispatch,settlement,reconnect}.test` / `tokenStreamWriter.test` | P-036 |
+| 慢测试与巨型单测回潮守卫 | `npm run gates`（`size` + `test-perf` `testAware` 通道）+ `gate-maintainability.test` + `npm run gates:self-proof` | P-037 |

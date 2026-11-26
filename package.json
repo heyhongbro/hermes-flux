@@ -50,6 +50,7 @@
     "gates:freeze": "node scripts/gates/run.mjs --update-baseline",
     "gates:mutation": "node scripts/gates/mutation-check.mjs",
     "mutation:stryker": "node scripts/gates/mutation-stryker.mjs",
+    "mutation:stryker:changed": "node scripts/gates/mutation-stryker-changed.mjs",
     "gates:allow": "node scripts/gates/allow-budget.mjs",
     "gates:invariants": "node scripts/verify/invariant-map.mjs --check",
     "gates:self-proof": "node scripts/verify/gate-self-proof.mjs",

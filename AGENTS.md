@@ -4,7 +4,7 @@
 
 > **核心工程原则**：
 > 1. **代码共享与单向解耦**：`core`（无界协议与纯状态机）➔ `ui`（表现层、Token 与纯组件）➔ `desktop / mobile / web`（轻量薄壳容器）；
-> 2. **零假冒交付与实证杀伤力**：业务逻辑必须有落盘测试且具备变异杀伤力，严禁假测试、弱断言与循环自证；
+> 2. **零假冒交付与实证杀伤力**：业务逻辑必须有落盘测试且具备变异杀伤力，严禁假测试、弱断言与循环自证；单测文件硬上限 1500 行（Stryker 领域子测建议 ≤ 1100 行），严禁单测新增真实墙钟 `setTimeout` 空等（详见 [`ENGINEERING_DISCIPLINE.md`](ENGINEERING_DISCIPLINE.md) 与 [`docs/testing-strategy.md`](docs/testing-strategy.md)）；
 > 3. **架构分层至高无上**：业务实现 100% 遵守架构分层与领域模型，严禁私自绕过 Core/PAL 编写临时胶水逻辑；
 > 4. **项目隔离铁律**：技术细节、架构规范与踩坑经验仅沉淀在本仓库内部，严禁污染中枢与全局；
 > 5. **UI 高度抽象与组件复用**：前端实现禁止为不同业务实体分别重复编写同构视图代码（如会话行、群聊行、Agent卡片等）；必须以基准样式抽象单一可复用组件，通过可选 Props 扩展差异，严禁样式漂移与双标实现。
@@ -37,11 +37,11 @@
 | **客户端缓存** | [`docs/api/client-cache.md`](docs/api/client-cache.md) | **接口说明与原理**：启动快照 + 尾部消息持久化模型（原理与流程图见 [`docs/api/client-cache-principles.md`](docs/api/client-cache-principles.md)） |
 | **网关接口索引** | [`docs/gateway/README.md`](docs/gateway/README.md) | 自动生成的 10 个网关核心模块接口文档与真实探针状态（禁止手动修改） |
 | **设计系统** | [`docs/design-system/04-tokens-and-design-system-spec.md`](docs/design-system/04-tokens-and-design-system-spec.md) | 几何/字体栈/DTCG 跨姿态通用；Slate 色表与 Shadow 物理层级仅 editorial/marketing 姿态；Hermes Flux 默认 tool 姿态 |
-| **踩坑登记表** | [`docs/architecture/pitfall-registry.md`](docs/architecture/pitfall-registry.md) | 踩坑记录 ➔ 根因 ➔ 守卫探针映射（P-001 ~ P-021） |
+| **踩坑登记表** | [`docs/architecture/pitfall-registry.md`](docs/architecture/pitfall-registry.md) | 踩坑记录 ➔ 根因 ➔ 守卫探针映射（P-001 ~ P-037） |
 | **动效与宿主隔离** | [`docs/architecture/motion-system-and-host-isolation-spec.md`](docs/architecture/motion-system-and-host-isolation-spec.md) | 跨端通用动效引擎、Version CAS 状态机、动态 Token 探测、Grid 折叠契约与宿主渐进改造规范 |
 | **配置与多网关缓存** | [`docs/architecture/client-settings-and-multi-gateway-cache-spec.md`](docs/architecture/client-settings-and-multi-gateway-cache-spec.md) | 分桶命名空间通用配置、多网关独立凭据与物理隔离、冷启动静默连接免弹窗 |
-| **工程纪律总纲** | [`ENGINEERING_DISCIPLINE.md`](ENGINEERING_DISCIPLINE.md) | 工业级工程防御体系、AST 防 AI 糊弄 15 条棘轮、长会话性能预算与平台避坑军规 |
-| **测试体系与门禁策略** | [`docs/testing-strategy.md`](docs/testing-strategy.md) | **【强制】凡涉及测试、覆盖率、门禁改动必读**。四层门禁架构（静态/单测/不变量/覆盖率/变异/真实渲染）、新增代码 100% 覆盖机制、变异测试选型与实测、工具盲区与认知边界 |
+| **工程纪律总纲** | [`ENGINEERING_DISCIPLINE.md`](ENGINEERING_DISCIPLINE.md) | 工业级工程防御体系、AST 防 AI 糊弄 15 条棘轮、长会话与测试执行性能军规、平台避坑指南 |
+| **测试体系与门禁策略** | [`docs/testing-strategy.md`](docs/testing-strategy.md) | **【强制】凡涉及测试、覆盖率、门禁改动必读**。六层门禁架构、新增代码 100% 覆盖机制、测试执行性能红线（`testAware` 门禁）、Stryker 领域变异与认知边界 |
 | **不变量映射表** | [`docs/invariants.json`](docs/invariants.json) | **新增 core 逻辑必须登记**。不变量编号 → 源码锚点（路径+符号）→ 守护测试 → 用户可见失效模式。**单一真值源是 JSON，`docs/invariants.md` 由 `npm run invariants:render` 生成，禁止手改**，由 `npm run gates:invariants` 校验 |
 | **macOS/iOS联调流** | [`docs/testing/mac-and-ios-automation-workflow.md`](docs/testing/mac-and-ios-automation-workflow.md) | **全端自动化联调工作流总纲**。无头 Mac Runner 配置（合盖不休眠）、SSH 免密、macOS Electron CDP 真机双态物理截屏、iOS Capacitor 8 SPM 原生工程集成与凭据绝对物理隔离 |
 | **研发路线图** | [`docs/roadmap.md`](docs/roadmap.md) | 全局研发路线图、已落地特性看板、已知缺陷跟踪 |
@@ -119,7 +119,8 @@ $$\text{packages/desktop} \mid \text{packages/mobile} \mid \text{packages/web} \
 | **改动集静态门禁** | `npm run gates:changed` | **改动完随时跑**：基于 `merge-base` 仅扫描触碰文件，**新增违规数严格为 0** |
 | **全量静态门禁** | `npm run gates` | 扫描全量源码，断言无新增架构、换肤、文案与性能违规 |
 | **全栈严格类型** | `npm run typecheck` | 执行 core、ui、desktop 递归类型推导，**0 TS 报错，严禁 as any** |
-| **全量单测回归** | `npm test` | 执行全工作区单元测试与架构守卫测试，**100% 绿灯（630+ 测试全部通过）** |
+| **全量单测回归** | `npm test` | 执行全工作区单元测试与架构守卫测试，**3000+ 用例全部通过，受控并发执行** |
 | **形式化不变量证明** | `npm run verify:formal` | **状态机必跑**：基于 fast-check 在随机并发交错中证明数学定理 |
+| **领域化变异测试** | `npm run mutation:stryker -- --domain=<name>` | 验证单测断言杀伤力，自适应并发 + 沙盒瘦身（禁 `--incremental`） |
 | **网关文档同步** | `npm run contract:doc` | 根据 RPC 真实探针重新生成 `docs/gateway/` 契约文档（严禁手改） |
-| **交付前总体验收** | `npm run verify` | **落盘前必跑**：链式执行 gates + contract + typecheck + test + formal，全绿通过 |
+| **交付前总体验收** | `npm run verify` | **落盘前必跑**：链式执行 gates + contract + typecheck + test + formal + perf，全绿通过 |

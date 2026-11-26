@@ -12,7 +12,14 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fileLineLimitRules, testIntegrityRules, FILE_LINE_LIMIT } from '../gates/rules/maintainability.mjs';
+import {
+  fileLineLimitRules,
+  testIntegrityRules,
+  testPerfRules,
+  FILE_LINE_LIMIT,
+  KNOWN_REAL_SLEEP_TESTS,
+  REAL_IO_SLEEP_TESTS,
+} from '../gates/rules/maintainability.mjs';
 import { stripComments } from '../gates/lib/scanner.mjs';
 
 /** 构造最小扫描上下文，口径与 run.mjs 的 makeScanCtx 一致 */
@@ -162,10 +169,166 @@ test('test-integrity · 豁免注释计入本文件警告计数，但文档块�
   assert.deepEqual(inString.warnings, [], '诊断文案不得计入敞口');
 });
 
-test('test-integrity · 两条规则均已注册进 RULES，且 id 唯一', async () => {
+test('size · 测试文件同样受单文件上限约束，存量超限单测只降不升', async () => {
+  const { KNOWN_OVERSIZE } = await import('../gates/rules/maintainability.mjs');
+  const newTestOver = checkFile(
+    fileLineLimitRules,
+    'packages/desktop/__tests__/unit/newHuge.test.mjs',
+    lines(FILE_LINE_LIMIT + 1),
+  );
+  assert.equal(newTestOver.length, 1);
+  assert.equal(newTestOver[0].ruleId, 'size/oversize-new');
+
+  const frozenTest = 'packages/desktop/__tests__/unit/reconnect-stage-preservation.test.mjs';
+  const max = KNOWN_OVERSIZE[frozenTest].max;
+  assert.deepEqual(checkFile(fileLineLimitRules, frozenTest, lines(max)), []);
+  const grown = checkFile(fileLineLimitRules, frozenTest, lines(max + 1));
+  assert.equal(grown.length, 1);
+  assert.equal(grown[0].ruleId, 'size/oversize-grown');
+});
+
+/* ---------------- 测试执行性能与夹具洁净 ---------------- */
+
+test('test-perf · 禁止 unit/formal 测试新增真实 setTimeout 空等或 timers/promises', () => {
+  const freshTest = 'packages/desktop/__tests__/unit/freshFeature.test.mjs';
+
+  const bigSleep = checkFile(
+    testPerfRules,
+    freshTest,
+    'const sleep = async () => new Promise((r) => setTimeout(r, 50));\n',
+  );
+  assert.equal(bigSleep.length, 1);
+  assert.equal(bigSleep[0].ruleId, 'test-perf/no-real-sleep');
+
+  const varSleep = checkFile(
+    testPerfRules,
+    freshTest,
+    'const waitMs = (ms) => new Promise((r) => setTimeout(r, ms));\n',
+  );
+  assert.equal(varSleep.length, 1);
+  assert.equal(varSleep[0].ruleId, 'test-perf/no-real-sleep');
+
+  const timersImport = checkFile(
+    testPerfRules,
+    freshTest,
+    "import { setTimeout as delay } from 'node:timers/promises';\n",
+  );
+  assert.equal(timersImport.length, 1);
+  assert.equal(timersImport[0].ruleId, 'test-perf/no-real-sleep');
+
+  // 0ms / <20ms 微小让步、注释与字符串字面量、正则引号内内容不得误报
+  const allowed = [
+    'const flushMicrotasks = () => new Promise((r) => setTimeout(r, 0));',
+    'const nextTick = () => new Promise((r) => setTimeout(r, 10));',
+    '// new Promise((r) => setTimeout(r, 50));',
+    "const doc = \"import { setTimeout } from 'node:timers/promises';\";",
+    "const quoteRe = /['\"`]/;",
+    "const sample = 'new Promise((r) => setTimeout(r, 80))';",
+  ].join('\n');
+  assert.deepEqual(checkFile(testPerfRules, freshTest, allowed), []);
+
+  // e2e / cdp 与真实 I/O 集成测试白名单不误报
+  assert.deepEqual(
+    checkFile(
+      testPerfRules,
+      'packages/desktop/__tests__/cdp/sample-cdp.test.mjs',
+      'await new Promise((r) => setTimeout(r, 500));\n',
+    ),
+    [],
+  );
+  const ioTest = [...REAL_IO_SLEEP_TESTS][0];
+  assert.deepEqual(
+    checkFile(testPerfRules, ioTest, 'await new Promise((r) => setTimeout(r, 1000));\n'),
+    [],
+  );
+});
+
+test('test-perf · 存量真实 sleep 登记文件只降不升，清零时提示移除登记', () => {
+  const frozenFile = Object.keys(KNOWN_REAL_SLEEP_TESTS)[0];
+  const max = KNOWN_REAL_SLEEP_TESTS[frozenFile].max;
+  const line = 'await new Promise((r) => setTimeout(r, 40));';
+
+  const atLimit = checkFile(
+    testPerfRules,
+    frozenFile,
+    Array.from({ length: max }, () => line).join('\n'),
+  );
+  assert.deepEqual(atLimit, []);
+
+  const overLimit = checkFile(
+    testPerfRules,
+    frozenFile,
+    Array.from({ length: max + 1 }, () => line).join('\n'),
+  );
+  assert.equal(overLimit.length, 1);
+  assert.equal(overLimit[0].ruleId, 'test-perf/no-real-sleep');
+
+  const zeroCtx = ctxOf('assert.equal(1, 1);\n');
+  assert.deepEqual(testPerfRules.check(frozenFile, zeroCtx), []);
+  assert.equal(zeroCtx.warnings.length, 1);
+  assert.equal(zeroCtx.warnings[0].ruleId, 'test-perf/real-sleep-paid-off');
+});
+
+test('test-perf · mock.timers.enable 必须配对 mock.timers.reset', () => {
+  const freshTest = 'packages/desktop/__tests__/unit/timerCheck.test.mjs';
+  const uncleaned = checkFile(
+    testPerfRules,
+    freshTest,
+    "test('x', (t) => {\n  t.mock.timers.enable({ apis: ['setTimeout'] });\n});\n",
+  );
+  assert.equal(uncleaned.length, 1);
+  assert.equal(uncleaned[0].ruleId, 'test-perf/mock-timers-cleanup');
+
+  const cleaned = checkFile(
+    testPerfRules,
+    freshTest,
+    "test('x', (t) => {\n  t.mock.timers.enable({ apis: ['setTimeout'] });\n  try {} finally { t.mock.timers.reset(); }\n});\n",
+  );
+  assert.deepEqual(cleaned, []);
+});
+
+test('test-perf · unit/helpers 夹具禁止 import dist/ 与篡改 globalThis', () => {
+  const helperFile = 'packages/desktop/__tests__/unit/helpers/myHarness.mjs';
+  const distHit = checkFile(
+    testPerfRules,
+    helperFile,
+    "import { createX } from '../../dist/renderer/x.mjs';\nexport { createX };\n",
+  );
+  assert.equal(distHit.length, 1);
+  assert.equal(distHit[0].ruleId, 'test-perf/no-helper-dist-import');
+
+  const globalHit = checkFile(
+    testPerfRules,
+    helperFile,
+    'export function setup() { globalThis.fetch = () => {}; }\n',
+  );
+  assert.equal(globalHit.length, 1);
+  assert.equal(globalHit[0].ruleId, 'test-perf/no-helper-global-patch');
+
+  // 注释/字符串说明不误报，ui/__tests__/helpers 不误报
+  const safeHelper = [
+    '// 严禁引入 dist/ 与篡改 globalThis',
+    "export const NOTE = \"from '../../dist/x.mjs' / globalThis\";",
+    'export function createHarness(factory) { return factory(); }',
+  ].join('\n');
+  assert.deepEqual(checkFile(testPerfRules, helperFile, safeHelper), []);
+  assert.deepEqual(
+    checkFile(
+      testPerfRules,
+      'packages/ui/__tests__/helpers/renderMessages.mjs',
+      "import { X } from '../../dist/index.js';\n",
+    ),
+    [],
+  );
+});
+
+test('test-integrity · 三条维护与测试规则均已注册进 RULES，且 testAware/id 正确', async () => {
   const { RULES } = await import('../gates/rules.mjs');
   const ids = RULES.map((r) => r.id);
   assert.equal(new Set(ids).size, ids.length, '规则 id 必须唯一，否则 byRule 统计会串台');
   assert.ok(ids.includes('size'), 'size 规则必须已注册');
   assert.ok(ids.includes('test-integrity'), 'test-integrity 规则必须已注册');
+  assert.ok(ids.includes('test-perf'), 'test-perf 规则必须已注册');
+  assert.equal(fileLineLimitRules.testAware, true);
+  assert.equal(testPerfRules.testAware, true);
 });

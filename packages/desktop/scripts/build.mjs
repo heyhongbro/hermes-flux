@@ -4,6 +4,7 @@
 
 import esbuild from 'esbuild';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +52,19 @@ function assertWorkspaceDistFresh(pkgName) {
   }
 }
 
+async function runBoundedPool(tasks, workerCount) {
+  let cursor = 0;
+  async function worker() {
+    while (cursor < tasks.length) {
+      const task = tasks[cursor++];
+      await esbuild.build(task);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(workerCount, tasks.length) }, () => worker()),
+  );
+}
+
 async function buildAll() {
   console.log('[Hermes Flux Build] Starting esbuild compilation...');
   const startTime = Date.now();
@@ -58,15 +72,8 @@ async function buildAll() {
   assertWorkspaceDistFresh('core');
   assertWorkspaceDistFresh('ui');
 
-  // Ensure dist directories
-  fs.mkdirSync(path.join(rootDir, 'dist/main'), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, 'dist/preload'), { recursive: true });
+  // Ensure base dist renderer directory exists before Tailwind CLI writes tailwind.css
   fs.mkdirSync(path.join(rootDir, 'dist/renderer'), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, 'dist/renderer/services'), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, 'dist/renderer/gateway'), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, 'dist/renderer/bootstrap'), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, 'dist/renderer/events'), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, 'dist/renderer/stream'), { recursive: true });
 
   // Tailwind v4 从 UI 组件源码扫描类名，并保留皮肤变量的运行时解析。
   // 设计意图(Why)：跨包管理器稳健的调用方式是直接 spawn CLI 的 JS 入口，不依赖 .bin shim 的平台后缀。
@@ -84,92 +91,11 @@ async function buildAll() {
     '-o', path.join(rootDir, 'dist/renderer/tailwind.css'),
     '--minify',
   ], { cwd: repoDir, encoding: 'utf8' });
-  if (tailwind.status !== 0) throw new Error(tailwind.stderr || 'Tailwind CSS build failed');
+  if (tailwind.error || tailwind.signal || tailwind.status !== 0) {
+    const detail = tailwind.error?.message || tailwind.signal || tailwind.stderr || `exit ${tailwind.status}`;
+    throw new Error(`Tailwind CSS build failed: ${detail}`);
+  }
   console.log('  ✔ Tailwind design tokens compiled');
-
-  // 1. Build Main Process
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/main/index.ts')],
-    outfile: path.join(rootDir, 'dist/main/index.js'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'cjs',
-    external: ['electron'],
-    sourcemap: true,
-  });
-  console.log('  ✔ Main process compiled');
-
-  // 2. Build Preload Script
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/preload/index.ts')],
-    outfile: path.join(rootDir, 'dist/preload/index.js'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'cjs',
-    external: ['electron'],
-    sourcemap: true,
-  });
-  console.log('  ✔ Preload script compiled');
-
-  // 3. Build Renderer Script
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/index.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/index.js'),
-    bundle: true,
-    platform: 'browser',
-    target: 'es2022',
-    format: 'esm',
-    sourcemap: true,
-    // 【设计意图 (Why)】React 的 development 构建会保留 DevTools 提示、双调用 render 与额外校验，
-    // 实测会把一次会话切换的渲染成本放大近一倍。桌面产物默认走 production，
-    // 需要调试 React 警告时用 NODE_ENV=development 重新构建即可。
-    define: {
-      'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV === 'development' ? 'development' : 'production'),
-    },
-    /**
-     * 【跨包依赖走编译产物 (Why)】core / ui 直接以源码内联时，入口 bundle 的 sourcemap
-     *   会把整棵 core/ui 源树再映射一次；增量覆盖率按「源文件 + 行」累加分支，
-     *   入口里未执行的函数会给已测分支贡献一条 taken=0，门禁因此对同一行反复报红
-     *   （实测 renderer/index.js 让 slidingWatchdog 的一条已覆盖分支长期判红）。
-     *   这里改用一份不带 `paths` 的运行时 tsconfig：`@hermes-flux/*` 按包入口解析到
-     *   各自 dist，映射落点不再指向 src；运行时语义不变。
-     * 【约束与规则 (Rules)】该 tsconfig 只服务入口 bundle，
-     *   类型检查仍以 tsconfig.json 的唯一真值为准，禁止在运行时配置里加 paths。
-     */
-    tsconfig: path.join(rootDir, 'tsconfig.runtime.json'),
-    /**
-     * 【切断对上游 sourcemap 的追溯 (Why)】esbuild 会读取输入文件末尾的
-     *   `//# sourceMappingURL=`，并把映射一路追回 core/ui 的 src。
-     *   入口 bundle 因此再次映射整棵跨包源树，未执行函数的分支会给已测分支贡献 taken=0。
-     *   剥掉这一行注释后，映射落点停在 dist 文件本身，门禁不再按 src 重复计数。
-     */
-    plugins: [
-      {
-        name: 'strip-upstream-sourcemap-comment',
-        setup(build) {
-          build.onLoad({ filter: /packages[\\/](core|ui)[\\/]dist[\\/].*\.js$/ }, (args) => ({
-            contents: fs.readFileSync(args.path, 'utf8').replace(/\/\/# sourceMappingURL=.*$/m, ''),
-            loader: 'js',
-          }));
-        },
-      },
-    ],
-  });
-  console.log('  ✔ Renderer script compiled');
-
-  // 3.1 Build Message Actions Module (for runtime & test execution)
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/messageActions.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/messageActions.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    sourcemap: true,
-  });
-  console.log('  ✔ Message actions module compiled');
 
   /**
    * 独立产物共享的运行时外部依赖。
@@ -181,604 +107,246 @@ async function buildAll() {
    *      内联副本曾让 slidingWatchdog 的一条已测分支长期报红）。
    */
   const SHARED_RUNTIME_EXTERNALS = ['@hermes-flux/core', '@hermes-flux/ui'];
+  const nodeModuleTask = (entryRel, outRel, external = SHARED_RUNTIME_EXTERNALS) => ({
+    entryPoints: [path.join(rootDir, entryRel)],
+    outfile: path.join(rootDir, outRel),
+    bundle: true,
+    platform: 'node',
+    target: 'node20',
+    format: 'esm',
+    ...(external ? { external } : {}),
+    sourcemap: true,
+  });
 
-  // 3b. 交互区纯逻辑模块（回滚事务 + 工具补丁队列）独立产物，供真实单测导入
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/rollbackTransaction.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/rollbackTransaction.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: SHARED_RUNTIME_EXTERNALS,
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/toolPatchQueue.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/toolPatchQueue.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: SHARED_RUNTIME_EXTERNALS,
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/conversationPush.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/conversationPush.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: SHARED_RUNTIME_EXTERNALS,
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/settingsController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/settingsController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: SHARED_RUNTIME_EXTERNALS,
-    sourcemap: true,
-  });
-  // 消息窗口与 Profile 刷新是热路径纯逻辑，独立产物供行为级单测直接导入（不依赖 DOM）。
-  // 提示词导航轨的滚动换算与缓存判定同为纯逻辑，一并独立产物，供 host 侧单测覆盖。
-  // transcriptRows 是网关行 → 视图模型的唯一翻译点，同理由行为测试直接导入。
-  // 【规则】一律带 SHARED_RUNTIME_EXTERNALS，理由见该常量上方的两段说明。
-  for (const moduleName of ['messageWindow', 'profileRefresh', 'promptNavigator', 'coldStartFocus', 'providerAdminController', 'providerAdminRest', 'learningRest', 'providerCatalog', 'gatewayConnection', 'queueControl', 'slashVisibility', 'botManagementController', 'scrollEndController']) {
-    await esbuild.build({
-      entryPoints: [path.join(rootDir, `src/renderer/${moduleName}.ts`)],
-      outfile: path.join(rootDir, `dist/renderer/${moduleName}.mjs`),
+  const esbuildTasks = [
+    // 1. Build Main Process
+    {
+      entryPoints: [path.join(rootDir, 'src/main/index.ts')],
+      outfile: path.join(rootDir, 'dist/main/index.js'),
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'cjs',
+      external: ['electron'],
+      sourcemap: true,
+    },
+    // 2. Build Preload Script
+    {
+      entryPoints: [path.join(rootDir, 'src/preload/index.ts')],
+      outfile: path.join(rootDir, 'dist/preload/index.js'),
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'cjs',
+      external: ['electron'],
+      sourcemap: true,
+    },
+    // 3. Build Renderer Script
+    {
+      entryPoints: [path.join(rootDir, 'src/renderer/index.ts')],
+      outfile: path.join(rootDir, 'dist/renderer/index.js'),
+      bundle: true,
+      platform: 'browser',
+      target: 'es2022',
+      format: 'esm',
+      sourcemap: true,
+      // 【设计意图 (Why)】React 的 development 构建会保留 DevTools 提示、双调用 render 与额外校验，
+      // 实测会把一次会话切换的渲染成本放大近一倍。桌面产物默认走 production，
+      // 需要调试 React 警告时用 NODE_ENV=development 重新构建即可。
+      define: {
+        'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV === 'development' ? 'development' : 'production'),
+      },
+      /**
+       * 【跨包依赖走编译产物 (Why)】core / ui 直接以源码内联时，入口 bundle 的 sourcemap
+       *   会把整棵 core/ui 源树再映射一次；增量覆盖率按「源文件 + 行」累加分支，
+       *   入口里未执行的函数会给已测分支贡献一条 taken=0，门禁因此对同一行反复报红
+       *   （实测 renderer/index.js 让 slidingWatchdog 的一条已覆盖分支长期判红）。
+       *   这里改用一份不带 `paths` 的运行时 tsconfig：`@hermes-flux/*` 按包入口解析到
+       *   各自 dist，映射落点不再指向 src；运行时语义不变。
+       * 【约束与规则 (Rules)】该 tsconfig 只服务入口 bundle，
+       *   类型检查仍以 tsconfig.json 的唯一真值为准，禁止在运行时配置里加 paths。
+       */
+      tsconfig: path.join(rootDir, 'tsconfig.runtime.json'),
+      /**
+       * 【切断对上游 sourcemap 的追溯 (Why)】esbuild 会读取输入文件末尾的
+       *   `//# sourceMappingURL=`，并把映射一路追回 core/ui 的 src。
+       *   入口 bundle 因此再次映射整棵跨包源树，未执行函数的分支会给已测分支贡献 taken=0。
+       *   剥掉这一行注释后，映射落点停在 dist 文件本身，门禁不再按 src 重复计数。
+       */
+      plugins: [
+        {
+          name: 'strip-upstream-sourcemap-comment',
+          setup(build) {
+            build.onLoad({ filter: /packages[\\/](core|ui)[\\/]dist[\\/].*\.js$/ }, (args) => ({
+              contents: fs.readFileSync(args.path, 'utf8').replace(/\/\/# sourceMappingURL=.*$/m, ''),
+              loader: 'js',
+            }));
+          },
+        },
+      ],
+    },
+    // 3.1 Build Message Actions Module (for runtime & test execution)
+    nodeModuleTask('src/renderer/messageActions.ts', 'dist/renderer/messageActions.mjs', null),
+
+    // 3b. 交互区纯逻辑模块（回滚事务 + 工具补丁队列 + 热路径模块）
+    ...['rollbackTransaction', 'toolPatchQueue', 'conversationPush', 'settingsController'].map((name) =>
+      nodeModuleTask(`src/renderer/${name}.ts`, `dist/renderer/${name}.mjs`),
+    ),
+    ...[
+      'messageWindow',
+      'profileRefresh',
+      'promptNavigator',
+      'coldStartFocus',
+      'providerAdminController',
+      'providerAdminRest',
+      'learningRest',
+      'providerCatalog',
+      'gatewayConnection',
+      'queueControl',
+      'slashVisibility',
+      'botManagementController',
+      'scrollEndController',
+    ].map((moduleName) => nodeModuleTask(`src/renderer/${moduleName}.ts`, `dist/renderer/${moduleName}.mjs`)),
+
+    // 主进程单测独立产物
+    nodeModuleTask('src/main/cookieHeader.ts', 'dist/main/cookieHeader.mjs', null),
+    nodeModuleTask('src/main/workspaceFs.ts', 'dist/main/workspaceFs.mjs', null),
+    nodeModuleTask('src/main/mediaStreamProtocol.ts', 'dist/main/mediaStreamProtocol.mjs', ['@hermes-flux/core']),
+    nodeModuleTask('src/main/powerEvents.ts', 'dist/main/powerEvents.mjs', null),
+    nodeModuleTask('src/main/windowControl.ts', 'dist/main/windowControl.mjs', null),
+    {
+      entryPoints: [path.join(rootDir, 'src/main/ipc.ts')],
+      outfile: path.join(rootDir, 'dist/main/ipc.cjs'),
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'cjs',
+      external: ['electron'],
+      sourcemap: true,
+    },
+
+    // transcriptRows 等多入口单测产物
+    {
+      entryPoints: [
+        path.join(rootDir, 'src/renderer/transcriptRows.ts'),
+        path.join(rootDir, 'src/renderer/slashCatalog.ts'),
+        path.join(rootDir, 'src/renderer/mentionToken.ts'),
+      ],
+      outdir: path.join(rootDir, 'dist/renderer'),
+      outExtension: { '.js': '.mjs' },
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'esm',
+      external: ['@hermes-flux/ui', '@hermes-flux/core'],
+      sourcemap: true,
+    },
+
+    // 持久化领域模块
+    nodeModuleTask('src/renderer/persistence/persistedJson.ts', 'dist/renderer/persistence/persistedJson.mjs', null),
+    nodeModuleTask('src/renderer/persistence/botActivityStore.ts', 'dist/renderer/persistence/botActivityStore.mjs'),
+    nodeModuleTask('src/renderer/persistence/sessionDrafts.ts', 'dist/renderer/persistence/sessionDrafts.mjs', null),
+
+    // 各子领域控制器与管理器
+    nodeModuleTask('src/renderer/completion/inputCompletion.ts', 'dist/renderer/completion/inputCompletion.mjs', ['@hermes-flux/ui', '@hermes-flux/core']),
+    nodeModuleTask('src/renderer/cache/desktopCacheBridge.ts', 'dist/renderer/cache/desktopCacheBridge.mjs'),
+    nodeModuleTask('src/renderer/presence/agentPresenceManager.ts', 'dist/renderer/presence/agentPresenceManager.mjs'),
+    nodeModuleTask('src/renderer/navigation/promptNavigatorManager.ts', 'dist/renderer/navigation/promptNavigatorManager.mjs'),
+    nodeModuleTask('src/renderer/cascade/modelCascadeManager.ts', 'dist/renderer/cascade/modelCascadeManager.mjs'),
+    nodeModuleTask('src/renderer/viewport/streamViewportManager.ts', 'dist/renderer/viewport/streamViewportManager.mjs'),
+    nodeModuleTask('src/renderer/viewport/postCommitPinObservers.ts', 'dist/renderer/viewport/postCommitPinObservers.mjs'),
+
+    // 桌面壳视口装配：外部化 ./streamViewportManager.mjs 防止重复进入覆盖率分支计数
+    {
+      entryPoints: [path.join(rootDir, 'src/renderer/viewport/desktopStreamViewport.ts')],
+      outfile: path.join(rootDir, 'dist/renderer/viewport/desktopStreamViewport.mjs'),
       bundle: true,
       platform: 'node',
       target: 'node20',
       format: 'esm',
       external: SHARED_RUNTIME_EXTERNALS,
       sourcemap: true,
-    });
-  }
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/main/cookieHeader.ts')],
-    outfile: path.join(rootDir, 'dist/main/cookieHeader.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/main/workspaceFs.ts')],
-    outfile: path.join(rootDir, 'dist/main/workspaceFs.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/main/mediaStreamProtocol.ts')],
-    outfile: path.join(rootDir, 'dist/main/mediaStreamProtocol.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core'],
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/main/powerEvents.ts')],
-    outfile: path.join(rootDir, 'dist/main/powerEvents.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/main/windowControl.ts')],
-    outfile: path.join(rootDir, 'dist/main/windowControl.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/main/ipc.ts')],
-    outfile: path.join(rootDir, 'dist/main/ipc.cjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'cjs',
-    external: ['electron'],
-    sourcemap: true,
-  });
-  console.log('  ✔ Interactive-stage pure modules compiled (rollbackTransaction, toolPatchQueue, conversationPush, settingsController, botManagementController, messageWindow, profileRefresh, promptNavigator, coldStartFocus, providerAdminController, providerAdminRest, providerCatalog, gatewayConnection, cookieHeader)');
+      plugins: [{
+        name: 'external-stream-viewport-manager',
+        setup(pluginBuild) {
+          pluginBuild.onResolve({ filter: /^\.\/streamViewportManager\.js$/ }, () => ({
+            path: './streamViewportManager.mjs',
+            external: true,
+          }));
+        },
+      }],
+    },
 
-  // transcriptRows 单独编译：它以 external 保留 @hermes-flux/ui 与 core 的裸说明符，
-  // 否则 React 的 CJS 依赖会被塞进 ESM 产物，Node 直接 import 时炸 "Dynamic require of util"。
-  await esbuild.build({
-    entryPoints: [
-      path.join(rootDir, 'src/renderer/transcriptRows.ts'),
-      path.join(rootDir, 'src/renderer/slashCatalog.ts'),
-      path.join(rootDir, 'src/renderer/mentionToken.ts'),
-    ],
-    outdir: path.join(rootDir, 'dist/renderer'),
-    outExtension: { '.js': '.mjs' },
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/ui', '@hermes-flux/core'],
-    sourcemap: true,
-  });
+    // 状态、左轨、检查舱、弹窗、输入与服务层
+    nodeModuleTask('src/renderer/leftrail/leftRailSnapshotManager.ts', 'dist/renderer/leftrail/leftRailSnapshotManager.mjs'),
+    nodeModuleTask('src/renderer/state/appState.ts', 'dist/renderer/state/appState.mjs'),
+    nodeModuleTask('src/renderer/inspector/inspectorController.ts', 'dist/renderer/inspector/inspectorController.mjs'),
+    nodeModuleTask('src/renderer/events/leftRailController.ts', 'dist/renderer/events/leftRailController.mjs'),
+    nodeModuleTask('src/renderer/events/presenceController.ts', 'dist/renderer/events/presenceController.mjs'),
+    nodeModuleTask('src/renderer/events/modalInteractionController.ts', 'dist/renderer/events/modalInteractionController.mjs'),
+    nodeModuleTask('src/renderer/events/inputDockController.ts', 'dist/renderer/events/inputDockController.mjs'),
+    nodeModuleTask('src/renderer/events/slashCommandRunner.ts', 'dist/renderer/events/slashCommandRunner.mjs'),
+    nodeModuleTask('src/renderer/services/sessionOperationService.ts', 'dist/renderer/services/sessionOperationService.mjs'),
+    nodeModuleTask('src/renderer/services/messageLoadingService.ts', 'dist/renderer/services/messageLoadingService.mjs'),
+    nodeModuleTask('src/renderer/services/turnExecutionService.ts', 'dist/renderer/services/turnExecutionService.mjs'),
+    nodeModuleTask('src/renderer/gateway/gatewayEventDispatcher.ts', 'dist/renderer/gateway/gatewayEventDispatcher.mjs'),
+    nodeModuleTask('src/renderer/messageWindowManager.ts', 'dist/renderer/messageWindowManager.mjs'),
+    nodeModuleTask('src/renderer/services/foregroundSyncCoordinator.ts', 'dist/renderer/services/foregroundSyncCoordinator.mjs'),
+    nodeModuleTask('src/renderer/renderCoordinator.ts', 'dist/renderer/renderCoordinator.mjs'),
 
-  // transcriptRows 单独编译：它以 external 保留 @hermes-flux/ui 与 core 的裸说明符，
-  // 否则 React 的 CJS 依赖会被塞进 ESM 产物，Node 直接 import 时炸 "Dynamic require of util"。
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/persistence/persistedJson.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/persistence/persistedJson.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    sourcemap: true,
-  });
-
-  // Bot 主工位活动持久化同样从 index.ts 整簇抽出；它依赖 core 的纯函数，
-  // 必须声明 external，否则会把 core 的实现打进产物导致两份状态。
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/persistence/botActivityStore.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/persistence/botActivityStore.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 会话草稿持久化：纯本地逻辑，无外部依赖，直接编译。
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/persistence/sessionDrafts.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/persistence/sessionDrafts.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    sourcemap: true,
-  });
-
-  // 输入补全领域从 index.ts 整簇抽出后，同样需要独立产物供行为测试直接导入。
-  // 【约束与规则 (Rules)】它依赖 @hermes-flux/ui 与 core，必须单独 build 并声明 external，
-  //   塞进上面那组会把 React 的 CJS 依赖打进 ESM，Node 直接 import 会炸。
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/completion/inputCompletion.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/completion/inputCompletion.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/ui', '@hermes-flux/core'],
-    sourcemap: true,
-  });
-
-  // 客户端缓存桥接领域：从 index.ts 整簇抽出，依赖 @hermes-flux/ui 与 core
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/cache/desktopCacheBridge.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/cache/desktopCacheBridge.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // Agent 在场与语气状态机领域：从 index.ts 整簇抽出，依赖 @hermes-flux/ui 与 core
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/presence/agentPresenceManager.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/presence/agentPresenceManager.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 提示词导航状态机领域：从 index.ts 整簇抽出，依赖 @hermes-flux/ui 与 core
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/navigation/promptNavigatorManager.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/navigation/promptNavigatorManager.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 思考等级级联定位领域：从 index.ts 抽出，纯几何与抑制状态机
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/cascade/modelCascadeManager.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/cascade/modelCascadeManager.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 会话流视口滚动与锚定领域：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/viewport/streamViewportManager.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/viewport/streamViewportManager.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 提交后驱动观察器：从 renderCoordinator.ts 抽出，使挂载/重建/合并/释放契约可脱宿主单测
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/viewport/postCommitPinObservers.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/viewport/postCommitPinObservers.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 桌面壳视口装配：把 StreamViewportHost 的真实依赖收敛为可单测入口
-  //
-  // 【设计意图 (Why)】StreamViewportManager 自身已有独立产物；这里若再内联一份，
-  //   同一份源码会以两个产物同时进入覆盖率统计，分支覆盖被重复累加（实测：bundle 侧
-  //   未执行的分支会把已测分支压成"未全覆盖"，门禁对同一行反复报红）。
-  // 【约束与规则 (Rules)】只外部化管理器本体到 ./streamViewportManager.mjs；
-  //   其余依赖都是 type-only，不产生运行时 import，禁止顺手外部化运行时代码。
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/viewport/desktopStreamViewport.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/viewport/desktopStreamViewport.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-    plugins: [{
-      name: 'external-stream-viewport-manager',
-      setup(pluginBuild) {
-        pluginBuild.onResolve({ filter: /^\.\/streamViewportManager\.js$/ }, () => ({
-          path: './streamViewportManager.mjs',
-          external: true,
-        }));
-      },
-    }],
-  });
-
-  // 左轨实体装饰与快照管理领域：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/leftrail/leftRailSnapshotManager.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/leftrail/leftRailSnapshotManager.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 全局应用状态模型领域：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/state/appState.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/state/appState.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 检查舱动效与下载控制器：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/inspector/inspectorController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/inspector/inspectorController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 左轨交互控制器：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/events/leftRailController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/events/leftRailController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 在场控制器：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/events/presenceController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/events/presenceController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 模态弹窗与右键菜单控制器：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/events/modalInteractionController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/events/modalInteractionController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 输入舱交互控制器：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/events/inputDockController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/events/inputDockController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 斜杠命令执行器：从 inputDockController 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/events/slashCommandRunner.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/events/slashCommandRunner.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 会话生命周期与设置切换服务：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/services/sessionOperationService.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/services/sessionOperationService.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 消息加载、历史分页漫游与副标题同步服务：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/services/messageLoadingService.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/services/messageLoadingService.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 回合执行与队列控制服务：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/services/turnExecutionService.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/services/turnExecutionService.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 网关连接生命周期与 WebSocket 下行事件分发服务：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/gateway/gatewayEventDispatcher.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/gateway/gatewayEventDispatcher.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 对话流虚拟窗口管理服务：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/messageWindowManager.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/messageWindowManager.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 前后台协同同步协调器：单飞视图增量同步与静默/闪烁相位驱动
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/services/foregroundSyncCoordinator.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/services/foregroundSyncCoordinator.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: SHARED_RUNTIME_EXTERNALS,
-    sourcemap: true,
-  });
-
-  // 渲染装配与协调管线服务：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/renderCoordinator.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/renderCoordinator.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // 移动端表现壳薄协调适配器与 Capacitor 原生桥独立产物，供单测直接导入验证
-  fs.mkdirSync(path.join(rootDir, 'dist/renderer/mobile'), { recursive: true });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/mobile/mobileShellCoordinator.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/mobile/mobileShellCoordinator.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  fs.mkdirSync(path.join(repoDir, 'packages/mobile/dist'), { recursive: true });
-  await esbuild.build({
-    entryPoints: [path.join(repoDir, 'packages/mobile/src/capacitor-bridge.ts')],
-    outfile: path.join(repoDir, 'packages/mobile/dist/capacitor-bridge.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@capacitor/*'],
-    sourcemap: true,
-  });
-
-  // 模型下拉与全局热键控制器：从 index.ts 抽出
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/dropdownKeybindController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/dropdownKeybindController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-
-  // Batch 6 终极收官服务：项目树、群聊研讨室、Profile 管理、设置中心、认知星图与状态栏集成服务
-  for (const serviceName of ['projectOperationService', 'projectDirectoryActions', 'groupOperationService', 'profileManagementService', 'settingsDataService', 'learningService', 'sessionStatusService', 'statusIntegration', 'conversationOrgCoordinator']) {
-    await esbuild.build({
-      entryPoints: [path.join(rootDir, `src/renderer/services/${serviceName}.ts`)],
-      outfile: path.join(rootDir, `dist/renderer/services/${serviceName}.mjs`),
+    // 移动端表现壳薄协调适配器与 Capacitor 原生桥独立产物
+    nodeModuleTask('src/renderer/mobile/mobileShellCoordinator.ts', 'dist/renderer/mobile/mobileShellCoordinator.mjs'),
+    {
+      entryPoints: [path.join(repoDir, 'packages/mobile/src/capacitor-bridge.ts')],
+      outfile: path.join(repoDir, 'packages/mobile/dist/capacitor-bridge.mjs'),
       bundle: true,
       platform: 'node',
       target: 'node20',
       format: 'esm',
-      external: ['@hermes-flux/core', '@hermes-flux/ui'],
+      external: ['@capacitor/*'],
       sourcemap: true,
-    });
+    },
+
+    // 模型下拉与全局热键控制器
+    nodeModuleTask('src/renderer/dropdownKeybindController.ts', 'dist/renderer/dropdownKeybindController.mjs'),
+
+    // Batch 6 服务
+    ...[
+      'projectOperationService',
+      'projectDirectoryActions',
+      'groupOperationService',
+      'profileManagementService',
+      'settingsDataService',
+      'learningService',
+      'sessionStatusService',
+      'statusIntegration',
+      'conversationOrgCoordinator',
+    ].map((serviceName) =>
+      nodeModuleTask(`src/renderer/services/${serviceName}.ts`, `dist/renderer/services/${serviceName}.mjs`),
+    ),
+
+    // Batch 7 服务与控制器
+    nodeModuleTask('src/renderer/services/fileViewerService.ts', 'dist/renderer/services/fileViewerService.mjs'),
+    nodeModuleTask('src/renderer/services/mediaResolver.ts', 'dist/renderer/services/mediaResolver.mjs'),
+    nodeModuleTask('src/renderer/titlebarController.ts', 'dist/renderer/titlebarController.mjs'),
+    nodeModuleTask('src/renderer/bootstrap/appBootstrap.ts', 'dist/renderer/bootstrap/appBootstrap.mjs'),
+    nodeModuleTask('src/renderer/events/conversationStreamController.ts', 'dist/renderer/events/conversationStreamController.mjs'),
+    nodeModuleTask('src/renderer/events/onboardingController.ts', 'dist/renderer/events/onboardingController.mjs'),
+    nodeModuleTask('src/renderer/stream/tokenStreamWriter.ts', 'dist/renderer/stream/tokenStreamWriter.mjs'),
+    nodeModuleTask('src/renderer/stream/streamDomOwnership.ts', 'dist/renderer/stream/streamDomOwnership.mjs'),
+  ];
+
+  // 启动并行 esbuild 池前统一预建全部唯一输出目录，避免并发写同目录时竞争建目录
+  const outDirs = new Set(
+    esbuildTasks.map((task) => (task.outfile ? path.dirname(task.outfile) : task.outdir)),
+  );
+  for (const dir of outDirs) {
+    fs.mkdirSync(dir, { recursive: true });
   }
-  // Batch 7 终极决战服务与控制器：文件查看器、顶栏状态机与启动自举
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/services/fileViewerService.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/services/fileViewerService.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/services/mediaResolver.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/services/mediaResolver.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/titlebarController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/titlebarController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/bootstrap/appBootstrap.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/bootstrap/appBootstrap.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/events/conversationStreamController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/events/conversationStreamController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/events/onboardingController.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/events/onboardingController.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/stream/tokenStreamWriter.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/stream/tokenStreamWriter.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-  await esbuild.build({
-    entryPoints: [path.join(rootDir, 'src/renderer/stream/streamDomOwnership.ts')],
-    outfile: path.join(rootDir, 'dist/renderer/stream/streamDomOwnership.mjs'),
-    bundle: true,
-    platform: 'node',
-    target: 'node20',
-    format: 'esm',
-    external: ['@hermes-flux/core', '@hermes-flux/ui'],
-    sourcemap: true,
-  });
-  console.log('  ✔ Batch 7 modules compiled (fileViewerService, titlebarController, appBootstrap, conversationStreamController, onboardingController, tokenStreamWriter, streamDomOwnership)');
-  console.log('  ✔ Batch 6 services compiled (projectOperationService, groupOperationService, profileManagementService, settingsDataService)');
-  console.log('  ✔ Batch 5 modules compiled (messageWindowManager, renderCoordinator, dropdownKeybindController)');
-  console.log('  ✔ Transcript rows + slash catalog + desktop cache bridge + agent presence + prompt nav + cascade + viewport + leftrail + state + inspector + modal + inputDock + sessionOperation + messageLoading + turnExecution + gatewayEventDispatcher modules compiled');
+
+  const concurrency = Math.max(4, Math.min(8, os.availableParallelism?.() ?? os.cpus().length ?? 4));
+  await runBoundedPool(esbuildTasks, concurrency);
+  console.log(`  ✔ ${esbuildTasks.length} esbuild bundles compiled (concurrency=${concurrency})`);
 
   // 4. Copy static assets
   fs.copyFileSync(

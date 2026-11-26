@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { hasInlineAllowance, lineAt, matchAll, REPO_ROOT } from './lib/scanner.mjs';
-import { fileLineLimitRules, testIntegrityRules } from './rules/maintainability.mjs';
+import { fileLineLimitRules, testIntegrityRules, testPerfRules } from './rules/maintainability.mjs';
 import { visualRules } from './rules/visual.mjs';
 
 /* ------------------------------------------------------------------ *
@@ -871,6 +871,7 @@ export const RULES = [
   integrityRules,
   fileLineLimitRules,
   testIntegrityRules,
+  testPerfRules,
   themeRules,
   templateExportRules,
   inlineHexRules,

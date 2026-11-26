@@ -24,6 +24,7 @@
  *   - 文件数下限来自 lib/test-targets.mjs 的单一真值源，禁止在命令行另写 glob。
  */
 
+import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { REPO_ROOT, SUITES, listSuiteFiles } from './lib/test-targets.mjs';
 
@@ -294,10 +295,57 @@ export function runCensus(suiteName, opts = {}) {
 
 /* ---------------- CLI ---------------- */
 const SKIP_CLI_FLAGS = new Set(['census-check.mjs']);
+const POSITIVE_INT_RE = /^[1-9]\d*$/;
 
-function main() {
-  const argv = process.argv.slice(2);
-  const explicit = argv.filter((a) => !a.startsWith('--'));
+/**
+ * 解析 Test Census CLI 参数与并发策略。
+ *
+ * 【设计意图 (Why)】
+ *   260 个 unit 文件彼此走 `node --test` 默认进程隔离且无共享端口/全局文件，
+ *   受控并发（2~4）可安全缩短执行时间；同时严格拒绝未知参数与冲突标志。
+ */
+export function parseCensusArgs(
+  argv = process.argv.slice(2),
+  cpuCount = os.availableParallelism?.() ?? os.cpus().length,
+) {
+  let serial = false;
+  let parallel = false;
+  let explicitConcurrency = null;
+  const explicitSuites = [];
+
+  for (const arg of argv) {
+    if (arg === '--serial') {
+      serial = true;
+      continue;
+    }
+    if (arg === '--parallel') {
+      parallel = true;
+      continue;
+    }
+    if (arg.startsWith('--concurrency=')) {
+      if (explicitConcurrency !== null) {
+        return { ok: false, error: `参数 --concurrency 重复出现: ${arg}` };
+      }
+      const raw = arg.slice('--concurrency='.length);
+      if (!POSITIVE_INT_RE.test(raw)) {
+        return { ok: false, error: `非法 --concurrency 值 "${raw}"，必须为正整数（如 1、2、4）` };
+      }
+      explicitConcurrency = Number(raw);
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      return { ok: false, error: `未知参数: ${arg}` };
+    }
+    explicitSuites.push(arg);
+  }
+
+  if (serial && (parallel || explicitConcurrency !== null)) {
+    return { ok: false, error: '--serial 不能与 --parallel 或 --concurrency 混用' };
+  }
+  if (parallel && explicitConcurrency !== null) {
+    return { ok: false, error: '--parallel 不能与 --concurrency 混用' };
+  }
+
   /**
    * 默认只跑 unit 套件：与原 `npm test` 的口径严格一致。
    * formal 由独立的 `verify:formal` 驱动，两者在 `npm run verify` 里串行执行，
@@ -305,26 +353,44 @@ function main() {
    * 需要一次跑全部时显式传 `all`。
    */
   const known = new Set([...Object.keys(SUITES), 'all']);
-  const unknown = explicit.filter((a) => !known.has(a));
-  /**
-   * 【失败不可静默，也不可用抛栈失败】未登记的套件名（例如误传了空串或多余的
-   * 命令行参数）必须给出可读诊断并退出 1。抛栈会让人以为是 census 自己崩了，
-   * 而真实原因是调用方传错了参数。
-   */
+  const unknown = explicitSuites.filter((a) => !known.has(a));
   if (unknown.length > 0) {
-    console.error(`${C.red}未知的套件名: ${unknown.map((u) => JSON.stringify(u)).join(', ')}${C.reset}`);
-    console.error(`${C.dim}  已登记: ${Object.keys(SUITES).join(', ')}（或 all 表示全部）${C.reset}`);
+    return { ok: false, unknownSuites: unknown, error: `未知的套件名: ${unknown.map((u) => JSON.stringify(u)).join(', ')}` };
+  }
+
+  const targets = explicitSuites.length > 0
+    ? (explicitSuites.includes('all') ? Object.keys(SUITES) : explicitSuites)
+    : ['unit'];
+
+  const cpus = Number.isFinite(cpuCount) && cpuCount > 0 ? cpuCount : 2;
+  const defaultConcurrency = Math.max(2, Math.min(4, Math.floor(cpus / 2)));
+  const concurrency = serial
+    ? 1
+    : parallel
+      ? undefined
+      : (explicitConcurrency ?? defaultConcurrency);
+
+  return { ok: true, targets, concurrency };
+}
+
+function main() {
+  const parsed = parseCensusArgs(process.argv.slice(2));
+  /**
+   * 【失败不可静默，也不可用抛栈失败】未登记的套件名或非法参数必须给出可读诊断并退出 1。
+   */
+  if (!parsed.ok) {
+    console.error(`${C.red}${parsed.error}${C.reset}`);
+    if (parsed.unknownSuites) {
+      console.error(`${C.dim}  已登记: ${Object.keys(SUITES).join(', ')}（或 all 表示全部）${C.reset}`);
+    }
     process.exitCode = 1;
     return;
   }
 
-  const targets = explicit.length > 0
-    ? (explicit.includes('all') ? Object.keys(SUITES) : explicit)
-    : ['unit'];
-  const concurrency = argv.includes('--parallel') ? undefined : 1;
+  const { targets, concurrency } = parsed;
 
   console.log(`${C.cyan}${C.bold}执行量统计层 (Test Census)${C.reset}`);
-  console.log(`${C.dim}  目的：证明测试真的执行过，而不是证明命令没报错${C.reset}\n`);
+  console.log(`${C.dim}  目的：证明测试真的执行过，而不是证明命令没报错 · 并发度 ${concurrency ?? 'auto'}${C.reset}\n`);
 
   const results = targets.map((name) => runCensus(name, { concurrency }));
   let failed = 0;

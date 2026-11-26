@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { parseTapSummary } from '../gates/census-check.mjs';
+import { parseCensusArgs, parseTapSummary } from '../gates/census-check.mjs';
 import { listSuiteFiles, SUITES } from '../gates/lib/test-targets.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
@@ -152,5 +152,38 @@ test('census · 文件路径一律 POSIX 相对路径，跨平台一致', () => 
     assert.ok(!f.includes('\\'), `路径必须 POSIX 化，实际为 ${f}`);
     assert.ok(!path.isAbsolute(f), `路径必须是仓库相对，实际为 ${f}`);
     assert.ok(fs.existsSync(path.join(REPO_ROOT, f)), `枚举出的文件必须真实存在: ${f}`);
+  }
+});
+
+test('census · parseCensusArgs 受控默认并发、标志兼容性与冲突/非法参数拒绝', () => {
+  // 默认按 CPU 核数计算受控并发 [2..4]
+  assert.deepEqual(parseCensusArgs([], 8), { ok: true, targets: ['unit'], concurrency: 4 });
+  assert.deepEqual(parseCensusArgs(['formal'], 4), { ok: true, targets: ['formal'], concurrency: 2 });
+  assert.deepEqual(parseCensusArgs(['all'], 2), { ok: true, targets: ['unit', 'formal'], concurrency: 2 });
+
+  // 合法标志
+  assert.deepEqual(parseCensusArgs(['--serial'], 8), { ok: true, targets: ['unit'], concurrency: 1 });
+  assert.deepEqual(parseCensusArgs(['--parallel'], 8), { ok: true, targets: ['unit'], concurrency: undefined });
+  assert.deepEqual(parseCensusArgs(['--concurrency=3', 'formal'], 8), {
+    ok: true,
+    targets: ['formal'],
+    concurrency: 3,
+  });
+
+  // 拒绝非法值、重复标志、未知标志、互斥组合与未知套件
+  for (const bad of [
+    ['--concurrency=0'],
+    ['--concurrency=-2'],
+    ['--concurrency=2abc'],
+    ['--concurrency='],
+    ['--concurrency=2', '--concurrency=3'],
+    ['--serial', '--parallel'],
+    ['--serial', '--concurrency=2'],
+    ['--parallel', '--concurrency=2'],
+    ['--unknown-flag'],
+    ['nonexistent-suite'],
+  ]) {
+    const res = parseCensusArgs(bad, 8);
+    assert.equal(res.ok, false, `必须拒绝参数组合: ${JSON.stringify(bad)}`);
   }
 });

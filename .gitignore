@@ -49,6 +49,7 @@ bun.lock
 .stryker-tmp/
 reports/
 stryker-output-*.json
+.stryker.tmp*.json
 
 
 # CDP 测试现场打包产物（每次运行重建）

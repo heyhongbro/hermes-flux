@@ -48,11 +48,17 @@ export const KNOWN_OVERSIZE = {
   'scripts/verify/control-flux.mjs': { max: 1701 },
   'packages/ui/src/components/InspectionPod/InspectionPod.ts': { max: 979 },
   'scripts/contract/probe.mjs': { max: 966 },
+  'packages/desktop/__tests__/unit/reconnect-stage-preservation.test.mjs': { max: 1707 },
+  'packages/desktop/__tests__/unit/render-coordinator.test.mjs': { max: 1519 },
+  'packages/desktop/__tests__/unit/stream-viewport-manager.test.mjs': { max: 2898 },
+  'packages/ui/__tests__/mobile-workspace-shell.test.mjs': { max: 5863 },
+  'packages/ui/__tests__/settings-modal.test.mjs': { max: 3819 },
 };
 
 export const fileLineLimitRules = {
   id: 'size',
   gate: 'Gate 0',
+  testAware: true,
   title: `单文件行数上限（≤ ${FILE_LINE_LIMIT} 行，存量冻结只降不升）`,
   check(file, ctx) {
     // 只约束可执行源码；样式表与文档另有口径
@@ -248,6 +254,345 @@ export const testIntegrityRules = {
         line: 1,
         ruleId: 'test-integrity/allow-comment',
         message: `本文件含 ${allowCount} 条行内豁免；仓库总敞口由 allow-budget.mjs 按只降不升判定`,
+      });
+    }
+
+    return out;
+  },
+};
+
+/* ------------------------------------------------------------------ *
+ * Gate 2 · 测试执行性能与夹具洁净（防止慢测试回潮）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 真实本地 I/O（HTTP / WebSocket / 真实浏览器子进程）集成测试白名单。
+ * 这些测试受外部协议/端口生命周期驱动，不纳入纯单测 sleep 阻断，但仍受行数上限约束。
+ */
+export const REAL_IO_SLEEP_TESTS = new Set([
+  'packages/core/__tests__/rpc/gateway-e2e.test.mjs',
+  'packages/core/__tests__/rpc/live-gateway-real.test.mjs',
+  'packages/core/__tests__/rpc/live-gateway.test.mjs',
+  'scripts/__tests__/start-browser-live.test.mjs',
+]);
+
+/**
+ * 存量单元/集成测试中历史遗留真实 `Promise + setTimeout(>=20ms 或变量延迟)` 冻结上限。
+ * 【冻结规则】只允许清零或下调，增 1 处即阻断，倒逼逐步迁移到 `t.mock.timers`。
+ */
+export const KNOWN_REAL_SLEEP_TESTS = {
+  'packages/core/__tests__/coalesce/tokenCoalescer.test.mjs': { max: 1 },
+  'packages/core/__tests__/rpc/client.test.mjs': { max: 1 },
+  'packages/core/__tests__/rpc/lifecycle-heartbeat.test.mjs': { max: 2 },
+  'packages/core/__tests__/rpc/ticket-refresh.test.mjs': { max: 2 },
+  'packages/desktop/__tests__/unit/appBootstrap.test.mjs': { max: 2 },
+  'packages/desktop/__tests__/unit/completion-domain.test.mjs': { max: 1 },
+  'packages/desktop/__tests__/unit/delete-session-focus.test.mjs': { max: 1 },
+  'packages/desktop/__tests__/unit/desktop-cache-bridge.test.mjs': { max: 1 },
+  'packages/desktop/__tests__/unit/desktop-stream-viewport.test.mjs': { max: 1 },
+  'packages/desktop/__tests__/unit/fileViewerService.test.mjs': { max: 1 },
+  'packages/desktop/__tests__/unit/foreground-sync-coordinator.test.mjs': { max: 5 },
+  'packages/desktop/__tests__/unit/long-session-scroll-restore.test.mjs': { max: 1 },
+  'packages/desktop/__tests__/unit/mediaResolver.test.mjs': { max: 2 },
+  'packages/desktop/__tests__/unit/messageLoadingService.test.mjs': { max: 6 },
+  'packages/desktop/__tests__/unit/power-events.test.mjs': { max: 1 },
+  'packages/desktop/__tests__/unit/reconnect-stage-preservation.test.mjs': { max: 4 },
+  'packages/desktop/__tests__/unit/session-status-service.test.mjs': { max: 8 },
+  'packages/desktop/__tests__/unit/session-subtitles-offline.test.mjs': { max: 1 },
+  'packages/desktop/__tests__/unit/settings-controller.test.mjs': { max: 1 },
+  'packages/desktop/__tests__/unit/settingsDataService.test.mjs': { max: 3 },
+  'packages/ui/__tests__/mobile-workspace-shell.test.mjs': { max: 4 },
+};
+
+/** 存量开启了 mock.timers 但暂未配对 reset() 的冻结清单（只降不升） */
+export const KNOWN_MISSING_TIMER_RESET = new Set([
+  'packages/desktop/__tests__/unit/session-status-service.test.mjs',
+]);
+
+/**
+ * 遮蔽字符串字面量内容并保留定界引号、`${...}` 插值代码态、正则字面量与全部换行位置。
+ *
+ * 【设计意图 (Why)】`ctx.codeLines` 已剥离注释但保留字符串；若不遮蔽字符串，规则会把
+ *   断言错误信息或诊断文案里的示例代码误判为真实违规；若不跳过正则字面量（如 `/['"`]/`），
+ *   正则内部的引号会破坏后续引号配对并引发整文件错判。
+ * 【约束与规则 (Rules)】返回字符串长度与 `\n` 位置必须与输入完全一致。
+ */
+export function stripStringsKeepLines(code) {
+  const n = code.length;
+  const buf = new Array(n);
+  const stack = [];
+  const interpDepths = [];
+  let state = 'code'; // code | single | double | template | interpolation
+  let escaped = false;
+
+  const enter = (nextState) => {
+    stack.push(state);
+    state = nextState;
+  };
+  const leave = () => {
+    state = stack.length > 0 ? stack.pop() : 'code';
+  };
+
+  for (let i = 0; i < n; i += 1) {
+    const c = code[i];
+    const next = code[i + 1];
+
+    if (state === 'single' || state === 'double' || state === 'template') {
+      if (state === 'template' && !escaped && c === '$' && next === '{') {
+        buf[i] = c;
+        buf[i + 1] = next;
+        i += 1;
+        interpDepths.push(0);
+        enter('interpolation');
+        continue;
+      }
+      if (escaped) {
+        buf[i] = c === '\n' ? '\n' : ' ';
+        escaped = false;
+        continue;
+      }
+      if (c === '\\') {
+        buf[i] = ' ';
+        escaped = true;
+        continue;
+      }
+      if (
+        (state === 'single' && c === "'") ||
+        (state === 'double' && c === '"') ||
+        (state === 'template' && c === '`')
+      ) {
+        buf[i] = c;
+        leave();
+        continue;
+      }
+      buf[i] = c === '\n' ? '\n' : ' ';
+      continue;
+    }
+
+    if (state === 'interpolation') {
+      if (c === '{') {
+        interpDepths[interpDepths.length - 1] += 1;
+        buf[i] = c;
+        continue;
+      }
+      if (c === '}') {
+        if (interpDepths[interpDepths.length - 1] === 0) {
+          buf[i] = c;
+          interpDepths.pop();
+          leave();
+        } else {
+          interpDepths[interpDepths.length - 1] -= 1;
+          buf[i] = c;
+        }
+        continue;
+      }
+    }
+
+    // 正则字面量原样保留，避免 `/['"`]/` 内嵌引号引发字符串状态失衡
+    if (c === '/') {
+      let j = i - 1;
+      while (j >= 0 && /\s/.test(code[j])) j -= 1;
+      const prevChar = j >= 0 ? code[j] : '';
+      const regexAllowed =
+        prevChar === '' ||
+        /[(,=:[!&|?{};+\-*%^~<>]/.test(prevChar) ||
+        /\b(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)\s*$/.test(
+          code.slice(Math.max(0, j - 12), j + 1),
+        );
+      if (regexAllowed) {
+        const start = i;
+        let k = i + 1;
+        let inClass = false;
+        let closed = false;
+        while (k < n) {
+          const ch = code[k];
+          if (ch === '\\') { k += 2; continue; }
+          if (ch === '\n') break;
+          if (ch === '[') inClass = true;
+          else if (ch === ']') inClass = false;
+          else if (ch === '/' && !inClass) { closed = true; break; }
+          k += 1;
+        }
+        if (closed) {
+          for (let m = start; m <= k; m += 1) buf[m] = code[m];
+          let m = k + 1;
+          while (m < n && /[a-z]/i.test(code[m])) {
+            buf[m] = code[m];
+            m += 1;
+          }
+          i = m - 1;
+          continue;
+        }
+      }
+    }
+
+    if (c === "'") {
+      enter('single');
+      buf[i] = c;
+      continue;
+    }
+    if (c === '"') {
+      enter('double');
+      buf[i] = c;
+      continue;
+    }
+    if (c === '`') {
+      enter('template');
+      buf[i] = c;
+      continue;
+    }
+
+    buf[i] = c;
+  }
+
+  return buf.join('');
+}
+
+function lineNumberAt(text, offset) {
+  let line = 1;
+  for (let k = 0; k < offset && k < text.length; k += 1) {
+    if (text[k] === '\n') line += 1;
+  }
+  return line;
+}
+
+const HELPER_UNIT_RE = /\/__tests__\/unit\/helpers\/[^/]+\.mjs$/;
+const E2E_OR_CDP_RE = /\/(?:e2e|cdp)\//;
+const TIMERS_PROMISES_RE = /(?:from|import)\s*\(?\s*['"](?:node:)?timers\/promises['"]/g;
+const REAL_PROMISE_SLEEP_RE = /\bnew\s+Promise\s*\([\s\S]{0,80}?setTimeout\s*\([^,\n]+,\s*([^)\n]+)\)/g;
+const HELPER_DIST_IMPORT_RE = /(?:from|import)\s*\(?\s*['"][^'"]*\/dist\//g;
+
+/**
+ * 测试执行性能与夹具洁净门禁。
+ *
+ * 【设计意图 (Why)】
+ *   Stryker 变异测试在最坏情况下对每个变异体都要重跑对应整份测试文件：
+ *   1 处 50ms 的真实 `setTimeout` 在 300 个变异体下就是 15 秒空等，累计可拖慢至十余分钟；
+ *   同时 `npm test` 采用多进程并发运行，夹具篡改 `globalThis` 或耦合 `dist/` 会污染并发隔离。
+ *
+ * 【防范的历史坑 (Pitfall)】
+ *   1. `turnExecutionService.test.mjs` 与 `slidingWatchdog.test.mjs` 曾含大量真实 `setTimeout` 与轮询，
+ *      导致 `turnExecutionWatchdog` 单域变异测试高达 ~12.2 分钟（改造为 `t.mock.timers` + 按域拆文件后降至 37.9s）。
+ *   2. `timers/promises` 的 `setTimeout(delay)` 同样造成真实墙钟阻塞且可绕过 `new Promise` 形态扫描。
+ *
+ * 【约束与规则 (Rules)】
+ *   - 仅作用于单元/形式化测试与 `unit/helpers/*.mjs`，生产源码与 e2e/cdp/真实 I/O 白名单不误伤；
+ *   - `t.mock.timers.enable(...)` 必须与 `t.mock.timers.reset()` 成对出现，禁止向生产源码注入虚拟时钟参数；
+ *   - 存量清单只降不升，清零后应从冻结表中删除以固化成果。
+ */
+export const testPerfRules = {
+  id: 'test-perf',
+  gate: 'Gate 2',
+  testAware: true,
+  title: '测试执行性能与夹具洁净（禁新增真实 sleep / 禁夹具污染 / 虚拟时钟配对清理）',
+  check(file, ctx) {
+    const isHelper = HELPER_UNIT_RE.test(file);
+    const isUnitOrFormalTest =
+      (file.includes('/__tests__/') || /\.test\.(mjs|cjs|js)$/.test(file)) &&
+      !E2E_OR_CDP_RE.test(file) &&
+      !file.includes('/helpers/');
+
+    if (!isHelper && !isUnitOrFormalTest) return [];
+
+    const code = ctx.codeLines.join('\n');
+    const masked = stripStringsKeepLines(code);
+    const out = [];
+
+    if (isHelper) {
+      TIMERS_PROMISES_RE.lastIndex = 0;
+      HELPER_DIST_IMPORT_RE.lastIndex = 0;
+      for (const m of code.matchAll(HELPER_DIST_IMPORT_RE)) {
+        if (masked.slice(m.index, m.index + 4) !== code.slice(m.index, m.index + 4)) continue;
+        const line = lineNumberAt(code, m.index);
+        const lineIdx = line - 1;
+        out.push({
+          file,
+          line,
+          lineIdx,
+          ruleId: 'test-perf/no-helper-dist-import',
+          message: 'unit/helpers 夹具禁止直接 import dist/ 编译产物：请改为从调用侧测试注入被测工厂函数',
+          snippet: (ctx.rawLines[lineIdx] ?? '').trim().slice(0, 110),
+        });
+      }
+
+      const maskedLines = masked.split('\n');
+      for (let i = 0; i < maskedLines.length; i += 1) {
+        if (!/\bglobalThis\b/.test(maskedLines[i])) continue;
+        out.push({
+          file,
+          line: i + 1,
+          lineIdx: i,
+          ruleId: 'test-perf/no-helper-global-patch',
+          message: 'unit/helpers 夹具禁止读写 globalThis 全局态，防止并发单测互相污染',
+          snippet: (ctx.rawLines[i] ?? '').trim().slice(0, 110),
+        });
+      }
+      return out;
+    }
+
+    if (!REAL_IO_SLEEP_TESTS.has(file)) {
+      for (const m of code.matchAll(TIMERS_PROMISES_RE)) {
+        if (masked.slice(m.index, m.index + 4) !== code.slice(m.index, m.index + 4)) continue;
+        const line = lineNumberAt(code, m.index);
+        const lineIdx = line - 1;
+        out.push({
+          file,
+          line,
+          lineIdx,
+          ruleId: 'test-perf/no-real-sleep',
+          message: '单元/集成测试禁止导入 timers/promises 进行真实墙钟等待：请改用 t.mock.timers 与确定性 tick 推进或 Promise 门闩',
+          snippet: (ctx.rawLines[lineIdx] ?? '').trim().slice(0, 110),
+        });
+      }
+
+      const sleepHits = [];
+      for (const m of masked.matchAll(REAL_PROMISE_SLEEP_RE)) {
+        const arg = m[1].trim();
+        const isBigLiteral = /^\d+$/.test(arg) && Number(arg) >= 20;
+        const isVarDelay = !/^\d+$/.test(arg) && arg !== '0';
+        if (!isBigLiteral && !isVarDelay) continue;
+        const line = lineNumberAt(masked, m.index);
+        const lineIdx = line - 1;
+        sleepHits.push({
+          file,
+          line,
+          lineIdx,
+          ruleId: 'test-perf/no-real-sleep',
+          message:
+            '单元/集成测试禁止新增真实 setTimeout 空等（≥20ms 或变量延迟）：' +
+            '请改用 node:test 的 t.mock.timers.enable({ apis: [\'setTimeout\', \'Date\'] }) + 确定性推进或微任务门闩，且严禁向生产源码注入虚拟时钟参数',
+          snippet: (ctx.rawLines[lineIdx] ?? '').trim().slice(0, 110),
+        });
+      }
+
+      const knownSleep = KNOWN_REAL_SLEEP_TESTS[file];
+      if (knownSleep) {
+        if (sleepHits.length === 0 && ctx.warnings) {
+          ctx.warnings.push({
+            file,
+            line: 1,
+            ruleId: 'test-perf/real-sleep-paid-off',
+            message: '存量真实 sleep 已清零，请从 KNOWN_REAL_SLEEP_TESTS 移除该登记项以固化成果',
+          });
+        } else if (sleepHits.length > knownSleep.max) {
+          out.push(...sleepHits.slice(knownSleep.max));
+        }
+      } else {
+        out.push(...sleepHits);
+      }
+    }
+
+    const enableMatch = /\bmock\.timers\.enable\s*\(/.exec(masked);
+    if (enableMatch && !/\bmock\.timers\.reset\s*\(/.test(masked) && !KNOWN_MISSING_TIMER_RESET.has(file)) {
+      const line = lineNumberAt(masked, enableMatch.index);
+      const lineIdx = line - 1;
+      out.push({
+        file,
+        line,
+        lineIdx,
+        ruleId: 'test-perf/mock-timers-cleanup',
+        message: '使用 mock.timers.enable() 必须配对调用 mock.timers.reset()（建议放入 try { ... } finally { t.mock.timers.reset(); } 或 afterEach）',
+        snippet: (ctx.rawLines[lineIdx] ?? '').trim().slice(0, 110),
       });
     }
 
