@@ -728,6 +728,39 @@ test('3 & 5. 移动端紧凑页脚（时间+复制+...浮层）、全新回滚/F
     view.rerender();
     assert.equal(findAll(view.tree, (n) => n.props?.['data-testid'] === 'msg-more-actions-menu').length, 0);
 
+    // 无 rowId 且未传 Escape 时点击菜单外其他键保持打开，且菜单项 data-row-id 回退为 ''
+    const streamingHtml = renderToStaticMarkup(
+      React.createElement(ConversationMessageFooter, {
+        message: astMsg,
+        mode: 'scratchpad',
+        role: 'assistant',
+        isStreaming: true,
+      }),
+    );
+    assert.equal(streamingHtml, '');
+
+    const noRowDriver = createHookDriver({ contains: () => false });
+    const noRowView = noRowDriver.mount(() =>
+      React.createElement(ConversationMessageFooter, {
+        message: { id: 'a-norow', role: 'assistant', content: 'no row' },
+        mode: 'scratchpad',
+        role: 'assistant',
+        compactActions: true,
+      }),
+    );
+    findAll(noRowView.tree, (n) => n.props?.['data-testid'] === 'msg-more-actions-btn')[0].props.onClick();
+    noRowView.rerender();
+    const noRowItems = findAll(
+      findAll(noRowView.tree, (n) => n.props?.['data-testid'] === 'msg-more-actions-menu')[0],
+      (n) => n.type === 'button',
+    );
+    assert.equal(noRowItems[0].props['data-row-id'], '');
+    assert.equal(noRowItems[1].props['data-row-id'], '');
+    for (const fn of docListeners.get('keydown') ?? []) fn({ key: 'Tab' });
+    noRowView.rerender();
+    assert.ok(findAll(noRowView.tree, (n) => n.props?.['data-testid'] === 'msg-more-actions-menu')[0]);
+    noRowView.unmount();
+
     view.unmount();
   } finally {
     globalThis.document = prevDoc;
