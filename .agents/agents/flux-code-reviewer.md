@@ -102,6 +102,14 @@ permissions:
    - 核查 artifacts/verification/<feature-id>/ 是否存在真实捕获的 screenshot.png 与 evidence.json；
    - **若新增用户界面功能却未落位特征地图与物理截图，直接一票否决（FAIL）**。
 
+### 4.5 测试文件性能与拆分约束（防止慢测试回潮）
+
+审查任何新增或修改测试文件时，必须核对：
+- **单文件规模与按域拆分**：测试文件物理行数必须 **≤ 1500 行**（若属 Stryker 变异域测试，建议控制在 **≤ 1100 行**）；多子域大服务必须按子域拆分文件（如 `*.core / submit / watchdog / interrupt.test.mjs`），禁止在单文件内无限追加导致 `@stryker-mutator/tap-runner` 整文件重跑放大。
+- **严禁单元/集成测试新增真实 `setTimeout` 空等或 `timers/promises`**：必须使用 `t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })` + 确定性 `tick` 推进或 Promise/微任务门闩，并在 `finally` 中配对调用 `t.mock.timers.reset()`；**严禁为迁就测试而向 `packages/*/src/**` 注入虚拟时钟参数**。
+- **公共测试夹具纯洁性**：`packages/*/__tests__/unit/helpers/*.mjs` 严禁直接导入 `dist/` 编译产物或读写 `globalThis`（被测工厂函数一律由调用侧注入）。
+- **注册表与并发行同步**：新增、拆分或重命名 Stryker 领域测试文件时，必须同步更新 `scripts/gates/lib/mutation-domains.mjs` 与 `scripts/gates/lib/test-targets.mjs` 的 `SUITES.unit.minFiles`，且测试不得依赖共享固定端口或仓库根目录未隔离临时文件。
+
 ### 5. 门禁不变量本身是否被削弱
 
 - 本次改动是否修改了 `scripts/gates/rules.mjs`？若是，必须审查规则是否被放宽。

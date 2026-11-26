@@ -6,8 +6,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SlidingActiveWatchdog } from '../../dist/turn/slidingWatchdog.js';
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 test('SlidingActiveWatchdog Unit & Timing Tests', async (t) => {
   await t.test('1. arm 后进入 armed 状态，disarm 优雅关闭', () => {
     let timeoutReason = null;
@@ -31,7 +29,8 @@ test('SlidingActiveWatchdog Unit & Timing Tests', async (t) => {
     assert.equal(timeoutReason, null);
   });
 
-  await t.test('2. 静默超时触发 inactivity 熔断', async () => {
+  await t.test('2. 静默超时触发 inactivity 熔断', (st) => {
+    st.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
     let timeoutReason = null;
     const watchdog = new SlidingActiveWatchdog({
       idleTimeoutMs: 50,
@@ -40,15 +39,24 @@ test('SlidingActiveWatchdog Unit & Timing Tests', async (t) => {
       onTimeout: (r) => { timeoutReason = r; },
     });
 
-    watchdog.arm();
-    await sleep(80);
+    try {
+      watchdog.arm();
+      st.mock.timers.tick(49);
+      assert.equal(watchdog.getState(), 'armed');
+      assert.equal(timeoutReason, null);
 
-    assert.equal(watchdog.getState(), 'expired');
-    assert.equal(timeoutReason, 'inactivity');
-    assert.equal(watchdog.feed(), false, '已 expired 状态下喂狗返回 false');
+      st.mock.timers.tick(1);
+      assert.equal(watchdog.getState(), 'expired');
+      assert.equal(timeoutReason, 'inactivity');
+      assert.equal(watchdog.feed(), false, '已 expired 状态下喂狗返回 false');
+    } finally {
+      watchdog.disarm();
+      st.mock.timers.reset();
+    }
   });
 
-  await t.test('3. 持续活跃喂狗可连续续期不中断（含 throttle 节流分支覆盖）', async () => {
+  await t.test('3. 持续活跃喂狗可连续续期不中断（含 throttle 节流分支覆盖）', (st) => {
+    st.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
     let timeoutReason = null;
     const watchdog = new SlidingActiveWatchdog({
       idleTimeoutMs: 60,
@@ -57,25 +65,30 @@ test('SlidingActiveWatchdog Unit & Timing Tests', async (t) => {
       onTimeout: (r) => { timeoutReason = r; },
     });
 
-    watchdog.arm();
-    // 连续两次立即喂狗，命中 throttleMs 分支
-    const feed1 = watchdog.feed();
-    const feed2 = watchdog.feed();
-    assert.equal(feed1, true);
-    assert.equal(feed2, true);
+    try {
+      watchdog.arm();
+      // 连续两次立即喂狗，命中 throttleMs 分支
+      const feed1 = watchdog.feed();
+      const feed2 = watchdog.feed();
+      assert.equal(feed1, true);
+      assert.equal(feed2, true);
 
-    // 每 20ms 喂一次狗，持续 120ms (远超过 60ms 的单次超时)
-    for (let i = 0; i < 4; i++) {
-      await sleep(20);
-      watchdog.feed();
-      assert.equal(watchdog.getState(), 'armed');
+      // 每 20ms 喂一次狗，持续 80ms（跨越 60ms 单次超时，验证 throttle=30ms 下周期续期保活）
+      for (let i = 0; i < 4; i++) {
+        st.mock.timers.tick(20);
+        watchdog.feed();
+        assert.equal(watchdog.getState(), 'armed');
+      }
+
+      assert.equal(timeoutReason, null, '喂狗保活期间不得超时');
+    } finally {
+      watchdog.disarm();
+      st.mock.timers.reset();
     }
-
-    assert.equal(timeoutReason, null, '喂狗保活期间不得超时');
-    watchdog.disarm();
   });
 
-  await t.test('4. 达到绝对硬上限时强制触发 hard-limit 熔断', async () => {
+  await t.test('4. 达到绝对硬上限时强制触发 hard-limit 熔断', (st) => {
+    st.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
     let timeoutReason = null;
     const watchdog = new SlidingActiveWatchdog({
       idleTimeoutMs: 60,
@@ -84,15 +97,24 @@ test('SlidingActiveWatchdog Unit & Timing Tests', async (t) => {
       onTimeout: (r) => { timeoutReason = r; },
     });
 
-    watchdog.arm();
-    // 即使一直喂狗，超过 100ms 也必须被硬上限熔断
-    for (let i = 0; i < 6; i++) {
-      await sleep(20);
-      watchdog.feed();
-    }
+    try {
+      watchdog.arm();
+      // 即使一直喂狗，超过 100ms 也必须被硬上限熔断
+      for (let i = 0; i < 4; i++) {
+        st.mock.timers.tick(20);
+        watchdog.feed();
+      }
+      st.mock.timers.tick(19);
+      assert.equal(watchdog.getState(), 'armed');
+      assert.equal(timeoutReason, null);
 
-    assert.equal(watchdog.getState(), 'expired');
-    assert.equal(timeoutReason, 'hard-limit');
+      st.mock.timers.tick(1);
+      assert.equal(watchdog.getState(), 'expired');
+      assert.equal(timeoutReason, 'hard-limit');
+    } finally {
+      watchdog.disarm();
+      st.mock.timers.reset();
+    }
   });
 
   await t.test('5. 默认参数构造与跨端定时器解耦', () => {
@@ -136,6 +158,7 @@ test('SlidingActiveWatchdog Unit & Timing Tests', async (t) => {
     assert.equal(clampedWatchdog.getState(), 'idle');
     clampedWatchdog.arm();
     assert.equal(clampedWatchdog.getState(), 'armed');
+    clampedWatchdog.disarm();
 
     // 覆盖 safeUnref 的各级容忍分支
     const safeUnref = Reflect.get(watchdog, 'safeUnref').bind(watchdog);
@@ -189,7 +212,8 @@ test('SlidingActiveWatchdog.renewIdle: idle/disarmed 不复活，armed/expired �
 });
 
 
-test('SlidingActiveWatchdog.renewIdle: expired (inactivity) 在未达 hardLimitMs 时可续期复活为 armed', async () => {
+test('SlidingActiveWatchdog.renewIdle: expired (inactivity) 在未达 hardLimitMs 时可续期复活为 armed', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
   const reasons = [];
   const wd = new SlidingActiveWatchdog({
     idleTimeoutMs: 25,
@@ -198,18 +222,27 @@ test('SlidingActiveWatchdog.renewIdle: expired (inactivity) 在未达 hardLimitM
     onTimeout: (r) => reasons.push(r),
   });
 
-  wd.arm();
-  await sleep(55);
-  assert.equal(wd.getState(), 'expired');
-  assert.deepEqual(reasons, ['inactivity']);
+  try {
+    wd.arm();
+    t.mock.timers.tick(24);
+    assert.equal(wd.getState(), 'armed');
+    assert.deepEqual(reasons, []);
 
-  assert.equal(wd.renewIdle(), true, 'expired 态未超 hardLimitMs 时 renewIdle 必须允许续期');
-  assert.equal(wd.getState(), 'armed');
-  assert.ok(wd.getElapsedMs() >= 40, 'renewIdle 不得重置累计运行时长起点');
-  wd.disarm();
+    t.mock.timers.tick(1);
+    assert.equal(wd.getState(), 'expired');
+    assert.deepEqual(reasons, ['inactivity']);
+
+    assert.equal(wd.renewIdle(), true, 'expired 态未超 hardLimitMs 时 renewIdle 必须允许续期');
+    assert.equal(wd.getState(), 'armed');
+    assert.equal(wd.getElapsedMs(), 25, 'renewIdle 不得重置累计运行时长起点');
+  } finally {
+    wd.disarm();
+    t.mock.timers.reset();
+  }
 });
 
-test('SlidingActiveWatchdog.renewIdle: 续期后越过 hardLimitMs 时硬上限定时器必须触发 hard-limit 熔断', async () => {
+test('SlidingActiveWatchdog.renewIdle: 续期后越过 hardLimitMs 时硬上限定时器必须触发 hard-limit 熔断', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
   const reasons = [];
   const wd = new SlidingActiveWatchdog({
     idleTimeoutMs: 50,
@@ -218,20 +251,93 @@ test('SlidingActiveWatchdog.renewIdle: 续期后越过 hardLimitMs 时硬上限�
     onTimeout: (r) => reasons.push(r),
   });
 
-  wd.arm();
-  await sleep(70);
-  assert.deepEqual(reasons, ['inactivity']);
-  assert.equal(wd.renewIdle(), true);
-  assert.equal(wd.getState(), 'armed');
+  try {
+    wd.arm();
+    t.mock.timers.tick(49);
+    assert.equal(wd.getState(), 'armed');
+    assert.deepEqual(reasons, []);
 
-  // 单次 feed 即将 renewed idleTimer 推迟到 hardLimitMs (130ms) 之后，验证 hardTimer 精确触发
-  await sleep(20);
-  assert.equal(wd.feed(), true);
+    t.mock.timers.tick(1);
+    assert.deepEqual(reasons, ['inactivity']);
+    assert.equal(wd.renewIdle(), true);
+    assert.equal(wd.getState(), 'armed');
 
-  await sleep(70);
-  assert.deepEqual(reasons, ['inactivity', 'hard-limit']);
-  assert.equal(wd.getState(), 'expired');
-  wd.disarm();
+    // 单次 feed 即将 renewed idleTimer 推迟到 hardLimitMs (130ms) 之后，验证 hardTimer 精确触发
+    t.mock.timers.tick(31);
+    assert.equal(wd.feed(), true);
+
+    t.mock.timers.tick(48);
+    assert.equal(wd.getState(), 'armed');
+    assert.deepEqual(reasons, ['inactivity']);
+
+    t.mock.timers.tick(1);
+    assert.deepEqual(reasons, ['inactivity', 'hard-limit']);
+    assert.equal(wd.getState(), 'expired');
+  } finally {
+    wd.disarm();
+    t.mock.timers.reset();
+  }
+});
+
+test('SlidingActiveWatchdog 边界: 默认 throttleMs=500 节流阈值与最小 idleTimeoutMs=10 钳位精确生效', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
+  const reasons = [];
+  const wdThrottle = new SlidingActiveWatchdog({
+    idleTimeoutMs: 650,
+    hardLimitMs: 5000,
+    onTimeout: (r) => reasons.push(r),
+  });
+  const clampReasons = [];
+  const wdClamped = new SlidingActiveWatchdog({
+    idleTimeoutMs: 1,
+    hardLimitMs: 100,
+    throttleMs: 1,
+    onTimeout: (r) => clampReasons.push(r),
+  });
+
+  try {
+    wdThrottle.arm();
+    t.mock.timers.tick(499);
+    assert.equal(wdThrottle.feed(), true);
+    t.mock.timers.tick(150);
+    assert.equal(wdThrottle.getState(), 'armed', '649ms 尚未到达 idleTimeoutMs=650');
+    t.mock.timers.tick(1);
+    assert.equal(wdThrottle.getState(), 'expired', '默认 throttleMs=500 下 499ms feed 必须被节流并在 650ms 准时超时');
+    assert.deepEqual(reasons, ['inactivity']);
+    wdThrottle.disarm();
+
+    const wdThrottlePass = new SlidingActiveWatchdog({
+      idleTimeoutMs: 650,
+      hardLimitMs: 5000,
+      onTimeout: (r) => reasons.push(r),
+    });
+    try {
+      wdThrottlePass.arm();
+      t.mock.timers.tick(500);
+      assert.equal(wdThrottlePass.feed(), true, '达到默认 throttleMs=500 时 feed 必须续期');
+      t.mock.timers.tick(150);
+      assert.equal(wdThrottlePass.getState(), 'armed', '续期后原 650ms 点位不得触发');
+      t.mock.timers.tick(499);
+      assert.equal(wdThrottlePass.getState(), 'armed');
+      t.mock.timers.tick(1);
+      assert.equal(wdThrottlePass.getState(), 'expired');
+      assert.deepEqual(reasons, ['inactivity', 'inactivity']);
+    } finally {
+      wdThrottlePass.disarm();
+    }
+
+    wdClamped.arm();
+    t.mock.timers.tick(9);
+    assert.equal(wdClamped.getState(), 'armed', '最小 idleTimeoutMs=10 钳位下 9ms 不得触发');
+    assert.deepEqual(clampReasons, []);
+    t.mock.timers.tick(1);
+    assert.equal(wdClamped.getState(), 'expired', '最小 idleTimeoutMs=10 钳位下 10ms 必须触发');
+    assert.deepEqual(clampReasons, ['inactivity']);
+  } finally {
+    wdThrottle.disarm();
+    wdClamped.disarm();
+    t.mock.timers.reset();
+  }
 });
 
 test('SlidingActiveWatchdog 确定性时钟与定时器变异全消杀：默认上限/节流边界/清理句柄/unref/renewIdle 封顶与过期回调', () => {

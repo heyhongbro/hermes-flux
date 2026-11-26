@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { REPO_ROOT, listSourceFiles, readSource, shortHash } from './lib/scanner.mjs';
 import { changedFiles } from './lib/changed.mjs';
+import { listAllTestAndHelperFiles } from './lib/test-targets.mjs';
 import { RULES } from './rules.mjs';
 import {
   heading,
@@ -126,6 +127,14 @@ function resolveCssTargets() {
   // 与源码集合同一条规则：空集回退全量，避免样式表检查被静默跳过。
   if (changed.size === 0) return existing;
   return existing.filter((rel) => changed.has(rel));
+}
+
+function resolveTestTargets() {
+  const all = listAllTestAndHelperFiles();
+  if (!flags.changed && !flags.staged) return all;
+  const changed = new Set(changedFiles({ stagedOnly: flags.staged }));
+  if (changed.size === 0) return all;
+  return all.filter((rel) => changed.has(rel));
 }
 
 /* ---------------- 债务基线 ---------------- */
@@ -240,6 +249,31 @@ function run() {
     }
   }
 
+  /* ---------------- 测试与夹具专项扫描 ---------------- */
+  /**
+   * 仅执行显式声明 testAware 的规则（单文件规模上限 + 测试执行性能与夹具洁净），
+   * 避免将测试目录并入主 SCAN_ROOTS 一次性引爆 75 条历史债务而被绕开。
+   */
+  const testTargets = resolveTestTargets();
+  for (const file of testTargets) {
+    let ctx;
+    try {
+      ctx = makeScanCtx(file, { fromIndex: flags.staged });
+    } catch (err) {
+      console.error(warnLine(`无法读取 ${file}: ${err.message}`));
+      continue;
+    }
+    for (const rule of RULES) {
+      if (!rule.testAware) continue;
+      const found = rule.check(file, ctx);
+      layoutWarnings.push(...ctx.warnings);
+      ctx.warnings.length = 0;
+      if (found.length === 0) continue;
+      allViolations.push(...found);
+      results.push({ rule, found });
+    }
+  }
+
   /* 棘轮判定：逐条把违规与冻结池对冲 */
   const blockingByRule = new Map();
   const frozenByRule = new Map();
@@ -297,6 +331,7 @@ function run() {
     const payload = {
       ok: passed,
       scannedFiles: targets.length,
+      scannedTestFiles: testTargets.length,
       mode: flags.staged ? 'staged' : flags.changed ? 'changed' : 'full',
       strict: flags.strict,
       summary: {
@@ -336,7 +371,7 @@ function run() {
   console.log(
     paint(
       C.dim,
-      `  扫描 ${targets.length} 个源文件 · ${flags.staged ? '暂存区' : flags.changed ? '改动集' : '全量'} · 债务基线 ${baseline.frozenAt ?? '未初始化'}`,
+      `  扫描 ${targets.length} 个源文件 · ${testTargets.length} 个测试文件 · ${flags.staged ? '暂存区' : flags.changed ? '改动集' : '全量'} · 债务基线 ${baseline.frozenAt ?? '未初始化'}`,
     ),
   );
 
@@ -412,6 +447,19 @@ if (flags.updateBaseline || flags.updateBaselineDry) {
   for (const file of targets) {
     const ctx = makeScanCtx(file, {});
     for (const rule of RULES) all.push(...rule.check(file, ctx));
+  }
+  const cssTargets = CSS_SCAN_TARGETS.filter((rel) => fs.existsSync(path.join(REPO_ROOT, rel)));
+  for (const file of cssTargets) {
+    const ctx = makeScanCtx(file, {});
+    for (const rule of RULES) {
+      if (rule.cssAware) all.push(...rule.check(file, ctx));
+    }
+  }
+  for (const file of listAllTestAndHelperFiles()) {
+    const ctx = makeScanCtx(file, {});
+    for (const rule of RULES) {
+      if (rule.testAware) all.push(...rule.check(file, ctx));
+    }
   }
   const total = Object.keys(buildEntries(all)).length;
   if (flags.updateBaselineDry) {

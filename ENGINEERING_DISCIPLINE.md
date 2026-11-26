@@ -46,7 +46,22 @@
 
 ---
 
-## 四、自动化质量门禁基线 (Automated Quality Gates)
+## 四、测试执行性能与防退化军规 (Test Performance Invariants)
+
+1. **按域拆分与文件规模红线**：
+   单测文件物理行数硬上限 **1500 行**（由 `npm run gates` `testAware` 通道机器阻断），Stryker 变异域测试建议控制在 **≤ 1100 行**，按子域拆文件（如 `core / submit / watchdog / interrupt`）并在 [`scripts/gates/lib/mutation-domains.mjs`](scripts/gates/lib/mutation-domains.mjs) 精确绑定子文件，杜绝 `@stryker-mutator/tap-runner` 整文件重跑放大。
+2. **禁止单元/集成测试新增真实墙钟 `setTimeout` 空等**：
+   严禁在单元/形式化测试中新增 `new Promise((r) => setTimeout(r, >=20))`、自定义真实 sleep 助手或 `timers/promises`（由 `test-perf/no-real-sleep` 机器阻断）；统一使用 `node:test` 原生 `t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })` + 确定性 `tick` 推进或 Promise/微任务门闩，且必须在 `finally` 中调用 `t.mock.timers.reset()`（`test-perf/mock-timers-cleanup` 机器阻断），**严禁向生产源码注入虚拟时钟参数**。
+3. **公共测试夹具纯洁性**：
+   复用的 Mock/Harness 抽到同级 `helpers/*.mjs`（建议 ≤ 250 行），严禁在 `unit/helpers/*.mjs` 内静态 import `dist/` 产物或读写 `globalThis`（由 `test-perf/no-helper-dist-import` / `no-helper-global-patch` 机器阻断），被测工厂函数一律由调用侧注入。
+4. **测试文件并行安全**：
+   `npm test` 默认按 `Math.max(2, Math.min(4, Math.floor(cpus / 2)))` 并发运行，单测禁止依赖共享固定端口、共享仓库根目录临时文件或进程级全局可变状态（临时文件一律落 `os.tmpdir()` + 唯一后缀并 `finally` 清理）。
+5. **Stryker 变异测试操作红线**：
+   严禁启用 `--incremental`；保持 `tempDirName: '.stryker-tmp'`；动态配置写 `os.tmpdir()`、报告经 `.tmp-*` 原子发布；`ignorePatterns` 严禁写入 `**/dist/**` 或 `packages/ui/src/icons/**`；多域并行满足 `并行域数 × concurrency ≤ availableParallelism() - 1` 且严禁与 `verify` / `build` / `test:perf` 同时运行。
+
+---
+
+## 五、自动化质量门禁基线 (Automated Quality Gates)
 
 提交或合并代码前，本地必须跑通五大核心验证：
 1. `npm run gates:changed`：改动集静态门禁（分层依赖、类型逃逸、换肤 Token 零硬编码，新增违规严格为 0）；

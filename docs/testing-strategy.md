@@ -255,6 +255,16 @@ C. 判定         A ∩ B 中任何 hits === 0 的行 → FAIL
 | 禁止测试文件里的强制成功退出 | 顶层 `exit(0)` 与异常钩子内的 `exit(0)` 能把真实失败吞成 exit=0/pass=1（实测） |
 | 豁免注释进 `allow-budget` 总量 | 见 7.2 |
 
+### 7.4 测试执行性能与拆分红线（`testAware` 通道）
+
+1. **为什么必须机器看住单测文件规模与真实 sleep**：`@stryker-mutator/tap-runner` 以**整文件**为最小执行粒度。1 份 2900 行、含 2.4s 真实 `setTimeout` 与轮询的单测文件在 300+ 个变异体下会被乘以 300 倍，把单域变异耗时拖垮至 12+ 分钟（按子域拆为 ≤1100 行文件并改用 `t.mock.timers` 后实测降至 37.9s）。
+2. **`testAware` 专项扫描通道**：`scripts/gates/run.mjs` 通过 `listAllTestAndHelperFiles()`（与 `test-targets.mjs` 共用枚举源）将所有 unit/formal 测试文件与 `unit/helpers/*.mjs` 接入 `size` 与 `test-perf` 两条 `testAware` 规则：
+   - **单测规模上限**：物理行数硬上限 **1500 行**（Stryker 领域建议 ≤ 1100 行）；5 个历史超限测试文件冻结在 `KNOWN_OVERSIZE`，只降不升；
+   - **`test-perf/no-real-sleep`**：拦截 `timers/promises` 导入及 `new Promise(... setTimeout(..., >=20ms | 变量延迟))`；21 个存量文件按调用次数冻结在 `KNOWN_REAL_SLEEP_TESTS`，只降不升（清零后由 warning 督促移除）；
+   - **`test-perf/mock-timers-cleanup`**：启用 `mock.timers.enable()` 必须配对 `mock.timers.reset()`（1 个存量文件 `KNOWN_MISSING_TIMER_RESET` 冻结）；
+   - **`test-perf/no-helper-dist-import` & `no-helper-global-patch`**：守卫 `unit/helpers/*.mjs` 不直接导入 `dist/` 产物、不读写 `globalThis`，确保多进程并发单测物理隔离。
+3. **真实 I/O 集成测试豁免边界**：`e2e/`、`cdp/` 目录及 4 个真实本地 HTTP/WS/浏览器子进程集成测试（登记在 `REAL_IO_SLEEP_TESTS`）受外部协议生命周期驱动，不纳入 `test-perf/no-real-sleep` 阻断，但仍受单文件 1500 行上限约束。
+
 ---
 
 ## 八、CI 编排
@@ -300,9 +310,11 @@ P-03 是三者中最危险的：P-01/P-02 造成假**红**（吵闹但安全）�
 
 **约束**：跨平台逻辑一律落在 Node 脚本里（`scripts/gates/verify-*.mjs`），CI 只负责调用；确需内联多行命令时必须显式 `shell: bash` 并首行 `set -e`，或拆成独立 step。
 
-### 8.4 已知盲区：`test-integrity` 规则在测试目录上不生效
+### 8.4 已知盲区：`test-integrity` 规则在测试目录上不生效（`size` / `test-perf` 已接入 `testAware`）
 
-`test-integrity` 系列规则（禁 `c8 ignore`、禁测试内 `exit(0)`、禁时区依赖）的判定对象是测试文件，但 `scripts/gates/run.mjs` 的 `SCAN_ROOTS` 只含各包 `src` 与 `scripts/gates`。**因此这些规则在全量门禁里恒为空跑**，只能靠 `scripts/__tests__/gate-*.test.mjs` 单测证明它们本身是对的。
+`size` 与 `test-perf` 四条测试规模及性能规则**已通过 `run.mjs` 的 `testAware` 专项通道覆盖全部 unit/formal 测试与 `unit/helpers`**（受 `KNOWN_OVERSIZE`、`KNOWN_REAL_SLEEP_TESTS`、`KNOWN_MISSING_TIMER_RESET` 冻结棘轮保护，已不再空跑）。
+
+`test-integrity` 系列规则（禁 `c8 ignore`、禁测试内 `exit(0)`、禁时区依赖）的判定对象是测试文件，但 `scripts/gates/run.mjs` 的主 `SCAN_ROOTS` 仍只含各包 `src` 与 `scripts/gates`。**因此这几条规则在全量门禁里目前恒为空跑**，靠 `scripts/__tests__/gate-*.test.mjs` 与 `gates:self-proof` 证明规则本身成立。
 
 实测把四个测试目录加入扫描域后立刻暴露 **75 条存量违规**：
 
@@ -342,6 +354,10 @@ P-03 是三者中最危险的：P-01/P-02 造成假**红**（吵闹但安全）�
 | 8 | CI workflow 多行 run 不得连写多条命令 | `ci/no-masked-command`（`gates:ci`） | 已实现 |
 | 9 | CI workflow 构建前不得读取产物 | `ci/no-prebuild-artifact-read`（`gates:ci`） | 已实现 |
 | 10 | 测试断言不得依赖运行机器本地时区 | `test-integrity/timezone-dependent` | 规则已实现（扫描域待补，见 8.4） |
+| 11 | 测试文件与测试夹具禁止超 1500 行（存量只降不升） | `size/oversize-new` / `oversize-grown`（`testAware` 通道） | 已实现 |
+| 12 | 单元/形式化测试禁止新增真实 `setTimeout` 空等或 `timers/promises` | `test-perf/no-real-sleep`（`testAware` + 存量冻结） | 已实现 |
+| 13 | 使用 `mock.timers.enable()` 必须配对 `mock.timers.reset()` | `test-perf/mock-timers-cleanup`（`testAware` + 存量冻结） | 已实现 |
+| 14 | `unit/helpers/*.mjs` 禁止导入 `dist/` 或篡改 `globalThis` | `test-perf/no-helper-dist-import` / `no-helper-global-patch`（`testAware`） | 已实现 |
 
 ---
 
@@ -363,3 +379,4 @@ P-03 是三者中最危险的：P-01/P-02 造成假**红**（吵闹但安全）�
 |---|---|
 | 2026-11-13 | 初版。基于实测建立四层门禁架构，记录现状基线与假测试三处实证 |
 | 2026-11-14 | **实测修正版**：① 四类假绿手法按实测重写（推翻「`process.exit(0)` 能伪造全绿」的绝对结论）；② 覆盖率基线改为 91.25/81.54/81.64，函数分母改为 1182/217；③ Stryker 结论改为 npm 可装、版本 10.1.1、必须配 `buildCommand`；④ 不变量映射改为 JSON 单一真值源 + 九条校验规则；⑤ 新增执行量统计层、增量覆盖率门禁、文件行数上限、豁免敞口预算四套机制；⑥ 三处假测试已修并逐一做过证伪验证 |
+| 2026-11-26 | **测试性能与拆分守卫落地**：在 `scripts/gates/run.mjs` 新增 `testAware` 专项扫描通道，将 `size`（1500 行硬上限）与新增 `test-perf/*` 四条规则真实接入全部 unit/formal 测试与 `unit/helpers/*.mjs`；登记 5 个历史超限测试与 21 个历史 sleep 测试只降不升冻结棘轮，防止慢测试与巨型单测回潮 |

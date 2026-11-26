@@ -187,6 +187,25 @@ scenario('size', '已登记文件涨过登记值必须阻断', async () => {
   };
 });
 
+scenario('size', '新建单测文件超过 1500 行必须阻断；等于上限必须放行', async () => {
+  const { fileLineLimitRules, FILE_LINE_LIMIT } = await import('../gates/rules/maintainability.mjs');
+  const { stripComments } = await import('../gates/lib/scanner.mjs');
+  const make = (n) => Array.from({ length: n }, (_, i) => `const t${i} = ${i};`).join('\n');
+
+  const atLimit = fileLineLimitRules.check('packages/desktop/__tests__/unit/new-spec.test.mjs', {
+    ...stripComments(make(FILE_LINE_LIMIT)),
+    warnings: [],
+  });
+  const over = fileLineLimitRules.check('packages/desktop/__tests__/unit/new-spec.test.mjs', {
+    ...stripComments(make(FILE_LINE_LIMIT + 1)),
+    warnings: [],
+  });
+  return {
+    ok: atLimit.length === 0 && over.length === 1 && over[0].ruleId === 'size/oversize-new',
+    detail: `单测等于上限违规=${atLimit.length}；超一行违规=${over.length}`,
+  };
+});
+
 /* ============================ 测试完整性 ============================ */
 
 scenario('test-integrity', 'c8 ignore 与测试内强制成功退出必须阻断', async () => {
@@ -200,6 +219,45 @@ scenario('test-integrity', 'c8 ignore 与测试内强制成功退出必须阻断
   return {
     ok: c8.length === 1 && exit.length === 1 && failFast.length === 0,
     detail: `c8=${c8.length} exit(0)=${exit.length} exit(1)=${failFast.length}`,
+  };
+});
+
+/* ============================ 测试性能与夹具 ============================ */
+
+scenario('test-perf', '单测真实 sleep / timers-promises / 缺 reset / helper 污染必须阻断，合规写法放行', async () => {
+  const { testPerfRules } = await import('../gates/rules/maintainability.mjs');
+  const { stripComments } = await import('../gates/lib/scanner.mjs');
+  const scan = (file, src) => testPerfRules.check(file, { ...stripComments(src), warnings: [] });
+
+  const testPath = 'packages/desktop/__tests__/unit/selfproof-perf.test.mjs';
+  const helperPath = 'packages/desktop/__tests__/unit/helpers/selfproofHarness.mjs';
+
+  const badSleep = scan(testPath, 'await new Promise((r) => setTimeout(r, 50));\n');
+  const badTimers = scan(testPath, "import { setTimeout } from 'node:timers/promises';\n");
+  const badReset = scan(testPath, "test('x', (t) => { t.mock.timers.enable({ apis: ['setTimeout'] }); });\n");
+  const badHelperDist = scan(helperPath, "import { f } from '../../dist/renderer/a.mjs';\n");
+  const badHelperGlobal = scan(helperPath, 'globalThis.__leak = true;\n');
+
+  const goodTest = scan(
+    testPath,
+    "test('ok', async (t) => {\n  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });\n  try { await new Promise((r) => setTimeout(r, 0)); } finally { t.mock.timers.reset(); }\n});\n",
+  );
+  const goodHelper = scan(helperPath, '// 禁止 dist/ 与 globalThis\nexport const make = (f) => ({ f });\n');
+
+  const ok =
+    badSleep.length === 1 &&
+    badTimers.length === 1 &&
+    badReset.length === 1 &&
+    badHelperDist.length === 1 &&
+    badHelperGlobal.length === 1 &&
+    goodTest.length === 0 &&
+    goodHelper.length === 0;
+  return {
+    ok,
+    detail:
+      `sleep=${badSleep.length} timers=${badTimers.length} reset=${badReset.length} ` +
+      `helperDist=${badHelperDist.length} helperGlobal=${badHelperGlobal.length} ` +
+      `goodTest=${goodTest.length} goodHelper=${goodHelper.length}`,
   };
 });
 

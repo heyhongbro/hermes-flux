@@ -117,8 +117,8 @@ export const MUTATION_DOMAINS = {
   },
   turnSettlement: {
     title: '流式回合收口与状态收敛 (Turn Settlement)',
-    mutate: ['packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:546-763'],
-    testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.test.mjs'],
+    mutate: ['packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:543-769'],
+    testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.settlement.test.mjs'],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
     // 实测 393 mutant / 345 killed / 48 survived / 0 noCov = 87.79%（2026-11-25）
@@ -127,7 +127,7 @@ export const MUTATION_DOMAINS = {
   turnExecutionWatchdog: {
     title: '回合看门狗探活续期与离线收敛 (Turn Execution Watchdog)',
     mutate: ['packages/desktop/src/renderer/services/turnExecutionService.ts:232-486'],
-    testFiles: ['packages/desktop/__tests__/unit/turnExecutionService.test.mjs'],
+    testFiles: ['packages/desktop/__tests__/unit/turnExecutionService.watchdog.test.mjs'],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/services/turnExecutionService.ts',
     // 实测 317 mutant / 260 killed / 57 survived / 0 noCov = 82.02%（2026-11-25）
@@ -140,7 +140,10 @@ export const MUTATION_DOMAINS = {
       'packages/desktop/src/renderer/services/turnExecutionService.ts:942-1016',
       'packages/desktop/src/renderer/services/turnExecutionService.ts:1095-1166',
     ],
-    testFiles: ['packages/desktop/__tests__/unit/turnExecutionService.test.mjs'],
+    testFiles: [
+      'packages/desktop/__tests__/unit/turnExecutionService.submit.test.mjs',
+      'packages/desktop/__tests__/unit/turnExecutionService.interrupt.test.mjs',
+    ],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/services/turnExecutionService.ts',
     // 实测 210 mutant / 186 killed / 24 survived / 0 noCov = 88.57%（2026-11-25）
@@ -149,11 +152,11 @@ export const MUTATION_DOMAINS = {
   sessionSelectToolPatch: {
     title: '会话切回流式工具补刷与删除清理 (Session Select & Delete Cleanup)',
     mutate: [
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:409-415',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:446-452',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:742-751',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:779-797',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:825-838',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:414-420',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:451-457',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:747-756',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:784-802',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:830-843',
     ],
     testFiles: ['packages/desktop/__tests__/unit/sessionOperationService.test.mjs'],
     buildCommand:
@@ -296,7 +299,10 @@ export const MUTATION_DOMAINS = {
   liveStreamCoordHydration: {
     title: '实时流解析、同步与远端补全协调器 (Live Stream Hydration)',
     mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:90-390'],
-    testFiles: ['packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs'],
+    testFiles: [
+      'packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs',
+      'packages/desktop/__tests__/unit/liveStreamCoordinator.boundaries.test.mjs',
+    ],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
     // 实测 358 mutant / 306 killed / 52 survived / 0 noCov = 85.47%（2026-11-25）
@@ -305,7 +311,10 @@ export const MUTATION_DOMAINS = {
   liveStreamCoordAttach: {
     title: '实时流恢复挂载与观察者投影协调器 (Live Stream Attach & Observer)',
     mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:390-635'],
-    testFiles: ['packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs'],
+    testFiles: [
+      'packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs',
+      'packages/desktop/__tests__/unit/liveStreamCoordinator.boundaries.test.mjs',
+    ],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
     // 实测 284 mutant / 240 killed / 44 survived / 0 noCov = 84.51%（2026-11-25）
@@ -345,12 +354,12 @@ export const MUTATION_DOMAINS = {
   gatewayStreamingDispatch: {
     title: '网关流式事件动作分发 (Gateway Streaming Dispatch)',
     mutate: [
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:181-220',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:193-220',
       'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:277-385',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:412-527',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:412-536',
     ],
     testFiles: [
-      'packages/desktop/__tests__/unit/gatewayEventDispatcher.test.mjs',
+      'packages/desktop/__tests__/unit/gatewayEventDispatcher.dispatch.test.mjs',
       'packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs',
     ],
     buildCommand:
@@ -361,11 +370,12 @@ export const MUTATION_DOMAINS = {
   gatewayFrameAndReconnect: {
     title: '网关帧解析与重连续流 (Gateway Frame & Reconnect)',
     mutate: [
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:789-921',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1242-1244',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1346-1403',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:181-191',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:795-927',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1248-1250',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1351-1409',
     ],
-    testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.test.mjs'],
+    testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.reconnect.test.mjs'],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
     // 实测 284 mutant / 239 killed / 2 timeout / 43 survived / 0 noCov = 84.86%（2026-11-25）

@@ -48,16 +48,16 @@ export const SUITES = {
     ],
     pattern: /\.test\.mjs$/,
     excludeDirs: ['formal'],
-    // 实测 238 个（core + ui + desktop/unit + mobile/unit + scripts），用例 2817+。
+    // 实测 267 个（core + ui + desktop/unit + mobile/unit + scripts），用例 2994+。
     // 下限只允许调高：删测试或目录改名会让枚举变少，本层随即失败。
-    minFiles: 238,
+    minFiles: 267,
   },
   formal: {
     label: '形式化不变量',
     roots: ['packages/core/__tests__/formal'],
     pattern: /\.test\.mjs$/,
     excludeDirs: [],
-    minFiles: 10,
+    minFiles: 23,
   },
 };
 
@@ -93,6 +93,20 @@ export function listSuiteFiles(suiteName) {
   for (const root of suite.roots) {
     for (const file of listTestFiles(root, { pattern: suite.pattern, excludeDirs: suite.excludeDirs })) {
       set.add(file);
+    }
+  }
+  return [...set].sort();
+}
+
+/** 枚举全部单元/形式化测试文件及关联单测夹具文件，供门禁 testAware 通道静态巡检 */
+export function listAllTestAndHelperFiles() {
+  const set = new Set([
+    ...listSuiteFiles('unit'),
+    ...listSuiteFiles('formal'),
+  ]);
+  for (const root of SUITES.unit.roots) {
+    for (const file of listTestFiles(root, { pattern: /\.mjs$/ })) {
+      if (file.includes('/helpers/')) set.add(file);
     }
   }
   return [...set].sort();
