@@ -18,6 +18,12 @@ export type ConversationMode = 'scratchpad' | 'foreground' | 'group';
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected';
 export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'error' | 'interrupted';
 
+export interface ToolOutputRiskInfo {
+  risk: string;
+  findings: string[];
+  redacted: boolean;
+}
+
 export interface ConversationToolVM {
   id: string;
   name: string;
@@ -32,6 +38,7 @@ export interface ConversationToolVM {
   delegationId?: string;
   imagePath?: string;
   inlineDiff?: string;
+  riskInfo?: ToolOutputRiskInfo;
 }
 
 export interface ConversationMessageVM {

@@ -249,6 +249,31 @@ export interface GroupMemberActivityView {
   progressAt?: number;
 }
 
+export type GroupApprovalModeChoice = 'once' | 'session' | 'always' | 'deny';
+
+export type NormalizedGroupPendingAction =
+  | {
+      kind: 'approval';
+      memberId: string;
+      taskId: string;
+      executionGeneration: number;
+      requestId: string;
+      command?: string;
+      description?: string;
+      toolName?: string;
+      choices: GroupApprovalModeChoice[];
+      allowSession?: boolean;
+      allowPermanent?: boolean;
+    }
+  | {
+      kind: 'retry' | 'prepare';
+      memberId: string;
+      taskId: string;
+      executionGeneration: number;
+      errorDetail?: string;
+      rawKind?: string;
+    };
+
 export interface GroupRoomStatusView {
   roomId: string;
   name: string;
@@ -257,10 +282,14 @@ export interface GroupRoomStatusView {
   running: boolean;
   working: boolean;
   blocked: boolean;
+  counts: Record<string, number>;
+  pendingActions: NormalizedGroupPendingAction[];
   memberActivity: GroupMemberActivityView[];
   lastError?: string | null;
   updatedAt: number;
 }
+
+export type NormalizedApprovalMode = 'manual' | 'smart' | 'off';
 
 export interface ScopedSessionStatus {
   scopeKey: string;
@@ -269,6 +298,7 @@ export interface ScopedSessionStatus {
   model?: string;
   provider?: string;
   projectName?: string;
+  approvalMode?: NormalizedApprovalMode;
   usage: SessionUsageView | null;
   usageError?: string;
   breakdown: ContextBreakdownState;
@@ -278,6 +308,95 @@ export interface ScopedSessionStatus {
 
 export type SessionStatusListener = () => void;
 
+export function normalizeSessionApprovalMode(info: SessionLiveInfo | Record<string, unknown> | null | undefined): NormalizedApprovalMode | undefined {
+  if (!info || typeof info !== 'object') return undefined;
+  const rec = info as Record<string, unknown>;
+  const rawMode = rec.approval_mode;
+  if (rawMode === 'manual' || rawMode === 'smart' || rawMode === 'off') {
+    return rawMode;
+  }
+  if (rec.yolo === true) return 'off';
+  if (rec.edit_approval_policy === 'ask') return 'manual';
+  return undefined;
+}
+
+function normalizeGroupPendingActions(rawList: unknown): NormalizedGroupPendingAction[] {
+  if (!Array.isArray(rawList)) return [];
+  const out: NormalizedGroupPendingAction[] = [];
+  for (const raw of rawList) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const item = raw as Record<string, unknown>;
+    const rawKind = typeof item.kind === 'string' ? item.kind.trim() : '';
+    const memberId = typeof item.member_id === 'string' ? item.member_id.trim() : '';
+    const taskId = typeof item.task_id === 'string' ? item.task_id.trim() : '';
+    const executionGeneration =
+      typeof item.execution_generation === 'number' && Number.isFinite(item.execution_generation)
+        ? item.execution_generation
+        : 0;
+    const requestId = typeof item.request_id === 'string' ? item.request_id.trim() : '';
+
+    if (rawKind === 'approval' || requestId) {
+      if (!taskId || !requestId) continue;
+      const validChoices: GroupApprovalModeChoice[] = [];
+      if (Array.isArray(item.choices)) {
+        for (const c of item.choices) {
+          if (c === 'once' || c === 'session' || c === 'always' || c === 'deny') {
+            validChoices.push(c);
+          }
+        }
+      }
+      if (validChoices.length === 0) {
+        validChoices.push('once');
+        if (item.allow_session === true) validChoices.push('session');
+        if (item.allow_permanent === true) validChoices.push('always');
+        validChoices.push('deny');
+      }
+      out.push({
+        kind: 'approval',
+        memberId,
+        taskId,
+        executionGeneration,
+        requestId,
+        ...(typeof item.command === 'string' && item.command ? { command: item.command } : {}),
+        ...(typeof item.description === 'string' && item.description ? { description: item.description } : {}),
+        ...(typeof item.tool_name === 'string' && item.tool_name ? { toolName: item.tool_name } : {}),
+        choices: validChoices,
+        ...(typeof item.allow_session === 'boolean' ? { allowSession: item.allow_session } : {}),
+        ...(typeof item.allow_permanent === 'boolean' ? { allowPermanent: item.allow_permanent } : {}),
+      });
+      continue;
+    }
+
+    if (taskId.startsWith('prepare:')) {
+      out.push({
+        kind: 'prepare',
+        memberId,
+        taskId,
+        executionGeneration,
+        ...(typeof item.error === 'string' && item.error ? { errorDetail: item.error } : {}),
+        ...(rawKind ? { rawKind } : {}),
+      });
+      continue;
+    }
+
+    if (taskId) {
+      const detail =
+        (typeof item.error === 'string' && item.error) ||
+        (typeof item.reason === 'string' && item.reason) ||
+        (typeof item.message === 'string' && item.message) ||
+        undefined;
+      out.push({
+        kind: 'retry',
+        memberId,
+        taskId,
+        executionGeneration,
+        ...(detail ? { errorDetail: detail } : {}),
+        ...(rawKind ? { rawKind } : {}),
+      });
+    }
+  }
+  return out;
+}
 function createDefaultBreakdown(): ContextBreakdownState {
   return {
     status: 'idle',
@@ -360,7 +479,12 @@ export class SessionStatusStore {
         contextFiles: scope.breakdown.contextFiles.slice(),
       },
       groupState: scope.groupState
-        ? { ...scope.groupState, memberActivity: scope.groupState.memberActivity.slice() }
+        ? {
+            ...scope.groupState,
+            memberActivity: scope.groupState.memberActivity.slice(),
+            pendingActions: scope.groupState.pendingActions.slice(),
+            counts: { ...scope.groupState.counts },
+          }
         : null,
     };
   }
@@ -400,6 +524,10 @@ export class SessionStatusStore {
     }
     if (info.project && typeof info.project.name === 'string' && info.project.name.trim()) {
       scope.projectName = info.project.name.trim();
+    }
+    const nextApprovalMode = normalizeSessionApprovalMode(info);
+    if (nextApprovalMode) {
+      scope.approvalMode = nextApprovalMode;
     }
 
     if (info.usage) {
@@ -628,6 +756,14 @@ export class SessionStatusStore {
       };
     });
 
+    const pendingActions = normalizeGroupPendingActions(driver?.pending_actions);
+    const counts: Record<string, number> = {};
+    if (driver?.counts && typeof driver.counts === 'object' && !Array.isArray(driver.counts)) {
+      for (const [k, v] of Object.entries(driver.counts)) {
+        if (typeof v === 'number' && Number.isFinite(v)) counts[k] = v;
+      }
+    }
+
     scope.groupState = {
       roomId: result.room?.room_id || result.room_id || roomId,
       name: result.room?.name || result.name || roomId,
@@ -636,6 +772,8 @@ export class SessionStatusStore {
       running: Boolean(driver?.running),
       working: Boolean(driver?.working),
       blocked: Boolean(driver?.blocked),
+      counts,
+      pendingActions,
       memberActivity,
       lastError: driver?.last_error ?? null,
       updatedAt: Date.now(),

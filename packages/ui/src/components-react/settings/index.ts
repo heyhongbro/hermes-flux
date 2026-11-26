@@ -6,6 +6,14 @@ export {
 } from './ProjectDirectoryPicker.js';
 export { BotManagerView } from './BotManagerView.js';
 export { McpAddDialog, type McpAddDialogProps } from './McpAddDialog.js';
+export {
+  McpOAuthInlinePanel,
+  startMcpOauthFlow,
+  triggerMcpReload,
+  type McpOauthFlowView,
+  type McpOauthInlineState,
+  type McpReloadConfirmState,
+} from './McpOAuthInlinePanel.js';
 export { McpRemoveConfirmDialog, type McpRemoveConfirmDialogProps } from './McpRemoveConfirmDialog.js';
 export {
   GroupedModelSelect,
@@ -75,6 +83,9 @@ export {
   type SettingsSearchEntry,
   type SettingsActions,
   type SettingsActionResult,
+  type McpReloadActionResult,
+  type McpOauthStartViewResult,
+  type McpOauthPollViewResult,
   type ToggleProviderAgentResult,
   type SettingsIconName,
   type SettingsLoadable,

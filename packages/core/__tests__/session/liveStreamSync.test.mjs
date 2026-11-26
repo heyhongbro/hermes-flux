@@ -513,7 +513,11 @@ test('LiveStreamSync 变异消杀全边界：游标换行、注册 defaults、of
   assert.equal('displayMetadata' in badFields, false);
   assert.equal('queuedUser' in badFields, false);
 
-  // 6. decideWatchdogProbeAction 无 probeResult 回落 settle-completed
+  // 6. decideWatchdogProbeAction 无 probeResult 回落 settle-completed，存在挂起交互卡时直接续期 renew
+  assert.equal(
+    decideWatchdogProbeAction({ reason: 'inactivity', isGatewayConnected: true, hasPendingInteractivePrompt: true }),
+    'renew',
+  );
   assert.equal(
     decideWatchdogProbeAction({ reason: 'inactivity', isGatewayConnected: true }),
     'settle-completed',

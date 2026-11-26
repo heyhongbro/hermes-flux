@@ -136,6 +136,16 @@ export interface TurnExecutionDeps {
   readonly getLiveStreamRegistry?: () => LiveStreamRegistry;
   readonly resolveBotNameForSession?: (storedSessionId: string) => string | null;
   readonly onWatchdogTurnStillRunning?: (storedSessionId: string, resumeResult: Record<string, unknown>) => void;
+  readonly hasPendingInteractivePrompt?: (storedSessionId: string, liveSessionId?: string | null) => boolean;
+  readonly onCaptureInteractiveFence?: () => number;
+  readonly onInteractiveResumeReconciled?: (input: {
+    client: HermesGatewayClient;
+    storedSessionId: string;
+    liveSessionId: string | null;
+    profile?: string;
+    resume: Record<string, unknown>;
+    fence: number;
+  }) => void;
   readonly onWatchdogTurnCompleted?: (storedSessionId: string) => Promise<void> | void;
   readonly onQueuedSubmitRace?: (storedSessionId: string) => Promise<void> | void;
   readonly watchdogHardLimitMs?: number;
@@ -169,6 +179,7 @@ export interface TurnExecutionDeps {
   };
   watchdogIdleTimeoutMs?: TurnWatchdogTimeoutMs;
   readonly onBeforeSendEntity?: (kind: 'session' | 'group', id: string, profile?: string) => void;
+  readonly isGroupBlocked?: (roomId: string) => boolean;
 }
 
 export type TurnExecutionWatchdogFeeder = () => void;
@@ -343,9 +354,20 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
     let resumeRes: Record<string, unknown> | null = null;
     let probeError = false;
+    const interactiveFence = deps.onCaptureInteractiveFence?.() ?? 0;
     try {
       if (client && state.gatewayConnected !== false) {
         resumeRes = await callSessionResumeForProbe(client, targetStoredId, resolvedProfile);
+        if (resumeRes) {
+          deps.onInteractiveResumeReconciled?.({
+            client,
+            storedSessionId: targetStoredId,
+            liveSessionId: state.activeLiveSessionId || null,
+            profile: resolvedProfile,
+            resume: resumeRes,
+            fence: interactiveFence,
+          });
+        }
       }
     } catch (err) {
       probeError = true;
@@ -361,6 +383,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       probeResult: resumeRes ? { isRunning: inflight.isRunning } : null,
       probeError,
       consecutiveProbeFailures,
+      hasPendingInteractivePrompt: deps.hasPendingInteractivePrompt?.(targetStoredId, state.activeLiveSessionId) ?? false,
     });
 
     if (decision === 'renew' || decision === 'defer-offline') {
@@ -591,6 +614,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       const state = deps.getState();
       return state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId;
     },
+    isBlocked: (roomId) => Boolean(deps.isGroupBlocked?.(roomId)),
     onSyncLogs: (roomId, logs) => {
       syncGroupRoomLogsToState(roomId, logs);
     },

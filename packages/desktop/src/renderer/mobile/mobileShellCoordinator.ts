@@ -29,6 +29,7 @@ import {
   inferMobileAppearanceFromTheme,
   mountMobileWorkspaceShell,
   resolveMobileSkinId,
+  resolveWorkspaceShellMode,
   t,
   type ConversationToolVM,
   type ConversationOrgPrefs,
@@ -63,6 +64,8 @@ import {
   normalizeOrgProfileName,
   type DeliverableItem,
 } from '@hermes-flux/core';
+import type { BackgroundWaitingSummary } from '@hermes-flux/core';
+import type { InteractivePromptService } from '../services/interactivePromptService.js';
 import type { LeftRailController } from '../events/leftRailController.js';
 import { openBrowserAttachmentPicker } from '../events/inputAttachmentPicker.js';
 import { resolveActiveWorkspaceCwd, type AppState } from '../state/appState.js';
@@ -151,11 +154,16 @@ export interface MobileShellCoordinatorDeps {
     profile?: string,
   ) => Promise<{ ok: boolean; message?: string }>;
   triggerHapticSelection?: () => void;
+  switchApproval?: (mode: 'manual' | 'smart' | 'off') => Promise<void> | void;
+  interactivePromptService?: InteractivePromptService;
+  openInteractiveExternalUrl?: (url: string) => void;
+  onSelectWaitingSummary?: (summary: BackgroundWaitingSummary) => void;
   syncReactMessageList?: (force?: boolean) => void;
   syncAgentPresenceHost?: () => void;
   syncAgentPresence?: () => void;
   onEnterStage?: () => void;
   onRetryConnect?: () => Promise<void> | void;
+  onCancelRollback?: () => void;
   syncStatusBarAppearance?: (appearance: 'dark' | 'light') => void;
   getSystemPrefersDark?: () => boolean;
   storage?: MobileStorageLike;
@@ -171,6 +179,7 @@ export interface MobileShellCoordinator {
   renderMobileShell(host: HTMLElement): void;
   buildSnapshot(): MobileWorkspaceSnapshot;
   getActions(): MobileWorkspaceActions;
+  refillStageComposer(text: string): void;
   openSubagentDetail(payload: { messageId: string; tools: ConversationToolVM[] }): void;
   openFileInReader(filePath: string, previewUrl?: string): Promise<void>;
   openMediaLightbox(items: readonly MediaLightboxItem[], initialIndex: number): void;
@@ -218,15 +227,15 @@ function loadCollapsedSections(storage?: MobileStorageLike): MobileSectionCollap
   }
 }
 
-function loadAppearancePreference(
-  storage: MobileStorageLike | undefined,
-  currentTheme: string,
-): MobileAppearancePreference {
+/**
+ * 读取移动端外观偏好，未持久化配置时默认 `'system'`（跟随操作系统深浅色自动切换）。
+ */
+function loadAppearancePreference(storage: MobileStorageLike | undefined): MobileAppearancePreference {
   const saved = readStorage(storage, MOBILE_APPEARANCE_STORAGE_KEY);
   if (saved === 'dark' || saved === 'light' || saved === 'system') {
     return saved;
   }
-  return inferMobileAppearanceFromTheme(currentTheme);
+  return 'system';
 }
 
 export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): MobileShellCoordinator {
@@ -235,7 +244,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
   let homeTab: MobileHomeTab = 'chats';
   let searchOpen = false;
   let collapsed = loadCollapsedSections(deps.storage);
-  let appearancePref: MobileAppearancePreference = loadAppearancePreference(deps.storage, initialState.theme);
+  let appearancePref: MobileAppearancePreference = loadAppearancePreference(deps.storage);
   let newChatOpen = false;
   let newChatStep: MobileNewChatStep = 'compose';
   let newChatTargetKind: 'bot' | 'group' = 'bot';
@@ -252,6 +261,8 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
   let subagentSheet: MobileSubagentSheetState | null = null;
   let actionSheet: MobileActionSheetState | null = null;
   let mediaLightbox: MobileMediaLightboxState | null = null;
+  let stageComposerDraft: { text: string; version: number } | null = null;
+  let stageComposerDraftVersion = 0;
 
   let mountHandle: MobileWorkspaceMount | null = null;
   let mountedHost: HTMLElement | null = null;
@@ -286,7 +297,43 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     }
   };
 
-  syncSkinAndStatusBar(false);
+  const isMobileModeActive = (): boolean => {
+    const state = deps.getState();
+    const hasMobileBridge =
+      typeof window !== 'undefined' && Boolean((window as { hermesMobile?: unknown }).hermesMobile);
+    const search = typeof location !== 'undefined' ? location.search : '';
+    return (
+      resolveWorkspaceShellMode({
+        platform: state.platform,
+        hasMobileBridge,
+        search,
+      }) === 'mobile'
+    );
+  };
+
+  if (isMobileModeActive()) {
+    syncSkinAndStatusBar(false);
+  }
+
+  const mediaQueryList =
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-color-scheme: dark)')
+      : null;
+
+  const handleSystemSchemeChange = (): void => {
+    if (appearancePref === 'system' && isMobileModeActive()) {
+      syncSkinAndStatusBar(false);
+      deps.render();
+    }
+  };
+
+  if (mediaQueryList) {
+    if (typeof mediaQueryList.addEventListener === 'function') {
+      mediaQueryList.addEventListener('change', handleSystemSchemeChange);
+    } else if (typeof mediaQueryList.addListener === 'function') {
+      mediaQueryList.addListener(handleSystemSchemeChange);
+    }
+  }
 
   const resolveInspectorBotProfile = (state: AppState): string => {
     const focus = state.activeFocus;
@@ -373,7 +420,9 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
   };
 
   function buildSnapshot(): MobileWorkspaceSnapshot {
-    syncSkinAndStatusBar(false);
+    if (isMobileModeActive()) {
+      syncSkinAndStatusBar(false);
+    }
     const state = deps.getState();
     const nowMs = deps.now ? deps.now() : Date.now();
     const allProfiles: LeftRailProfile[] = deps.leftRailController.decorateRailProfiles(nowMs);
@@ -473,6 +522,14 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       messagesCount: state.messages.length,
       selectedModel: state.selectedModel,
       currentProvider: state.currentProvider,
+      approvalMode: state.approvalMode,
+      interactivePrompts: deps.interactivePromptService?.getActivePromptsForCurrentFocus() ?? [],
+      activeInteractivePromptKey:
+        deps.interactivePromptService?.getActivePromptKeyForCurrentFocus() ?? null,
+      interactiveDockCollapsed:
+        deps.interactivePromptService?.isCollapsedForCurrentFocus() ?? false,
+      backgroundWaitingSummaries:
+        deps.interactivePromptService?.getBackgroundWaitingSummaries() ?? [],
       availableModels: state.availableModels,
       modelDetails,
       attachments: state.attachments,
@@ -500,6 +557,14 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       groupMembers: resolveInspectorGroupMembers(state),
       subagentSheet,
       actionSheet,
+      rollbackBanner:
+        state.rollbackArmed && state.rollbackArmed.sessionId === state.activeSessionId
+          ? {
+              removedCount: state.rollbackArmed.removedCount,
+              anchorLabel: state.rollbackArmed.anchorLabel,
+            }
+          : null,
+      stageComposerDraft,
       sideAgentCapsules: state.sideAgentCapsules.map((c) => ({
         id: c.id,
         kind: c.kind,
@@ -594,16 +659,19 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       deps.render();
     },
     onSelectBot: (botName) => {
+      stageComposerDraft = null;
       activePane = 'stage';
       void deps.openBotChat(botName);
       deps.render();
     },
     onSelectGroup: (roomId) => {
+      stageComposerDraft = null;
       activePane = 'stage';
       void deps.openGroupRoom(roomId);
       deps.render();
     },
     onSelectSession: (sessionId, botName) => {
+      stageComposerDraft = null;
       activePane = 'stage';
       void deps.selectSession(sessionId, { botName });
       deps.render();
@@ -647,12 +715,15 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     onActionOpen: (sheet) => {
       actionSheet = null;
       if (sheet.kind === 'bot') {
+        stageComposerDraft = null;
         activePane = 'stage';
         void deps.openBotChat(sheet.id);
       } else if (sheet.kind === 'group') {
+        stageComposerDraft = null;
         activePane = 'stage';
         void deps.openGroupRoom(sheet.id);
       } else if (sheet.kind !== 'folder') {
+        stageComposerDraft = null;
         activePane = 'stage';
         const curState = deps.getState();
         const targetProfile = sheet.botName ? normalizeOrgProfileName(sheet.botName) : null;
@@ -806,6 +877,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       newChatOpen = false;
       newChatStep = 'compose';
       newChatProjectId = undefined;
+      stageComposerDraft = null;
       activePane = 'stage';
       deps.render();
 
@@ -836,13 +908,52 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       })();
     },
     onSendMessage: (text) => {
+      stageComposerDraft = null;
       void deps.routeSend(text);
     },
     onInterruptTurn: () => {
       void deps.interruptTurn();
     },
+    onCancelRollback: () => {
+      stageComposerDraft = null;
+      deps.onCancelRollback?.();
+    },
     onSelectModel: (model, provider) => {
       void deps.switchModel(model, provider);
+    },
+    onSelectApprovalMode: (mode) => {
+      void deps.switchApproval?.(mode);
+    },
+    onReplyInteractive: async (prompt, payload) => {
+      if (deps.interactivePromptService) {
+        return await deps.interactivePromptService.submitReply(prompt, payload);
+      }
+      return false;
+    },
+    onLockClarifyAnswer: async (prompt, questionId, answer) => {
+      if (deps.interactivePromptService) {
+        await deps.interactivePromptService.lockClarifyAnswer(prompt, questionId, answer);
+      }
+    },
+    onOpenInteractiveExternalUrl: (url) => {
+      deps.openInteractiveExternalUrl?.(url);
+    },
+    onWakeConnection: async (prompt) => {
+      if (deps.interactivePromptService) {
+        await deps.interactivePromptService.wakeConnection(prompt);
+      }
+    },
+    onToggleInteractiveDockCollapsed: (collapsed) => {
+      deps.interactivePromptService?.setCollapsedForCurrentFocus(collapsed);
+    },
+    onSelectInteractivePrompt: (canonicalKey) => {
+      deps.interactivePromptService?.setActivePromptKeyForCurrentFocus(canonicalKey);
+    },
+    onSelectWaitingSummary: (summary) => {
+      stageComposerDraft = null;
+      activePane = 'stage';
+      deps.onSelectWaitingSummary?.(summary);
+      deps.render();
     },
     onRefreshModels: () => {
       void deps.fetchModelOptions?.();
@@ -1160,11 +1271,25 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     mountHandle.update();
   }
 
+  function refillStageComposer(text: string): void {
+    stageComposerDraftVersion += 1;
+    stageComposerDraft = { text, version: stageComposerDraftVersion };
+    activePane = 'stage';
+    deps.render();
+  }
+
   function openSubagentDetail(payload: { messageId: string; tools: ConversationToolVM[] }): void {
     actions.onOpenSubagentSheet(payload);
   }
 
   function dispose(): void {
+    if (mediaQueryList) {
+      if (typeof mediaQueryList.removeEventListener === 'function') {
+        mediaQueryList.removeEventListener('change', handleSystemSchemeChange);
+      } else if (typeof mediaQueryList.removeListener === 'function') {
+        mediaQueryList.removeListener(handleSystemSchemeChange);
+      }
+    }
     mountHandle?.unmount();
     mountHandle = null;
     mountedHost = null;
@@ -1174,6 +1299,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     renderMobileShell,
     buildSnapshot,
     getActions: () => actions,
+    refillStageComposer,
     openSubagentDetail,
     openFileInReader,
     openMediaLightbox,

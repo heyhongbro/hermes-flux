@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -61,11 +62,17 @@ test('拦截器证伪实证 2：代码行已执行但存在未覆盖条件分支
     /Branch Coverage < 100%/,
     '必须明确报告分支覆盖未达 100%',
   );
-  // 第 277 行为三元运算符单侧未命中分支（steps.length > 0 ? steps : [1]）
+  // 动态定位三元运算符单侧未命中分支（steps.length > 0 ? steps : [1]），避免前置类型/逻辑追加导致行号漂移假红
+  const presenceLines = fs
+    .readFileSync(path.join(REPO_ROOT, 'packages/core/src/agent/agentPresence.ts'), 'utf8')
+    .split(/\r?\n/);
+  const ternaryIdx = presenceLines.findIndex((line) => line.includes('steps.length > 0 ? steps : [1]'));
+  assert.ok(ternaryIdx >= 0, '预期能在 agentPresence.ts 中找到目标三元表达式');
+  const expectedLine = ternaryIdx + 1;
   assert.match(
     r.stdout,
-    /行：.*277/,
-    '必须精准定位到未覆盖分支所在的源码行号 277',
+    new RegExp(`行：.*${expectedLine}`),
+    `必须精准定位到未覆盖分支所在的源码行号 ${expectedLine}`,
   );
 });
 

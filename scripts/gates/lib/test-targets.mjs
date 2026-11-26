@@ -48,16 +48,16 @@ export const SUITES = {
     ],
     pattern: /\.test\.mjs$/,
     excludeDirs: ['formal'],
-    // 实测 272 个（core + ui + desktop/unit + mobile/unit + scripts），用例 3039+。
+    // 实测 287 个（core + ui + desktop/unit + mobile/unit + scripts），用例 3119+。
     // 下限只允许调高：删测试或目录改名会让枚举变少，本层随即失败。
-    minFiles: 272,
+    minFiles: 287,
   },
   formal: {
     label: '形式化不变量',
     roots: ['packages/core/__tests__/formal'],
     pattern: /\.test\.mjs$/,
     excludeDirs: [],
-    minFiles: 23,
+    minFiles: 24,
   },
 };
 

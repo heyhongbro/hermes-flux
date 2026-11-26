@@ -181,6 +181,7 @@ export interface CapacitorBridgePluginOverrides {
   userAgent?: string;
   isPluginAvailable?: (name: string) => boolean;
   app?: Pick<typeof App, 'getInfo' | 'minimizeApp' | 'addListener'>;
+  browser?: Pick<typeof Browser, 'open' | 'addListener'>;
   keyboard?: Pick<typeof Keyboard, 'addListener'>;
   statusBar?: Pick<typeof StatusBar, 'setStyle'>;
   haptics?: Pick<typeof Haptics, 'selectionChanged'>;
@@ -277,6 +278,7 @@ export function resolveVisualViewportKeyboardHeight(
 
 export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginOverrides): HermesMobileBridge {
   const capApp = overrides?.app ?? App;
+  const capBrowser = overrides?.browser ?? Browser;
   const capKeyboard = overrides?.keyboard ?? Keyboard;
   const capStatusBar = overrides?.statusBar ?? StatusBar;
   const capHaptics = overrides?.haptics ?? Haptics;
@@ -602,7 +604,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
       if (!url || typeof url !== 'string') return;
       if (url.startsWith('http://') || url.startsWith('https://')) {
         try {
-          await Browser.open({ url });
+          await capBrowser.open({ url });
         } catch {
           if (typeof window !== 'undefined') window.open(url, '_blank');
         }
@@ -989,6 +991,15 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
     }).catch(logBridgeDegrade);
   }
 
+  // 系统外链 OAuth 浏览器关停事件转发：驱动 connectors.operation.wake 自动探测授权终态
+  if (checkPlugin('Browser')) {
+    capBrowser.addListener('browserFinished', () => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('hermes-mobile-browser-finished'));
+      }
+    }).catch(logBridgeDegrade);
+  }
+
   // 原生网络接口变化监听：精确捕捉 Wi-Fi <-> 5G / VPN 静默切换与断开恢复
   if (checkPlugin('Network') || overrides?.network) {
     let previousType = 'unknown';
@@ -1022,6 +1033,49 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
   return bridge;
 }
 
+/**
+ * 冷启动阶段立即按移动端持久化偏好（默认跟随系统）推导双皮肤与状态栏极性，避免深浅闪烁。
+ */
+export function resolveInitialMobileAppearance(): {
+  skin: 'obsidian-gold' | 'jade-white';
+  appearance: 'dark' | 'light';
+} {
+  let savedPref: string | null = null;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      savedPref = window.localStorage.getItem('hermes_flux_mobile_appearance');
+    }
+  // gate-degrade: 隐私模式或测试桩禁用 localStorage 时回落系统深浅色判定
+  } catch {}
+  let appearance: 'dark' | 'light';
+  if (savedPref === 'light') {
+    appearance = 'light';
+  } else if (savedPref === 'dark') {
+    appearance = 'dark';
+  } else {
+    const prefersDark =
+      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+        : true;
+    appearance = prefersDark ? 'dark' : 'light';
+  }
+  return {
+    skin: appearance === 'light' ? 'jade-white' : 'obsidian-gold',
+    appearance,
+  };
+}
+
+function applyInitialMobileDocumentAppearance(bridge?: HermesMobileBridge): void {
+  const { skin, appearance } = resolveInitialMobileAppearance();
+  if (typeof document !== 'undefined' && document.documentElement) {
+    document.documentElement.setAttribute?.('data-theme', skin);
+    document.documentElement.setAttribute?.('data-appearance', appearance);
+  }
+  if (bridge?.syncStatusBarAppearance) {
+    void bridge.syncStatusBarAppearance(appearance);
+  }
+}
+
 // 自动向全局注入（同时注入 hermesMobile 与 hermesDesktop，彻底消灭未适配代码的报错与冲突）
 if (typeof window !== 'undefined') {
   const mobileBridge = createCapacitorPlatformBridge();
@@ -1029,4 +1083,5 @@ if (typeof window !== 'undefined') {
   if (!window.hermesDesktop) {
     window.hermesDesktop = mobileBridge;
   }
+  applyInitialMobileDocumentAppearance(mobileBridge);
 }

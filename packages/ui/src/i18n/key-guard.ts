@@ -23,6 +23,7 @@ import type { zhInspector } from './messages/inspector.js';
 import type { zhAgents } from './messages/agents.js';
 import type { zhGallery } from './messages/gallery.js';
 import type { zhStatusPod } from './messages/statusPod.js';
+import type { zhInteractive } from './messages/interactive.js';
 
 export type IsLiteralUnion<T> = string extends T ? false : true;
 export type AssertTrue<T extends true> = T;
@@ -39,3 +40,4 @@ export type InspectorKeysLiteral = AssertTrue<IsLiteralUnion<keyof typeof zhInsp
 export type AgentsKeysLiteral = AssertTrue<IsLiteralUnion<keyof typeof zhAgents>>;
 export type GalleryKeysLiteral = AssertTrue<IsLiteralUnion<keyof typeof zhGallery>>;
 export type StatusPodKeysLiteral = AssertTrue<IsLiteralUnion<keyof typeof zhStatusPod>>;
+export type InteractiveKeysLiteral = AssertTrue<IsLiteralUnion<keyof typeof zhInteractive>>;

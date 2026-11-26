@@ -646,6 +646,86 @@
       "symbol": "decideWatchdogProbeAction",
       "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
       "failure": "长耗时工具或深思考期间无 delta 静默超过 60s 即被前端看门狗误杀为离线闲置"
+    },
+    {
+      "id": "INV-STREAM-07",
+      "topic": "等待交互阻塞期间看门狗 inactivty 续期且 hard-limit 仍止损",
+      "source": "packages/core/src/session/liveStreamSync.ts",
+      "symbol": "decideWatchdogProbeAction#interactive",
+      "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
+      "failure": "Agent 等待 clarify/approval/secret 超过 60s 无流式 delta 时被看门狗误杀为闲置超时"
+    },
+    {
+      "id": "INV-INTERACT-01",
+      "topic": "session.resume 围栏对账不得抹杀在途实时反向请求",
+      "source": "packages/core/src/interactive/interactiveCoordinator.ts",
+      "symbol": "InteractiveRequestCoordinator.reconcileFromResume",
+      "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
+      "failure": "慢 session.resume 返回空列表抹杀刚通过 WS 抵达的实时审批卡"
+    },
+    {
+      "id": "INV-INTERACT-02",
+      "topic": "bindSessionHandle 原位重键并无损合并先到实时请求与恢复快照",
+      "source": "packages/core/src/interactive/interactiveCoordinator.ts",
+      "symbol": "InteractiveRequestCoordinator.bindSessionHandle",
+      "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
+      "failure": "live_ws 请求先于 session.create/resume 返回时绑定 storedSessionId 丢失或重复出卡"
+    },
+    {
+      "id": "INV-INTERACT-03",
+      "topic": "Cancel-Dominates-Rollback 终态吸收与双端抢答收敛",
+      "source": "packages/core/src/interactive/interactiveCoordinator.ts",
+      "symbol": "InteractiveRequestCoordinator.rollbackSubmit",
+      "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
+      "failure": "已取消/已完结的交互请求在在途提交失败后被错误回滚重新弹出"
+    },
+    {
+      "id": "INV-INTERACT-04",
+      "topic": "JSON-RPC 服务端反向请求优先按 method 分类严防同号 ID 串台",
+      "source": "packages/core/src/rpc/serverRequestRouter.ts",
+      "symbol": "classifyJsonRpcFrame",
+      "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
+      "failure": "服务端反向请求同号 id 与本地 pendingRequests 撞号被误判为 RPC 响应并提前 settle"
+    },
+    {
+      "id": "INV-INTERACT-05",
+      "topic": "socketGeneration 守卫与 Classic/Canonical 参数契约严格隔离",
+      "source": "packages/core/src/interactive/replyRouter.ts",
+      "symbol": "resolveReplyRoute",
+      "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
+      "failure": "socket 切代仍写旧 WS 帧，或 Classic/Canonical 参数与 profile 混传触发 4000"
+    },
+    {
+      "id": "INV-INTERACT-06",
+      "topic": "群聊 pending_actions 正交隔离且 Canonical groups.approve 限 once|deny",
+      "source": "packages/core/src/interactive/interactiveCoordinator.ts",
+      "symbol": "InteractiveRequestCoordinator.reconcileGroupPendingActions",
+      "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
+      "failure": "群聊阻塞动作误染单聊/Bot 主工位，或 canonical 群聊传入 session/always 触发 4000"
+    },
+    {
+      "id": "INV-INTERACT-07",
+      "topic": "connection op 按 seq 单调递增防乱序回退且 settled:false 保留卡片",
+      "source": "packages/core/src/interactive/interactiveCoordinator.ts",
+      "symbol": "InteractiveRequestCoordinator.applyConnectionUpdate",
+      "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
+      "failure": "connection.update 乱序 seq 倒流复活已完结授权卡或部分提交时提前关卡"
+    },
+    {
+      "id": "INV-INTERACT-08",
+      "topic": "交互密钥与凭据载荷无条件脱敏不得泄漏明文",
+      "source": "packages/core/src/log/redact.ts",
+      "symbol": "redactInteractivePayload",
+      "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
+      "failure": "secret/sudo/vault/connection env 中的用户凭据明文写入日志或遥测"
+    },
+    {
+      "id": "INV-INTERACT-09",
+      "topic": "群聊阻塞期暂停轮询轮次与停滞消耗防误判超时失败",
+      "source": "packages/core/src/group/groupLogPollerManager.ts",
+      "symbol": "GroupLogPollerManager.executeRound",
+      "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
+      "failure": "群聊等待人工审批或重试时被 GroupLogPollerManager 消耗完 maxStagnantRounds/maxRounds 误判为失败"
     }
   ]
 }

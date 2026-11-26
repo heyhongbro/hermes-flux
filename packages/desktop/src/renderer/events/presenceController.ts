@@ -25,7 +25,7 @@ import type {
   AgentPresenceSnapshot,
   ConversationMount,
 } from '@hermes-flux/ui';
-import type { AgentPresence } from '@hermes-flux/core';
+import type { AgentPresence, WaitingPromptReason } from '@hermes-flux/core';
 import { AgentPresenceManager, agentPresenceFingerprint } from '../presence/agentPresenceManager.js';
 import type { AppState } from '../state/appState.js';
 
@@ -41,6 +41,7 @@ export interface PresenceControllerDeps {
     getSnapshot: () => AgentPresenceSnapshot,
   ) => ConversationMount;
   ensureAgentPresenceHost: (layout: 'stage' | 'dock') => HTMLElement | null;
+  getWaitingReasonForCurrentFocus?: () => WaitingPromptReason | null;
 }
 
 export class PresenceController {
@@ -71,6 +72,7 @@ export class PresenceController {
       get activeGroupSpeaker() { return deps.getState().activeGroupSpeaker; },
       resolveAgentAvatar: (name) => deps.resolveAgentAvatar(name),
       isGroupConversationActive: () => deps.isGroupConversationActive(),
+      getWaitingReasonForCurrentFocus: () => deps.getWaitingReasonForCurrentFocus?.() ?? null,
       onUpdateReact: () => { this.updateReactAgentPresence?.(); },
     });
   }

@@ -417,3 +417,35 @@ test('TokenStreamWriter: 多会话并发消息精确归属 resolveSessionIdForMe
   ]));
   assert.equal(state.messages.some((m) => m.id === 'ast-hydrate' && m.content === 'hydrated'), true);
 });
+
+test('TokenStreamWriter: 移动端流式思考直写显形 #msg-thought-* 并唤醒 .m-trace-capsule/.m-trace-stack', (t) => {
+  const capsuleAttrs = { 'data-mobile-trace-empty': 'true' };
+  const stackAttrs = { 'data-mobile-trace-empty': 'true' };
+  const mobileCapsule = { setAttribute: (k, v) => { capsuleAttrs[k] = v; } };
+  const mobileStack = { setAttribute: (k, v) => { stackAttrs[k] = v; } };
+  const thoughtEl = {
+    id: 'msg-thought-m1',
+    innerText: '',
+    style: { display: 'none' },
+    closest: (sel) => {
+      if (sel === '.m-trace-capsule') return mobileCapsule;
+      if (sel === '.m-trace-stack') return mobileStack;
+      return null;
+    },
+  };
+
+  const previousDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: (id) => (id === 'msg-thought-m1' ? thoughtEl : null),
+  };
+  t.after(() => { globalThis.document = previousDocument; });
+
+  const { deps } = createMockDeps();
+  const writer = createTokenStreamWriter(deps);
+  writer.writeFlushedTokens(new Map([['m1', { thought: 'Mobile reasoning chunk' }]]));
+
+  assert.equal(thoughtEl.innerText, 'Mobile reasoning chunk');
+  assert.equal(thoughtEl.style.display, 'block');
+  assert.equal(capsuleAttrs['data-mobile-trace-empty'], 'false');
+  assert.equal(stackAttrs['data-mobile-trace-empty'], 'false');
+});

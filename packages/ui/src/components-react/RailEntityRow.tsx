@@ -125,6 +125,7 @@ export interface RailEntityRowProps {
   timestamp?: number;
   timeFallback?: string;
   activityState?: LeftRailSession['activityState'];
+  waitingReason?: LeftRailSession['waitingReason'];
   activityTransition?: ActivityTransition;
   activityTransitionToken?: number;
   entityKind?: ActivityEntityKind;
@@ -155,6 +156,7 @@ export function RailEntityRow({
   timestamp,
   timeFallback,
   activityState,
+  waitingReason,
   activityTransition,
   activityTransitionToken,
   entityKind,
@@ -202,6 +204,7 @@ export function RailEntityRow({
             <span className="ml-auto flex shrink-0 items-center gap-1">
               <ActivityIndicator
                 state={activityState}
+                waitingReason={waitingReason}
                 transition={activityTransition}
                 transitionToken={activityTransitionToken}
                 placement="inline"

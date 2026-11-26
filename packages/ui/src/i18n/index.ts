@@ -21,6 +21,7 @@ import { zhAgents, enAgents } from './messages/agents.js';
 import { zhGallery, enGallery } from './messages/gallery.js';
 import { zhStatusPod, enStatusPod } from './messages/statusPod.js';
 import { zhMobile, enMobile } from './messages/mobile.js';
+import { zhInteractive, enInteractive } from './messages/interactive.js';
 
 export const zhDict = {
   ...zhChrome,
@@ -34,6 +35,7 @@ export const zhDict = {
   ...zhGallery,
   ...zhStatusPod,
   ...zhMobile,
+  ...zhInteractive,
 } as const;
 
 export type I18nKey = keyof typeof zhDict;
@@ -50,6 +52,7 @@ export const enDict: Record<I18nKey, string> = {
   ...enGallery,
   ...enStatusPod,
   ...enMobile,
+  ...enInteractive,
 };
 export type Locale = 'zh-CN' | 'en-US';
 export const DICTIONARIES: Record<Locale, Record<I18nKey, string>> = {

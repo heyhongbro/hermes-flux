@@ -67,3 +67,17 @@ test('主按钮文字色不得与强调色文字复用同一取值', async () =>
     );
   }
 });
+
+test('所有皮肤 --warning 文本在卡片与浮层表面必须达到 WCAG AA（>= 4.5:1）', async () => {
+  const { SKINS } = await import('../dist/tokens/skins.js');
+  for (const [id, skin] of Object.entries(SKINS)) {
+    const warning = skin.slots['--warning'];
+    for (const surface of ['--card', '--popover']) {
+      const ratio = contrast(warning, skin.slots[surface]);
+      assert.ok(
+        ratio >= 4.5,
+        `皮肤 ${id} 的 --warning ${warning} 在 ${surface} ${skin.slots[surface]} 上对比度仅 ${ratio.toFixed(2)}:1（低于 4.5:1）`,
+      );
+    }
+  }
+});

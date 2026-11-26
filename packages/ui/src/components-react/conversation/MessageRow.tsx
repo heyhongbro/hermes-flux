@@ -21,7 +21,7 @@ import { t } from '../../i18n/index.js';
 import { MarkdownBlock } from './MarkdownBlock.js';
 import { StreamRow } from './StreamRow.js';
 import { ToolSection } from './ToolCapsule.js';
-import { CompactTraceCapsule } from './CompactTraceCapsule.js';
+import { CompactTraceCapsule, type CompactTraceStep } from './CompactTraceCapsule.js';
 import { MessageAttachments } from './MessageAttachments.js';
 import { ConversationMessageFooter } from './MessageFooter.js';
 import type { ConversationMode, ConversationMessageVM, ConversationToolVM } from './types.js';
@@ -59,6 +59,7 @@ export interface MessageRowProps {
   onOpenSubagent?: (subagentId: string) => void;
   onCopyMessage?: (content: string) => void;
   compactTrace?: boolean;
+  traceSteps?: readonly CompactTraceStep[];
   onOpenSubagentDetail?: (payload: { messageId: string; tools: ConversationToolVM[] }) => void;
   resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   onOpenFile?: (filePath: string, previewUrl?: string) => void;
@@ -80,6 +81,7 @@ export const MessageRow = React.memo(function MessageRow({
   onOpenSubagent,
   onCopyMessage,
   compactTrace,
+  traceSteps,
   onOpenSubagentDetail,
   resolveMediaUrl,
   onOpenFile,
@@ -181,8 +183,9 @@ export const MessageRow = React.memo(function MessageRow({
   const hasContent = Boolean(message.content && message.content.trim());
   const hasThought = Boolean(message.thought && message.thought.trim());
   const hasTools = Boolean(message.toolCalls && message.toolCalls.length > 0);
+  const hasTraceSteps = Boolean(traceSteps && traceSteps.length > 0);
   const hasBeforeFooter = Boolean(isLastInTurn && beforeFooterSlot);
-  if (!isUser && !hasContent && !hasThought && !hasBeforeFooter && !hasTools && !isStreaming) {
+  if (!isUser && !hasContent && !hasThought && !hasBeforeFooter && !hasTools && !hasTraceSteps && !isStreaming) {
     return null;
   }
 
@@ -237,6 +240,7 @@ export const MessageRow = React.memo(function MessageRow({
           role="user"
           isStreaming={isStreaming}
           readOnly={readOnly}
+          compactActions={Boolean(compactTrace)}
           onCopyMessage={onCopyMessage}
         />
       </div>
@@ -265,7 +269,9 @@ export const MessageRow = React.memo(function MessageRow({
           thought={message.thought}
           thoughtDurationMs={message.thoughtDurationMs}
           tools={message.toolCalls ?? []}
+          steps={traceSteps}
           isStreaming={isStreaming}
+          readOnly={readOnly}
           knownFiles={knownFiles}
           onOpenSubagentDetail={onOpenSubagentDetail}
         />
@@ -320,6 +326,7 @@ export const MessageRow = React.memo(function MessageRow({
           mode={mode}
           role="assistant"
           readOnly={readOnly}
+          compactActions={Boolean(compactTrace)}
           onCopyMessage={onCopyMessage}
           meta={
             <>

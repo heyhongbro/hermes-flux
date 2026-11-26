@@ -25,7 +25,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `source` 为真实源码路径 | 违者 FAIL |
 | `source`+`symbol` 组合唯一 | 违者 FAIL |
 
-## 总览（80 条，覆盖 19 个领域）
+## 总览（90 条，覆盖 20 个领域）
 
 ### ATTACH（5 条）
 
@@ -85,6 +85,20 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-FS-04` | 文件树过滤完备性（无空祖先残留且命中叶/祖先路径可回溯） | `packages/core/src/fs/fileTreeService.ts` → `filterFileTree` | `file-tree-formal.test.mjs` | 过滤关键字后留下大量空文件夹或漏掉深层匹配文件 |
 | `INV-FS-05` | 二进制文件与超大文件预览阻断单调性（二进制恒优先于体积上限拦截且绝不误杀图片） | `packages/core/src/fs/fileService.ts` → `evaluateFilePreviewGuard` | `file-tree-formal.test.mjs` | .exe 等二进制文件被当作文本渲染成乱码，或超大文件直接撑爆前端 DOM 表格 |
 | `INV-FS-06` | 项目目录 picker 单段命名清洗、POSIX shell 安全引用与锁定根目录不可重命名守卫 | `packages/core/src/fs/directoryPickerService.ts` → `validateDirectoryName` | `file-tree-formal.test.mjs` | 目录创建或重命名遭 `..`/控制字符/`.env` 注入越界，或误改 `/`/locked_root 破坏工作区 |
+
+### INTERACT（9 条）
+
+| 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
+|---|---|---|---|---|
+| `INV-INTERACT-01` | session.resume 围栏对账不得抹杀在途实时反向请求 | `packages/core/src/interactive/interactiveCoordinator.ts` → `InteractiveRequestCoordinator.reconcileFromResume` | `interactive-prompts-formal.test.mjs` | 慢 session.resume 返回空列表抹杀刚通过 WS 抵达的实时审批卡 |
+| `INV-INTERACT-02` | bindSessionHandle 原位重键并无损合并先到实时请求与恢复快照 | `packages/core/src/interactive/interactiveCoordinator.ts` → `InteractiveRequestCoordinator.bindSessionHandle` | `interactive-prompts-formal.test.mjs` | live_ws 请求先于 session.create/resume 返回时绑定 storedSessionId 丢失或重复出卡 |
+| `INV-INTERACT-03` | Cancel-Dominates-Rollback 终态吸收与双端抢答收敛 | `packages/core/src/interactive/interactiveCoordinator.ts` → `InteractiveRequestCoordinator.rollbackSubmit` | `interactive-prompts-formal.test.mjs` | 已取消/已完结的交互请求在在途提交失败后被错误回滚重新弹出 |
+| `INV-INTERACT-04` | JSON-RPC 服务端反向请求优先按 method 分类严防同号 ID 串台 | `packages/core/src/rpc/serverRequestRouter.ts` → `classifyJsonRpcFrame` | `interactive-prompts-formal.test.mjs` | 服务端反向请求同号 id 与本地 pendingRequests 撞号被误判为 RPC 响应并提前 settle |
+| `INV-INTERACT-05` | socketGeneration 守卫与 Classic/Canonical 参数契约严格隔离 | `packages/core/src/interactive/replyRouter.ts` → `resolveReplyRoute` | `interactive-prompts-formal.test.mjs` | socket 切代仍写旧 WS 帧，或 Classic/Canonical 参数与 profile 混传触发 4000 |
+| `INV-INTERACT-06` | 群聊 pending_actions 正交隔离且 Canonical groups.approve 限 once|deny | `packages/core/src/interactive/interactiveCoordinator.ts` → `InteractiveRequestCoordinator.reconcileGroupPendingActions` | `interactive-prompts-formal.test.mjs` | 群聊阻塞动作误染单聊/Bot 主工位，或 canonical 群聊传入 session/always 触发 4000 |
+| `INV-INTERACT-07` | connection op 按 seq 单调递增防乱序回退且 settled:false 保留卡片 | `packages/core/src/interactive/interactiveCoordinator.ts` → `InteractiveRequestCoordinator.applyConnectionUpdate` | `interactive-prompts-formal.test.mjs` | connection.update 乱序 seq 倒流复活已完结授权卡或部分提交时提前关卡 |
+| `INV-INTERACT-08` | 交互密钥与凭据载荷无条件脱敏不得泄漏明文 | `packages/core/src/log/redact.ts` → `redactInteractivePayload` | `interactive-prompts-formal.test.mjs` | secret/sudo/vault/connection env 中的用户凭据明文写入日志或遥测 |
+| `INV-INTERACT-09` | 群聊阻塞期暂停轮询轮次与停滞消耗防误判超时失败 | `packages/core/src/group/groupLogPollerManager.ts` → `GroupLogPollerManager.executeRound` | `interactive-prompts-formal.test.mjs` | 群聊等待人工审批或重试时被 GroupLogPollerManager 消耗完 maxStagnantRounds/maxRounds 误判为失败 |
 
 ### LEARN（2 条）
 
@@ -148,7 +162,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-STAGE-03` | 流式工具状态机收敛 | `packages/core/src/session/eventReducer.ts` → `reduceEvent` | `interactive-stage-formal.test.mjs` | 工具卡状态不收敛，幽灵工具残留 |
 | `INV-STAGE-04` | @ 路由排他性与 cleanText 不残留 token | `packages/desktop/src/renderer/mentionToken.ts` → `parseMentionToken` | `interactive-stage-formal.test.mjs` | 通道类型错配；正文里残留 @token 原文 |
 
-### STREAM（6 条）
+### STREAM（7 条）
 
 | 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
 |---|---|---|---|---|
@@ -158,6 +172,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-STREAM-04` | reconcileInflightText 仅向前对账，绝不回退已领先的本地流 | `packages/core/src/session/liveStreamSync.ts` → `LiveStreamRegistry.reconcileInflightText` | `live-stream-sync-formal.test.mjs` | 较慢的 inflight.assistant 快照覆盖已超前的流式正文，引发界面文字倒流 |
 | `INV-STREAM-05` | 远端用户气泡插入规划幂等且精准定位在流式助手行前 | `packages/core/src/session/liveStreamSync.ts` → `planRemoteUserPromptInsert` | `live-stream-sync-formal.test.mjs` | 多端同步用户提问时在观察端重复生成多条相同用户气泡 |
 | `INV-STREAM-06` | 看门狗超时裁决遵循先探活后收口，hard-limit 无条件止损 | `packages/core/src/session/liveStreamSync.ts` → `decideWatchdogProbeAction` | `live-stream-sync-formal.test.mjs` | 长耗时工具或深思考期间无 delta 静默超过 60s 即被前端看门狗误杀为离线闲置 |
+| `INV-STREAM-07` | 等待交互阻塞期间看门狗 inactivty 续期且 hard-limit 仍止损 | `packages/core/src/session/liveStreamSync.ts` → `decideWatchdogProbeAction#interactive` | `live-stream-sync-formal.test.mjs` | Agent 等待 clarify/approval/secret 超过 60s 无流式 delta 时被看门狗误杀为闲置超时 |
 
 ### SUBAGENT（7 条）
 

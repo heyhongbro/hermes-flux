@@ -564,3 +564,97 @@ test('D6: gatewayEventDispatcher - frame parsing/session-info/subagent-failed/re
     t.mock.timers.reset();
   }
 });
+
+test('D6: gatewayEventDispatcher - 交互 TurnAction 分发、approval_mode 同步与 frame.kind / payload.session_id 回退', () => {
+  const interactiveActions = [];
+  const notifications = [];
+  let riskReturn = true;
+  const riskEvents = [];
+  const { deps, rendered, state } = createMockDispatcherDeps();
+  state.activeSessionId = 'sess-1';
+  state.approvalMode = 'manual';
+  deps.onInteractiveTurnAction = (action) => interactiveActions.push(action);
+  deps.onGatewayNotification = (action) => notifications.push(action);
+  deps.onToolOutputRisk = (action) => {
+    riskEvents.push(action);
+    return riskReturn;
+  };
+  const dispatcher = createGatewayEventDispatcher(deps);
+  try {
+    // 1. session-info syncs approval_mode (manual / smart / off) & ignores unsupported values
+    for (const mode of ['smart', 'off', 'manual']) {
+      const prevR = rendered.length;
+      dispatcher.applyTurnActions([{ type: 'session-info', sessionId: 'sess-1', info: { approval_mode: mode } }]);
+      assert.equal(state.approvalMode, mode);
+      assert.equal(rendered.length, prevR + 1);
+    }
+    const rBeforeInvalid = rendered.length;
+    dispatcher.applyTurnActions([{ type: 'session-info', sessionId: 'sess-1', info: { approval_mode: 'bogus' } }]);
+    assert.equal(state.approvalMode, 'manual');
+    assert.equal(rendered.length, rBeforeInvalid);
+    assert.equal(interactiveActions.length, 4);
+
+    // 2. request-cancel / approval-cancelled / connection-request / connection-update / gateway-ready trigger onInteractiveTurnAction + render
+    for (const act of [
+      { type: 'request-cancel', id: 'rc-1', method: 'approval', reason: 'done' },
+      { type: 'approval-cancelled', sessionId: 'live-1', reason: 'x', cancelledCount: 1, requestIds: ['a1'] },
+      { type: 'connection-request', sessionId: 'live-1', payload: { op_id: 'op-1', seq: 1, deadline_at: 2, timeout_seconds: 10, targets: [] } },
+      { type: 'connection-update', sessionId: 'live-1', payload: { op_id: 'op-1', seq: 2, deadline_at: 2, settled: true, targets: [] } },
+      { type: 'gateway-ready', replayEpoch: 'ep-1', sessionAuthority: true },
+    ]) {
+      const prevR = rendered.length;
+      dispatcher.applyTurnActions([act]);
+      assert.equal(rendered.length, prevR + 1);
+    }
+    assert.equal(interactiveActions.length, 9);
+
+    // 3. tool-output-risk: true -> render, false -> no render
+    const rRisk1 = rendered.length;
+    dispatcher.applyTurnActions([{ type: 'tool-output-risk', toolCallId: 'tc-1', risk: 'high', findings: ['leak'], redacted: true }]);
+    assert.equal(rendered.length, rRisk1 + 1);
+    riskReturn = false;
+    dispatcher.applyTurnActions([{ type: 'tool-output-risk', toolCallId: 'tc-2', risk: 'low', findings: [], redacted: false }]);
+    assert.equal(rendered.length, rRisk1 + 1);
+    assert.equal(riskEvents.length, 2);
+
+    // 4. notification-show / notification-clear call onGatewayNotification without render
+    const rNotif = rendered.length;
+    dispatcher.applyTurnActions([
+      { type: 'notification-show', text: 'hi', level: 'info', kind: 'notice' },
+      { type: 'notification-clear', key: 'k1' },
+    ]);
+    assert.equal(notifications.length, 2);
+    assert.equal(rendered.length, rNotif);
+
+    // 5. handleGatewayEvent frame.type/event/kind + frameRec.session_id / framePayload.session_id parsing
+    const reg = new LiveStreamRegistry();
+    deps.getLiveStreamRegistry = () => reg;
+    const disp2 = createGatewayEventDispatcher(deps);
+    try {
+      disp2.handleGatewayEvent({
+        type: 'request.cancel',
+        payload: { session_id: 'live-1', id: 'rk-pl', reason: 'timeout' },
+      });
+      disp2.handleGatewayEvent({
+        type: 'connection.update',
+        session_id: 'live-1',
+        payload: { op_id: 'op-pl', seq: 3, deadline_at: 4, settled: false, targets: [] },
+      });
+      assert.equal(interactiveActions.at(-2)?.id, 'rk-pl');
+      assert.equal(interactiveActions.at(-2)?.sessionId, undefined);
+      assert.equal(interactiveActions.at(-1)?.payload?.op_id, 'op-pl');
+      assert.equal(interactiveActions.at(-1)?.sessionId, 'live-1');
+
+      state.activeSessionId = 's-kind';
+      disp2.handleGatewayEvent({ kind: 'message.start', session_id: 'live-s-kind', payload: { text: 'hk' } });
+      state.activeSessionId = 's-ev';
+      disp2.handleGatewayEvent({ event: 'message.start', payload: { session_id: 'live-s-ev', text: 'he' } });
+      assert.equal(reg.hasSession('s-kind'), true);
+      assert.equal(reg.hasSession('s-ev'), true);
+    } finally {
+      disp2.disconnect();
+    }
+  } finally {
+    dispatcher.disconnect();
+  }
+});

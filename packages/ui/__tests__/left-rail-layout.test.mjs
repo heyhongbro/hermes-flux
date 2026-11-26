@@ -460,7 +460,8 @@ test('GroupedLeftRail 渲染契约：无独立 BOT 边栏、含新建会话按�
   assert.ok(emptyErrorHtml.includes('id="session-list-error"'));
   assert.ok(emptyErrorHtml.includes('网关握手超时'));
   assert.ok(emptyErrorHtml.includes('暂无可用 BOT'));
-  assert.ok(emptyErrorHtml.includes('暂无协同群聊'));
+  assert.equal(emptyErrorHtml.includes('id="rail-groups-accordion-trigger"'), false, '群聊列表为空时不得渲染群聊分组');
+  assert.equal(emptyErrorHtml.includes('暂无协同群聊'), false, '群聊列表为空时不得渲染空态占位');
   assert.ok(emptyErrorHtml.includes('暂时无法显示历史会话'));
   assert.equal(emptyErrorHtml.includes('text-faint'), false, '错误/空态说明文案严禁退回低对比度 text-faint');
 

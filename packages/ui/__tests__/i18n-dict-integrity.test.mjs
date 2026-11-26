@@ -27,6 +27,7 @@ import * as agents from '../dist/i18n/messages/agents.js';
 import * as gallery from '../dist/i18n/messages/gallery.js';
 import * as statusPod from '../dist/i18n/messages/statusPod.js';
 import * as mobile from '../dist/i18n/messages/mobile.js';
+import * as interactive from '../dist/i18n/messages/interactive.js';
 
 const PARTS = [
   ['chrome', chrome.zhChrome, chrome.enChrome],
@@ -40,6 +41,7 @@ const PARTS = [
   ['gallery', gallery.zhGallery, gallery.enGallery],
   ['statusPod', statusPod.zhStatusPod, statusPod.enStatusPod],
   ['mobile', mobile.zhMobile, mobile.enMobile],
+  ['interactive', interactive.zhInteractive, interactive.enInteractive],
 ];
 
 test('字典分域：域间零重叠、并集等于 zhDict、en 逐域等集', async () => {

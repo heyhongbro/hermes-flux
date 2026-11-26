@@ -25,8 +25,11 @@
  *   - 三类实体各自持有独立集合，本模块不做任何跨域（session ↔ bot ↔ group）推导。
  */
 
-/** 实体活动三态 */
-export type ActivityState = 'running' | 'unread' | 'read';
+/** 等待用户输入的具体业务原因 */
+export type WaitingPromptReason = 'clarify' | 'approval' | 'credential' | 'connection' | 'confirm';
+
+/** 实体活动四态（优先级：waiting > running > unread > read） */
+export type ActivityState = 'waiting' | 'running' | 'unread' | 'read';
 
 /** 完成瞬态跃迁标记：用于列表行在刚完成时播放一次收敛动画 */
 export type ActivityTransition = 'none' | 'just-completed';
@@ -39,8 +42,14 @@ export interface ActivityStatusSpec {
   readonly rendersIndicator: boolean;
 }
 
-/** 三态规格权威查找表（优先级严格为 running > unread > read） */
+/** 四态规格权威查找表（优先级严格为 waiting > running > unread > read） */
 export const ACTIVITY_STATUS_TABLE: Readonly<Record<ActivityState, ActivityStatusSpec>> = Object.freeze({
+  waiting: Object.freeze({
+    state: 'waiting',
+    priority: 3,
+    isTransient: true,
+    rendersIndicator: true,
+  }),
   running: Object.freeze({
     state: 'running',
     priority: 2,
@@ -64,8 +73,10 @@ export const ACTIVITY_STATUS_TABLE: Readonly<Record<ActivityState, ActivityStatu
 /** 实体域：会话 / 专职 Bot / 群聊房间，各自独立一整套集合 */
 export type ActivityDomain = 'session' | 'bot' | 'group';
 
-/** 求值输入：只读地消费运行集合与未读集合 */
+/** 求值输入：只读地消费等待集合、运行集合与未读集合 */
 export interface ActivityProbe {
+  /** 当前挂起等待人类回答/审批/密钥/授权的实体 id 集合（优先级最高） */
+  waitingIds?: ReadonlySet<string>;
   /** 正在运行的实体 id 集合 */
   runningIds: ReadonlySet<string>;
   /** 已完成后尚未被用户查看的实体 id 集合 */
@@ -78,14 +89,15 @@ export interface ActivityProbe {
 }
 
 /**
- * 求单个实体的三态。
+ * 求单个实体的活动状态。
  *
- * 优先级严格为 running > unread > read：
- * 一个实体不可能同时"正在跑"又"已完成未读"；若两个集合同时命中，
- * 以运行态为准（正在进行中的事实高于上一轮的未读残留）。
+ * 优先级严格为 waiting > running > unread > read：
+ * 若代理正停在等待人类输入（提问/审批/密钥/连接授权），该信号必须压过普通运行态，
+ * 让用户在列表上一眼定位到阻塞源。
  */
 export function resolveActivityState(entityId: string, probe: ActivityProbe): ActivityState {
   if (!entityId) return 'read';
+  if (probe.waitingIds?.has(entityId)) return 'waiting';
   if (probe.streamingId === entityId) return 'running';
   if (probe.runningIds.has(entityId)) return 'running';
   if (probe.unreadIds.has(entityId)) return 'unread';
@@ -281,7 +293,7 @@ export class ActivityTransitionTracker {
     currentState: ActivityState,
     nowMs: number
   ): ActivityTransitionResult {
-    if (!entityId || currentState === 'running') {
+    if (!entityId || currentState === 'running' || currentState === 'waiting') {
       return { transition: 'none' };
     }
     const key = ActivityTransitionTracker.makeKey(domain, entityId);

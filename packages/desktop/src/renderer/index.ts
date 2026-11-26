@@ -52,7 +52,7 @@ import {
   type ActivityIndicatorVariant, setLocale, type FontPreferences,
   renderToolCapsuleSlot, formatLeftRailTime,
 } from '@hermes-flux/ui';
-import { createToolPatchQueue } from './toolPatchQueue.js';
+import { createToolPatchQueue, revealMobileTraceContainers } from './toolPatchQueue.js';
 import { resolveColdStartFocus } from './coldStartFocus.js';
 import { createModalInteractionController } from './events/modalInteractionController.js';
 import { createInputDockController } from './events/inputDockController.js';
@@ -91,6 +91,14 @@ import { createRenderCoordinator, type RenderMessagesSnapshot } from './renderCo
 import { createMobileShellCoordinator } from './mobile/mobileShellCoordinator.js';
 import { createDropdownKeybindController } from './dropdownKeybindController.js';
 import type { HermesDesktopBridge } from '../preload/index.js';
+import {
+  applyToolOutputRiskAction,
+  createDesktopInteractiveSubsystem,
+  isProtectedIslandFocus,
+  reconcileLiveSessionResume,
+  scheduleRestoreComposerFocus,
+  syncInteractiveTopPillOffset,
+} from './interactiveWiring.js';
 
 const cacheService = new CacheService(new DesktopCacheStore(), { sessionCap: 500, messageCap: 2000 });
 
@@ -324,12 +332,9 @@ const botActivityStore = createBotActivityStore({
   formatTime: (ts) => formatSessionTime(ts), onPersistError: (err) => console.warn('[Flux] bot activity persist failed:', err),
 });
 
-function restoreComposerFocus(): void {
-  setTimeout(() => {
-    const input = document.getElementById('dock-prompt-input') as HTMLTextAreaElement | null;
-    if (input && document.activeElement !== input) input.focus();
-  }, 30);
-}
+const restoreComposerFocus = (): void => {
+  scheduleRestoreComposerFocus();
+};
 
 function resolveAgentAvatar(nameOrDisplayName?: string): string {
   if (!nameOrDisplayName) return '';
@@ -403,6 +408,7 @@ const toolPatchQueue = createToolPatchQueue({
     const el = document.getElementById(`msg-tools-${messageId}`);
     if (!el) return false;
     el.innerHTML = html;
+    revealMobileTraceContainers(el, html);
     return true;
   },
   isNearBottom: () => isStreamNearBottom(document.getElementById('conversation-stream')),
@@ -463,31 +469,14 @@ const conversationOrgCoordinator = createConversationOrgCoordinator({
 });
 
 const groupOperationService = createGroupOperationService({
-  getState: () => state, getGatewayClient: () => gatewayClient, render: () => render(),
-  t: (k, p) => t(k, p), disarmRollbackOnLeave: () => disarmRollbackOnLeave(),
-  unreadGroupRoomIds, activeRunningGroupRoomIds, activityTransitionTracker,
-  groupRoomStore, cancelColdStartFocus: () => cancelColdStartFocus(), sessionMessagesCache,
-  turnExecutionService: {
-    resetActiveGroupThread: () => turnExecutionService.resetActiveGroupThread(),
-    syncGroupRoomLogsToState: (r, l) => turnExecutionService.syncGroupRoomLogsToState(r, l),
-    refreshGroupRoomLog: (r) => turnExecutionService.refreshGroupRoomLog(r),
-    sendGroupMessage: (r, t) => turnExecutionService.sendGroupMessage(r, t),
-  },
-  groupPollerManager: {
-    isPolling: (r) => groupPollerManager.isPolling(r),
-    startAwaitReply: (r, b) => groupPollerManager.startAwaitReply(r, b),
-    stop: (r) => groupPollerManager.stop(r),
-    stopAll: () => groupPollerManager.stopAll(),
-  },
-  persistGroupsToCache: (r) => persistGroupsToCache(r), resolveAgentAvatar: (n) => resolveAgentAvatar(n),
-  formatTimestamp: (ts) => formatTimestamp(ts), nextLoadMessagesGeneration: () => ++activeLoadMessagesGeneration,
-  getCurrentLoadMessagesGeneration: () => activeLoadMessagesGeneration, logSession,
-  setPendingScrollToBottom: (p) => renderCoordinator.setPendingScrollToBottom(p),
-  captureStreamAnchor: () => captureStreamAnchor(),
-  beginSessionEnter: (id, opts) => streamViewportManager.beginSessionEnter(id, {
-    ...opts,
-    phase: opts?.forcePinToBottom ? 'ready' : (gatewayClient ? 'loading' : 'ready'),
-  }),
+  getState: () => state, getGatewayClient: () => gatewayClient, render: () => render(), t: (k, p) => t(k, p), disarmRollbackOnLeave: () => disarmRollbackOnLeave(),
+  unreadGroupRoomIds, activeRunningGroupRoomIds, activityTransitionTracker, groupRoomStore, cancelColdStartFocus: () => cancelColdStartFocus(), sessionMessagesCache,
+  turnExecutionService: { resetActiveGroupThread: () => turnExecutionService.resetActiveGroupThread(), syncGroupRoomLogsToState: (r, l) => turnExecutionService.syncGroupRoomLogsToState(r, l), refreshGroupRoomLog: (r) => turnExecutionService.refreshGroupRoomLog(r), sendGroupMessage: (r, t) => turnExecutionService.sendGroupMessage(r, t) },
+  groupPollerManager: { isPolling: (r) => groupPollerManager.isPolling(r), startAwaitReply: (r, b) => groupPollerManager.startAwaitReply(r, b), stop: (r) => groupPollerManager.stop(r), stopAll: () => groupPollerManager.stopAll() },
+  persistGroupsToCache: (r) => persistGroupsToCache(r), resolveAgentAvatar: (n) => resolveAgentAvatar(n), formatTimestamp: (ts) => formatTimestamp(ts),
+  nextLoadMessagesGeneration: () => ++activeLoadMessagesGeneration, getCurrentLoadMessagesGeneration: () => activeLoadMessagesGeneration, logSession,
+  setPendingScrollToBottom: (p) => renderCoordinator.setPendingScrollToBottom(p), captureStreamAnchor: () => captureStreamAnchor(),
+  beginSessionEnter: (id, opts) => streamViewportManager.beginSessionEnter(id, { ...opts, phase: opts?.forcePinToBottom ? 'ready' : (gatewayClient ? 'loading' : 'ready') }),
   onGroupActivated: (roomId) => statusIntegration.onGroupActivated(roomId),
 });
 
@@ -674,6 +663,17 @@ function showToast(message: string, durationMs = 2200): void {
   }, durationMs);
 }
 
+const interactiveSubsystem = createDesktopInteractiveSubsystem({
+  getState: () => state, getGatewayClient: () => gatewayClient, getDesktopApi: () => desktopApi,
+  getSessionHandleRegistry: () => defaultSessionHandleRegistry, botForeverChatCache,
+  toStoredSessionId: (id) => toStoredSessionId(id), resolveBotNameForSession: (sid) => resolveBotNameForSession(sid),
+  describeRpcError: (e) => describeRpcError(e), t, setTimedDockNotice: (m, d) => setTimedDockNotice(m, d), clearTimedDockNotice: (o) => clearTimedDockNotice(o),
+  selectSession: (id, o) => selectSession(id, o), openBotChat: (b) => openBotChat(b), openGroupRoom: (r) => openGroupRoom(r),
+  syncAgentPresence: () => syncAgentPresence(), syncStreamBottomInset: () => syncStreamBottomInset(), render: () => render(),
+});
+const interactivePromptService = interactiveSubsystem.service;
+const interactiveWiring = interactiveSubsystem.wiring;
+
 const messageLoadingService = createMessageLoadingService({
   getState: () => state, getGatewayClient: () => gatewayClient, render: () => render(),
   sessionMessagesCache, cacheService,
@@ -695,6 +695,7 @@ const messageLoadingService = createMessageLoadingService({
   onSessionActivated: (sid, bot) => statusIntegration.onSessionActivated(sid, bot),
   onSessionMessagesLoaded: (sid) => statusIntegration.onSessionMessagesLoaded(sid),
   onLiveSessionReady: (sid, lid, info, bot) => statusIntegration.onLiveSessionReady(sid, lid, info, bot),
+  onCaptureInteractiveFence: () => interactivePromptService.captureSyncFence(), onInteractiveResumeReconciled: interactiveSubsystem.reconcileResume,
   onActiveTurnDiscovered: (p) => gatewayEventDispatcher.attachLiveTurnFromResume(p),
 });
 
@@ -722,7 +723,7 @@ sessionOperationService = createSessionOperationService({
   getActiveStreamingMessageId: () => activeStreamingMessageId, scheduleToolPatch: (mid) => scheduleToolPatch(mid),
   onReenterSameSession: () => { void messageLoadingService.refreshActiveSession({ checkLiveTurn: true }); }, onSyncFocusedStream: (sid) => gatewayEventDispatcher.syncFocusedStreamingProjection(sid),
   resetActiveStreamingState: () => {
-    tokenCoalescer.clear(); toolPatchQueue.clear(); disarmTurnWatchdog();
+    tokenCoalescer.clear(); toolPatchQueue.clear(); turnExecutionService.disarmTurnWatchdog();
     activeStreamingMessageId = null; activeStreamingStoredSessionId = null;
     activeStreamingLiveId = null; activeStreamingBotName = null; state.isStreaming = false;
   },
@@ -746,8 +747,10 @@ sessionOperationService = createSessionOperationService({
   logSessionWarn: (m, meta) => logSession.warn(m, meta), logSessionDebug: (m, meta) => logSession.debug(m, meta),
   onSessionActivated: (sid, bot) => statusIntegration.onSessionActivated(sid, bot),
   onLiveSessionReady: (sid, lid, info, bot) => statusIntegration.onLiveSessionReady(sid, lid, info, bot),
+  onSessionInteractiveBound: (sid, lid) => interactivePromptService.bindSessionHandle(sid, lid),
+  requestRpcConfirm: (opts) => interactivePromptService.requestRpcConfirm(opts),
   onSessionCreatedInContainer: (p, sid, cid) => conversationOrgCoordinator.assignNewEntityContainer('session', sid, { profile: p, containerId: cid }),
-  onSessionDeleted: (sid, p) => { statusIntegration.onSessionDeleted(sid); conversationOrgCoordinator.pruneDeletedEntity('session', sid, p); },
+  onSessionDeleted: (sid, p) => { statusIntegration.onSessionDeleted(sid); interactivePromptService.clearSession(sid); conversationOrgCoordinator.pruneDeletedEntity('session', sid, p); },
 });
 
 async function fetchSessions(): Promise<void> {
@@ -806,6 +809,7 @@ async function ensureLiveSessionId(): Promise<string> {
     const sess = state.sessions.find((s) => s.id === state.activeSessionId);
     const prof = (state.activeFocus.type === 'bot' ? state.activeFocus.botName : sess?.botName) || state.profileName || 'default';
     let res: Record<string, unknown> | null = null;
+    const interactiveFence = interactivePromptService.captureSyncFence();
     try {
       res = await gatewayClient.call<Record<string, unknown>>('session.resume', { session_id: guard.sessionId, profile: prof });
     } catch (firstErr: unknown) {
@@ -813,6 +817,15 @@ async function ensureLiveSessionId(): Promise<string> {
       else throw firstErr;
     }
     const handles = readSessionHandles(res, guard.sessionId);
+    reconcileLiveSessionResume({
+      subsystem: interactiveSubsystem,
+      client: gatewayClient,
+      storedFallbackId: guard.sessionId,
+      profile: prof,
+      resume: res,
+      handles,
+      fence: interactiveFence,
+    });
     if (handles) {
       defaultSessionHandleRegistry.register(handles);
       let liveId = '';
@@ -826,8 +839,7 @@ async function ensureLiveSessionId(): Promise<string> {
 }
 
 const createNewSession = (o?: { profile?: string; projectId?: string; containerId?: string; title?: string }) => sessionOperationService.createNewSession(o);
-const deleteSession = (id: string) => sessionOperationService.deleteSession(id);
-const renameSession = (id: string, title: string) => sessionOperationService.renameSession(id, title);
+const deleteSession = (id: string) => sessionOperationService.deleteSession(id); const renameSession = (id: string, title: string) => sessionOperationService.renameSession(id, title);
 const copySessionId = (id: string) => sessionOperationService.copySessionId(id); const pinSession = (id: string) => sessionOperationService.pinSession(id);
 const exportMarkdown = (id: string) => sessionOperationService.exportMarkdown(id); const archiveSession = (id: string) => sessionOperationService.archiveSession(id);
 const handleArmedOnDelete = (id: string) => sessionOperationService.handleArmedOnDelete(id); const disarmRollbackOnLeave = (outId?: string) => sessionOperationService.disarmRollbackOnLeave(outId);
@@ -867,6 +879,8 @@ const turnExecutionService = createTurnExecutionService({
   onWatchdogTurnCompleted: (sid) => { if (sid === state.activeSessionId) void messageLoadingService.refreshActiveSession({ forceRefreshAfterReconnect: true, checkLiveTurn: true }); },
   onQueuedSubmitRace: (sid) => { if (sid === state.activeSessionId) return messageLoadingService.refreshActiveSession({ forceRefreshAfterReconnect: true, checkLiveTurn: true }); },
   render: () => render(), t, logStream, onBeforeSendEntity: (k, id, p) => conversationOrgCoordinator.autoReopenIfDone(k, id, p),
+  hasPendingInteractivePrompt: (s, l) => interactivePromptService.hasPendingPromptForSession(s, l), isGroupBlocked: (roomId) => interactivePromptService.hasPendingPromptForGroup(roomId),
+  onCaptureInteractiveFence: () => interactivePromptService.captureSyncFence(), onInteractiveResumeReconciled: interactiveSubsystem.reconcileResume,
 });
 
 const groupPollerManager = turnExecutionService.getGroupPollerManager();
@@ -915,26 +929,19 @@ const gatewayEventDispatcher = createGatewayEventDispatcher({
   onStatusDisconnected: () => { statusIntegration.onDisconnected(); deliverableCoordinator.clear(); },
   onReadyEnsureDoneSessions: () => { if (state.orgPrefs.showDoneSection && state.orgContainerCollapsed.done === false && !state.doneSessionsLoaded && !state.doneLoading) void conversationOrgCoordinator.ensureDoneSessionsLoaded(); },
   onStatusTurnAction: (a, fn) => statusIntegration.onGatewayTurnAction(a, fn),
+  onGatewayClientCreated: interactiveSubsystem.attachClient, onGatewayDisconnect: () => interactivePromptService.resetOnDisconnect(),
+  onInteractiveTurnAction: (action) => interactivePromptService.handleTurnAction(action),
+  onToolOutputRisk: (action) => applyToolOutputRiskAction(state.messages, sessionMessagesCache, activeStreamingMessageId, action, (mid) => scheduleToolPatch(mid)),
+  onGatewayNotification: interactiveSubsystem.handleNotificationAction,
+  onCaptureInteractiveFence: () => interactivePromptService.captureSyncFence(), onInteractiveResumeReconciled: interactiveSubsystem.reconcileResume,
 });
 
-const armTurnWatchdog = () => turnExecutionService.armTurnWatchdog();
-const disarmTurnWatchdog = () => turnExecutionService.disarmTurnWatchdog();
 const isStreamingActiveForCurrentSession = () => turnExecutionService.isStreamingActiveForCurrentSession();
-const clearPresenceTerminal = () => turnExecutionService.clearPresenceTerminal();
-const armPresenceTerminal = (t: NonNullable<AppState['presenceTerminal']>) => turnExecutionService.armPresenceTerminal(t);
-const setTimedDockNotice = (msg: string, d = 4000) => turnExecutionService.setTimedDockNotice(msg, d);
-const clearTimedDockNotice = (options?: { skipRender?: boolean }) => turnExecutionService.clearTimedDockNotice(options);
-const interruptTurn = () => turnExecutionService.interruptTurn();
-const sendGroupMessage = (roomId: string, text: string) => turnExecutionService.sendGroupMessage(roomId, text);
+const setTimedDockNotice = (msg: string, d = 4000) => turnExecutionService.setTimedDockNotice(msg, d); const clearTimedDockNotice = (options?: { skipRender?: boolean }) => turnExecutionService.clearTimedDockNotice(options);
+const interruptTurn = () => turnExecutionService.interruptTurn(); const sendGroupMessage = (roomId: string, text: string) => turnExecutionService.sendGroupMessage(roomId, text);
 const syncGroupRoomLogsToState = (roomId: string, logs: readonly GroupMessageEntry[]) => turnExecutionService.syncGroupRoomLogsToState(roomId, logs);
 const refreshGroupRoomLog = (roomId: string) => turnExecutionService.refreshGroupRoomLog(roomId);
-const sendMessage = (text: string) => turnExecutionService.sendMessage(text);
-const routeSend = (text: string) => turnExecutionService.routeSend(text);
-const enqueueDraft = () => turnExecutionService.enqueueDraft();
-const handleQueueAction = (a: string, id: string) => turnExecutionService.handleQueueAction(a, id);
-const runSlashCommand = (cmd: string) => inputDockController.runSlashCommand(cmd);
-const askSideAgent = (k: 'btw' | 'delegation', tp: string, q: string) => turnExecutionService.askSideAgent(k, tp, q);
-const armCapsuleTimers = (taskId: string) => turnExecutionService.armCapsuleTimers(taskId);
+const sendMessage = (text: string) => turnExecutionService.sendMessage(text); const routeSend = (text: string) => turnExecutionService.routeSend(text);
 
 function formatTimestamp(ts: number | string, now: Date = new Date()): string {
   if (typeof ts === 'string') return ts;
@@ -1009,11 +1016,9 @@ const modalInteractionController = createModalInteractionController({
   routeSend: (text) => routeSend(text), sendGroupMessage: (roomId, text) => sendGroupMessage(roomId, text),
   requestMarkDone: (k, id, title, p) => conversationOrgCoordinator.requestMarkDone(k, id, title, p),
   restoreDone: (k, id, p) => conversationOrgCoordinator.restoreDone(k, id, p), moveEntityToFolder: (k, id, c, p) => conversationOrgCoordinator.moveEntityToFolder(k, id, c, p),
-  promptCreateFolder: (m) => conversationOrgCoordinator.promptCreateFolder(m), promptRenameFolder: (fid, n) => conversationOrgCoordinator.promptRenameFolder(fid, n),
-  confirmDeleteFolder: (fid, n) => conversationOrgCoordinator.confirmDeleteFolder(fid, n),
+  promptCreateFolder: (m) => conversationOrgCoordinator.promptCreateFolder(m), promptRenameFolder: (fid, n) => conversationOrgCoordinator.promptRenameFolder(fid, n), confirmDeleteFolder: (fid, n) => conversationOrgCoordinator.confirmDeleteFolder(fid, n),
   openNewChatInContainer: (k, c) => { cancelColdStartFocus(); void fetchProjects(); state.selectedNewTaskProjectId = undefined; state.selectedNewTaskContainerId = c; state.newTaskModalTab = k === 'group' ? 'group' : 'solo'; state.isNewTaskModalOpen = true; render(); },
-  onGroupCreatedInContainer: (rid, opts) => conversationOrgCoordinator.assignNewEntityContainer('group', rid, opts),
-  t: (key, params) => t(key, params),
+  onGroupCreatedInContainer: (rid, opts) => conversationOrgCoordinator.assignNewEntityContainer('group', rid, opts), t: (key, params) => t(key, params),
 });
 
 const closeConfirmModal = (action: 'ok' | 'cancel') => modalInteractionController.closeConfirmModal(action);
@@ -1021,26 +1026,17 @@ const closeConfirmModal = (action: 'ok' | 'cancel') => modalInteractionControlle
 const inputDockController = createInputDockController({
   getState: () => state, commitState: (patch) => { Object.assign(state, patch); }, requestRender: () => render(),
   routeSend: (text) => routeSend(text), interruptTurn: () => interruptTurn(), handleRollbackCancel: () => handleRollbackCancel(),
-  requestSlashCompletion: (prefix) => inputCompletion.requestSlashCompletion(prefix),
-  requestPathCompletion: (query, agentItems) => inputCompletion.requestPathCompletion(query, agentItems),
+  requestSlashCompletion: (prefix) => inputCompletion.requestSlashCompletion(prefix), requestPathCompletion: (query, agentItems) => inputCompletion.requestPathCompletion(query, agentItems),
   isStreamingActiveForCurrentSession: () => isStreamingActiveForCurrentSession(), t: (key, params) => t(key, params),
-  clearDockNoticeDismissTimer: () => clearTimedDockNotice({ skipRender: true }),
-  setTimedDockNotice: (msg, dur) => setTimedDockNotice(msg, dur), getGatewayClient: () => gatewayClient,
-  ensureLiveSessionId: () => ensureLiveSessionId(), createNewSession: async () => { await createNewSession(); },
-  sendMessage: (text) => sendMessage(text), interactiveService: interactiveService,
-  getRpcCaller: () => rpcCaller, describeRpcError: (err) => describeRpcError(err),
-  getSlashCanon: () => inputCompletion.getSlashCanon(),
-  reloadSessionMessages: async (sId) => { await loadMessages(sId); },
+  clearDockNoticeDismissTimer: () => clearTimedDockNotice({ skipRender: true }), setTimedDockNotice: (msg, dur) => setTimedDockNotice(msg, dur),
+  getGatewayClient: () => gatewayClient, ensureLiveSessionId: () => ensureLiveSessionId(), createNewSession: async () => { await createNewSession(); },
+  sendMessage: (text) => sendMessage(text), interactiveService: interactiveService, getRpcCaller: () => rpcCaller,
+  describeRpcError: (err) => describeRpcError(err), getSlashCanon: () => inputCompletion.getSlashCanon(), reloadSessionMessages: async (sId) => { await loadMessages(sId); },
 });
 
-const syncComposerHeight = () => {
-  const inputEl = document.getElementById('dock-prompt-input') as HTMLTextAreaElement | null;
-  inputDockController.syncComposerHeight(inputEl);
-};
 const handleSend = (source: 'button' | 'enter') => inputDockController.handleSend(source);
 const addInputAttachments = (fileList: FileList | File[]) => inputDockController.addInputAttachments(fileList);
-const syncComposerPoppers = () => inputDockController.syncComposerPoppers();
-const syncComposerBadges = () => inputDockController.syncComposerBadges();
+const syncComposerPoppers = () => inputDockController.syncComposerPoppers(); const syncComposerBadges = () => inputDockController.syncComposerBadges();
 
 async function confirmGroupRename(roomId: string, name: string): Promise<void> {
   const newName = name.trim();
@@ -1077,6 +1073,7 @@ const leftRailController = createLeftRailController({
   onToggleContainer: (cid) => conversationOrgCoordinator.toggleContainer(cid), onRetryDoneSection: () => { void conversationOrgCoordinator.ensureDoneSessionsLoaded(true); }, onRequestMarkDone: (k, id, title, p) => conversationOrgCoordinator.requestMarkDone(k, id, title, p),
   onRestoreDone: (k, id, p) => { void conversationOrgCoordinator.restoreDone(k, id, p); }, onSearchQueryChanged: (q) => conversationOrgCoordinator.onSearchQueryChanged(q),
   getMoveEntityContext: (k, id, p) => conversationOrgCoordinator.getMoveEntityContext(k, id, p),
+  getWaitingEntityMaps: () => interactivePromptService.getWaitingEntityMaps(), getBotForeverSessionMap: interactiveSubsystem.getBotForeverSessionMap,
 });
 
 const createLeftRailActions = (): LeftRailActions => {
@@ -1098,15 +1095,13 @@ const resolveSessionKnownFiles = createSessionKnownFilesResolver(() => state.mes
 });
 
 const statusIntegration = createStatusIntegration({
-  getState: () => state, getGatewayClient: () => gatewayClient, getSessionHandleRegistry: () => defaultSessionHandleRegistry,
-  getSessionMessagesCache: () => sessionMessagesCache, isStreamingActiveForCurrentSession: () => isStreamingActiveForCurrentSession(),
-  getActiveStreamingStoredSessionId: () => activeStreamingStoredSessionId, getActiveStreamingMessageId: () => activeStreamingMessageId,
-  formatTimestamp: (ts) => formatTimestamp(ts), scheduleToolPatch: (mid) => scheduleToolPatch(mid),
-  syncReactMessageList: (f) => renderCoordinator.syncReactMessageList(f), syncRightPod: () => renderCoordinator.syncRightPod(),
-  syncTitlebar: () => renderCoordinator.syncTitlebar(), openFilePreview: (p) => handleOpenFilePreview(p),
-  syncComposerHeight: (el) => inputDockController.syncComposerHeight(el), setTimedDockNotice: (m, d) => setTimedDockNotice(m, d),
+  getState: () => state, getGatewayClient: () => gatewayClient, getSessionHandleRegistry: () => defaultSessionHandleRegistry, getSessionMessagesCache: () => sessionMessagesCache,
+  isStreamingActiveForCurrentSession: () => isStreamingActiveForCurrentSession(), getActiveStreamingStoredSessionId: () => activeStreamingStoredSessionId,
+  getActiveStreamingMessageId: () => activeStreamingMessageId, formatTimestamp: (ts) => formatTimestamp(ts), scheduleToolPatch: (mid) => scheduleToolPatch(mid),
+  syncReactMessageList: (f) => renderCoordinator.syncReactMessageList(f), syncRightPod: () => renderCoordinator.syncRightPod(), syncTitlebar: () => renderCoordinator.syncTitlebar(),
+  openFilePreview: (p) => handleOpenFilePreview(p), syncComposerHeight: (el) => inputDockController.syncComposerHeight(el), setTimedDockNotice: (m, d) => setTimedDockNotice(m, d),
   onOpenConstellation: (profileName) => settingsDataService.openBotSettings(profileName, { tab: 'constellation' }),
-  render: () => render(), t,
+  onGroupPendingActions: (roomId, actions) => interactivePromptService.reconcileGroupState(roomId, actions), render: () => render(), t,
 });
 const deliverableCoordinator = createSessionDeliverableCoordinator({
   getState: () => state, getDesktopApi: () => desktopApi, getSubagentWrittenPaths: () => statusIntegration.getActiveSubagentWrittenPaths(),
@@ -1115,31 +1110,23 @@ const deliverableCoordinator = createSessionDeliverableCoordinator({
 
 const renderCoordinator = createRenderCoordinator({
   getState: () => state, messageWindowManager, modalInteractionController,
-  isStreamingActiveForCurrentSession: () => isStreamingActiveForCurrentSession(),
-  resolveSessionKnownFiles: () => resolveSessionKnownFiles(),
+  isStreamingActiveForCurrentSession: () => isStreamingActiveForCurrentSession(), resolveSessionKnownFiles: () => resolveSessionKnownFiles(),
   getVerifiedDeliverablePaths: deliverableCoordinator.getVerifiedPaths, getSubagentWrittenPaths: deliverableCoordinator.getSubagentWrittenPaths,
   getSessionDeliverables: deliverableCoordinator.getSessionDeliverables, scheduleDeliverableVerification: deliverableCoordinator.scheduleVerification, clearDeliverables: deliverableCoordinator.clear,
   resolveMediaUrl: mediaResolver.resolveMediaUrl, onOpenFile: (p, u) => { void handleOpenFilePreview(p, u); }, onDownloadMediaItem: (item) => { void fileViewerService.downloadMedia(item); },
-  getTitlebarSnapshot: () => titlebarController.getTitlebarSnapshot(),
-  onMinimizeWindow: () => titlebarController.onMinimizeWindow(), onMaximizeWindow: () => titlebarController.onMaximizeWindow(),
-  onCloseWindow: () => titlebarController.onCloseWindow(),
-  onToggleInspector: () => statusIntegration.onToggleInspector(),
-  getRightPodSnapshot: () => statusIntegration.getRightPodSnapshot(),
-  getRightPodActions: () => statusIntegration.getRightPodActions(),
+  getTitlebarSnapshot: () => titlebarController.getTitlebarSnapshot(), onMinimizeWindow: () => titlebarController.onMinimizeWindow(), onMaximizeWindow: () => titlebarController.onMaximizeWindow(),
+  onCloseWindow: () => titlebarController.onCloseWindow(), onToggleInspector: () => statusIntegration.onToggleInspector(),
+  getRightPodSnapshot: () => statusIntegration.getRightPodSnapshot(), getRightPodActions: () => statusIntegration.getRightPodActions(),
   getLeftRailSnapshot: () => getLeftRailSnapshot(), createLeftRailActions: () => createLeftRailActions(),
   getPromptNavigatorSnapshot: () => getPromptNavigatorSnapshot(), createPromptNavigatorActions: () => createPromptNavigatorActions(),
-  setPromptNavigatorUpdateHandler: (handler) => promptNavigatorManager.setUpdateHandler(handler),
-  rebuildPromptEntries: () => rebuildPromptEntries(), syncPromptNavigatorMeta: () => syncPromptNavigatorMeta(),
-  syncPromptNavigator: () => syncPromptNavigator(), syncReactSettings: () => syncReactSettings(),
-  ensureSettingsSectionData: (section) => ensureSettingsSectionData(section), syncAgentPresenceHost: () => syncAgentPresenceHost(),
-  syncAgentPresence: () => syncAgentPresence(), captureStreamAnchor: () => captureStreamAnchor(),
-  applyStreamAnchor: (anchor, pin) => applyStreamAnchor(anchor, pin), stabilizeStreamAnchor: (anchor) => stabilizeStreamAnchor(anchor),
-  isStreamNearBottom: (stream) => isStreamNearBottom(stream), syncStreamBottomInset: () => syncStreamBottomInset(),
-  settleInitialBottom: () => settleInitialBottom(), bindEvents: () => bindEvents(),
+  setPromptNavigatorUpdateHandler: (handler) => promptNavigatorManager.setUpdateHandler(handler), rebuildPromptEntries: () => rebuildPromptEntries(), syncPromptNavigatorMeta: () => syncPromptNavigatorMeta(),
+  syncPromptNavigator: () => syncPromptNavigator(), syncReactSettings: () => syncReactSettings(), ensureSettingsSectionData: (section) => ensureSettingsSectionData(section),
+  syncAgentPresenceHost: () => syncAgentPresenceHost(), syncInteractiveHosts: () => interactiveWiring?.syncHosts(), syncAgentPresence: () => syncAgentPresence(),
+  captureStreamAnchor: () => captureStreamAnchor(), applyStreamAnchor: (anchor, pin) => applyStreamAnchor(anchor, pin), stabilizeStreamAnchor: (anchor) => stabilizeStreamAnchor(anchor),
+  isStreamNearBottom: (stream) => isStreamNearBottom(stream), syncStreamBottomInset: () => syncStreamBottomInset(), settleInitialBottom: () => settleInitialBottom(), bindEvents: () => bindEvents(),
   // React 提交后驱动：提交后重新对齐 armed 计划（观察器合并到一帧），语义见 streamViewportManager.reassertActivePin。
   isSessionEnterPending: () => streamViewportManager.isSessionEnterPending(), settleSessionEnter: (probe, sessionId, phase, count, authoritativeReady) => streamViewportManager.settleSessionEnter(probe, sessionId, phase, count, authoritativeReady), reassertActivePin: () => streamViewportManager?.reassertActivePin(),
-  markProgrammaticScroll: (stream) => markProgrammaticScroll(stream),
-  syncComposerPoppers: () => syncComposerPoppers(), syncComposerBadges: () => syncComposerBadges(), logRender,
+  markProgrammaticScroll: (stream) => markProgrammaticScroll(stream), syncComposerPoppers: () => syncComposerPoppers(), syncComposerBadges: () => syncComposerBadges(), logRender,
   onRetryConnect: gatewayEventDispatcher.retryNow,
 });
 
@@ -1226,11 +1213,13 @@ const presenceController = createPresenceController({
   activeRunningGroupRoomIds,
   mountAgentPresence: (host, getSnapshot) => mountAgentPresence(host, getSnapshot),
   ensureAgentPresenceHost: (layout) => ensureAgentPresenceHost(layout),
+  getWaitingReasonForCurrentFocus: () => interactivePromptService.getWaitingReasonForCurrentFocus(),
 });
 
 function syncAgentPresenceHost(): void {
   const presenceHost = ensureAgentPresenceHost(state.presenceLayout);
   presenceController.syncAgentPresenceHost();
+  syncInteractiveTopPillOffset();
   scrollEndController.syncHost();
 }
 
@@ -1316,6 +1305,8 @@ const mobileShellCoordinator = createMobileShellCoordinator({
   renameFolder: (fid, n) => conversationOrgCoordinator.renameFolder(fid, n), deleteFolder: (fid) => conversationOrgCoordinator.deleteFolder(fid),
   assignNewEntityContainer: (k, id, o) => conversationOrgCoordinator.assignNewEntityContainer(k, id, o), setOrgPrefs: (p) => conversationOrgCoordinator.setOrgPrefs(p),
   onEnterStage: () => { void messageLoadingService.refreshActiveSession({ checkLiveTurn: true }); }, onRetryConnect: gatewayEventDispatcher.retryNow,
+  onCancelRollback: () => conversationStreamController.handleRollbackCancel(),
+  switchApproval, interactivePromptService, openInteractiveExternalUrl: interactiveWiring.openSafeExternalUrl, onSelectWaitingSummary: interactiveWiring.selectBackgroundSummary,
 });
 renderCoordinator.setMobileShellCoordinator(mobileShellCoordinator);
 const foregroundSyncCoordinator = createForegroundSyncCoordinator({
@@ -1324,7 +1315,7 @@ const foregroundSyncCoordinator = createForegroundSyncCoordinator({
   onReadyEnsureDoneSessions: () => { if (state.orgPrefs.showDoneSection && state.orgContainerCollapsed.done === false && !state.doneSessionsLoaded && !state.doneLoading) void conversationOrgCoordinator.ensureDoneSessionsLoaded(); },
   refreshConversationOrgIfStale: () => { conversationOrgCoordinator.refreshOnFocusIfStale(); },
   refreshActiveSession: messageLoadingService.refreshActiveSession.bind(messageLoadingService),
-  refreshGroupRoomLog, openBotChat,
+  refreshGroupRoomLog, refreshGroupState: (roomId) => statusIntegration.refreshGroupStateNow(roomId), openBotChat,
   ...createActiveViewSyncAdapters({
     getState: renderCoordinator.getState, isMobileShellActive: renderCoordinator.isMobileShellActive,
     getMobileViewContext: mobileShellCoordinator.getActiveViewContext, settingsDataService,
@@ -1374,6 +1365,11 @@ const conversationStreamController = createConversationStreamController({
   scheduleSessionsRefresh: () => scheduleSessionsRefresh(), getSessionMessagesCache: () => sessionMessagesCache,
   handleOpenFilePreview: (path, url) => handleOpenFilePreview(path, url), syncPromptNavigatorFromScroll: () => syncPromptNavigatorFromScroll(),
   onOpenSubagent: (sid) => statusIntegration.onOpenSubagent(sid),
+  onRefillMobileComposer: (text) => {
+    if (!renderCoordinator.isMobileShellActive()) return false;
+    mobileShellCoordinator.refillStageComposer(text);
+    return true;
+  },
   loadOlderMessages: (opts) => loadOlderMessages(opts), relocateMessageWindowToIndex: (idx) => relocateMessageWindowToIndex(idx),
   syncScrollTopToWindow: (reason) => syncScrollTopToWindow(reason), slideMessageWindowForward: () => slideMessageWindowForward(),
   expandMessageWindow: () => expandMessageWindow(), settleInitialBottom: () => settleInitialBottom(),
@@ -1478,6 +1474,9 @@ async function init(): Promise<void> {
   document.documentElement.style.setProperty('--rail-w-left', `${restoredLeft}px`);
   localStorage.setItem('hermes_flux_rail_w_left', String(restoredLeft));
   await appBootstrap.init();
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('beforeunload', () => interactiveWiring.dispose(), { once: true });
+  }
 }
 
 init();

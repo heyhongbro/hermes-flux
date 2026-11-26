@@ -300,8 +300,8 @@ test('在场指示器 · 14 条表现层契约', async (t) => {
     // 【规则】key 必须同时携带状态、语气与空闲轮播序号：少任何一个都会让对应维度的
     //   文案切换变成「复用节点 + 硬替换」，交叉淡入永不触发。
     assert.ok(
-      /key=\{`\$\{presence\.kind\}:\$\{tone\}:\$\{text\.isIdleQuip \? idleQuip\.tick : ''\}`\}/.test(src),
-      '文案行 key 必须包含 presence.kind / tone / 空闲轮播序号',
+      /key=\{`\$\{presence\.kind\}:\$\{tone\}:\$\{text\.isIdleQuip \? idleQuip\.tick : ''\}:\$\{presence\.kind === 'waiting' \? presence\.reason : ''\}`\}/.test(src),
+      '文案行 key 必须包含 presence.kind / tone / waiting.reason / 空闲轮播序号',
     );
   });
 
@@ -430,8 +430,8 @@ test('在场指示器 · 14 条表现层契约', async (t) => {
     const actionbarBlock = /\.input-dock-container > \.dock-actionbar \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
     assert.ok(actionbarBlock, '必须存在 dock 操作带定位规则');
     assert.ok(
-      /bottom:\s*calc\(100% \+ 8px\)/.test(actionbarBlock),
-      'dock 操作带必须绝对贴在输入舱上沿，禁止参与 flex 流',
+      /bottom:\s*calc\(100%(?: \+ var\(--flux-interactive-prompt-h, 0px\))? \+ 8px\)/.test(actionbarBlock),
+      'dock 操作带必须绝对贴在输入舱上沿（有停靠卡时上抬停靠卡高度），禁止参与 flex 流',
     );
     assert.ok(/pointer-events:\s*none/.test(actionbarBlock), '整条操作带不得拦截消息流点击');
     assert.ok(/z-index:\s*1/.test(actionbarBlock), '操作带必须低于输入舱 popper / 审批菜单');

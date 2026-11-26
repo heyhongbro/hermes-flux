@@ -149,6 +149,15 @@ export interface MessageLoadingDeps {
     info?: Record<string, unknown> | null,
     profile?: string,
   ) => void;
+  readonly onCaptureInteractiveFence?: () => number;
+  readonly onInteractiveResumeReconciled?: (input: {
+    client: HermesGatewayClient;
+    storedSessionId: string;
+    liveSessionId: string | null;
+    profile?: string;
+    resume: Record<string, unknown>;
+    fence: number;
+  }) => void;
   readonly onReconnectStillStreaming?: (
     storedSessionId: string,
     liveSessionId: string,
@@ -495,6 +504,7 @@ export class MessageLoadingService {
         return;
       }
       if (!gatewayClient) return;
+      const checkFence = this.deps.onCaptureInteractiveFence?.() ?? 0;
       try {
         const checkRes = await this.callSessionResume(
           gatewayClient,
@@ -515,6 +525,16 @@ export class MessageLoadingService {
           this.deps.onLiveSessionReady?.(checkHandles.storedId, checkHandles.liveId, rawCheckInfo, resolvedBotName);
         } else {
           state.activeLiveSessionId = sessionId;
+        }
+        if (checkRes && typeof checkRes === 'object') {
+          this.deps.onInteractiveResumeReconciled?.({
+            client: gatewayClient,
+            storedSessionId: checkHandles ? checkHandles.storedId : sessionId,
+            liveSessionId: checkHandles ? checkHandles.liveId : null,
+            profile: resolvedBotName,
+            resume: checkRes,
+            fence: checkFence,
+          });
         }
         const checkResumeState = extractResumeInflightState(checkRes);
         if (checkResumeState.isRunning && checkRes) {
@@ -665,6 +685,7 @@ export class MessageLoadingService {
     // 5. Background asynchronous session.resume for live session activation & handle resolution
     const resumePromise = (async () => {
       const rpcStartedAt = performance.now();
+      const resumeFence = this.deps.onCaptureInteractiveFence?.() ?? 0;
       try {
         const res = await this.callSessionResume(gatewayClient, sessionId, resolvedBotName, fastLoaded);
 
@@ -691,6 +712,16 @@ export class MessageLoadingService {
           this.deps.onLiveSessionReady?.(handles.storedId, handles.liveId, rawInfo, resolvedBotName);
         } else {
           state.activeLiveSessionId = sessionId;
+        }
+        if (res && typeof res === 'object') {
+          this.deps.onInteractiveResumeReconciled?.({
+            client: gatewayClient,
+            storedSessionId: handles ? handles.storedId : sessionId,
+            liveSessionId: handles ? handles.liveId : null,
+            profile: resolvedBotName,
+            resume: res,
+            fence: resumeFence,
+          });
         }
 
         const rawResumedCwd = typeof rawInfo.cwd === 'string' ? rawInfo.cwd : typeof rawInfo.path === 'string' ? rawInfo.path : undefined;

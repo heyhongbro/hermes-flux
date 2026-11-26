@@ -9,7 +9,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { generatePointCloudBlock } from '../../../scripts/generate-point-cloud-css.mjs';
+import { ActivityIndicator } from '../dist/index.js';
 import {
   ACTIVITY_INDICATOR_STORAGE_KEY,
   ACTIVITY_INDICATOR_VARIANTS,
@@ -392,4 +395,14 @@ test('3D 点云 CSS 完整性：生成器逐字同步、全部 12 套 t0 非坍�
       }
     }
   }
+
+  // waiting 态无 waitingReason 时回 fallback 键；有 waitingReason 时精确映射对应提示词
+  const waitNoReason = renderToStaticMarkup(
+    React.createElement(ActivityIndicator, { state: 'waiting', placement: 'inline', entityKind: 'session' }),
+  );
+  const waitClarify = renderToStaticMarkup(
+    React.createElement(ActivityIndicator, { state: 'waiting', waitingReason: 'clarify', placement: 'inline', entityKind: 'session' }),
+  );
+  assert.match(waitNoReason, /data-waiting-reason=""/);
+  assert.match(waitClarify, /data-waiting-reason="clarify"/);
 });

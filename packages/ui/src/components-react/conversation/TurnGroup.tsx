@@ -24,6 +24,10 @@ import {
   type DeliverableMessageInput,
 } from '@hermes-flux/core';
 import type { ConversationMessageVM, ConversationMode, ConversationToolVM } from './types.js';
+import {
+  consolidateMobileTurnTraces,
+  type ConsolidatedMobileTurnRow,
+} from './CompactTraceCapsule.js';
 import { MessageRow } from './MessageRow.js';
 import { TurnDeliverables } from './TurnDeliverables.js';
 import type { MediaLightboxItem } from './MediaLightbox.js';
@@ -112,7 +116,8 @@ const areEqual = (prev: TurnGroupProps, next: TurnGroupProps): boolean => {
           ta.durationMs !== tb.durationMs ||
           ta.subagentId !== tb.subagentId ||
           ta.imagePath !== tb.imagePath ||
-          ta.inlineDiff !== tb.inlineDiff
+          ta.inlineDiff !== tb.inlineDiff ||
+          ta.riskInfo !== tb.riskInfo
         ) {
           return false;
         }
@@ -188,12 +193,14 @@ export const TurnGroup = React.memo(function TurnGroup({
   onOpenFile,
   onOpenMediaLightbox,
 }: TurnGroupProps): React.ReactElement {
-  const viewMessages = React.useMemo(
-    () => aggregateTurnTools(messages, isStreaming),
-    [messages, isStreaming]
-  );
-  const lastIndex = viewMessages.length - 1;
-  const isAssistantTurn = viewMessages[0]?.role === 'assistant';
+  const renderedRows = React.useMemo<ConsolidatedMobileTurnRow[]>(() => {
+    if (compactTrace) {
+      return consolidateMobileTurnTraces(messages, isStreaming);
+    }
+    return aggregateTurnTools(messages, isStreaming).map((message) => ({ message }));
+  }, [messages, isStreaming, compactTrace]);
+  const lastIndex = renderedRows.length - 1;
+  const isAssistantTurn = messages[0]?.role === 'assistant';
 
   const hasDelegationTool = React.useMemo(
     () =>
@@ -277,10 +284,10 @@ export const TurnGroup = React.memo(function TurnGroup({
       data-conv-turn-last={isLastTurn ? 'true' : 'false'}
       data-conv-streaming={isStreaming ? 'true' : 'false'}
     >
-      {viewMessages.map((message, index) => (
+      {renderedRows.map((row, index) => (
         <MessageRow
-          key={message.id}
-          message={message}
+          key={row.message.id}
+          message={row.message}
           isFirstInTurn={index === 0}
           isLastInTurn={index === lastIndex}
           mode={mode}
@@ -294,6 +301,7 @@ export const TurnGroup = React.memo(function TurnGroup({
           onOpenSubagent={onOpenSubagent}
           onCopyMessage={onCopyMessage}
           compactTrace={compactTrace}
+          traceSteps={row.traceSteps}
           onOpenSubagentDetail={onOpenSubagentDetail}
           resolveMediaUrl={resolveMediaUrl}
           onOpenFile={onOpenFile}
