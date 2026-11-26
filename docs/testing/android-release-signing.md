@@ -54,7 +54,22 @@ keyPassword=你的别名密码
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-未配置上述任意一项时，`assembleRelease` 与 `npm run build:android`（位于 `packages/mobile`）会显式打印告警并安全降级回 `signingConfigs.debug`，保证本地调试构建不阻塞。
+未配置上述任意一项时，`assembleRelease` 与 `npm run package:mobile:android`（或 `packages/mobile` 下的 `npm run build:android`）会显式打印告警并安全降级回 `signingConfigs.debug`，保证本地调试构建不阻塞。
+
+若需阻断未签名包流入正式发布（CI 或发版场景），请使用严格模式（缺失凭据或产物证书仍为 `CN=Android Debug` 时立即非零退出）：
+
+```bash
+# 方式 A：仓根一键严格打包
+npm run package:mobile:android:release
+
+# 方式 B：注入环境变量严格门禁
+FLUX_REQUIRE_SIGNING=1 npm run package:mobile:android
+
+# 方式 C：全端统一体检
+npm run signing:check -- --platform=android --strict
+```
+
+> 更多 iOS / macOS / Windows 四端签名与公证配置见 [`cross-platform-release-signing.md`](cross-platform-release-signing.md)。
 
 ---
 
