@@ -46,11 +46,19 @@ android {
     }
     buildTypes {
         release {
+            def requireReleaseSigning = [
+                project.findProperty('requireReleaseSigning')?.toString(),
+                System.getenv('FLUX_REQUIRE_SIGNING'),
+                System.getenv('ANDROID_REQUIRE_RELEASE_SIGNING'),
+            ].any { it != null && it.trim().toLowerCase() in ['true', '1'] }
+
             def releaseSigningConfig = signingConfigs.findByName('release')
             if (releaseSigningConfig != null) {
                 signingConfig releaseSigningConfig
+            } else if (requireReleaseSigning) {
+                throw new GradleException('[Hermes Flux] Release signing is required, but keystore.properties / ANDROID_KEYSTORE_* is missing or incomplete. Refusing to fall back to debug signing. See docs/testing/cross-platform-release-signing.md.')
             } else {
-                logger.warn('[Hermes Flux] WARNING: Release keystore not configured (keystore.properties or ANDROID_KEYSTORE_* missing). Falling back to debug signing; Android will warn about unverified developer identity on install. See docs/testing/android-release-signing.md.')
+                logger.warn('[Hermes Flux] WARNING: Release keystore not configured (keystore.properties or ANDROID_KEYSTORE_* missing). Falling back to debug signing; Android will warn about unverified developer identity on install. See docs/testing/cross-platform-release-signing.md.')
                 signingConfig signingConfigs.debug
             }
             minifyEnabled false

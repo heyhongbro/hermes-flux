@@ -25,7 +25,11 @@
         "arch": ["x64"]
       }
     ],
-    "requestedExecutionLevel": "asInvoker"
+    "requestedExecutionLevel": "asInvoker",
+    "signtoolOptions": {
+      "signingHashAlgorithms": ["sha256"],
+      "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+    }
   },
   "portable": {
     "artifactName": "${productName}-${version}-win-x64-portable.${ext}"
@@ -51,7 +55,11 @@
       }
     ],
     "category": "public.app-category.developer-tools",
-    "darkModeSupport": true
+    "darkModeSupport": true,
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.plist"
   },
   "linux": {
     "target": [

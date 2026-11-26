@@ -12,8 +12,11 @@
     "start": "node scripts/build.mjs && electron dist/main/index.js",
     "package:win": "node scripts/package-win.mjs",
     "package:win:dir": "node scripts/package-win.mjs --dir",
+    "package:win:nsis": "node scripts/package-win.mjs --nsis",
     "package:win:portable": "node scripts/package-win.mjs --portable",
-    "package:mac": "node scripts/build.mjs && electron-builder --mac",
+    "package:win:release": "node scripts/package-win.mjs --nsis --require-signing",
+    "package:mac": "node scripts/package-mac.mjs",
+    "package:mac:release": "node scripts/package-mac.mjs --require-signing",
     "package:linux": "node scripts/build.mjs && electron-builder --linux"
   },
   "dependencies": {
