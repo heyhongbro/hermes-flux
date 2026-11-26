@@ -372,6 +372,9 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             externalModelPicker={true}
             onStageReady={actions.onStageReady}
             onOpenInspector={() => actions.onSelectPane('inspector')}
+            rollbackBanner={snapshot.rollbackBanner}
+            onCancelRollback={actions.onCancelRollback}
+            composerDraftOverride={snapshot.stageComposerDraft}
           />
 
           <MobileInspectorScreen

@@ -403,6 +403,12 @@ const toolPatchQueue = createToolPatchQueue({
     const el = document.getElementById(`msg-tools-${messageId}`);
     if (!el) return false;
     el.innerHTML = html;
+    if (html.trim().length > 0 && typeof el.closest === 'function') {
+      const mobileCapsule = el.closest<HTMLElement>('.m-trace-capsule');
+      if (mobileCapsule) mobileCapsule.setAttribute('data-mobile-trace-empty', 'false');
+      const mobileStack = el.closest<HTMLElement>('.m-trace-stack');
+      if (mobileStack) mobileStack.setAttribute('data-mobile-trace-empty', 'false');
+    }
     return true;
   },
   isNearBottom: () => isStreamNearBottom(document.getElementById('conversation-stream')),
@@ -1316,6 +1322,7 @@ const mobileShellCoordinator = createMobileShellCoordinator({
   renameFolder: (fid, n) => conversationOrgCoordinator.renameFolder(fid, n), deleteFolder: (fid) => conversationOrgCoordinator.deleteFolder(fid),
   assignNewEntityContainer: (k, id, o) => conversationOrgCoordinator.assignNewEntityContainer(k, id, o), setOrgPrefs: (p) => conversationOrgCoordinator.setOrgPrefs(p),
   onEnterStage: () => { void messageLoadingService.refreshActiveSession({ checkLiveTurn: true }); }, onRetryConnect: gatewayEventDispatcher.retryNow,
+  onCancelRollback: () => conversationStreamController.handleRollbackCancel(),
 });
 renderCoordinator.setMobileShellCoordinator(mobileShellCoordinator);
 const foregroundSyncCoordinator = createForegroundSyncCoordinator({
@@ -1374,6 +1381,11 @@ const conversationStreamController = createConversationStreamController({
   scheduleSessionsRefresh: () => scheduleSessionsRefresh(), getSessionMessagesCache: () => sessionMessagesCache,
   handleOpenFilePreview: (path, url) => handleOpenFilePreview(path, url), syncPromptNavigatorFromScroll: () => syncPromptNavigatorFromScroll(),
   onOpenSubagent: (sid) => statusIntegration.onOpenSubagent(sid),
+  onRefillMobileComposer: (text) => {
+    if (!renderCoordinator.isMobileShellActive()) return false;
+    mobileShellCoordinator.refillStageComposer(text);
+    return true;
+  },
   loadOlderMessages: (opts) => loadOlderMessages(opts), relocateMessageWindowToIndex: (idx) => relocateMessageWindowToIndex(idx),
   syncScrollTopToWindow: (reason) => syncScrollTopToWindow(reason), slideMessageWindowForward: () => slideMessageWindowForward(),
   expandMessageWindow: () => expandMessageWindow(), settleInitialBottom: () => settleInitialBottom(),

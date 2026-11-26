@@ -8,7 +8,7 @@
  *      滚回底部或生成新回合时自动恢复舒展态；
  *   3. 中部复用标准 `#conversation-stream` 与 `#react-message-list-host`，确保 120 FPS
  *      TokenStreamWriter 流式直写与虚拟视口零差异复用；
- *   4. 底部挂载变形输入舱 `MobileMorphingComposer`（`inputId="dock-prompt-input"`），
+ *   4. 底部挂载变形输入舱 `MobileMorphingComposer`（`inputId="mobile-stage-prompt-input"`），
  *      自动随 `--keyboard-height` 与安全区抬升避让。
  */
 
@@ -59,6 +59,9 @@ export interface MobileConversationScreenProps {
   externalModelPicker?: boolean;
   onStageReady?: () => void;
   onOpenInspector?: () => void;
+  rollbackBanner?: { removedCount: number; anchorLabel: string } | null;
+  onCancelRollback?: () => void;
+  composerDraftOverride?: { text: string; version: number } | null;
 }
 
 export function MobileConversationScreen({
@@ -89,6 +92,9 @@ export function MobileConversationScreen({
   externalModelPicker,
   onStageReady,
   onOpenInspector,
+  rollbackBanner,
+  onCancelRollback,
+  composerDraftOverride,
 }: MobileConversationScreenProps): React.ReactElement {
   const [compactPresence, setCompactPresence] = React.useState(false);
   const [pillMounted, setPillMounted] = React.useState(false);
@@ -208,6 +214,25 @@ export function MobileConversationScreen({
       {dockNotice ? <div className="m-stage__notice">{dockNotice}</div> : null}
 
       <div className="m-stage__composer-dock">
+        {rollbackBanner ? (
+          <div className="m-stage__rollback-banner" data-testid="mobile-rollback-banner">
+            <span className="m-stage__rollback-text">
+              {t('chat.rollbackArmed', {
+                count: rollbackBanner.removedCount,
+                anchor: rollbackBanner.anchorLabel,
+              })}
+            </span>
+            <button
+              type="button"
+              className="m-stage__rollback-cancel"
+              data-action="rollback-cancel"
+              data-testid="mobile-rollback-cancel"
+              onClick={onCancelRollback}
+            >
+              {t('chat.rollbackCancel')}
+            </button>
+          </div>
+        ) : null}
         <MobileMorphingComposer
           inputId="mobile-stage-prompt-input"
           placeholder={placeholder}
@@ -227,6 +252,7 @@ export function MobileConversationScreen({
           forceModelPickerOpen={forceModelPickerOpen}
           onModelPickerOpenChange={onModelPickerOpenChange}
           externalModelPicker={externalModelPicker}
+          draftOverride={composerDraftOverride}
         />
       </div>
     </section>

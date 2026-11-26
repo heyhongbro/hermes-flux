@@ -75,8 +75,10 @@ export const zhMobile = {
 
   'mobile.trace.runningSummary': '思考与执行中…',
   'mobile.trace.thoughtAndTools': '已思考 {sec}s · 执行 {count} 步操作',
+  'mobile.trace.thoughtAndToolsNoTime': '已思考 · 执行 {count} 步操作',
   'mobile.trace.thoughtOnly': '已思考 {sec}s',
   'mobile.trace.toolsOnly': '执行 {count} 步操作',
+  'mobile.trace.thoughtMulti': '已记录 {count} 段推理过程',
   'mobile.trace.thoughtDefault': '已记录推理过程',
   'mobile.trace.subagentSingle': '已调用子代理 · {name}',
   'mobile.trace.subagentMulti': '协同 {count} 个子代理任务',
@@ -328,8 +330,10 @@ export const enMobile = {
 
   'mobile.trace.runningSummary': 'Thinking & running tools…',
   'mobile.trace.thoughtAndTools': 'Thought {sec}s · {count} steps',
+  'mobile.trace.thoughtAndToolsNoTime': 'Reasoning · {count} steps',
   'mobile.trace.thoughtOnly': 'Thought {sec}s',
   'mobile.trace.toolsOnly': '{count} steps executed',
+  'mobile.trace.thoughtMulti': '{count} reasoning steps',
   'mobile.trace.thoughtDefault': 'Reasoning trace',
   'mobile.trace.subagentSingle': 'Subagent · {name}',
   'mobile.trace.subagentMulti': '{count} subagent tasks',

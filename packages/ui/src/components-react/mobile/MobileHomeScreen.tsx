@@ -489,11 +489,8 @@ export function MobileHomeScreen({
           </div>
         ))}
 
-        {/* 3. 未归类群聊分区（群聊全部被项目/文件夹收纳时隐藏空态噪声） */}
-        {(groupsSection.items.length > 0 ||
-          ![...projectSections, ...folderSections].some((b) =>
-            b.items.some((entry) => entry.kind === 'group'),
-          )) && (
+        {/* 3. 未归类群聊分区（群聊列表为空或全部已归入项目/文件夹时自动隐藏整个群聊分区） */}
+        {groupsSection.items.length > 0 && (
           <div className="m-section" data-section="groups" data-expanded={groupsSection.effectiveExpanded ? 'true' : 'false'}>
             <button
               type="button"
@@ -517,11 +514,7 @@ export function MobileHomeScreen({
 
             <div className="m-section__body" data-expanded={groupsSection.effectiveExpanded ? 'true' : 'false'}>
               <div className="m-section__body-inner">
-                {groupsSection.items.length === 0 ? (
-                  !model.isSearching ? <div className="m-section__empty">{t('mobile.home.emptyGroups')}</div> : null
-                ) : (
-                  groupsSection.items.map((row) => renderOrgRow(row, 'unassigned'))
-                )}
+                {groupsSection.items.map((row) => renderOrgRow(row, 'unassigned'))}
               </div>
             </div>
           </div>

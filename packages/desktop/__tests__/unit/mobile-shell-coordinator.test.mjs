@@ -1305,3 +1305,101 @@ test('MobileShellCoordinator: 仅在切入 stage 屏且从非 stage 迁入时触
   acts.onSelectPane('stage');
   assert.equal(enterStageCalls, 2, 'home -> stage 返回必须触发 onEnterStage 续流/对账');
 });
+
+test('MobileShellCoordinator 默认皮肤跟随系统、动态响应 matchMedia 变更且不污染桌面端主题', () => {
+  const prevWin = globalThis.window;
+  let prefersDark = false;
+  const listeners = new Set();
+  globalThis.window = {
+    matchMedia: () => ({
+      get matches() {
+        return prefersDark;
+      },
+      addEventListener(_ev, fn) {
+        listeners.add(fn);
+      },
+      removeEventListener(_ev, fn) {
+        listeners.delete(fn);
+      },
+    }),
+  };
+
+  try {
+    // 1. 首次启动无存储时默认 appearancePref='system'，浅色系统解析为 jade-white
+    const hMob = createHarness({
+      getSystemPrefersDark: undefined,
+      storage: createMemoryStorage(),
+      state: { platform: 'android', theme: 'obsidian-gold' },
+    });
+    const snapLight = hMob.coordinator.buildSnapshot();
+    assert.equal(snapLight.appearancePref, 'system');
+    assert.equal(snapLight.theme, 'jade-white');
+
+    // 2. 系统切换深色模式时实时同步为 obsidian-gold 并触发 render
+    const rendersBefore = hMob.calls.filter(([k]) => k === 'render').length;
+    prefersDark = true;
+    for (const fn of listeners) fn({ matches: true });
+    assert.equal(hMob.state.theme, 'obsidian-gold');
+    assert.equal(hMob.calls.filter(([k]) => k === 'render').length, rendersBefore + 1);
+
+    // 3. 显式切为 light 后，系统再切回浅/深不再覆盖用户选择
+    hMob.coordinator.getActions().onSetAppearancePreference('light');
+    assert.equal(hMob.state.theme, 'jade-white');
+    for (const fn of listeners) fn({ matches: true });
+    assert.equal(hMob.state.theme, 'jade-white');
+
+    // 4. 销毁时退订 matchMedia 监听，避免泄漏
+    assert.equal(listeners.size, 1);
+    hMob.coordinator.dispose();
+    assert.equal(listeners.size, 0);
+
+    // 5. 桌面平台实例化协调器不得覆盖桌面用户的 warm-paper 等皮肤偏好
+    const hDesktop = createHarness({
+      getSystemPrefersDark: undefined,
+      storage: createMemoryStorage(),
+      state: { platform: 'win32', theme: 'warm-paper' },
+    });
+    assert.equal(hDesktop.state.theme, 'warm-paper');
+    prefersDark = true;
+    for (const fn of listeners) fn({ matches: true });
+    assert.equal(hDesktop.state.theme, 'warm-paper');
+    hDesktop.coordinator.dispose();
+  } finally {
+    globalThis.window = prevWin;
+  }
+});
+
+test('14. refillStageComposer 与移动端回滚横幅/取消联动', () => {
+  let canceledCount = 0;
+  const h = createHarness({
+    state: {
+      platform: 'android',
+      activeSessionId: 's-1',
+      rollbackArmed: {
+        sessionId: 's-1',
+        targetId: 'u-2',
+        anchor: { kind: 'row', rowId: 12 },
+        snapshot: [],
+        removedCount: 2,
+        anchorLabel: '10:00',
+      },
+    },
+    onCancelRollback: () => {
+      canceledCount += 1;
+      h.state.rollbackArmed = null;
+      h.deps.render();
+    },
+  });
+
+  h.coordinator.refillStageComposer('retry prompt');
+  const snap = h.coordinator.buildSnapshot();
+  assert.equal(snap.activePane, 'stage');
+  assert.deepEqual(snap.stageComposerDraft, { text: 'retry prompt', version: 1 });
+  assert.deepEqual(snap.rollbackBanner, { removedCount: 2, anchorLabel: '10:00' });
+
+  h.coordinator.getActions().onCancelRollback?.();
+  assert.equal(canceledCount, 1);
+  const afterCancel = h.coordinator.buildSnapshot();
+  assert.equal(afterCancel.stageComposerDraft, null);
+  assert.equal(afterCancel.rollbackBanner, null);
+});

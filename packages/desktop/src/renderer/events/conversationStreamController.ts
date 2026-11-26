@@ -40,6 +40,7 @@ import {
 import type { AppState } from '../state/appState.js';
 import {
   messageActionController,
+  resolveCopyContent,
 } from '../messageActions.js';
 import {
   applyOptimisticCut,
@@ -61,6 +62,7 @@ export interface ConversationStreamControllerDeps {
   getSessionMessagesCache: () => Map<string, MessageViewModel[]>;
   handleOpenFilePreview: (filePath: string, previewUrl?: string) => Promise<void>;
   onOpenSubagent?: (subagentId: string) => void;
+  onRefillMobileComposer?: (text: string) => boolean;
   syncPromptNavigatorFromScroll: () => void;
   loadOlderMessages: (options?: { preserveViewportWindow?: boolean }) => Promise<void>;
   relocateMessageWindowToIndex: (index: number) => boolean;
@@ -284,16 +286,29 @@ export function createConversationStreamController(
     }
 
     const targetMsg = state.messages.find((m) => m.id === plan.targetId);
-    const textarea = typeof document !== 'undefined'
-      ? (document.getElementById('dock-prompt-input') as HTMLTextAreaElement | null)
-      : null;
-    const refilled = messageActionController.executeRollback(
-      btn,
-      state.messages,
-      textarea,
-      setTimedDockNotice,
-      t('chat.rollbackSuccess')
-    );
+    const rollbackText = resolveCopyContent(btn, state.messages);
+    let refilledSuccess = false;
+    if (rollbackText && deps.onRefillMobileComposer?.(rollbackText)) {
+      refilledSuccess = true;
+      setTimedDockNotice(t('chat.rollbackSuccess'));
+    } else {
+      const textarea = typeof document !== 'undefined'
+        ? (document.getElementById('dock-prompt-input') as HTMLTextAreaElement | null)
+        : null;
+      const refilled = messageActionController.executeRollback(
+        btn,
+        state.messages,
+        textarea,
+        setTimedDockNotice,
+        t('chat.rollbackSuccess')
+      );
+      refilledSuccess = refilled.success;
+    }
+
+    if (!refilledSuccess) {
+      render();
+      return;
+    }
 
     if (plan.mode === 'refill-only') {
       setTimedDockNotice(t('chat.rollbackNoAnchor'));
@@ -314,7 +329,6 @@ export function createConversationStreamController(
     if (state.activeSessionId) {
       getSessionMessagesCache().set(state.activeSessionId, [...state.messages]);
     }
-    void refilled;
     state.rollbackArmed = {
       sessionId: state.activeSessionId,
       targetId: plan.targetId,

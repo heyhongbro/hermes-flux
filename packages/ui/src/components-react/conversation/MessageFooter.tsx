@@ -20,36 +20,20 @@
  */
 
 import * as React from 'react';
+import { Copy, GitFork, MoreHorizontal, RotateCcw } from 'lucide-react';
 import { t } from '../../i18n/index.js';
 import type { ConversationMessageVM, ConversationMode } from './types.js';
 
-function CopyIcon(): React.ReactElement {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-    </svg>
-  );
+function CopyIcon({ size = 13 }: { size?: number }): React.ReactElement {
+  return <Copy size={size} strokeWidth={1.85} aria-hidden="true" />;
 }
 
-function RollbackIcon(): React.ReactElement {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 7v6h6" />
-      <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
-    </svg>
-  );
+function RollbackIcon({ size = 13 }: { size?: number }): React.ReactElement {
+  return <RotateCcw size={size} strokeWidth={1.85} aria-hidden="true" />;
 }
 
-function ForkIcon(): React.ReactElement {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <line x1="6" x2="6" y1="3" y2="15" />
-      <circle cx="18" cy="6" r="3" />
-      <circle cx="6" cy="18" r="3" />
-      <path d="M18 9a9 9 0 0 1-9 9" />
-    </svg>
-  );
+function ForkIcon({ size = 13 }: { size?: number }): React.ReactElement {
+  return <GitFork size={size} strokeWidth={1.85} aria-hidden="true" />;
 }
 
 /** 时间前的时钟图标：14px，与 OpenChamber message-footer 同尺寸 */
@@ -114,6 +98,8 @@ export interface ConversationMessageFooterProps {
   isStreaming?: boolean;
   /** 只读详情流：隐藏回滚与分叉并直连复制回调 */
   readOnly?: boolean;
+  /** 移动端紧凑模式：默认仅展示日期时间 + 复制按钮，将回滚与 Fork 收纳进 `...` 浮层菜单 */
+  compactActions?: boolean;
   onCopyMessage?: (content: string) => void;
 }
 
@@ -124,13 +110,107 @@ export function ConversationMessageFooter({
   meta,
   isStreaming = false,
   readOnly = false,
+  compactActions = false,
   onCopyMessage,
 }: ConversationMessageFooterProps): React.ReactElement | null {
   const isUser = role === 'user';
   const showMutatingActions = mode === 'scratchpad' && !readOnly;
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const menuWrapRef = React.useRef<HTMLSpanElement | null>(null);
+
+  React.useEffect(() => {
+    if (!menuOpen || !showMutatingActions || typeof document === 'undefined') return;
+    const handleOutside = (event: PointerEvent): void => {
+      if (!menuWrapRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', handleOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuOpen, showMutatingActions]);
+
   if (isStreaming) return null;
 
-  const actions = (
+  const actions = compactActions ? (
+    <span className="conv-message__actions conv-footer__actions">
+      <ActionButton
+        action="copy-msg"
+        message={message}
+        label={t('chat.copy')}
+        onClick={onCopyMessage ? () => onCopyMessage(message.content) : undefined}
+      >
+        <CopyIcon size={13} />
+      </ActionButton>
+      {showMutatingActions ? (
+        <span
+          ref={menuWrapRef}
+          className="conv-footer__more-wrap m-no-swipe"
+          data-open={menuOpen ? 'true' : 'false'}
+        >
+          <button
+            type="button"
+            className="msg-action-btn conv-footer__more-btn"
+            data-testid="msg-more-actions-btn"
+            aria-label={t('chat.moreActions')}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((prev) => !prev)}
+          >
+            <MoreHorizontal size={14} strokeWidth={1.85} aria-hidden="true" />
+          </button>
+          {menuOpen ? (
+            <div
+              className="conv-footer__menu m-no-swipe"
+              role="menu"
+              data-testid="msg-more-actions-menu"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="msg-action-btn conv-footer__menu-item"
+                data-action="rollback-msg"
+                data-msg-id={message.id}
+                data-row-id={message.rowId ?? ''}
+                data-content={message.content}
+                aria-label={t('chat.rollback')}
+                onClick={() => {
+                  queueMicrotask(() => setMenuOpen(false));
+                }}
+              >
+                <RollbackIcon size={15} />
+                <span>{t('chat.rollback')}</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="msg-action-btn conv-footer__menu-item"
+                data-action="fork-msg"
+                data-msg-id={message.id}
+                data-row-id={message.rowId ?? ''}
+                data-content={message.content}
+                aria-label={t('chat.fork')}
+                onClick={() => {
+                  queueMicrotask(() => setMenuOpen(false));
+                }}
+              >
+                <ForkIcon size={15} />
+                <span>{t('chat.fork')}</span>
+              </button>
+            </div>
+          ) : null}
+        </span>
+      ) : null}
+    </span>
+  ) : (
     <span className="conv-message__actions conv-footer__actions">
       <ActionButton
         action="copy-msg"
@@ -161,18 +241,19 @@ export function ConversationMessageFooter({
     </span>
   ) : null;
 
-  const info = meta || stamp ? (
+  const visibleMeta = compactActions ? undefined : meta;
+  const info = visibleMeta || stamp ? (
     <span className="conv-footer__info">
-      {meta}
+      {visibleMeta}
       {stamp}
     </span>
   ) : null;
 
   return (
     <div
-      className={`conv-message__footer conv-footer${isUser ? ' conv-footer--user' : ' conv-footer--assistant'}${isUser ? '' : ' assistant-footer-bar'}`}
+      className={`conv-message__footer conv-footer${isUser ? ' conv-footer--user' : ' conv-footer--assistant'}${isUser ? '' : ' assistant-footer-bar'}${compactActions ? ' conv-footer--compact' : ''}`}
     >
-      {isUser ? (
+      {compactActions || isUser ? (
         <>
           {info}
           {actions}

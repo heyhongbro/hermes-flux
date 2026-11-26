@@ -167,6 +167,8 @@ export interface MobileWorkspaceSnapshot {
   groupMembers: Array<{ name: string; displayName: string; avatar?: string }>;
   subagentSheet: MobileSubagentSheetState | null;
   actionSheet: MobileActionSheetState | null;
+  rollbackBanner?: { removedCount: number; anchorLabel: string } | null;
+  stageComposerDraft?: { text: string; version: number } | null;
   sideAgentCapsules: Array<{
     id: string;
     kind: 'btw' | 'delegation';
@@ -219,6 +221,7 @@ export interface MobileWorkspaceActions {
 
   onSendMessage: (text: string) => void;
   onInterruptTurn: () => void;
+  onCancelRollback?: () => void;
   onSelectModel: (model: string, provider?: string) => void;
   onRefreshModels?: () => void;
   onOpenAttachmentPicker: () => void;

@@ -524,11 +524,8 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
               </RailOrgContainerSection>
             ))}
 
-            {/* 3. 未归类群聊分组（群聊全部被项目/文件夹收纳时自动隐藏占位噪声） */}
-            {(groupsSection.items.length > 0 ||
-              ![...projectSections, ...folderSections].some((b) =>
-                b.items.some((entry) => entry.kind === 'group'),
-              )) && (
+            {/* 3. 未归类群聊分组（群聊列表为空或全部已归入项目/文件夹时自动隐藏整个群聊分组） */}
+            {groupsSection.items.length > 0 && (
               <GroupedSection
                 section="groups"
                 triggerId="rail-groups-accordion-trigger"
@@ -539,13 +536,7 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
                 activityVariant={props.activityVariant}
                 onToggle={props.onToggleGroups}
               >
-                {groupsSection.items.length === 0 ? (
-                  !groupedModel.isSearching ? (
-                    <div className="px-2 py-2 text-caption text-muted-foreground">{t('rail.groupsEmpty')}</div>
-                  ) : null
-                ) : (
-                  groupsSection.items.map((row) => renderMixedEntry(row, false))
-                )}
+                {groupsSection.items.map((row) => renderMixedEntry(row, false))}
               </GroupedSection>
             )}
 

@@ -83,6 +83,7 @@ const bootstrapEnv = createDomEnv();
 const {
   createCapacitorPlatformBridge,
   resolveCssKeyboardHeight,
+  resolveInitialMobileAppearance,
   resolveVisualViewportKeyboardHeight,
 } = await import('../../dist/capacitor-bridge.mjs');
 const autoInjectedMobile = bootstrapEnv.win.hermesMobile;
@@ -1049,5 +1050,45 @@ test('Capacitor Network 原生网络切换监听、getNetworkStatus 降级与鉴
   } finally {
     globalThis.fetch = prevFetch;
     env.restore();
+  }
+});
+
+test('resolveInitialMobileAppearance 默认跟随系统深浅色并优先尊重已持久化的外观偏好', () => {
+  const prevWin = globalThis.window;
+  let prefersDark = false;
+  const store = new Map();
+  globalThis.window = {
+    localStorage: {
+      getItem: (k) => (store.has(k) ? store.get(k) : null),
+    },
+    matchMedia: () => ({ matches: prefersDark }),
+  };
+
+  try {
+    // 1. 默认无存储时随系统浅/深色切换
+    assert.deepEqual(resolveInitialMobileAppearance(), {
+      skin: 'jade-white',
+      appearance: 'light',
+    });
+    prefersDark = true;
+    assert.deepEqual(resolveInitialMobileAppearance(), {
+      skin: 'obsidian-gold',
+      appearance: 'dark',
+    });
+
+    // 2. 持久化 light / dark 优先级高于系统色
+    store.set('hermes_flux_mobile_appearance', 'light');
+    assert.deepEqual(resolveInitialMobileAppearance(), {
+      skin: 'jade-white',
+      appearance: 'light',
+    });
+    prefersDark = false;
+    store.set('hermes_flux_mobile_appearance', 'dark');
+    assert.deepEqual(resolveInitialMobileAppearance(), {
+      skin: 'obsidian-gold',
+      appearance: 'dark',
+    });
+  } finally {
+    globalThis.window = prevWin;
   }
 });

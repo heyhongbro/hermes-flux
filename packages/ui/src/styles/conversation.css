@@ -1657,6 +1657,57 @@ details[open] > summary > .tool-row__expand {
   outline-offset: 1px;
 }
 
+.conv-footer__more-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.conv-footer__more-wrap[data-open="true"] {
+  z-index: 30;
+}
+
+.conv-footer__menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  min-width: 132px;
+  padding: 4px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border);
+  background: var(--popover);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.conv-footer--user .conv-footer__menu {
+  left: auto;
+  right: 0;
+}
+
+.conv-footer__menu-item {
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  padding: 6px 10px;
+  justify-content: flex-start;
+  gap: 8px;
+  border-radius: var(--radius-card);
+  color: var(--foreground);
+  opacity: 1;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.conv-footer__menu-item:active {
+  background: var(--card-active);
+}
+
 .meta-tag,
 .time-tag,
 .model-tag,

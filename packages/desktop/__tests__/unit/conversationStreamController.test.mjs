@@ -591,3 +591,62 @@ test('ConversationStreamController - 滚动几何与滑窗状态机回归守卫'
     }
   });
 });
+
+test('ConversationStreamController: handleRollbackMessage 移动端回填撤回与回填失败防误截断守卫', () => {
+  const refillCalls = [];
+  const baseMessages = [
+    { id: 'u0', rowId: 5, role: 'user', content: 'First prompt', timestamp: '09:59' },
+    { id: 'a0', rowId: 6, role: 'assistant', content: 'First answer', timestamp: '09:59' },
+    { id: 'u1', rowId: 10, role: 'user', content: 'Target retry prompt', timestamp: '10:00' },
+    { id: 'a1', rowId: 11, role: 'assistant', content: 'Target answer', timestamp: '10:01' },
+  ];
+
+  // 1. 移动端回填失败（无 #dock-prompt-input 且无移动端回调）时，绝不截断消息或激活 rollbackArmed
+  const failCase = createMockDeps({
+    state: { messages: baseMessages.map((m) => ({ ...m })) },
+  });
+  const globalDoc = globalThis.document;
+  globalThis.document = {
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+
+  try {
+    const failController = createConversationStreamController(failCase.deps);
+    const btn = {
+      getAttribute: (attr) => {
+        if (attr === 'data-msg-id') return 'u1';
+        if (attr === 'data-row-id') return '10';
+        return null;
+      },
+      closest: () => null,
+    };
+    failController.handleRollbackMessage(btn);
+    assert.equal(failCase.state.messages.length, 4, '回填失败时严禁误截断既有消息');
+    assert.equal(failCase.state.rollbackArmed, null, '回填失败时不得挂起 rollbackArmed');
+
+    // 2. 移动端回填成功：触发 onRefillMobileComposer、乐观截断并允许 handleRollbackCancel 完整恢复
+    const okCase = createMockDeps({
+      state: { messages: baseMessages.map((m) => ({ ...m })) },
+      deps: {
+        onRefillMobileComposer: (text) => {
+          refillCalls.push(text);
+          return true;
+        },
+      },
+    });
+    const okController = createConversationStreamController(okCase.deps);
+    okController.handleRollbackMessage(btn);
+    assert.deepEqual(refillCalls, ['Target retry prompt']);
+    assert.equal(okCase.state.messages.length, 2);
+    assert.equal(okCase.state.rollbackArmed?.removedCount, 2);
+    assert.equal(okCase.state.rollbackArmed?.targetId, 'u1');
+
+    okController.handleRollbackCancel();
+    assert.equal(okCase.state.rollbackArmed, null);
+    assert.equal(okCase.state.messages.length, 4);
+  } finally {
+    globalThis.document = globalDoc;
+  }
+});

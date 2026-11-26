@@ -154,7 +154,10 @@ export function createTokenStreamWriter(deps: TokenStreamWriterDeps): TokenStrea
           const thoughtEl = document.getElementById(`msg-thought-${targetMsg.id}`);
           if (thoughtEl) {
             thoughtEl.innerText = targetMsg.thought || '';
-            const fold = thoughtEl.closest('details');
+            if (thoughtEl.style && thoughtEl.style.display === 'none') {
+              thoughtEl.style.display = 'block';
+            }
+            const fold = typeof thoughtEl.closest === 'function' ? thoughtEl.closest('details') : null;
             if (fold) {
               fold.style.display = 'block';
               if (!fold.open) fold.open = true;
@@ -162,6 +165,18 @@ export function createTokenStreamWriter(deps: TokenStreamWriterDeps): TokenStrea
               if (summaryEl) {
                 summaryEl.innerText = getCleanReasoningSummary(targetMsg.thought || '');
               }
+            }
+            const mobileCapsule = typeof thoughtEl.closest === 'function'
+              ? thoughtEl.closest<HTMLElement>('.m-trace-capsule')
+              : null;
+            if (mobileCapsule) {
+              mobileCapsule.setAttribute('data-mobile-trace-empty', 'false');
+            }
+            const mobileStack = typeof thoughtEl.closest === 'function'
+              ? thoughtEl.closest<HTMLElement>('.m-trace-stack')
+              : null;
+            if (mobileStack) {
+              mobileStack.setAttribute('data-mobile-trace-empty', 'false');
             }
           }
         }

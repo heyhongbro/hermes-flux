@@ -147,6 +147,7 @@ export interface MobileMorphingComposerProps {
   forceModelPickerOpen?: boolean;
   externalModelPicker?: boolean;
   autoFocus?: boolean;
+  draftOverride?: { text: string; version: number } | null;
 }
 
 export function MobileMorphingComposer({
@@ -169,12 +170,14 @@ export function MobileMorphingComposer({
   forceModelPickerOpen,
   externalModelPicker = false,
   autoFocus = false,
+  draftOverride = null,
 }: MobileMorphingComposerProps): React.ReactElement {
   const [text, setText] = React.useState('');
   const [focused, setFocused] = React.useState(false);
   const [localModelOpen, setLocalModelOpen] = React.useState(false);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const blurTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAppliedDraftVersionRef = React.useRef(0);
 
   const clearBlurTimer = React.useCallback((): void => {
     if (blurTimerRef.current !== null) {
@@ -213,6 +216,20 @@ export function MobileMorphingComposer({
       textareaRef.current?.focus();
     }
   }, [autoFocus]);
+
+  React.useEffect(() => {
+    if (!draftOverride || draftOverride.version <= 0) return;
+    if (draftOverride.version === lastAppliedDraftVersionRef.current) return;
+    lastAppliedDraftVersionRef.current = draftOverride.version;
+    setText(draftOverride.text);
+    setFocused(true);
+    const el = textareaRef.current;
+    if (el) {
+      el.focus?.();
+      const endPos = draftOverride.text.length;
+      el.setSelectionRange?.(endPos, endPos);
+    }
+  }, [draftOverride]);
 
   const handleSubmit = (): void => {
     const trimmed = text.trim();
