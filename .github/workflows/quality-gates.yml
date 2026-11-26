@@ -2,13 +2,21 @@ name: Quality Gates
 
 # 设计意图：
 #   本地 pre-commit 可被 --no-verify 绕过，CI 是不可绕过的最终裁决层。
-#   两者执行同一套门禁实现（scripts/gates），避免「本地绿、CI 红」的口径分裂。
+#   仅守护受保护集成分支 push（合入后兜底）与全部 pull_request（含任意 t3/*/feat/*/fix/* 与 fork PR），
+#   避免功能分支既触发 push 又触发 pull_request 导致双倍 CI 账单；同时支持 workflow_dispatch 手动校验。
 
 on:
   push:
-    branches: [main, 'dev/**', 'feat/**']
+    branches: [main, 'dev/**']
   pull_request:
     branches: [main, 'dev/**']
+  workflow_dispatch:
+    inputs:
+      mutation_domain:
+        description: '可选：手动指定运行的单个 Stryker 变异域（留空则按需检查）'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: gates-${{ github.workflow }}-${{ github.ref }}
@@ -16,8 +24,9 @@ concurrency:
 
 jobs:
   gates:
-    name: Gate 0-5
+    name: Gate 0-4
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -28,64 +37,51 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # 门禁需要与基线比对，且棘轮依赖完整历史才能算改动集
+          # 门禁需要与基线比对，且 PR 增量覆盖率与变更域变异测试依赖完整提交历史
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
 
       # 安装口径必须与 package-lock.json 严格一致，禁止 `npm install` 的隐式改写。
-      # 历史坑：曾写 `npm install || npm install --legacy-peer-deps`，而包内
-      #   `workspace:*` 会让两条分支同时报 EUNSUPPORTEDPROTOCOL，CI 在第 4 步必挂；
-      #   兜底分支对同一根因无效，是典型的"假兜底"。
-      # 约束：workspace 内部依赖统一用 `*`（npm 会解析成 file link），
-      #   任何 `workspace:` 协议都会让 npm 直接失败。
+      # 约束：workspace 内部依赖统一用 `*`，任何 `workspace:` 协议都会让 npm 直接失败。
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      # 依赖装不上时后续门禁全是空跑，必须显式证明 workspace 链接已建立。
-      # 历史坑 1：曾写 `require.resolve('@hermes-flux/core')`。core 的 main 指向被
-      #   .gitignore 忽略的 dist/index.js，而本步骤在 `npm run build` 之前执行，
-      #   于是两个平台稳定 MODULE_NOT_FOUND——门禁自己造了一处假红。
-      #   链接是否建立与产物是否存在是两件事，不能用后者证明前者。
-      # 历史坑 2：曾把校验内联成 bash 的 `for p in ...; do ... done`。windows runner
-      #   默认 shell 是 pwsh，同一段脚本直接 ParserError。
-      # 约束：判定逻辑一律落在 Node 脚本里，CI 只调用，不承载 shell 语义。
+      # 必须在 npm run build 之前以文件系统核验 workspace 链接，禁止提前 require 产物
       - name: Verify workspace links
         run: node scripts/gates/verify-workspace-links.mjs
 
-      # CI workflow 自身的可移植性静态检查：bash 专有语法、多行 run 命令掩盖、
-      # 构建前 require 产物。这三类缺陷都表现为「本地全绿、CI 稳定红」，
-      # 且红的原因与被测代码无关，必须在改动 workflow 时当场拦住。
+      # CI workflow 自身可移植性静态检查（覆盖全文件全部 job）
       - name: Gate 0a · CI workflow 可移植性
         run: npm run gates:ci
 
-      # 测试目标必须由 Node 自己枚举，不能用 shell 展开的 glob。
-      # 历史坑：bash 默认关闭 globstar 时 `**` 退化为 `*`，只能命中一层子目录，
-      #   packages/ui/__tests__ 根级 30 个文件在 ubuntu 上静默不跑，而退出码仍为 0。
-      #   现在 npm test 走 scripts/gates/census-check.mjs，它会断言文件数与用例数下限。
+      # 测试目标由 Node 自己枚举，绕开 ubuntu/windows shell globstar 语义差异
       - name: Verify test census (glob 与执行量自证)
         run: node scripts/gates/census-targets.mjs
 
-
-      - name: Gate 0/4 · 静态门禁（架构 / 换肤 / i18n / 性能）
+      - name: Gate 0/4 · 静态门禁（架构 / 换肤 / i18n / 性能 / testAware 测试规模与性能）
         run: node scripts/gates/run.mjs
-        # 默认棘轮模式：新增违规一律阻断，存量债务基线放行（当前存量已清零）。
-        # 刻意不在 CI 用 --strict：若 CI 因历史债务常红，它必然被忽略，
-        # 门禁随即名存实亡。存量清偿进度由下方独立的观测任务写入 Summary。
+
+      # 存量债务清偿进度仅在 ubuntu 单侧写入 Step Summary，避免拉起额外独立 runner 重复 npm ci
+      - name: 存量债务进度观测（输出至 Job Summary）
+        if: matrix.os == 'ubuntu-latest'
+        run: node scripts/gates/report-debt-progress.mjs
 
       - name: Gate 1 · 全栈严格类型
         run: npm run typecheck
 
+      # 单次全量构建后直接运行 `npm run census`，避免 `npm test` 内部 `pretest` 再次重复构建
+      - name: Gate 1b · 全量构建
+        run: npm run build
+
       - name: Gate 2 · 单元测试与不变量
-        run: npm test
+        run: npm run census
 
       - name: Gate 2b · 门禁自身变异检验
         run: npm run gates:mutation
-        # 防止门禁退化为永远绿灯的空壳：故意破坏 scanner/rules，
-        # 对应测试必须变红。存活任何变异体即判定测试无效。
 
       - name: Gate 2c · Agent 编排一致性
         run: npm run gates:config
@@ -93,17 +89,16 @@ jobs:
       - name: Gate 2d · 豁免敞口预算（行内豁免只降不升）
         run: npm run gates:allow
 
-      # 门禁自证：证明每个门禁在被违反时确实会红。
-      # 与 gates:mutation 互补——后者验证测试的杀伤力，这里验证门禁的杀伤力。
       - name: Gate 2e · 门禁自证套件（门禁本身具备杀伤力）
         run: npm run gates:self-proof
 
-      # 增量覆盖拦截自证：证明新增代码与分支未覆盖时门禁确实会红。
       - name: Gate 2g · 增量覆盖率拦截器自证（未覆盖代码与分支必拦截）
         run: npm run gates:coverage-proof
 
-      # 假测试证伪：删掉五处生产实现，对应测试必须变红且原因对得上。
-      # 这是唯一能客观回答"这个测试有没有用"的手段。
+      - name: Gate 2h · PR 新增代码 100% 增量覆盖率
+        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
+        run: npm run coverage:new
+
       - name: Gate 2f · 假测试证伪器（删生产代码必须变红）
         run: npm run gates:fake-tests
 
@@ -112,13 +107,8 @@ jobs:
 
       - name: Gate 3 · 形式化不变量（fast-check）
         run: npm run verify:formal
-        # 状态机类缺陷靠普通单例测不出来：只有随机并发交错才能暴露
-        # 「拉取在途写入被误删」「墓碑被迟滞快照复活」这类问题。
 
-      # 必须拆成三个独立 step：GitHub 在 windows runner 上用 pwsh 承载多行 `run: |`，
-      # 而 pwsh 的 step 结果是「最后一条原生命令」的退出码——前面某条失败会被
-      # 后面某条成功掩盖（实测：先 exit 1 再 exit 0，整步判定为成功）。
-      # 拆成独立 step 后每条命令各自结算，ubuntu 与 windows 口径一致。
+      # 拆成独立 step 确保 windows pwsh 逐条结算退出码
       - name: Gate 0b · 网关契约一致性
         run: npm run contract:verify
 
@@ -128,25 +118,32 @@ jobs:
       - name: Gate 0d · 契约文档同步
         run: npm run contract:doc:check
 
-      # 性能基准必须独占 CPU。放在其它作业之后串行执行，避免与测试并发争抢
-      # （实测并发下同一份代码稳定慢约 3 倍：串行 15ms → 并发 41~44ms）。
       - name: Gate 4e · 长会话性能预算（独占 CPU）
         run: npm run test:perf
 
-      - name: Gate 5 · 全量构建
-        run: npm run build
-
-  debt-progress:
-    # 存量债务清偿进度观测：将 --strict --json 结果写入 Job Summary，
-    # 避免历史冻结债务或观察性统计触发无意义的 CheckRun 红灯，同时在出现新增阻断违规时仍失败。
-    name: 存量债务进度
+  pr-mutation:
+    name: Gate 5 · PR 变更域 Stryker 变异测试
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.mutation_domain != '')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
-      - run: npm ci --ignore-scripts
-      - name: 存量债务进度观测（输出至 Job Summary）
-        run: node scripts/gates/report-debt-progress.mjs
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify workspace links
+        run: node scripts/gates/verify-workspace-links.mjs
+
+      - name: Gate 5 · PR 变更域 Stryker 变异测试
+        env:
+          PR_BASE_REF: ${{ github.base_ref }}
+          MANUAL_MUTATION_DOMAIN: ${{ inputs.mutation_domain }}
+        run: node scripts/gates/mutation-stryker-changed.mjs --ci

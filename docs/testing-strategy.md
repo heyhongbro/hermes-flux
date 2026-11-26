@@ -274,27 +274,30 @@ C. 判定         A ∩ B 中任何 hits === 0 的行 → FAIL
 ```yaml
 on:
   push:
-    branches: [main, 'dev/**', 'feat/**']
+    branches: [main, 'dev/**']
   pull_request:
     branches: [main, 'dev/**']
+  workflow_dispatch:
 ```
+
+> 刻意收敛 `push.branches` 仅守护主干/集成分支（合入后兜底），源分支一律在 `pull_request`（预合并提交 `refs/pull/N/merge`）跑完门禁，避免同一份代码在分支上开 PR 后触发双倍 runner 账单。
 
 ### 8.2 作业顺序
 
-| 步骤 | 内容 | 为何在这个位置 |
+| 作业 / 步骤 | 内容 | 为何在这个位置 |
 |---|---|---|
 | 安装 | `npm ci --ignore-scripts` | 装不上时后续全是空跑 |
-| `gates:workspace-links` | 4 个链接的实体 + 包名 + realpath 三重校验 | 必须在任何门禁之前，且**不能** require 产物（产物要等 `build`） |
-| `gates:ci` | workflow 自身的可移植性静态检查 | 改 workflow 时当场拦住跨平台缺陷，见 8.4 |
+| `gates:workspace-links` | 4 个链接的实体 + 包名 + realpath 三重校验 | 必须在任何构建之前，且**不能** require 产物 |
+| `gates:ci` | workflow 全部 job 的跨平台可移植性静态检查 | 改 workflow 时当场拦住跨平台缺陷，见 8.3 |
 | `gates:targets` | 枚举自检（不执行测试） | 把"枚举少了"与"跑失败了"分开定位 |
-| `gates` | 静态门禁 | 最便宜 |
-| `typecheck` | 含 mobile（此前从未被检查） | |
-| `npm test` | census 包裹的执行量自证 | |
-| `gates:mutation` | 锚点唯一性 + 5 个变异点 | 防止门禁退化成空壳 |
-| `gates:allow` / `gates:invariants` | 豁免预算 + 不变量映射 | |
-| `verify:formal` | 46 项形式化不变量 | |
-| contract 三连 | 契约一致性与文档同步 | **必须拆成三个独立 step**，见 8.4 |
-| `build` | 全量构建 | 放最后，前面都过了才值得付构建成本 |
+| `gates` + `report-debt-progress` | 静态门禁（含 `testAware` 测试性能/规模）+ 债务摘要 | 最便宜；ubuntu 单侧写入 Summary |
+| `typecheck` → `build` → `census` | 全栈类型检查、单次构建、执行量自证单测（避免 `pretest` 重复构建） | 前置通过即一次编译直接复用产物 |
+| `gates:mutation` / `config` / `allow` / `self-proof` / `coverage-proof` | 门禁自守卫矩阵 | 验证门禁规则、配置与增量拦截器本身未退化 |
+| `coverage:new`（仅 `pull_request` · ubuntu） | 真实 PR 增量 100% 行与分支覆盖门禁 | 对齐 `merge-base` 真实校验新增生产代码 |
+| `gates:fake-tests` / `gates:invariants` / `verify:formal` | 假测试证伪、不变量映射与 98 项形式化性质测试 | 行为真实性与状态机守卫 |
+| contract 三连 | 契约一致性与文档同步 | **必须拆成三个独立 step**，见 8.3 |
+| `test:perf` | 长会话性能预算（独占 CPU） | 放在测试末位避免并发噪声 |
+| `pr-mutation`（独立 job，仅 PR 或手动指定域） | `mutation-stryker-changed.mjs --ci` 按变更行区间与测试文件触发 Stryker | 只对 PR 真实修改到的领域跑变异测试，0 命中跳过构建 |
 
 ### 8.3 跨平台 shell 语义（三次真实事故，已由 `gates:ci` 机器拦截）
 

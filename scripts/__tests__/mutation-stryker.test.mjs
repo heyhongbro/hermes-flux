@@ -15,6 +15,12 @@ import {
   resolveDefaultConcurrency,
   validateDomainFiles,
 } from '../gates/mutation-stryker.mjs';
+import {
+  parseChangedCliArgs,
+  parseMutateSpec,
+  parseUnifiedDiffHunks,
+  selectAffectedDomains,
+} from '../gates/mutation-stryker-changed.mjs';
 
 test('parseCliArgs: 支持 --domain 后置 --concurrency 且默认按 CPU 核心数自适应并发', () => {
   assert.equal(resolveDefaultConcurrency(1), 2);
@@ -273,5 +279,133 @@ test('publishMutationReport: 原子覆盖发布正式报告且清理临时文件
     assert.throws(() => publishMutationReport(path.join(tmpDir, 'missing.json'), finalReport));
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('parseMutateSpec 与 parseUnifiedDiffHunks: 精准解析行号区间与纯删除 hunk', () => {
+  assert.equal(parseMutateSpec('!packages/core/src/a.ts'), null);
+  assert.equal(parseMutateSpec('packages/core/src/*.ts'), null);
+  assert.deepEqual(parseMutateSpec('packages/core/src/a.ts'), {
+    file: 'packages/core/src/a.ts',
+    startLine: null,
+    endLine: null,
+  });
+  assert.deepEqual(parseMutateSpec('packages/desktop/src/svc.ts:232-486'), {
+    file: 'packages/desktop/src/svc.ts',
+    startLine: 232,
+    endLine: 486,
+  });
+  assert.deepEqual(parseMutateSpec('packages/core/src/b.ts:10:2-20:8'), {
+    file: 'packages/core/src/b.ts',
+    startLine: 10,
+    endLine: 20,
+  });
+
+  const diff = [
+    'diff --git a/packages/desktop/src/svc.ts b/packages/desktop/src/svc.ts',
+    '+++ b/packages/desktop/src/svc.ts',
+    '@@ -240,0 +245,3 @@ fn',
+    '@@ -800,2 +800,0 @@ del',
+    'diff --git a/deleted.ts b/deleted.ts',
+    '+++ /dev/null',
+    '@@ -1,5 +0,0 @@ gone',
+    'diff --git a/docs/readme.md b/docs/readme.md',
+    '+++ b/docs/readme.md',
+    '@@ -1 +1 @@',
+  ].join('\n');
+  const hunks = parseUnifiedDiffHunks(diff);
+  assert.deepEqual(hunks.get('packages/desktop/src/svc.ts'), [
+    [245, 247],
+    [800, 801],
+  ]);
+  assert.equal(hunks.has('deleted.ts'), false);
+  assert.deepEqual(hunks.get('docs/readme.md'), [[1, 1]]);
+});
+
+test('selectAffectedDomains: 按行号与测试文件精确命中，隔离无关域并显式上报未映射源码', () => {
+  const miniDomains = {
+    domFull: {
+      title: 'Full File Domain',
+      mutate: ['packages/core/src/cache/cacheMerge.ts'],
+      testFiles: ['packages/core/__tests__/cache/cache-merge.test.mjs'],
+    },
+    domWatchdog: {
+      title: 'Watchdog Slice',
+      mutate: ['packages/desktop/src/renderer/services/turnExecutionService.ts:232-486'],
+      testFiles: ['packages/desktop/__tests__/unit/turnExecutionService.watchdog.test.mjs'],
+    },
+    domSubmit: {
+      title: 'Submit Slice',
+      mutate: ['packages/desktop/src/renderer/services/turnExecutionService.ts:942-1016'],
+      testFiles: ['packages/desktop/__tests__/unit/turnExecutionService.submit.test.mjs'],
+    },
+  };
+
+  // 1. 同文件只改 L300 -> 仅命中 domWatchdog，绝不拉起 domSubmit
+  const sliceHit = selectAffectedDomains(
+    {
+      changedFiles: ['packages/desktop/src/renderer/services/turnExecutionService.ts'],
+      changedRangesByFile: new Map([['packages/desktop/src/renderer/services/turnExecutionService.ts', [[300, 305]]]]),
+    },
+    miniDomains,
+  );
+  assert.deepEqual(sliceHit.selectedDomains, ['domWatchdog']);
+  assert.deepEqual(sliceHit.unmappedSourceFiles, []);
+
+  // 2. 只改域测试文件 + 未映射源码 -> 命中对应域且 unmappedSourceFiles 可见
+  const testAndUnmapped = selectAffectedDomains(
+    {
+      changedFiles: [
+        'packages/core/__tests__/cache/cache-merge.test.mjs',
+        'packages/ui/src/newWidget.tsx',
+        'packages/core/src/types.d.ts',
+      ],
+      changedRangesByFile: new Map(),
+    },
+    miniDomains,
+  );
+  assert.deepEqual(testAndUnmapped.selectedDomains, ['domFull']);
+  assert.deepEqual(testAndUnmapped.unmappedSourceFiles, ['packages/ui/src/newWidget.tsx']);
+
+  // 3. 纯文档/门禁测试改动 -> 0 命中且 0 未映射源码
+  const docsOnly = selectAffectedDomains(
+    { changedFiles: ['docs/testing-strategy.md', 'scripts/__tests__/verify-ci-workflow.test.mjs'] },
+    miniDomains,
+  );
+  assert.deepEqual(docsOnly.selectedDomains, []);
+  assert.deepEqual(docsOnly.unmappedSourceFiles, []);
+});
+
+test('parseChangedCliArgs: 校验标志、PR_BASE_REF 与 MANUAL_MUTATION_DOMAIN', () => {
+  const ciAuto = parseChangedCliArgs(
+    ['--ci'],
+    { PR_BASE_REF: 'main', MANUAL_MUTATION_DOMAIN: '' },
+    { cache: {} },
+  );
+  assert.deepEqual(ciAuto, {
+    ok: true,
+    base: 'origin/main',
+    concurrency: null,
+    dryRun: false,
+    ci: true,
+    manualDomain: null,
+  });
+
+  const ciManual = parseChangedCliArgs(
+    ['--ci', '--concurrency=4'],
+    { PR_BASE_REF: 'dev/v0.1', MANUAL_MUTATION_DOMAIN: 'cache' },
+    { cache: {} },
+  );
+  assert.equal(ciManual.ok, true);
+  assert.equal(ciManual.manualDomain, 'cache');
+  assert.equal(ciManual.concurrency, 4);
+
+  for (const [args, env] of [
+    [['--ci'], { MANUAL_MUTATION_DOMAIN: 'toString' }],
+    [['--concurrency=0'], {}],
+    [['--base='], {}],
+    [['--unknown'], {}],
+  ]) {
+    assert.equal(parseChangedCliArgs(args, env, { cache: {} }).ok, false);
   }
 });

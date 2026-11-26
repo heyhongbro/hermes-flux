@@ -173,3 +173,40 @@ test('规则自证样本必须齐全且成对（坏样本命中 / 好样本放�
     assert.equal(goodHit, false, `${key}.good 必须被规则放行`);
   }
 });
+
+test('多 job 解析与隔离：后续 job 的步骤归属与三类缺陷不得因首个 job 而漏检', () => {
+  const multi = `jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build
+        run: npm run build
+  pr-mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Masked
+        run: |
+          npm run a
+          npm run b
+      - name: LinkBeforeBuild
+        run: node -e "require.resolve('@hermes-flux/core')"
+      - name: BashSyntax
+        run: |
+          for x in 1 2; do
+            echo $x
+          done
+`;
+  const steps = parseSteps(multi);
+  assert.equal(steps.length, 4, `应解析出 2 个 job 共 4 个 step，实际 ${steps.length}`);
+  assert.deepEqual(
+    steps.map((s) => s.job),
+    ['gates', 'pr-mutation', 'pr-mutation', 'pr-mutation'],
+    '每个 step 必须正确归属所在 job，job1 末步不得吞入 job2 字段',
+  );
+
+  const { failures } = auditWorkflow(multi);
+  const rules = failures.map((f) => f.rule);
+  assert.ok(rules.includes('ci/no-masked-command'), '第二个 job 的多行掩盖命令必须命中');
+  assert.ok(rules.includes('ci/no-prebuild-artifact-read'), '第二个 job 未构建前的 require.resolve 不得被第一个 job 的 build 掩盖');
+  assert.ok(rules.includes('ci/no-bash-only-syntax'), '第二个 job 的 bash 语法必须命中');
+});

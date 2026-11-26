@@ -83,9 +83,16 @@ function resolveBase() {
   const arg = process.argv.find((a) => a.startsWith('--base='));
   if (arg) return arg.slice('--base='.length);
 
-  // GitHub Actions PR 环境变量
+  // GitHub Actions PR 环境变量：优先取 merge-base，避免主干并行合入引发反向 diff 假红
   if (process.env.GITHUB_BASE_REF) {
-    return `origin/${process.env.GITHUB_BASE_REF}`;
+    const remoteBase = `origin/${process.env.GITHUB_BASE_REF}`;
+    const mbRes = spawnSync('git', ['merge-base', 'HEAD', remoteBase], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const mb = mbRes.status === 0 ? mbRes.stdout.trim() : '';
+    return mb || remoteBase;
   }
 
   const headRes = spawnSync('git', ['rev-parse', 'HEAD'], {
