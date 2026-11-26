@@ -103,6 +103,8 @@ export interface WatchdogProbeDecisionInput {
   probeError?: boolean;
   consecutiveProbeFailures: number;
   maxProbeFailures?: number;
+  /** 该会话存在未解决的交互请求（clarify/approval/secret/connection）时禁止误判为闲置超时 */
+  hasPendingInteractivePrompt?: boolean;
 }
 
 export type WatchdogProbeAction =
@@ -434,6 +436,9 @@ export function extractResumeInflightState(res: unknown): ResumeInflightState {
 export function decideWatchdogProbeAction(input: WatchdogProbeDecisionInput): WatchdogProbeAction {
   if (input.reason === 'hard-limit') {
     return 'settle-timeout';
+  }
+  if (input.hasPendingInteractivePrompt) {
+    return 'renew';
   }
   const maxFailures = input.maxProbeFailures ?? 2;
   if (!input.isGatewayConnected) {

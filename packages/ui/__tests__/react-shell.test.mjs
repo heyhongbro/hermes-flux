@@ -6,7 +6,14 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Titlebar } from '../dist/components-react/Titlebar.js';
 import { StatusBar } from '../dist/components-react/StatusBar.js';
-import { createShellMountUpdater, getStatusBarSnapshot, getTitlebarSnapshot, mountNewChatDialog } from '../dist/components-react/mount-shell-components.js';
+import {
+  createShellMountUpdater,
+  getStatusBarSnapshot,
+  getTitlebarSnapshot,
+  mountInteractivePromptHost,
+  mountInteractiveTopPill,
+  mountNewChatDialog,
+} from '../dist/components-react/mount-shell-components.js';
 import { resolveSkinId } from '../dist/tokens/skins.js';
 
 test('Titlebar renders window controls, global toggles and no profile switcher', () => {
@@ -162,6 +169,24 @@ test('shell mount bridge rejects missing hosts and forwards render updates to th
   });
   update('second');
   assert.deepEqual(renders, ['first', 'second']);
+
+  // mountInteractivePromptHost & mountInteractiveTopPill: disconnected guard + connected initial/update renders
+  const fakePromptSnap = () => ({ surface: 'desktop-dock', prompts: [], locale: 'zh', onReply: async () => true });
+  const fakePillSnap = () => ({ surface: 'desktop', summaries: [], resolveEntityLabel: () => '', onSelectSummary: () => {} });
+  assert.throws(() => mountInteractivePromptHost(null, fakePromptSnap), /host must be connected/);
+  assert.throws(() => mountInteractiveTopPill(null, fakePillSnap), /host must be connected/);
+  const renderedPromptTrees = [];
+  const renderedPillTrees = [];
+  const updatePromptHost = mountInteractivePromptHost(host, fakePromptSnap, () => ({
+    render(el) { renderedPromptTrees.push(el); },
+  }));
+  updatePromptHost();
+  const updateTopPill = mountInteractiveTopPill(host, fakePillSnap, () => ({
+    render(el) { renderedPillTrees.push(el); },
+  }));
+  updateTopPill();
+  assert.equal(renderedPromptTrees.length, 2);
+  assert.equal(renderedPillTrees.length, 2);
 });
 
 test('React color utilities compile from the theme map, and the probe detects a missing control selector', () => {

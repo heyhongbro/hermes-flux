@@ -25,6 +25,7 @@ import type {
   LeftRailProfile,
   LeftRailProject,
   LeftRailSession,
+  WaitingPromptReason,
 } from '../components/LeftRail/types.js';
 
 export type {
@@ -37,6 +38,7 @@ export type {
   LeftRailProfile,
   LeftRailProject,
   LeftRailSession,
+  WaitingPromptReason,
 };
 
 export interface LeftRailSessionEntry {

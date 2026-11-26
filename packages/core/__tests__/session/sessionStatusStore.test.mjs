@@ -5,6 +5,7 @@ import {
   buildGroupScopeKey,
   buildSessionScopeKey,
   extractCompressionThreshold,
+  normalizeSessionApprovalMode,
   reduceRightPodMode,
   resolveEffectiveCompressionRatio,
 } from '../../dist/session/sessionStatusStore.js';
@@ -203,4 +204,81 @@ test('SessionStatusStore - sessionInfo, usage优先级, breakdown回填, Fail-Sa
   store.applyUsagePayload(s3Key, { context_used: 0, context_max: 0 });
   s3 = store.getScope(s3Key);
   assert.equal(s3?.usage?.contextPercent, 30);
+});
+
+test('normalizeSessionApprovalMode 与 applyGroupState pending_actions/counts 全分支覆盖', () => {
+  assert.equal(normalizeSessionApprovalMode(null), undefined);
+  assert.equal(normalizeSessionApprovalMode({ approval_mode: 'manual' }), 'manual');
+  assert.equal(normalizeSessionApprovalMode({ approval_mode: 'smart' }), 'smart');
+  assert.equal(normalizeSessionApprovalMode({ approval_mode: 'off' }), 'off');
+  assert.equal(normalizeSessionApprovalMode({ yolo: true }), 'off');
+  assert.equal(normalizeSessionApprovalMode({ edit_approval_policy: 'ask' }), 'manual');
+  assert.equal(normalizeSessionApprovalMode({ approval_mode: 'unknown' }), undefined);
+
+  const store = new SessionStatusStore();
+  const sKey = buildSessionScopeKey('s-app');
+  store.applySessionInfo(sKey, { approval_mode: 'manual' });
+  assert.equal(store.getScope(sKey)?.approvalMode, 'manual');
+
+  store.applyGroupState('room-act', {
+    room: { room_id: 'room-act', name: 'ActRoom', members: [] },
+    driver_status: {
+      running: true,
+      working: false,
+      blocked: true,
+      counts: { queued: 2, ignored: 'non-num' },
+      member_activity: [],
+      pending_actions: [
+        null,
+        [],
+        { kind: 'approval', member_id: 'm1', task_id: '', request_id: 'r0' },
+        {
+          kind: 'approval',
+          member_id: 'm1',
+          task_id: 't1',
+          request_id: 'r1',
+          execution_generation: 3,
+          command: 'ls',
+          description: 'list',
+          tool_name: 'terminal',
+          choices: ['once', 'session', 'always', 'deny', 'invalid'],
+          allow_session: true,
+          allow_permanent: true,
+        },
+        {
+          member_id: 'm2',
+          task_id: 't2',
+          request_id: 'r2',
+          execution_generation: 'bad',
+          allow_session: true,
+          allow_permanent: true,
+        },
+        {
+          member_id: 'm2b',
+          task_id: 't2b',
+          request_id: 'r2b',
+          allow_session: false,
+          allow_permanent: false,
+        },
+        { kind: 'prep', member_id: 'm3', task_id: 'prepare:install', error: 'missing dep' },
+        { member_id: 'm3b', task_id: 'prepare:bare' },
+        { kind: 'failed', member_id: 'm4', task_id: 't4', error: 'boom' },
+        { member_id: 'm5', task_id: 't5', reason: 'timeout' },
+        { member_id: 'm6', task_id: 't6', message: 'stalled' },
+        { member_id: 'm7', task_id: 't7' },
+        { member_id: 'm8', task_id: '' },
+        { kind: 123, member_id: 99, task_id: null, request_id: 'r-non-str' },
+      ],
+    },
+  });
+  const snap = store.getScope(buildGroupScopeKey('room-act'))?.groupState;
+  assert.deepEqual(snap?.counts, { queued: 2 });
+  assert.equal(snap?.pendingActions.length, 9);
+  assert.deepEqual(snap?.pendingActions[1].choices, ['once', 'session', 'always', 'deny']);
+  assert.deepEqual(snap?.pendingActions[2].choices, ['once', 'deny']);
+  assert.equal(snap?.pendingActions[3].kind, 'prepare');
+  assert.equal(snap?.pendingActions[5].errorDetail, 'boom');
+  assert.equal(snap?.pendingActions[6].errorDetail, 'timeout');
+  assert.equal(snap?.pendingActions[7].errorDetail, 'stalled');
+  assert.equal(snap?.pendingActions[8].errorDetail, undefined);
 });

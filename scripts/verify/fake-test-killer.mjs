@@ -105,8 +105,8 @@ const MUTATIONS = [
     name: 'MessageRow: 流式末行不再放行空助手行（回退 2026-11-09 的守卫写法）',
     file: 'packages/ui/dist/components-react/conversation/MessageRow.js',
     // 保持语法有效：只去掉流式例外条件，模拟"守卫回潮"
-    find: /!hasTools && !isStreaming\)/,
-    replace: '!hasTools)',
+    find: /!hasTools && !hasTraceSteps && !isStreaming\)/,
+    replace: '!hasTools && !hasTraceSteps)',
     test: 'packages/ui/__tests__/streaming-anchor-formal.test.mjs',
     expect: '流式末行必须产出直写锚点',
     why: '空助手行整行判空吞掉流式首帧锚点，tokenStreamWriter 直写全程空转，正文退化为一次性铺满',

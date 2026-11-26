@@ -33,6 +33,15 @@ export interface ToolPatchDeps {
   schedule: (cb: () => void) => void;
 }
 
+/** 当工具插槽写入非空内容时，移除移动端祖先 trace 容器的空占位隐藏属性。 */
+export function revealMobileTraceContainers(el: HTMLElement, html: string): void {
+  if (html.trim().length === 0 || typeof el.closest !== 'function') return;
+  const mobileCapsule = el.closest<HTMLElement>('.m-trace-capsule');
+  if (mobileCapsule) mobileCapsule.setAttribute('data-mobile-trace-empty', 'false');
+  const mobileStack = el.closest<HTMLElement>('.m-trace-stack');
+  if (mobileStack) mobileStack.setAttribute('data-mobile-trace-empty', 'false');
+}
+
 export function createToolPatchQueue(deps: ToolPatchDeps) {
   const pending = new Set<string>();
   let scheduled = false;

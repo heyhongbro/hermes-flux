@@ -59,6 +59,15 @@ export interface LiveStreamCoordinatorDeps {
   readonly setMessageWindowUserExpanded?: (val: boolean) => void;
   readonly isStreamNearBottom?: () => boolean;
   readonly setPendingScrollToBottom?: (val: boolean) => void;
+  readonly onCaptureInteractiveFence?: () => number;
+  readonly onInteractiveResumeReconciled?: (input: {
+    client: HermesGatewayClient;
+    storedSessionId: string;
+    liveSessionId: string | null;
+    profile?: string;
+    resume: Record<string, unknown>;
+    fence: number;
+  }) => void;
 }
 
 export interface LiveStreamCoordinator {
@@ -331,7 +340,19 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
       const state = deps.getState();
       const resolvedProfile =
         botName || state.sessions.find((s) => s.id === storedSessionId)?.botName || state.profileName || 'default';
+      const interactiveFence = deps.onCaptureInteractiveFence?.() ?? 0;
       const resumeRes = await callSessionResumeQuick(client, storedSessionId, resolvedProfile);
+      if (resumeRes) {
+        const handles = readSessionHandles(resumeRes, storedSessionId);
+        deps.onInteractiveResumeReconciled?.({
+          client,
+          storedSessionId: handles?.storedId || storedSessionId,
+          liveSessionId: handles?.liveId ?? null,
+          profile: resolvedProfile,
+          resume: resumeRes,
+          fence: interactiveFence,
+        });
+      }
       if (targetEpoch !== deps.getConnectionEpoch() || deps.getGatewayClient() !== client) return;
 
       const curStream = streamRegistry.getBySession(storedSessionId);

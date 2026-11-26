@@ -46,6 +46,8 @@ export interface GroupLogPollerOptions<TEntry extends GroupLogPollEntry = GroupL
   onSyncLogs: (roomId: string, logs: readonly TEntry[]) => void;
   onCompleted: (roomId: string, isFocused: boolean) => void;
   onFailed: (roomId: string) => void;
+  /** 当房间因审批/重试等交互阻塞挂起时返回 true，保活轮询并暂停轮次与停滞消耗。 */
+  isBlocked?: (roomId: string) => boolean;
   scheduler?: GroupLogPollScheduler;
   maxRounds?: number;
   maxStagnantRounds?: number;
@@ -295,6 +297,11 @@ export class GroupLogPollerManager<TEntry extends GroupLogPollEntry = GroupLogPo
 
   private async executeRound(task: RoomPollTask): Promise<void> {
     if (!this.isCurrentTask(task)) return;
+    if (this.options.isBlocked?.(task.roomId)) {
+      // 阻塞期间暂停 round/stagnant 消耗，按退避周期维持轻量探活
+      this.scheduleNext(task, this.backoffIntervalMs);
+      return;
+    }
     task.round += 1;
 
     let logs: readonly TEntry[];

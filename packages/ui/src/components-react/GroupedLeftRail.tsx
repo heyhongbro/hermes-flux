@@ -25,6 +25,7 @@ import { ChevronRight, Plus, Search, X } from 'lucide-react';
 import { t } from '../i18n/index.js';
 import { useMotionPresence } from '../motion/index.js';
 import type { ActivityIndicatorVariant } from '../tokens/activityIndicator.js';
+import type { WaitingPromptReason } from '../components/LeftRail/types.js';
 import { Button } from './primitives/Button.js';
 import { Input } from './primitives/Input.js';
 import { Skeleton } from './primitives/Skeleton.js';
@@ -61,7 +62,7 @@ interface GroupedSectionProps {
   listId: string;
   title: string;
   expanded: boolean;
-  showRunningStatus: boolean;
+  headerStatus?: { state: 'running' | 'waiting'; waitingReason?: WaitingPromptReason } | null;
   activityVariant?: ActivityIndicatorVariant;
   onToggle?: () => void;
   children: React.ReactNode;
@@ -73,7 +74,7 @@ function GroupedSection({
   listId,
   title,
   expanded,
-  showRunningStatus,
+  headerStatus,
   activityVariant,
   onToggle,
   children,
@@ -95,10 +96,11 @@ function GroupedSection({
           className="flux-grouped-section__chevron shrink-0 text-muted-foreground"
         />
         <span className="truncate">{title}</span>
-        {showRunningStatus ? (
+        {headerStatus ? (
           <span className="ml-auto flex shrink-0 items-center">
             <ActivityIndicator
-              state="running"
+              state={headerStatus.state}
+              waitingReason={headerStatus.waitingReason}
               placement="inline"
               entityKind={section === 'bots' ? 'bot' : 'group'}
               variant={activityVariant}
@@ -142,6 +144,7 @@ const GroupedBotRow = React.memo(function GroupedBotRow({
       timestamp={row.profile.timestamp}
       timeFallback={row.timeText}
       activityState={row.activityState}
+      waitingReason={row.waitingReason}
       activityTransition={row.activityTransition}
       activityTransitionToken={row.activityTransitionToken}
       entityKind="bot"
@@ -208,6 +211,7 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
       timestamp={row.group.updatedAt || row.group.createdAt}
       timeFallback={row.timeText}
       activityState={row.activityState}
+      waitingReason={row.waitingReason}
       activityTransition={row.activityTransition}
       activityTransitionToken={row.activityTransitionToken}
       entityKind="group"
@@ -267,6 +271,7 @@ const GroupedSessionRow = React.memo(function GroupedSessionRow({
       timestamp={row.session.timestamp}
       timeFallback={row.timeText}
       activityState={row.activityState}
+      waitingReason={row.waitingReason}
       activityTransition={row.activityTransition}
       activityTransitionToken={row.activityTransitionToken}
       entityKind="session"
@@ -462,7 +467,7 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
               listId="rail-bots-nested-list"
               title={t(botsSection.titleKey)}
               expanded={botsSection.effectiveExpanded}
-              showRunningStatus={Boolean(botsSection.headerStatus)}
+              headerStatus={botsSection.headerStatus}
               activityVariant={props.activityVariant}
               onToggle={props.onToggleBots}
             >
@@ -532,7 +537,7 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
                 listId="rail-groups-nested-list"
                 title={t(groupsSection.titleKey)}
                 expanded={groupsSection.effectiveExpanded}
-                showRunningStatus={Boolean(groupsSection.headerStatus)}
+                headerStatus={groupsSection.headerStatus}
                 activityVariant={props.activityVariant}
                 onToggle={props.onToggleGroups}
               >
@@ -547,7 +552,7 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
               listId="rail-sessions-nested-list"
               title={t(sessionsSection.titleKey)}
               expanded={sessionsSection.effectiveExpanded}
-              showRunningStatus={false}
+              headerStatus={null}
               activityVariant={props.activityVariant}
               onToggle={props.onToggleSessions}
             >

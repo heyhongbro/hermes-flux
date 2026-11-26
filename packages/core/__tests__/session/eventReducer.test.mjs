@@ -830,4 +830,88 @@ test('reduceGatewayEvent 变异消杀全边界：side-agent/tool.start/tool.comp
     reduceGatewayEvent({ type: 'tool.complete', session_id: 'live-1', payload: { tool_id: 'tx', output: 'ok' } }, emptyMsgCtx),
     [],
   );
+
+  // 9. connection.request / connection.update / gateway.ready 全边界覆盖
+  assert.deepEqual(reduceGatewayEvent({ type: 'connection.request', session_id: 'live-1', payload: {} }, ctx), []);
+  const reqNoSess = reduceGatewayEvent(
+    { type: 'connection.request', payload: { op_id: 'op-a', seq: 1, deadline_at: 100, timeout_seconds: 60, targets: [] } },
+    ctx,
+  );
+  assert.equal(reqNoSess[0]?.type, 'connection-request');
+  assert.equal('sessionId' in reqNoSess[0], false);
+
+  assert.deepEqual(reduceGatewayEvent({ type: 'connection.update', session_id: 'live-1', payload: {} }, ctx), []);
+  const updWithSess = reduceGatewayEvent(
+    { type: 'connection.update', session_id: 'live-1', payload: { op_id: 'op-a', seq: 2, deadline_at: 100, settled: false, targets: [] } },
+    ctx,
+  );
+  assert.equal(updWithSess[0]?.type, 'connection-update');
+  assert.equal(updWithSess[0]?.sessionId, 'live-1');
+  const updNoSess = reduceGatewayEvent(
+    { type: 'connection.update', payload: { op_id: 'op-a', seq: 3, deadline_at: 100, settled: true, targets: [] } },
+    ctx,
+  );
+  assert.equal('sessionId' in updNoSess[0], false);
+
+  const gr1 = reduceGatewayEvent({ type: 'gateway.ready', payload: { replay_epoch: 'e1', session_authority: true } }, ctx);
+  assert.deepEqual(gr1, [{ type: 'gateway-ready', replayEpoch: 'e1', sessionAuthority: true }]);
+  const gr2 = reduceGatewayEvent({ type: 'gateway.ready', payload: { replay_epoch: 'e2', session_authority: null } }, ctx);
+  assert.deepEqual(gr2, [{ type: 'gateway-ready', replayEpoch: 'e2', sessionAuthority: null }]);
+  const gr3 = reduceGatewayEvent({ type: 'gateway.ready', payload: { replay_epoch: 'e3', session_authority: 'bad' } }, ctx);
+  assert.deepEqual(gr3, [{ type: 'gateway-ready', replayEpoch: 'e3' }]);
+
+  // 10. notification.show / notification.clear / tool.output_risk 全分支覆盖
+  assert.deepEqual(reduceGatewayEvent({ type: 'notification.show', payload: { text: '   ' } }, ctx), []);
+  const nFull = reduceGatewayEvent(
+    {
+      type: 'notification.show',
+      payload: { text: ' hello ', ttl_ms: 2500, key: 'k1', id: 'n1', detail: 'det', level: 'warn', kind: 'toast' },
+    },
+    ctx,
+  );
+  assert.deepEqual(nFull, [
+    { type: 'notification-show', text: 'hello', level: 'warn', kind: 'toast', ttlMs: 2500, key: 'k1', id: 'n1', detail: 'det' },
+  ]);
+  const nMin = reduceGatewayEvent({ type: 'notification.show', payload: { text: 'ok' } }, ctx);
+  assert.deepEqual(nMin, [{ type: 'notification-show', text: 'ok', level: 'info', kind: 'notice' }]);
+
+  assert.deepEqual(reduceGatewayEvent({ type: 'notification.clear', payload: { key: '  ' } }, ctx), []);
+  assert.deepEqual(
+    reduceGatewayEvent({ type: 'notification.clear', payload: { key: ' k1 ' } }, ctx),
+    [{ type: 'notification-clear', key: 'k1' }],
+  );
+
+  assert.deepEqual(reduceGatewayEvent({ type: 'tool.output_risk', session_id: 'live-1', payload: {} }, ctx), []);
+  const rFull = reduceGatewayEvent(
+    {
+      type: 'tool.output_risk',
+      session_id: 'live-1',
+      payload: { tool_id: 'tc-1', name: 'bash', risk: 'high', findings: ['secret'], redacted: true },
+    },
+    ctx,
+  );
+  assert.deepEqual(rFull, [
+    {
+      type: 'tool-output-risk',
+      sessionId: 'live-1',
+      messageId: 'ast-1',
+      toolCallId: 'tc-1',
+      toolName: 'bash',
+      risk: 'high',
+      findings: ['secret'],
+      redacted: true,
+    },
+  ]);
+  const rById = reduceGatewayEvent(
+    { type: 'tool.output_risk', payload: { id: 'tc-2' } },
+    { ...ctx, activeSessionId: null, activeSessionIds: [] },
+  );
+  assert.equal(rById[0]?.toolCallId, 'tc-2');
+  const rByCallId = reduceGatewayEvent(
+    { type: 'tool.output_risk', session_id: 'live-1', payload: { tool_call_id: 'tc-3' } },
+    ctx,
+  );
+  assert.deepEqual(rByCallId, [
+    { type: 'tool-output-risk', sessionId: 'live-1', messageId: 'ast-1', toolCallId: 'tc-3', risk: 'medium', findings: [], redacted: false },
+  ]);
 });

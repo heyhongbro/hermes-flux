@@ -19,8 +19,8 @@
  */
 
 import * as React from 'react';
-import { ArrowUp, Check, ChevronDown, Plus, Square, X } from 'lucide-react';
-import { t } from '../../i18n/index.js';
+import { ArrowUp, Check, ChevronDown, Plus, Shield, Square, X } from 'lucide-react';
+import { t, type I18nKey } from '../../i18n/index.js';
 import type { InputAttachmentItem } from '../../components/InputDock/InputDock.js';
 import { MessageAttachments } from '../conversation/MessageAttachments.js';
 import { buildMobileModelPickerItems, resolveShortModelName } from './mobileShellModel.js';
@@ -134,6 +134,8 @@ export interface MobileMorphingComposerProps {
   disabled?: boolean;
   selectedModel: string;
   currentProvider?: string;
+  approvalMode?: 'manual' | 'smart' | 'off';
+  hideApprovalMode?: boolean;
   availableModels: string[];
   modelDetails: MobileModelOption[];
   attachments: InputAttachmentItem[];
@@ -142,6 +144,7 @@ export interface MobileMorphingComposerProps {
   onAttach?: () => void;
   onRemoveAttachment?: (id: string) => void;
   onSelectModel: (model: string, provider?: string) => void;
+  onOpenApprovalSheet?: () => void;
   onRefreshModels?: () => void;
   onModelPickerOpenChange?: (open: boolean) => void;
   forceModelPickerOpen?: boolean;
@@ -157,6 +160,8 @@ export function MobileMorphingComposer({
   disabled = false,
   selectedModel,
   currentProvider,
+  approvalMode = 'smart',
+  hideApprovalMode = false,
   availableModels,
   modelDetails,
   attachments,
@@ -165,6 +170,7 @@ export function MobileMorphingComposer({
   onAttach,
   onRemoveAttachment,
   onSelectModel,
+  onOpenApprovalSheet,
   onRefreshModels,
   onModelPickerOpenChange,
   forceModelPickerOpen,
@@ -270,6 +276,13 @@ export function MobileMorphingComposer({
     }
     setModelPickerOpen(true);
   };
+
+  const approvalLabelKey: I18nKey =
+    approvalMode === 'manual'
+      ? 'dock.approvalManual'
+      : approvalMode === 'off'
+        ? 'dock.approvalOff'
+        : 'dock.approvalSmart';
 
   return (
     <>
@@ -377,6 +390,24 @@ export function MobileMorphingComposer({
               <span className="m-composer__model-label">{shortModel}</span>
               <ChevronDown size={13} aria-hidden="true" />
             </button>
+
+            {!hideApprovalMode && onOpenApprovalSheet ? (
+              <button
+                type="button"
+                className="m-composer__model-pill"
+                data-testid="mobile-composer-approval-pill"
+                aria-label={`${t('dock.approval')}: ${t(approvalLabelKey)}`}
+                onMouseDown={keepToolbarAlive}
+                onPointerDown={keepToolbarAlive}
+                onClick={() => {
+                  clearBlurTimer();
+                  onOpenApprovalSheet();
+                }}
+              >
+                <Shield size={13} aria-hidden="true" />
+                <span className="m-composer__model-label">{t(approvalLabelKey)}</span>
+              </button>
+            ) : null}
           </div>
 
           {isStreaming && onStop ? (

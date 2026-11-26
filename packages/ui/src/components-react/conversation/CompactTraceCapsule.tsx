@@ -303,8 +303,9 @@ export function CompactTraceCapsule({
         : t('mobile.trace.subagentSingle', { name: summarizeSubagentTarget(subagentTools[0]) });
 
   const isMultiStep = effectiveSteps.length > 1;
-  const singleStepThought = partitionedSteps[0]?.step.thought || '';
-  const singleStepHasThought = partitionedSteps[0]?.hasThought ?? false;
+  const firstStep = partitionedSteps[0];
+  const singleStepThought = firstStep.step.thought || '';
+  const singleStepHasThought = firstStep.hasThought;
 
   return (
     <div

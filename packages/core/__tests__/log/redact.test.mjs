@@ -7,7 +7,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { redactSensitive, isSensitiveKey } from '../../dist/log/redact.js';
+import { redactSensitive, redactInteractivePayload, isSensitiveKey } from '../../dist/log/redact.js';
 
 test('api_key / password / token 等键必须被替换为固定掩码', () => {
   const input = {
@@ -90,4 +90,65 @@ test('method 级额外字段：mcp.servers.set_api_key 的 value 必须脱敏', 
   const withExtra = redactSensitive(params, { extraKeys: ['value'] });
   assert.equal(withExtra.value, '[REDACTED]');
   assert.equal(withExtra.name, 'github');
+});
+
+test('redactInteractivePayload 覆盖所有交互方法、嵌套 env map 掩码与深度上限', () => {
+  // 1. 原始/空/非对象载荷分支
+  assert.equal(redactInteractivePayload('secret', null), null);
+  assert.equal(redactInteractivePayload('secret', undefined), undefined);
+  assert.equal(redactInteractivePayload('secret', 'raw-pw'), '[REDACTED]');
+  assert.equal(redactInteractivePayload('secret', ''), '');
+  assert.equal(redactInteractivePayload('session.list', 'plain'), 'plain');
+
+  // 2. request.answer & preview.act & vault.save_login & default fallback
+  const ans = redactInteractivePayload('request.answer', { id: 'r1', result: { value: 'v1' }, ok: true });
+  assert.equal(ans.result, '[REDACTED]');
+  assert.equal(ans.ok, true);
+
+  const act = redactInteractivePayload('preview.act', { action: 'fill', vault: 'pw', selector: '#a' });
+  assert.equal(act.vault, '[REDACTED]');
+  assert.equal(act.selector, '#a');
+
+  const vaultLogin = redactInteractivePayload('vault.save_login', {
+    identifier: 'alice@example.com',
+    value: 'pw',
+    site: 'github.com',
+  });
+  assert.equal(vaultLogin.identifier, '[REDACTED]');
+  assert.equal(vaultLogin.value, '[REDACTED]');
+  assert.equal(vaultLogin.site, 'github.com');
+
+  const normal = redactInteractivePayload('clarify.respond', { answer: 'opt-a', token: 't' });
+  assert.equal(normal.answer, 'opt-a');
+  assert.equal(normal.token, '[REDACTED]');
+
+  // 3. connection.respond / mcp.servers.add 全形态 env map（object/array/scalar/null/超深层）
+  let nested = { env: { SKIP: 'x' } };
+  for (let i = 0; i < 8; i += 1) nested = { child: nested };
+  const conn = redactInteractivePayload('connection.respond', {
+    targets: [
+      {
+        name: 'linear',
+        bearer_token: 'tok-1',
+        env: { CUSTOM_ENV: 'secret-1', ANOTHER: 'secret-2' },
+      },
+      { env: [{ value: 'secret-3', label: 'A' }] },
+      { env: 'raw-env-string' },
+      { env: null },
+    ],
+    nested,
+  });
+  assert.equal(conn.targets[0].bearer_token, '[REDACTED]');
+  assert.deepEqual(conn.targets[0].env, { CUSTOM_ENV: '[REDACTED]', ANOTHER: '[REDACTED]' });
+  assert.deepEqual(conn.targets[1].env, [{ value: '[REDACTED]', label: 'A' }]);
+  assert.equal(conn.targets[2].env, '[REDACTED]');
+  assert.equal(conn.targets[3].env, null);
+
+  const mcpAdd = redactInteractivePayload('mcp.servers.add', {
+    name: 'my-mcp',
+    env: { OPENAI_API_KEY: 'sk-123' },
+    bearer_token: 'bt-1',
+  });
+  assert.deepEqual(mcpAdd.env, { OPENAI_API_KEY: '[REDACTED]' });
+  assert.equal(mcpAdd.bearer_token, '[REDACTED]');
 });

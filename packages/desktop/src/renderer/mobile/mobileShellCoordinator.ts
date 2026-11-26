@@ -64,6 +64,8 @@ import {
   normalizeOrgProfileName,
   type DeliverableItem,
 } from '@hermes-flux/core';
+import type { BackgroundWaitingSummary } from '@hermes-flux/core';
+import type { InteractivePromptService } from '../services/interactivePromptService.js';
 import type { LeftRailController } from '../events/leftRailController.js';
 import { openBrowserAttachmentPicker } from '../events/inputAttachmentPicker.js';
 import { resolveActiveWorkspaceCwd, type AppState } from '../state/appState.js';
@@ -152,6 +154,10 @@ export interface MobileShellCoordinatorDeps {
     profile?: string,
   ) => Promise<{ ok: boolean; message?: string }>;
   triggerHapticSelection?: () => void;
+  switchApproval?: (mode: 'manual' | 'smart' | 'off') => Promise<void> | void;
+  interactivePromptService?: InteractivePromptService;
+  openInteractiveExternalUrl?: (url: string) => void;
+  onSelectWaitingSummary?: (summary: BackgroundWaitingSummary) => void;
   syncReactMessageList?: (force?: boolean) => void;
   syncAgentPresenceHost?: () => void;
   syncAgentPresence?: () => void;
@@ -516,6 +522,14 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       messagesCount: state.messages.length,
       selectedModel: state.selectedModel,
       currentProvider: state.currentProvider,
+      approvalMode: state.approvalMode,
+      interactivePrompts: deps.interactivePromptService?.getActivePromptsForCurrentFocus() ?? [],
+      activeInteractivePromptKey:
+        deps.interactivePromptService?.getActivePromptKeyForCurrentFocus() ?? null,
+      interactiveDockCollapsed:
+        deps.interactivePromptService?.isCollapsedForCurrentFocus() ?? false,
+      backgroundWaitingSummaries:
+        deps.interactivePromptService?.getBackgroundWaitingSummaries() ?? [],
       availableModels: state.availableModels,
       modelDetails,
       attachments: state.attachments,
@@ -906,6 +920,40 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     },
     onSelectModel: (model, provider) => {
       void deps.switchModel(model, provider);
+    },
+    onSelectApprovalMode: (mode) => {
+      void deps.switchApproval?.(mode);
+    },
+    onReplyInteractive: async (prompt, payload) => {
+      if (deps.interactivePromptService) {
+        return await deps.interactivePromptService.submitReply(prompt, payload);
+      }
+      return false;
+    },
+    onLockClarifyAnswer: async (prompt, questionId, answer) => {
+      if (deps.interactivePromptService) {
+        await deps.interactivePromptService.lockClarifyAnswer(prompt, questionId, answer);
+      }
+    },
+    onOpenInteractiveExternalUrl: (url) => {
+      deps.openInteractiveExternalUrl?.(url);
+    },
+    onWakeConnection: async (prompt) => {
+      if (deps.interactivePromptService) {
+        await deps.interactivePromptService.wakeConnection(prompt);
+      }
+    },
+    onToggleInteractiveDockCollapsed: (collapsed) => {
+      deps.interactivePromptService?.setCollapsedForCurrentFocus(collapsed);
+    },
+    onSelectInteractivePrompt: (canonicalKey) => {
+      deps.interactivePromptService?.setActivePromptKeyForCurrentFocus(canonicalKey);
+    },
+    onSelectWaitingSummary: (summary) => {
+      stageComposerDraft = null;
+      activePane = 'stage';
+      deps.onSelectWaitingSummary?.(summary);
+      deps.render();
     },
     onRefreshModels: () => {
       void deps.fetchModelOptions?.();

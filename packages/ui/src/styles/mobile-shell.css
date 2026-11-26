@@ -708,7 +708,9 @@
   z-index: 20;
   padding: calc(env(safe-area-inset-top, 0px) + 8px) 68px 12px;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   pointer-events: none;
   background: linear-gradient(180deg, var(--background) 32%, transparent 100%);
 }
@@ -726,6 +728,10 @@
   justify-content: center;
   min-width: 0;
   max-width: 100%;
+}
+
+.m-stage__presence-host:empty {
+  display: none;
 }
 
 .m-stage__presence-host .conv-presence {
@@ -794,9 +800,14 @@
   scroll-behavior: auto;
   overscroll-behavior: contain;
   overflow-anchor: auto;
-  padding: calc(env(safe-area-inset-top, 0px) + 124px) 16px calc(132px + var(--m-bottom-inset));
+  padding: calc(env(safe-area-inset-top, 0px) + 124px) 16px max(var(--m-composer-dock-h, 88px), calc(132px + var(--m-bottom-inset)));
   background: var(--background);
   box-sizing: border-box;
+}
+
+.m-stage[data-has-top-pill="true"] .m-stage__stream,
+.m-stage[data-has-top-pill="true"] #conversation-stream.m-stage__stream {
+  padding-top: calc(env(safe-area-inset-top, 0px) + 176px);
 }
 
 .m-stage__msg-host {
@@ -988,10 +999,9 @@
 }
 
 .m-stage__notice {
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: calc(var(--m-bottom-inset) + 74px);
+  position: relative;
+  margin: 0 4px 8px;
+  scroll-margin-bottom: var(--m-bottom-inset);
   padding: 8px 12px;
   border-radius: var(--radius-panel);
   background: var(--card);
@@ -1047,6 +1057,9 @@
   right: 0;
   bottom: 0;
   z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding: 12px 12px calc(var(--m-bottom-inset) + 10px);
   background: linear-gradient(0deg, var(--background) 55%, transparent 100%);
 }
@@ -1381,6 +1394,10 @@
 
 .m-sheet-backdrop[data-sheet-kind="model"] {
   z-index: 70;
+}
+
+.m-sheet-backdrop[data-sheet-kind="approval"] {
+  z-index: 65;
 }
 
 .m-page-sheet {
@@ -3167,6 +3184,152 @@
 }
 
 .m-shell .conn-pill__action::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+}
+
+/* ---------------- 移动端贴舱交互卡、顶部提醒胶囊与首屏待处理横幅 ---------------- */
+.m-stage__top-pill {
+  position: relative;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--popover);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-aux);
+  cursor: pointer;
+}
+
+.m-stage__top-pill::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+}
+
+.m-stage__top-pill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-stage__top-pill-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.m-waiting-banner {
+  width: 100%;
+  min-height: 44px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.m-waiting-banner:active {
+  background: var(--card-active);
+}
+
+.m-waiting-banner__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-aux);
+}
+
+.m-waiting-banner__cta {
+  flex-shrink: 0;
+  font-size: var(--fs-aux);
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.m-interactive-dock {
+  width: 100%;
+}
+
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__header {
+  padding: 4px 8px 4px 12px;
+}
+
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__body {
+  max-height: 180px;
+  padding: 4px 12px;
+}
+
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__footer {
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 12px 8px;
+}
+
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__collapsed-bar {
+  min-height: 36px;
+}
+
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__collapsed-trigger {
+  position: relative;
+  min-height: 36px;
+  align-self: stretch;
+}
+
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__choice-chip,
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__tab {
+  position: relative;
+  min-height: 32px;
+}
+
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__icon-btn {
+  position: relative;
+  min-width: 32px;
+  min-height: 32px;
+}
+
+.m-interact__btn {
+  position: relative;
+  min-width: 44px;
+  min-height: 32px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.m-interact__btn::after,
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__collapsed-trigger::after,
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__choice-chip::after,
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__tab::after,
+.flux-interact__card[data-surface="mobile-dock"] .flux-interact__icon-btn::after {
   content: '';
   position: absolute;
   top: 50%;

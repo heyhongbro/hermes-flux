@@ -29,7 +29,17 @@ const MASK = '[REDACTED]';
  * refreshToken / authorization / cookie。
  * 不匹配 key_env（结尾是 env）、token_count（结尾是 count）、tokens（复数不视为秘密字段）。
  */
-const SENSITIVE_SUFFIX = /(?:apikey|password|passwd|secret|token|authorization|cookie)$/;
+const SENSITIVE_SUFFIX = /(?:apikey|password|passwd|passphrase|privatekey|secret|token|authorization|cookie)$/;
+
+const INTERACTIVE_VALUE_SECRET_METHODS: ReadonlySet<string> = new Set([
+  'mcp.servers.set_api_key',
+  'secret',
+  'sudo',
+  'display.install.sudo',
+  'vault.code',
+  'vault.unlock_prompt',
+  'vault.save_login',
+]);
 
 export function isSensitiveKey(key: string): boolean {
   return SENSITIVE_SUFFIX.test(key.replace(/[_-]/g, '').toLowerCase());
@@ -43,6 +53,80 @@ export interface RedactOptions {
 export function redactSensitive(value: unknown, options: RedactOptions = {}): unknown {
   const extra = new Set((options.extraKeys ?? []).map((key) => key.toLowerCase()));
   return walk(value, 0, new WeakSet<object>(), extra);
+}
+
+/**
+ * 将对象直接子节点全部脱敏（用于任意 env var key 映射，如 connection.respond 的 target.env）。
+ * 纯函数，不修改入参。
+ */
+function maskEnvMap(envValue: unknown): unknown {
+  if (envValue === null || envValue === undefined) return envValue;
+  if (typeof envValue !== 'object') return MASK;
+  if (Array.isArray(envValue)) {
+    return envValue.map((item) => walk(item, 0, new WeakSet<object>(), new Set(['value'])));
+  }
+  const masked: Record<string, unknown> = {};
+  for (const key of Object.keys(envValue as Record<string, unknown>)) {
+    masked[key] = MASK;
+  }
+  return masked;
+}
+
+/**
+ * 脱敏交互式请求参数、服务下发参数（如 preview.act.vault）与反向请求响应（secret/sudo/vault/request.answer/connection.respond）。
+ *
+ * 【设计意图 (Why)】
+ *   用户填写的环境变量密钥、sudo 口令、2FA 验证码、Vault 登录凭据与 connection.respond 里的
+ *   任意环境变量名，绝不能通过调试日志或契约错误日志落入磁盘 `flux-*.log`。
+ *
+ * 【规则 (Rules)】
+ *   - 绝不修改入参；
+ *   - 不得把通用词尾 `value` / `code` 加进全局 `SENSITIVE_SUFFIX`，仅按 method 上下文精确脱敏；
+ *   - `connection.respond` 与 `mcp.servers.add` 中名为 `env` 的字典内部全部键值必须无条件掩码。
+ */
+export function redactInteractivePayload(method: string, payload: unknown): unknown {
+  if (payload === null || payload === undefined || typeof payload !== 'object') {
+    return INTERACTIVE_VALUE_SECRET_METHODS.has(method) && typeof payload === 'string' && payload.length > 0
+      ? MASK
+      : payload;
+  }
+
+  if (method === 'request.answer') {
+    return redactSensitive(payload, { extraKeys: ['result', 'value'] });
+  }
+
+  if (method === 'preview.act') {
+    return redactSensitive(payload, { extraKeys: ['vault'] });
+  }
+
+  if (method === 'connection.respond' || method === 'mcp.servers.add') {
+    const base = redactSensitive(payload, { extraKeys: ['value', 'bearer_token'] });
+    return maskNestedEnvMaps(base, 0);
+  }
+
+  if (INTERACTIVE_VALUE_SECRET_METHODS.has(method)) {
+    return redactSensitive(payload, { extraKeys: ['value', 'identifier'] });
+  }
+
+  return redactSensitive(payload);
+}
+
+function maskNestedEnvMaps(node: unknown, depth: number): unknown {
+  if (node === null || node === undefined || typeof node !== 'object' || depth >= 8) {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map((item) => maskNestedEnvMaps(item, depth + 1));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    if (k.toLowerCase() === 'env') {
+      out[k] = maskEnvMap(v);
+    } else {
+      out[k] = maskNestedEnvMaps(v, depth + 1);
+    }
+  }
+  return out;
 }
 
 function walk(value: unknown, depth: number, seen: WeakSet<object>, extra: Set<string>): unknown {

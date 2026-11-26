@@ -381,4 +381,148 @@ test('HermesGatewayClient JSON-RPC 2.0 Unit Tests', async (t) => {
     assert.equal(detailRes.ok, false);
     assert.match(detailRes.error || '', /invalid archived parameter/);
   });
+
+  await t.test('manages socket generations, server requests, responses, errors, and capability handshake', async () => {
+    const client = new HermesGatewayClient({
+      url: 'ws://127.0.0.1:19999/ws',
+      enableHeartbeat: false,
+      enableLifecycleWake: false,
+      clientCapabilities: { server_requests: true, desktop_local: false },
+    });
+    const flushMicrotasks = async () => {
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    };
+
+    try {
+      assert.equal(client.getSocketGeneration(), 0);
+      assert.equal(client.getNegotiatedCapabilities(), null);
+
+      // No socket / closed socket returns false
+      assert.equal(client.sendServerResponse('r0', { ok: true }), false);
+      assert.equal(client.sendServerError('r0', -32000, 'no ws'), false);
+
+      const sent = [];
+      let throwOnSend = false;
+      const openSocket = {
+        readyState: WebSocket.OPEN,
+        close() {},
+        send(raw) {
+          if (throwOnSend) throw new Error('send boom');
+          const parsed = JSON.parse(raw);
+          sent.push(parsed);
+          if (parsed.method === 'client.capabilities') {
+            queueMicrotask(() => {
+              client.handleMessage(
+                JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: parsed.id,
+                  result: { interactive: true, version: '1.0' },
+                }),
+              );
+            });
+          }
+        },
+      };
+
+      // Stale socket guard in completeHandshake
+      client.completeHandshake(openSocket);
+      assert.equal(client.getState(), 'DISCONNECTED');
+
+      // Promote FSM + bind active socket, then test handshake + capabilities negotiation
+      client.ws = openSocket;
+      client.getFsm().transitionTo('CONNECTING');
+      client.getFsm().transitionTo('HANDSHAKING');
+      client.completeHandshake(openSocket);
+      assert.equal(client.getState(), 'CONNECTED');
+      await flushMicrotasks();
+      assert.deepEqual(client.getNegotiatedCapabilities(), { interactive: true, version: '1.0' });
+
+      // Socket closed listener + generation bump
+      const closedGens = [];
+      const unsubClosed = client.onSocketClosed((gen) => closedGens.push(gen));
+      client.bumpSocketGeneration();
+      assert.equal(client.getSocketGeneration(), 1);
+      assert.equal(client.getNegotiatedCapabilities(), null);
+      assert.deepEqual(closedGens, [0]);
+      unsubClosed();
+      client.bumpSocketGeneration();
+      assert.equal(client.getSocketGeneration(), 2);
+      assert.deepEqual(closedGens, [0]);
+
+      // sendServerResponse & sendServerError: stale generation, success, and send throw
+      assert.equal(client.sendServerResponse('r1', { ok: true }, 1, 'request.answer'), false);
+      assert.equal(client.sendServerError('r1', -32601, 'stale', undefined, 1), false);
+
+      sent.length = 0;
+      assert.equal(client.sendServerResponse('r2', { token: 'abc' }, 2), true);
+      assert.equal(client.sendServerError('r3', -32001, 'bad input', { field: 'x' }, 2), true);
+      assert.equal(sent.length, 2);
+      assert.deepEqual(sent[0].result, { token: 'abc' });
+      assert.equal(sent[1].error.code, -32001);
+
+      throwOnSend = true;
+      assert.equal(client.sendServerResponse('r4', { ok: true }, 2, 'approval.decide'), false);
+      assert.equal(client.sendServerError('r5', -32002, 'fail', undefined, 2), false);
+      throwOnSend = false;
+
+      // handleMessage server-request routing: unclaimed -> -32601, throwing listener caught, claimed -> no auto-error
+      sent.length = 0;
+      const unsubThrow = client.onServerRequest(() => {
+        throw new Error('listener error');
+      });
+      client.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: 'sr-1', method: 'approval.prompt', params: { p: 1 } }));
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].error.code, -32601);
+      unsubThrow();
+
+      const captured = [];
+      const unsubClaim = client.onServerRequest((frame) => {
+        captured.push(frame);
+        return true;
+      });
+      client.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: 'sr-2', method: 'approval.prompt', params: { p: 2 } }));
+      assert.equal(captured.length, 1);
+      assert.equal(captured[0].socketGeneration, 2);
+      assert.equal(sent.length, 1);
+      unsubClaim();
+
+      // Early return inside negotiateClientCapabilities when socket is replaced before resolve
+      const client2 = new HermesGatewayClient({
+        url: 'ws://127.0.0.1:19999/ws',
+        enableHeartbeat: false,
+        enableLifecycleWake: false,
+        clientCapabilities: { interactive: true },
+      });
+      try {
+        let resolveReplaced;
+        const replacedSocket = {
+          readyState: WebSocket.OPEN,
+          close() {},
+          send(raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed.method === 'client.capabilities') {
+              resolveReplaced = () =>
+                client2.handleMessage(
+                  JSON.stringify({ jsonrpc: '2.0', id: parsed.id, result: { stale: true } }),
+                );
+            }
+          },
+        };
+        client2.ws = replacedSocket;
+        client2.getFsm().transitionTo('CONNECTING');
+        client2.getFsm().transitionTo('HANDSHAKING');
+        client2.completeHandshake(replacedSocket);
+        client2.ws = openSocket;
+        resolveReplaced?.();
+        await flushMicrotasks();
+        assert.equal(client2.getNegotiatedCapabilities(), null);
+        // Orphan response id for non-existent pendingRequest hits if (!pending) return cleanly (L1465)
+        client2.handleMessage(JSON.stringify({ jsonrpc: '2.0', id: 'orphan-resp-id', result: {} }));
+      } finally {
+        client2.disconnect();
+      }
+    } finally {
+      client.disconnect();
+    }
+  });
 });

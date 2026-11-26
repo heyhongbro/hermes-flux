@@ -46,6 +46,7 @@ import {
 import { MobileHomeScreen } from './MobileHomeScreen.js';
 import { MobileConversationScreen } from './MobileConversationScreen.js';
 import { MobileModelPickerSheet } from './MobileMorphingComposer.js';
+import { MobileApprovalModeSheet } from './MobileApprovalModeSheet.js';
 import { MobileInspectorScreen } from './MobileInspectorScreen.js';
 import { MobileNewChatSheet } from './MobileNewChatSheet.js';
 import { MobileSubagentSheet } from './MobileSubagentSheet.js';
@@ -81,6 +82,7 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
   const [folderNameDraft, setFolderNameDraft] = React.useState('');
   const [pendingMoveTarget, setPendingMoveTarget] = React.useState<MobileActionSheetState | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
+  const [approvalPickerOpen, setApprovalPickerOpen] = React.useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = React.useState(false);
 
   const dragRef = React.useRef<{
@@ -120,7 +122,16 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
   const botWizardOpen = Boolean(snapshot.settingsSnapshot.botManagement?.wizard?.open);
   const mediaLightboxOpen = Boolean(snapshot.mediaLightbox && snapshot.mediaLightbox.items.length > 0);
   const anySheetOpen =
-    snapshot.newChatOpen || Boolean(snapshot.subagentSheet) || Boolean(snapshot.actionSheet) || botWizardOpen || mediaLightboxOpen;
+    snapshot.newChatOpen ||
+    Boolean(snapshot.subagentSheet) ||
+    Boolean(snapshot.actionSheet) ||
+    botWizardOpen ||
+    mediaLightboxOpen ||
+    approvalPickerOpen;
+
+  const hasExpandedInteractiveDock =
+    Boolean(snapshot.interactivePrompts && snapshot.interactivePrompts.length > 0) &&
+    !snapshot.interactiveDockCollapsed;
 
   // Android 物理返回键 / 系统返回统一归约分发
   React.useEffect(() => {
@@ -133,7 +144,9 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
         hasActionSheet: Boolean(snapshot.actionSheet),
         actionSheetStep: sheetStep,
         hasModelSheet: modelPickerOpen,
+        hasApprovalSheet: approvalPickerOpen,
         hasSubagentSheet: Boolean(snapshot.subagentSheet),
+        hasExpandedInteractiveDock,
         botWizardOpen,
         newChatOpen: snapshot.newChatOpen,
         newChatStep: snapshot.newChatStep,
@@ -162,8 +175,14 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
         case 'closeModelSheet':
           setModelPickerOpen(false);
           break;
+        case 'closeApprovalSheet':
+          setApprovalPickerOpen(false);
+          break;
         case 'closeSubagentSheet':
           actions.onCloseSubagentSheet();
+          break;
+        case 'collapseInteractiveDock':
+          actions.onToggleInteractiveDockCollapsed?.(true);
           break;
         case 'closeBotWizard':
           actions.settingsActions.onCloseBotWizard();
@@ -203,7 +222,7 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
 
     window.addEventListener('hermes-mobile-back', handleMobileBack);
     return () => window.removeEventListener('hermes-mobile-back', handleMobileBack);
-  }, [snapshot, actions, modelPickerOpen, projectPickerOpen, sheetStep, botWizardOpen]);
+  }, [snapshot, actions, modelPickerOpen, approvalPickerOpen, hasExpandedInteractiveDock, projectPickerOpen, sheetStep, botWizardOpen]);
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (anySheetOpen || snapshot.settingsOpen || snapshot.searchOpen || snapshot.botSubpage !== null) return;
@@ -286,6 +305,32 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
 
   const trackTransform = resolveTrackTransform(snapshot.activePane, isDragging, dragOffsetPx);
 
+  const resolveWaitingEntityLabel = React.useCallback(
+    (summary: { entityType: 'session' | 'bot' | 'group'; entityId: string }): string => {
+      if (summary.entityType === 'bot') {
+        const hit = snapshot.allProfiles.find((p) => p.name === summary.entityId);
+        return hit?.displayName || hit?.name || summary.entityId;
+      }
+      if (summary.entityType === 'group') {
+        const fromSection = snapshot.homeModel.groupsSection.items.find((g) => g.id === summary.entityId);
+        if (fromSection?.title) return fromSection.title;
+        for (const bucket of [...snapshot.homeModel.projectSections, ...snapshot.homeModel.folderSections]) {
+          const hit = bucket.items.find((item) => item.kind === 'group' && item.id === summary.entityId);
+          if (hit?.title) return hit.title;
+        }
+        return summary.entityId;
+      }
+      const fromSess = snapshot.homeModel.sessionsSection.items.find((s) => s.id === summary.entityId);
+      if (fromSess?.title) return fromSess.title;
+      for (const bucket of [...snapshot.homeModel.projectSections, ...snapshot.homeModel.folderSections]) {
+        const hit = bucket.items.find((item) => item.kind === 'session' && item.id === summary.entityId);
+        if (hit?.title) return hit.title;
+      }
+      return summary.entityId;
+    },
+    [snapshot.allProfiles, snapshot.homeModel],
+  );
+
   const activeSheet = snapshot.actionSheet;
 
   return (
@@ -341,6 +386,9 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             onOpenActionSheet={actions.onOpenActionSheet}
             onHapticSelection={actions.onHapticSelection}
             settingsActions={actions.settingsActions}
+            backgroundWaitingSummaries={snapshot.backgroundWaitingSummaries}
+            resolveWaitingEntityLabel={resolveWaitingEntityLabel}
+            onSelectWaitingSummary={actions.onSelectWaitingSummary}
           />
 
           <MobileConversationScreen
@@ -355,6 +403,12 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             messagesCount={snapshot.messagesCount}
             selectedModel={snapshot.selectedModel}
             currentProvider={snapshot.currentProvider}
+            approvalMode={snapshot.approvalMode}
+            interactivePrompts={snapshot.interactivePrompts}
+            activeInteractivePromptKey={snapshot.activeInteractivePromptKey}
+            interactiveDockCollapsed={snapshot.interactiveDockCollapsed}
+            backgroundWaitingSummaries={snapshot.backgroundWaitingSummaries}
+            resolveWaitingEntityLabel={resolveWaitingEntityLabel}
             availableModels={snapshot.availableModels}
             modelDetails={snapshot.modelDetails}
             attachments={snapshot.attachments}
@@ -363,6 +417,16 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             onSendMessage={actions.onSendMessage}
             onInterruptTurn={actions.onInterruptTurn}
             onSelectModel={actions.onSelectModel}
+            onOpenApprovalSheet={
+              actions.onSelectApprovalMode ? () => setApprovalPickerOpen(true) : undefined
+            }
+            onReplyInteractive={actions.onReplyInteractive}
+            onLockClarifyAnswer={actions.onLockClarifyAnswer}
+            onOpenInteractiveExternalUrl={actions.onOpenInteractiveExternalUrl}
+            onWakeConnection={actions.onWakeConnection}
+            onToggleInteractiveDockCollapsed={actions.onToggleInteractiveDockCollapsed}
+            onSelectInteractivePrompt={actions.onSelectInteractivePrompt}
+            onSelectWaitingSummary={actions.onSelectWaitingSummary}
             onRefreshModels={actions.onRefreshModels}
             onOpenAttachmentPicker={actions.onOpenAttachmentPicker}
             onRemoveAttachment={actions.onRemoveAttachment}
@@ -463,6 +527,13 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
         onSelectModel={actions.onSelectModel}
         onClose={() => setModelPickerOpen(false)}
         onRefreshModels={actions.onRefreshModels}
+      />
+
+      <MobileApprovalModeSheet
+        open={approvalPickerOpen}
+        approvalMode={snapshot.approvalMode ?? 'smart'}
+        onSelectApprovalMode={(mode) => actions.onSelectApprovalMode?.(mode)}
+        onClose={() => setApprovalPickerOpen(false)}
       />
 
       <MobileSubagentSheet

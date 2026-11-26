@@ -9,7 +9,7 @@
 | `profiles.create` | `profile` `name` `description` `clone_from` `clone_all` `clone_channels` `no_skills` `no_alias` `soul` `model` `provider` `share_auth` `mirror_credentials` | `ok` `name` `path` `soul_written` `model_set` `mirrored` `warnings` | `packages/core/src/profile/profileService.ts:196` | ✅ 0.22.5 |
 | `profiles.describe` | `profile` `name` | `name` `description` `soul` `model` `skills` `toolsets` `toolsets_pinned` `mcp_servers` | `packages/core/src/profile/profileService.ts:109`<br>`packages/core/src/profile/profileService.ts:165`<br>`packages/desktop/src/renderer/services/learningService.ts:111` | ✅ 0.22.5 |
 | `profiles.get_asset` | `profile` `name` `asset` | `found` `mime` `size` `data` | `packages/core/src/profile/profileService.ts:280` | ✅ 0.22.5 |
-| `profiles.list` | `profile` `include_sessions` | `profiles` `bot_mode_protocol` `install_id` | `packages/core/src/organization/profileMetaAdapter.ts:111`<br>`packages/core/src/profile/profileService.ts:82`<br>`packages/core/src/rpc/client.ts:1213`<br>`packages/desktop/src/renderer/settingsController.ts:162` | ✅ 0.22.5 |
+| `profiles.list` | `profile` `include_sessions` | `profiles` `bot_mode_protocol` `install_id` | `packages/core/src/organization/profileMetaAdapter.ts:111`<br>`packages/core/src/profile/profileService.ts:82`<br>`packages/core/src/rpc/client.ts:1321`<br>`packages/desktop/src/renderer/settingsController.ts:162` | ✅ 0.22.5 |
 | `profiles.set_asset` | `profile` `name` `asset` `data` `clear` | `ok` `asset` `size` `removed` | `packages/core/src/profile/profileService.ts:305` | ✅ 0.22.5 |
 
 ## 明细
@@ -59,7 +59,7 @@
 - 调用点：
   - `packages/core/src/organization/profileMetaAdapter.ts:111`
   - `packages/core/src/profile/profileService.ts:82`
-  - `packages/core/src/rpc/client.ts:1213`
+  - `packages/core/src/rpc/client.ts:1321`
   - `packages/desktop/src/renderer/settingsController.ts:162`
 
 ### `profiles.set_asset`

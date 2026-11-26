@@ -141,6 +141,20 @@ export interface GatewayEventDispatcherDeps {
     action: TurnAction,
     toStoredSessionId: (id?: string | null) => string | null,
   ) => void;
+  readonly onGatewayClientCreated?: (client: HermesGatewayClient) => void;
+  readonly onGatewayDisconnect?: () => void;
+  readonly onInteractiveTurnAction?: (action: TurnAction) => void;
+  readonly onToolOutputRisk?: (action: Extract<TurnAction, { type: 'tool-output-risk' }>) => boolean;
+  readonly onGatewayNotification?: (action: TurnAction) => void;
+  readonly onCaptureInteractiveFence?: () => number;
+  readonly onInteractiveResumeReconciled?: (input: {
+    client: HermesGatewayClient;
+    storedSessionId: string;
+    liveSessionId: string | null;
+    profile?: string;
+    resume: Record<string, unknown>;
+    fence: number;
+  }) => void;
 }
 
 export interface GatewayEventDispatcher {
@@ -215,6 +229,8 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     setMessageWindowUserExpanded: deps.setMessageWindowUserExpanded,
     isStreamNearBottom: deps.isStreamNearBottom,
     setPendingScrollToBottom: deps.setPendingScrollToBottom,
+    onCaptureInteractiveFence: deps.onCaptureInteractiveFence,
+    onInteractiveResumeReconciled: deps.onInteractiveResumeReconciled,
   });
 
   function clearColdStartRetryTimer(): void {
@@ -794,11 +810,23 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
         case 'subagent-complete':
         case 'subagent-failed': {
           deps.onStatusTurnAction?.(action, deps.toStoredSessionId);
+          if (action.type === 'session-info') {
+            deps.onInteractiveTurnAction?.(action);
+          }
           const rawSid = action.type === 'subagent-spawn' ? action.parentSessionId : action.sessionId;
           const storedSid = liveCoord.resolveStoredSessionId(rawSid);
           if (storedSid) {
             if (action.type === 'session-info') {
               const infoRec = action.info as Record<string, unknown>;
+              if (
+                storedSid === state.activeSessionId &&
+                (infoRec?.approval_mode === 'manual' ||
+                  infoRec?.approval_mode === 'smart' ||
+                  infoRec?.approval_mode === 'off')
+              ) {
+                state.approvalMode = infoRec.approval_mode;
+                needsRender = true;
+              }
               const infoRunning = Boolean(infoRec?.running || infoRec?.streaming);
               if (infoRunning) {
                 if (
@@ -816,6 +844,25 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
               deps.feedTurnWatchdog?.();
             }
           }
+          break;
+        }
+
+        case 'request-cancel':
+        case 'approval-cancelled':
+        case 'connection-request':
+        case 'connection-update':
+        case 'gateway-ready': {
+          deps.onInteractiveTurnAction?.(action);
+          needsRender = true;
+          break;
+        }
+        case 'tool-output-risk': {
+          if (deps.onToolOutputRisk?.(action)) needsRender = true;
+          break;
+        }
+        case 'notification-show':
+        case 'notification-clear': {
+          deps.onGatewayNotification?.(action);
           break;
         }
       }
@@ -1144,10 +1191,12 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
         }),
         autoConnect: false,
         enableLifecycleWake: false,
+        clientCapabilities: { server_requests: true, desktop_local: false },
         timeoutMs: 25000,
       });
 
       deps.setGatewayClient(client);
+      deps.onGatewayClientCreated?.(client);
 
       if (desktopApi?.httpProxy) {
         client.setRestFallbackHandler(async (path, opts) => {
@@ -1275,6 +1324,7 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     deps.getUnreadGroupRoomIds().clear();
     deps.getSessionHandleRegistry().clear?.();
     deps.clearSessionsRefreshTimer();
+    deps.onGatewayDisconnect?.();
 
     const state = deps.getState();
     state.manualDisconnected = true;

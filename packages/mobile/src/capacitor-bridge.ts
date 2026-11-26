@@ -181,6 +181,7 @@ export interface CapacitorBridgePluginOverrides {
   userAgent?: string;
   isPluginAvailable?: (name: string) => boolean;
   app?: Pick<typeof App, 'getInfo' | 'minimizeApp' | 'addListener'>;
+  browser?: Pick<typeof Browser, 'open' | 'addListener'>;
   keyboard?: Pick<typeof Keyboard, 'addListener'>;
   statusBar?: Pick<typeof StatusBar, 'setStyle'>;
   haptics?: Pick<typeof Haptics, 'selectionChanged'>;
@@ -277,6 +278,7 @@ export function resolveVisualViewportKeyboardHeight(
 
 export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginOverrides): HermesMobileBridge {
   const capApp = overrides?.app ?? App;
+  const capBrowser = overrides?.browser ?? Browser;
   const capKeyboard = overrides?.keyboard ?? Keyboard;
   const capStatusBar = overrides?.statusBar ?? StatusBar;
   const capHaptics = overrides?.haptics ?? Haptics;
@@ -602,7 +604,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
       if (!url || typeof url !== 'string') return;
       if (url.startsWith('http://') || url.startsWith('https://')) {
         try {
-          await Browser.open({ url });
+          await capBrowser.open({ url });
         } catch {
           if (typeof window !== 'undefined') window.open(url, '_blank');
         }
@@ -985,6 +987,15 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
       const notConsumed = window.dispatchEvent(ev);
       if (notConsumed) {
         void capApp.minimizeApp().catch(logBridgeDegrade);
+      }
+    }).catch(logBridgeDegrade);
+  }
+
+  // 系统外链 OAuth 浏览器关停事件转发：驱动 connectors.operation.wake 自动探测授权终态
+  if (checkPlugin('Browser')) {
+    capBrowser.addListener('browserFinished', () => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('hermes-mobile-browser-finished'));
       }
     }).catch(logBridgeDegrade);
   }

@@ -321,11 +321,14 @@ async function buildAll() {
       'sessionStatusService',
       'statusIntegration',
       'conversationOrgCoordinator',
+      'interactivePromptService',
+      'mcpOAuthService',
     ].map((serviceName) =>
       nodeModuleTask(`src/renderer/services/${serviceName}.ts`, `dist/renderer/services/${serviceName}.mjs`),
     ),
 
     // Batch 7 服务与控制器
+    nodeModuleTask('src/renderer/interactiveWiring.ts', 'dist/renderer/interactiveWiring.mjs'),
     nodeModuleTask('src/renderer/services/fileViewerService.ts', 'dist/renderer/services/fileViewerService.mjs'),
     nodeModuleTask('src/renderer/services/mediaResolver.ts', 'dist/renderer/services/mediaResolver.mjs'),
     nodeModuleTask('src/renderer/titlebarController.ts', 'dist/renderer/titlebarController.mjs'),

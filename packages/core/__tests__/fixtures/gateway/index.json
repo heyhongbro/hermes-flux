@@ -1654,6 +1654,90 @@
       "ok": false,
       "skipped": true,
       "reason": "历史衍生树按路径读取依赖磁盘树文件，离线探针显式跳过，由标准化合并单测与形式化不变量守护"
+    },
+    {
+      "module": "interactive",
+      "method": "client.capabilities",
+      "ok": false,
+      "skipped": true,
+      "reason": "握手能力协商仅对支持 hermes-gateway-v1 的真实 WS 会话生效；离线探针显式跳过，由 negotiateClientCapabilities 单测（含 4000 自动降级）与契约白名单守护"
+    },
+    {
+      "module": "interactive",
+      "method": "approval.pending",
+      "ok": false,
+      "skipped": true,
+      "reason": "待审批队列探测仅在活跃会话处于挂起审批状态时返回非空条目；离线探针显式跳过，由 InteractiveRequestCoordinator 与服务单测守护"
+    },
+    {
+      "module": "interactive",
+      "method": "approval.received",
+      "ok": false,
+      "skipped": true,
+      "reason": "审批送达回执依赖在途阻塞的审批 request_id，离线无状态探针无法造出该态，由契约白名单守护"
+    },
+    {
+      "module": "interactive",
+      "method": "approval.respond",
+      "ok": false,
+      "skipped": true,
+      "reason": "审批答复需真实挂起中的审批请求（once/session/always/deny），离线探针显式跳过，由 replyRouter Formal 定理（Classic vs Canonical 隔离）与单测守护"
+    },
+    {
+      "module": "interactive",
+      "method": "clarify.lock",
+      "ok": false,
+      "skipped": true,
+      "reason": "多题提问单题锁定依赖活跃中的 clarify 请求 id，离线探针显式跳过，由契约白名单与 InteractivePromptService 单测守护"
+    },
+    {
+      "module": "interactive",
+      "method": "clarify.respond",
+      "ok": false,
+      "skipped": true,
+      "reason": "Canonical clarify 应答需真实挂起 prompt_id 与 execution_generation，离线探针显式跳过，由 replyRouter 契约参数单测守护（含严禁传 profile 约束）"
+    },
+    {
+      "module": "interactive",
+      "method": "request.answer",
+      "ok": false,
+      "skipped": true,
+      "reason": "断线重连补答 WS 反向请求（secret/sudo/vault/clarify）依赖服务端在途挂起请求，离线探针显式跳过，由 replyRouter 与形式化不变量守护"
+    },
+    {
+      "module": "interactive",
+      "method": "connectors.operation.wake",
+      "ok": false,
+      "skipped": true,
+      "reason": "连接操作唤醒依赖真实的 OAuth/Install 进行中 op_id，离线探针显式跳过，由契约白名单与连接停靠卡单测守护"
+    },
+    {
+      "module": "interactive",
+      "method": "reload.mcp",
+      "ok": false,
+      "skipped": true,
+      "reason": "MCP 热重载会影响在线网关活跃会话工具表，离线探针显式跳过，由 mcpOAuthService 契约单测（含禁传 profile 与 confirm_required 重试）守护"
+    },
+    {
+      "module": "interactive",
+      "method": "mcp.servers.oauth.start",
+      "ok": false,
+      "skipped": true,
+      "reason": "MCP OAuth 授权发起需真实 OAuth 服务端配置且禁传 client_redirect_uri，离线探针显式跳过，由 mcpOAuthService 与内联面板单测守护"
+    },
+    {
+      "module": "interactive",
+      "method": "mcp.servers.oauth.poll",
+      "ok": false,
+      "skipped": true,
+      "reason": "MCP OAuth 轮询依赖在途授权 session_id，离线探针显式跳过，由服务与轮询清理单测守护"
+    },
+    {
+      "module": "interactive",
+      "method": "mcp.servers.oauth.cancel",
+      "ok": false,
+      "skipped": true,
+      "reason": "MCP OAuth 取消依赖在途授权 session_id，离线探针显式跳过，由服务与内联面板单测守护"
     }
   ],
   "note": "主基线录制自 0.22.5；extensions 模块（mcp.servers.status / skills.manage / skills.reload）录制自 0.21.6 @ 2026-11-08T13:22:20.724Z，逐条带 gatewayVersion 标注。"

@@ -13,12 +13,21 @@
  */
 
 import * as React from 'react';
-import type { GatewayConnectionPhase } from '@hermes-flux/core';
+import type {
+  BackgroundWaitingSummary,
+  ClarifyPrompt,
+  ConnectionPrompt,
+  GatewayConnectionPhase,
+  InteractivePrompt,
+  InteractiveReplyPayload,
+} from '@hermes-flux/core';
 import { PanelRight } from 'lucide-react';
 import { t } from '../../i18n/index.js';
 import type { InputAttachmentItem } from '../../components/InputDock/InputDock.js';
 import type { LeftRailActiveFocus } from '../leftRailModel.js';
 import { ConnectionStatusPill } from '../ConnectionStatusPill.js';
+import { InteractivePromptHost } from '../interactive/InteractivePromptHost.js';
+import { BackgroundPromptTopPill } from '../interactive/BackgroundPromptTopPill.js';
 import { shouldCompactStagePresence } from './mobileShellModel.js';
 import type { MobileModelOption } from './types.js';
 import { MobileMorphingComposer } from './MobileMorphingComposer.js';
@@ -35,6 +44,12 @@ export interface MobileConversationScreenProps {
   messagesCount: number;
   selectedModel: string;
   currentProvider?: string;
+  approvalMode?: 'manual' | 'smart' | 'off';
+  interactivePrompts?: readonly InteractivePrompt[];
+  activeInteractivePromptKey?: string | null;
+  interactiveDockCollapsed?: boolean;
+  backgroundWaitingSummaries?: readonly BackgroundWaitingSummary[];
+  resolveWaitingEntityLabel?: (summary: BackgroundWaitingSummary) => string;
   availableModels: string[];
   modelDetails: MobileModelOption[];
   attachments: InputAttachmentItem[];
@@ -50,6 +65,14 @@ export interface MobileConversationScreenProps {
   onSendMessage: (text: string) => void;
   onInterruptTurn: () => void;
   onSelectModel: (model: string, provider?: string) => void;
+  onOpenApprovalSheet?: () => void;
+  onReplyInteractive?: (prompt: InteractivePrompt, payload: InteractiveReplyPayload) => Promise<boolean | void>;
+  onLockClarifyAnswer?: (prompt: ClarifyPrompt, questionId: string, answer: string) => Promise<void>;
+  onOpenInteractiveExternalUrl?: (url: string) => void;
+  onWakeConnection?: (prompt: ConnectionPrompt) => Promise<void>;
+  onToggleInteractiveDockCollapsed?: (collapsed: boolean) => void;
+  onSelectInteractivePrompt?: (canonicalKey: string) => void;
+  onSelectWaitingSummary?: (summary: BackgroundWaitingSummary) => void;
   onRefreshModels?: () => void;
   onOpenAttachmentPicker: () => void;
   onRemoveAttachment: (id: string) => void;
@@ -75,6 +98,12 @@ export function MobileConversationScreen({
   isStreaming,
   selectedModel,
   currentProvider,
+  approvalMode = 'smart',
+  interactivePrompts = [],
+  activeInteractivePromptKey,
+  interactiveDockCollapsed = false,
+  backgroundWaitingSummaries = [],
+  resolveWaitingEntityLabel,
   availableModels,
   modelDetails,
   attachments,
@@ -83,6 +112,14 @@ export function MobileConversationScreen({
   onSendMessage,
   onInterruptTurn,
   onSelectModel,
+  onOpenApprovalSheet,
+  onReplyInteractive,
+  onLockClarifyAnswer,
+  onOpenInteractiveExternalUrl,
+  onWakeConnection,
+  onToggleInteractiveDockCollapsed,
+  onSelectInteractivePrompt,
+  onSelectWaitingSummary,
   onRefreshModels,
   onOpenAttachmentPicker,
   onRemoveAttachment,
@@ -102,10 +139,33 @@ export function MobileConversationScreen({
     !gatewayConnected &&
     (connectionPhase === undefined || connectionPhase === 'unconfigured');
   const streamRef = React.useRef<HTMLDivElement | null>(null);
+  const paneRef = React.useRef<HTMLElement | null>(null);
+  const composerDockRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     onStageReady?.();
   }, [onStageReady]);
+
+  // 监测底部停靠舱（含交互停靠卡 + 输入舱 + 提示条）总高并写入 `--m-composer-dock-h`，同步避让聊天流底部
+  React.useEffect(() => {
+    const dockEl = composerDockRef.current;
+    const paneEl = paneRef.current;
+    if (!dockEl || !paneEl || typeof ResizeObserver === 'undefined') return;
+    let lastH = -1;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const blockSize = entry.borderBoxSize?.[0]?.blockSize;
+      const rawH = typeof blockSize === 'number' && blockSize > 0 ? blockSize : entry.contentRect.height;
+      const nextH = Math.max(76, Math.ceil(rawH));
+      if (nextH !== lastH) {
+        lastH = nextH;
+        paneEl.style.setProperty('--m-composer-dock-h', `${nextH}px`);
+      }
+    });
+    observer.observe(dockEl);
+    return () => observer.disconnect();
+  }, []);
 
   // 软键盘弹起压缩对话流可视区时，若用户原本接近底部则等量推进 scrollTop 保持最新消息可见
   React.useEffect(() => {
@@ -145,8 +205,10 @@ export function MobileConversationScreen({
 
   return (
     <section
+      ref={paneRef}
       className="m-pane m-stage flux-middle-pod"
       data-compact-presence={compactPresence ? 'true' : 'false'}
+      data-has-top-pill={backgroundWaitingSummaries.length > 0 && onSelectWaitingSummary ? 'true' : 'false'}
       aria-label={activeBotDisplayName || t('mobile.section.sessions')}
     >
       <div className="m-stage__presence-scrim" data-compact={compactPresence ? 'true' : 'false'}>
@@ -166,6 +228,14 @@ export function MobileConversationScreen({
             onRetry={onRetryConnect}
             onOpenSettings={onOpenSettings}
             onMountedChange={setPillMounted}
+          />
+        ) : null}
+        {backgroundWaitingSummaries.length > 0 && onSelectWaitingSummary ? (
+          <BackgroundPromptTopPill
+            surface="mobile"
+            summaries={backgroundWaitingSummaries}
+            resolveEntityLabel={resolveWaitingEntityLabel ?? ((item) => item.entityId)}
+            onSelectSummary={onSelectWaitingSummary}
           />
         ) : null}
         {onOpenInspector ? (
@@ -211,9 +281,22 @@ export function MobileConversationScreen({
         ) : null}
       </div>
 
-      {dockNotice ? <div className="m-stage__notice">{dockNotice}</div> : null}
-
-      <div className="m-stage__composer-dock">
+      <div ref={composerDockRef} className="m-stage__composer-dock">
+        {dockNotice ? <div className="m-stage__notice">{dockNotice}</div> : null}
+        {interactivePrompts.length > 0 && onReplyInteractive ? (
+          <InteractivePromptHost
+            surface="mobile-dock"
+            prompts={interactivePrompts}
+            activeCanonicalKey={activeInteractivePromptKey}
+            collapsed={interactiveDockCollapsed}
+            onCollapsedChange={onToggleInteractiveDockCollapsed}
+            onSelectPrompt={onSelectInteractivePrompt}
+            onReply={onReplyInteractive}
+            onLockClarifyAnswer={onLockClarifyAnswer}
+            onOpenExternalUrl={onOpenInteractiveExternalUrl}
+            onWakeConnection={onWakeConnection}
+          />
+        ) : null}
         {rollbackBanner ? (
           <div className="m-stage__rollback-banner" data-testid="mobile-rollback-banner">
             <span className="m-stage__rollback-text">
@@ -240,6 +323,8 @@ export function MobileConversationScreen({
           disabled={!gatewayConnected}
           selectedModel={selectedModel}
           currentProvider={currentProvider}
+          approvalMode={approvalMode}
+          hideApprovalMode={activeFocus.type === 'group'}
           availableModels={availableModels}
           modelDetails={modelDetails}
           attachments={attachments}
@@ -248,6 +333,7 @@ export function MobileConversationScreen({
           onAttach={onOpenAttachmentPicker}
           onRemoveAttachment={onRemoveAttachment}
           onSelectModel={onSelectModel}
+          onOpenApprovalSheet={onOpenApprovalSheet}
           onRefreshModels={onRefreshModels}
           forceModelPickerOpen={forceModelPickerOpen}
           onModelPickerOpenChange={onModelPickerOpenChange}

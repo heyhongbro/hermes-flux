@@ -116,7 +116,8 @@ const areEqual = (prev: TurnGroupProps, next: TurnGroupProps): boolean => {
           ta.durationMs !== tb.durationMs ||
           ta.subagentId !== tb.subagentId ||
           ta.imagePath !== tb.imagePath ||
-          ta.inlineDiff !== tb.inlineDiff
+          ta.inlineDiff !== tb.inlineDiff ||
+          ta.riskInfo !== tb.riskInfo
         ) {
           return false;
         }

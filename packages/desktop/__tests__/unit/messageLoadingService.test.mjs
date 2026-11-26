@@ -860,3 +860,87 @@ test('MessageLoadingService 变异消杀全边界：构造代际/列表全字段
   await svc.loadMessages('sess-1');
   await new Promise((r) => setTimeout(r, 15));
 });
+
+test('MessageLoadingService 流式重连对账传递 onCaptureInteractiveFence 与 onInteractiveResumeReconciled', async () => {
+  const reconciled = [];
+  const registeredHandles = [];
+  let nextResume = { session_id: 'live-rec', running: true };
+  const gwClient = {
+    fetchSessionMessages: async () => ({ status: 'success', messages: [] }),
+    call: async () => nextResume,
+  };
+  const { deps } = createMockDeps({
+    getActiveStreamingStoredSessionId: () => 'sess-1',
+    gatewayClient: gwClient,
+    defaultSessionHandleRegistry: {
+      register: (h) => registeredHandles.push(h),
+      unregister: () => {},
+      toStoredSessionId: (id) => id,
+      toLiveId: () => '',
+    },
+    onCaptureInteractiveFence: () => 17,
+    onInteractiveResumeReconciled: (info) => reconciled.push(info),
+  });
+  const svc = createMessageLoadingService(deps);
+  await svc.loadMessagesInner('sess-1', undefined, { silent: true, checkLiveTurn: true });
+  assert.equal(reconciled.length, 1);
+  assert.deepEqual(registeredHandles, [{ storedId: 'sess-1', liveId: 'live-rec' }]);
+  assert.equal(reconciled[0].client, gwClient);
+  assert.equal(reconciled[0].storedSessionId, 'sess-1');
+  assert.equal(reconciled[0].liveSessionId, 'live-rec');
+  assert.equal(reconciled[0].profile, 'default');
+  assert.equal(reconciled[0].fence, 17);
+  assert.deepEqual(reconciled[0].resume, { session_id: 'live-rec', running: true });
+
+  // No fence callback & missing session_id (checkHandles === null) + null resume + deps reconnect fallbacks
+  const reconciledNoFence = [];
+  const fallbackEvents = [];
+  let pendingCallResolver = null;
+  let callMode = 'resolve';
+  const gwNoFenceClient = {
+    fetchSessionMessages: async () => ({ status: 'success', messages: [] }),
+    call: async () => (callMode === 'defer' ? new Promise((r) => { pendingCallResolver = r; }) : nextResume),
+  };
+  const regNoFence = [];
+  const { deps: depsNoFence, state: stateNoFence } = createMockDeps({
+    getActiveStreamingStoredSessionId: () => 'sess-1',
+    gatewayClient: gwNoFenceClient,
+    defaultSessionHandleRegistry: {
+      register: (h) => regNoFence.push(h),
+      unregister: () => {},
+      toStoredSessionId: (id) => id,
+      toLiveId: () => '',
+    },
+    onInteractiveResumeReconciled: (info) => reconciledNoFence.push(info),
+    onReconnectStillStreaming: (sid, lid, res) => fallbackEvents.push(['still', sid, lid, res.running]),
+    onReconnectStreamFinished: (sid) => fallbackEvents.push(['finished', sid]),
+  });
+  const svcNoFence = createMessageLoadingService(depsNoFence);
+  nextResume = { session_id: '', running: true };
+  await svcNoFence.loadMessagesInner('sess-1', undefined, { silent: true, checkLiveTurn: true });
+  assert.equal(reconciledNoFence.length, 1);
+  assert.equal(reconciledNoFence[0].liveSessionId, 'sess-1');
+  assert.equal(reconciledNoFence[0].fence, 0);
+  assert.deepEqual(fallbackEvents.at(-1), ['still', 'sess-1', 'sess-1', true]);
+
+  nextResume = { session_id: 'live-done', running: false };
+  await svcNoFence.loadMessagesInner('sess-1', undefined, { silent: true, checkLiveTurn: true });
+  assert.deepEqual(fallbackEvents.at(-1), ['finished', 'sess-1']);
+
+  // activeSessionId switched while checkLiveTurn in-flight (same generation): must abort at L515
+  callMode = 'defer';
+  const regBeforeAbort = regNoFence.length;
+  const reconBeforeAbort = reconciledNoFence.length;
+  const abortedP = svcNoFence.loadMessagesInner('sess-1', undefined, { silent: true, checkLiveTurn: true });
+  stateNoFence.activeSessionId = 'sess-other';
+  pendingCallResolver({ session_id: 'live-stale-switch', running: true });
+  await abortedP;
+  assert.equal(regNoFence.length, regBeforeAbort);
+  assert.equal(reconciledNoFence.length, reconBeforeAbort);
+  callMode = 'resolve';
+  stateNoFence.activeSessionId = 'sess-1';
+
+  nextResume = null;
+  await svcNoFence.loadMessagesInner('sess-1', undefined, { silent: true, checkLiveTurn: true });
+  assert.equal(reconciledNoFence.length, reconBeforeAbort);
+});

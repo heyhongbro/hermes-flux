@@ -122,7 +122,24 @@ export * from './components-react/loadPhase.js';
 export * from './components-react/conversation/index.js';
 export { renderLeftRailHtml, type LeftRailHtmlSnapshot } from './components-react/leftRailStaticRender.js';
 export { renderBotAvatar, escapeHtml } from './utils/botAvatar.js';
-export { mountStatusBar, mountTitlebar, mountLeftRail, mountRightPod, mountNewChatDialog, type StatusBarSnapshot, type TitlebarSnapshot, type LeftRailSnapshot, type LeftRailActions, type RightPodSnapshot, type RightPodActions } from './components-react/mount-shell-components.js';
+export {
+  mountStatusBar,
+  mountTitlebar,
+  mountLeftRail,
+  mountRightPod,
+  mountNewChatDialog,
+  mountInteractivePromptHost,
+  mountInteractiveTopPill,
+  type StatusBarSnapshot,
+  type TitlebarSnapshot,
+  type LeftRailSnapshot,
+  type LeftRailActions,
+  type RightPodSnapshot,
+  type RightPodActions,
+  type InteractivePromptHostSnapshot,
+  type InteractiveTopPillSnapshot,
+} from './components-react/mount-shell-components.js';
+export * from './components-react/interactive/index.js';
 export type { StatusSubjectIdentity } from './components-react/status/types.js';
 export { StatusPanelGlyph } from './icons/titlebarGlyphs.js';
 export {

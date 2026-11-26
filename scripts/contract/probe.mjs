@@ -33,7 +33,7 @@ import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
 import { fileURLToPath } from 'node:url';
-import { buildExtensionsProbeModule } from './probeExtensions.mjs';
+import { buildExtensionsProbeModule, buildInteractiveProbeModule } from './probeExtensions.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '../..');
@@ -728,6 +728,8 @@ function buildModules(ctx) {
         },
       ],
     },
+
+    buildInteractiveProbeModule({ profile, ctx }),
   ];
 }
 

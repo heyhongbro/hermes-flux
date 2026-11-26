@@ -67,6 +67,8 @@ export * from './viewport/scrollEndMachine.js';
 export * from './turn/slidingWatchdog.js';
 export * from './session/liveStreamSync.js';
 export * from './session/sessionStatusStore.js';
+export * from './rpc/serverRequestRouter.js';
+export * from './interactive/index.js';
 export type {
   AttachedImageResult,
   FileAttachResult,

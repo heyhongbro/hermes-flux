@@ -82,6 +82,7 @@ import { createSettingsController, resolveGatewayPassword } from '../settingsCon
 import { createBotManagementController, createBotWizardController } from '../botManagementController.js';
 import { loadProviderCatalog } from '../providerCatalog.js';
 import { createProjectDirectoryActions } from './projectDirectoryActions.js';
+import { createMcpOAuthActions } from './mcpOAuthService.js';
 import type { LearningService } from './learningService.js';
 
 export interface GatewayConnectionTestResult {
@@ -1448,6 +1449,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         void deps.connect();
       },
       onDisconnectGateway: () => { deps.disconnect(); },
+      ...createMcpOAuthActions({ getState: () => state, getGatewayClient: deps.getGatewayClient, getDesktopApi: deps.getDesktopApi, describeRpcError: deps.describeRpcError, t: deps.t, onNotify: (msg) => deps.showToast(msg), onExtensionsChanged: () => { void getSettingsController().loadExtensions(); } }),
     };
   }
 

@@ -174,10 +174,15 @@ export function ToolCapsule({ tool, now, actionEnabled = true, onOpenSubagent }:
     [presentation.kind, tool.args, view]
   );
 
-  const meta = duration || failedExit ? (
+  const meta = duration || failedExit || tool.riskInfo ? (
     <>
       {duration ? <span>{duration}</span> : null}
       {failedExit ? <span className="conv-row__exit">exit {view.exitCode}</span> : null}
+      {tool.riskInfo ? (
+        <span className="conv-row__risk" data-risk-level={tool.riskInfo.risk}>
+          {t('interactive.toolRisk.badge', { risk: tool.riskInfo.risk })}
+        </span>
+      ) : null}
     </>
   ) : undefined;
 
@@ -216,12 +221,12 @@ export function ToolCapsule({ tool, now, actionEnabled = true, onOpenSubagent }:
       meta={meta}
       trailing={trailing}
       status={tool.status}
-      expandable={hasToolOutput(view)}
+      expandable={hasToolOutput(view) || Boolean(tool.riskInfo)}
       title={target}
       iconOverride={isFileTool ? <FileTypeIcon filePath={target} /> : undefined}
       action={delegationAction}
     >
-      <ToolOutput view={view} />
+      <ToolOutput view={view} riskInfo={tool.riskInfo} />
     </StreamRow>
   );
 }

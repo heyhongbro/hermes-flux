@@ -15,6 +15,7 @@
 import * as React from 'react';
 import { t } from '../../i18n/index.js';
 import type { ToolOutputView } from '../../lib/toolOutput.js';
+import type { ToolOutputRiskInfo } from './types.js';
 
 /** 单次最多渲染的匹配行数：网关通常已截断，这里只防御异常大结果。 */
 const MAX_MATCH_ROWS = 120;
@@ -28,7 +29,7 @@ function diffLineClass(line: string): string {
   return 'conv-diff__line';
 }
 
-function DiffBody({ diff }: { diff: string }): React.ReactElement {
+export function DiffBody({ diff }: { diff: string }): React.ReactElement {
   return (
     <pre className="conv-tool-output__diff-body">
       {diff.split('\n').map((line, index) => (
@@ -112,10 +113,33 @@ export function ToolOutputBody({ view }: { view: ToolOutputView }): React.ReactE
 }
 
 /** 工具输出容器：错误与提示固定在正文外侧，正文形态由归一化视图决定。 */
-export function ToolOutput({ view }: { view: ToolOutputView }): React.ReactElement | null {
-  if (view.kind === 'empty' && !view.error && !view.note) return null;
+export function ToolOutput({
+  view,
+  riskInfo,
+}: {
+  view: ToolOutputView;
+  riskInfo?: ToolOutputRiskInfo;
+}): React.ReactElement | null {
+  if (view.kind === 'empty' && !view.error && !view.note && !riskInfo) return null;
   return (
     <div className="conv-tool-output">
+      {riskInfo ? (
+        <div className="conv-tool-risk-box" data-risk-level={riskInfo.risk}>
+          <div className="conv-tool-risk__head">
+            <span>{t('interactive.toolRisk.badge', { risk: riskInfo.risk })}</span>
+            {riskInfo.redacted ? (
+              <span className="conv-tool-risk__redacted">{t('interactive.toolRisk.redacted')}</span>
+            ) : null}
+          </div>
+          {riskInfo.findings.length > 0 ? (
+            <ul className="conv-tool-risk__findings">
+              {riskInfo.findings.map((finding, idx) => (
+                <li key={`${idx}:${finding}`}>{finding}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       {view.error ? <div className="conv-tool-output__error">{view.error}</div> : null}
       <ToolOutputBody view={view} />
       {view.note ? <div className="conv-tool-output__note">{view.note}</div> : null}

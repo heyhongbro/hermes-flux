@@ -3,9 +3,14 @@
  */
 
 import type {
+  BackgroundWaitingSummary,
+  ClarifyPrompt,
+  ConnectionPrompt,
   DeliverableKind,
   FileTreeLoadState,
   GatewayConnectionPhase,
+  InteractivePrompt,
+  InteractiveReplyPayload,
   LearningDetailState,
   LearningLoadState,
 } from '@hermes-flux/core';
@@ -145,6 +150,11 @@ export interface MobileWorkspaceSnapshot {
   messagesCount: number;
   selectedModel: string;
   currentProvider?: string;
+  approvalMode?: 'manual' | 'smart' | 'off';
+  interactivePrompts?: readonly InteractivePrompt[];
+  activeInteractivePromptKey?: string | null;
+  interactiveDockCollapsed?: boolean;
+  backgroundWaitingSummaries?: readonly BackgroundWaitingSummary[];
   availableModels: string[];
   modelDetails: MobileModelOption[];
   attachments: InputAttachmentItem[];
@@ -223,6 +233,14 @@ export interface MobileWorkspaceActions {
   onInterruptTurn: () => void;
   onCancelRollback?: () => void;
   onSelectModel: (model: string, provider?: string) => void;
+  onSelectApprovalMode?: (mode: 'manual' | 'smart' | 'off') => void;
+  onReplyInteractive?: (prompt: InteractivePrompt, payload: InteractiveReplyPayload) => Promise<boolean | void>;
+  onLockClarifyAnswer?: (prompt: ClarifyPrompt, questionId: string, answer: string) => Promise<void>;
+  onOpenInteractiveExternalUrl?: (url: string) => void;
+  onWakeConnection?: (prompt: ConnectionPrompt) => Promise<void>;
+  onToggleInteractiveDockCollapsed?: (collapsed: boolean) => void;
+  onSelectInteractivePrompt?: (canonicalKey: string) => void;
+  onSelectWaitingSummary?: (summary: BackgroundWaitingSummary) => void;
   onRefreshModels?: () => void;
   onOpenAttachmentPicker: () => void;
   onRemoveAttachment: (id: string) => void;

@@ -24,6 +24,7 @@ import {
   deriveAgentPresence,
   presenceTone,
 } from '@hermes-flux/core';
+import type { WaitingPromptReason } from '@hermes-flux/core';
 import {
   type AgentPresenceSnapshot,
   type LeftRailGroupRoom,
@@ -54,6 +55,7 @@ export interface AgentPresenceHost {
   activeGroupSpeaker?: string | null;
   resolveAgentAvatar: (name: string) => string | undefined;
   isGroupConversationActive: () => boolean;
+  getWaitingReasonForCurrentFocus?: () => WaitingPromptReason | null;
   onUpdateReact?: () => void;
 }
 
@@ -98,13 +100,15 @@ function formatPresenceIdentityKey(identity: AgentPresenceSnapshot['identity']):
 function agentPresenceFingerprint(snapshot: AgentPresenceSnapshot): string {
   const { presence, identity, locale } = snapshot;
   const detail =
-    presence.kind === 'tool'
-      ? `tool:${presence.tool}:${presence.target}:${presence.runningCount}`
-      : presence.kind === 'delegating'
-        ? `delegating:${presence.profile}:${presence.count}`
-        : presence.kind === 'failed'
-          ? `failed:${presence.message}`
-          : presence.kind;
+    presence.kind === 'waiting'
+      ? `waiting:${presence.reason}`
+      : presence.kind === 'tool'
+        ? `tool:${presence.tool}:${presence.target}:${presence.runningCount}`
+        : presence.kind === 'delegating'
+          ? `delegating:${presence.profile}:${presence.count}`
+          : presence.kind === 'failed'
+            ? `failed:${presence.message}`
+            : presence.kind;
 
   const identityKey = formatPresenceIdentityKey(identity);
 
@@ -275,6 +279,7 @@ function buildAgentPresenceSnapshot(
     subagentProfile: pendingDelegations[0]?.profile,
     lastError: terminal?.kind === 'failed' ? terminal.message : undefined,
     interrupted: terminal?.kind === 'interrupted',
+    waitingReason: host.getWaitingReasonForCurrentFocus?.() ?? null,
     turnStartedAt: domain.groupRoomId
       ? groupTurnStartedAt
       : turnStartedSessionId === host.activeSessionId

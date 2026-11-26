@@ -22,18 +22,31 @@ import { isLegacyRpcMethodError } from './connectionPhase.js';
 import { normalizeSessionsResult, extractAvailableModels, extractModelDetails } from '../models/types.js';
 import { buildModelCatalogView, type ModelCatalogEntry } from '../models/modelCatalog.js';
 import { createLogger } from '../log/logger.js';
-import { redactSensitive } from '../log/redact.js';
+import { redactInteractivePayload } from '../log/redact.js';
 import { CONTRACT_METHODS } from './contracts/contractTable.generated.js';
+import type {
+  ClientCapabilitiesParams,
+  ClientCapabilitiesResult,
+} from './contracts/gateway-contract.generated.js';
 import { EXTRA_METHODS } from './contracts/extraMethods.js';
 import { normalizeAgentProfile } from './profileNormalize.js';
+import {
+  buildJsonRpcErrorFrame,
+  buildJsonRpcResultFrame,
+  classifyJsonRpcFrame,
+  negotiateClientCapabilities,
+  type JsonRpcId,
+  type ServerRequestFrame,
+  type ServerRequestHandler,
+} from './serverRequestRouter.js';
+
+export type { JsonRpcId, ServerRequestFrame, ServerRequestHandler } from './serverRequestRouter.js';
 
 const log = createLogger('rpc');
 
 /** 单个 RPC 的参数脱敏口径：通用键名 + method 级额外字段。 */
 function redactParams(method: string, params: unknown): unknown {
-  return redactSensitive(params, {
-    extraKeys: method === 'mcp.servers.set_api_key' ? ['value'] : [],
-  });
+  return redactInteractivePayload(method, params);
 }
 
 /**
@@ -107,6 +120,8 @@ export interface RpcClientOptions {
   heartbeatTimeoutMs?: number;
   /** 是否监听移动端/浏览器前后台可见性与网络状态实现即刻唤醒自愈（默认开启） */
   enableLifecycleWake?: boolean;
+  /** 建连握手阶段声明的客户端反向请求能力，配置后在 HANDSHAKING 阶段自动协商 `client.capabilities` */
+  clientCapabilities?: ClientCapabilitiesParams;
 }
 
 export interface RestFallbackOptions {
@@ -192,6 +207,11 @@ export class HermesGatewayClient {
     }
   >();
   private notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
+  private serverRequestListeners = new Set<ServerRequestHandler>();
+  private socketClosedListeners = new Set<(closedGeneration: number) => void>();
+  private socketGeneration = 0;
+  private clientCapabilities?: ClientCapabilitiesParams;
+  private negotiatedCapabilities: ClientCapabilitiesResult | null = null;
   private fsm: WebSocketFsm;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
@@ -221,6 +241,7 @@ export class HermesGatewayClient {
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15000;
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 5000;
     this.enableLifecycleWake = options.enableLifecycleWake ?? true;
+    this.clientCapabilities = options.clientCapabilities;
 
     this.fsm = new WebSocketFsm({
       heartbeatIntervalMs: this.heartbeatIntervalMs,
@@ -248,6 +269,68 @@ export class HermesGatewayClient {
 
   public getState(): FsmState {
     return this.fsm.getState();
+  }
+
+  public getSocketGeneration(): number {
+    return this.socketGeneration;
+  }
+
+  public getNegotiatedCapabilities(): ClientCapabilitiesResult | null {
+    return this.negotiatedCapabilities ? { ...this.negotiatedCapabilities } : null;
+  }
+
+  public onServerRequest(handler: ServerRequestHandler): () => void {
+    this.serverRequestListeners.add(handler);
+    return () => {
+      this.serverRequestListeners.delete(handler);
+    };
+  }
+
+  public onSocketClosed(handler: (closedGeneration: number) => void): () => void {
+    this.socketClosedListeners.add(handler);
+    return () => {
+      this.socketClosedListeners.delete(handler);
+    };
+  }
+
+  public sendServerResponse(
+    id: JsonRpcId,
+    result: unknown,
+    expectedSocketGeneration?: number,
+    methodForRedaction?: string,
+  ): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (expectedSocketGeneration !== undefined && expectedSocketGeneration !== this.socketGeneration) {
+      log.warn('dropping stale server response across socket generation', { id, expectedSocketGeneration, currentSocketGeneration: this.socketGeneration });
+      return false;
+    }
+    log.debug('server request response sent', { id, method: methodForRedaction, result: redactInteractivePayload(methodForRedaction ?? '', result) });
+    try {
+      this.ws.send(buildJsonRpcResultFrame(id, result));
+      return true;
+    } catch (err) {
+      log.warn('sendServerResponse failed', { id, method: methodForRedaction, err });
+      return false;
+    }
+  }
+
+  public sendServerError(id: JsonRpcId, code: number, message: string, data?: unknown, expectedSocketGeneration?: number): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (expectedSocketGeneration !== undefined && expectedSocketGeneration !== this.socketGeneration) return false;
+    try {
+      this.ws.send(buildJsonRpcErrorFrame(id, code, message, data));
+      return true;
+    } catch (err) {
+      log.warn('sendServerError failed', { id, code, err });
+      return false;
+    }
+  }
+
+  private bumpSocketGeneration(): void {
+    const closingGen = this.socketGeneration;
+    this.socketGeneration += 1;
+    this.negotiatedCapabilities = null;
+    this.socketClosedListeners.forEach((fn) => fn(closingGen));
   }
 
   public getReconnectAttempt(): number {
@@ -361,6 +444,7 @@ export class HermesGatewayClient {
     this.stopHeartbeat();
     const oldSocket = this.ws;
     this.ws = null;
+    this.bumpSocketGeneration();
     this.clearPendingRequests(reason);
     if (oldSocket) {
       try {
@@ -602,8 +686,29 @@ export class HermesGatewayClient {
     }
   }
 
+  private completeHandshake(socket: WebSocket): void {
+    if (this.intentionalClose || this.ws !== socket) return;
+    log.info('handshake ok, connected');
+    // ping 确认连通即立即完成握手晋升 CONNECTED，能力协商随后异步并发执行，
+    // 既避免未实现 client.capabilities 的旧版网关/离线夹具卡死在 CONNECTING 3s，又不影响后续反向请求到达前完成能力声明。
+    this.fsm.transitionTo('CONNECTED');
+    this.startHeartbeat();
+    if (this.clientCapabilities) {
+      void negotiateClientCapabilities(
+        this,
+        this.clientCapabilities,
+        Math.min(this.heartbeatTimeoutMs, 3000),
+      ).then((caps) => {
+        if (this.intentionalClose || this.ws !== socket) return;
+        this.negotiatedCapabilities = caps;
+      });
+    }
+  }
+
   private openWebSocket(targetUrl: string): void {
     this.connectStartedAt = Date.now();
+    this.socketGeneration += 1;
+    this.negotiatedCapabilities = null;
     try {
       const socket = new WebSocket(targetUrl);
       this.ws = socket;
@@ -618,9 +723,7 @@ export class HermesGatewayClient {
         this.call('ping', {}, handshakeTimeoutMs)
           .then(() => {
             if (this.intentionalClose || this.ws !== socket) return;
-            log.info('handshake ok, connected');
-            this.fsm.transitionTo('CONNECTED');
-            this.startHeartbeat();
+            void this.completeHandshake(socket);
           })
           .catch((err: unknown) => {
             if (this.intentionalClose || this.ws !== socket) return;
@@ -628,12 +731,12 @@ export class HermesGatewayClient {
             // 传输超时/断连必须关掉半开套接字并调度重连，防止"假在线"。
             if (isLegacyRpcMethodError(err)) {
               log.warn('handshake ping returned RPC error, proceeding as connected', err);
-              this.fsm.transitionTo('CONNECTED');
-              this.startHeartbeat();
+              void this.completeHandshake(socket);
               return;
             }
             log.warn('handshake ping failed, closing socket and scheduling reconnect', err);
             this.ws = null;
+            this.bumpSocketGeneration();
             this.clearPendingRequests('Handshake ping failed');
             try {
               socket.close();
@@ -659,6 +762,7 @@ export class HermesGatewayClient {
         if (this.ws !== socket) return;
         this.stopHeartbeat();
         this.ws = null;
+        this.bumpSocketGeneration();
         this.clearPendingRequests('WebSocket closed');
         if (!this.intentionalClose) {
           this.scheduleReconnect();
@@ -697,6 +801,7 @@ export class HermesGatewayClient {
       this.ws.close();
       this.ws = null;
     }
+    this.bumpSocketGeneration();
     this.fsm.transitionTo('DISCONNECTED');
   }
 
@@ -820,6 +925,9 @@ export class HermesGatewayClient {
         log.warn('rpc call timed out', { id, method, timeoutMs: effectiveTimeout });
         reject(new Error(`RPC request '${method}' with id ${id} timed out after ${effectiveTimeout}ms`));
       }, effectiveTimeout);
+      if (typeof (timer as { unref?: () => void }).unref === 'function') {
+        (timer as { unref: () => void }).unref();
+      }
 
       this.pendingRequests.set(id, {
         resolve: resolve as (result: unknown) => void,
@@ -1330,23 +1438,44 @@ export class HermesGatewayClient {
   private handleMessage(raw: unknown): void {
     if (typeof raw !== 'string') return;
     try {
-      const data = JSON.parse(raw);
-      if (typeof data.id !== 'undefined' && this.pendingRequests.has(data.id)) {
-        // RPC Response
-        const pending = this.pendingRequests.get(data.id)!;
-        this.pendingRequests.delete(data.id);
-        clearTimeout(pending.timer);
-
-        if (data.error) {
-          pending.reject(data.error);
-        } else {
-          pending.resolve(data.result);
+      const frame = classifyJsonRpcFrame(JSON.parse(raw));
+      if (frame.kind === 'server-request') {
+        log.debug('server request received', {
+          id: frame.id,
+          method: frame.method,
+          params: redactInteractivePayload(frame.method, frame.params),
+        });
+        let claimed = false;
+        for (const listener of this.serverRequestListeners) {
+          try {
+            if (listener({ ...frame, socketGeneration: this.socketGeneration }) === true) {
+              claimed = true;
+            }
+          } catch (listenerErr) {
+            log.warn('server request listener threw', { id: frame.id, method: frame.method, listenerErr });
+          }
         }
-      } else if (data.method) {
-        // RPC Notification or Server Event
-        const handlers = this.notificationHandlers.get(data.method);
+        if (!claimed) {
+          this.sendServerError(frame.id, -32601, `Unhandled server request: ${frame.method}`, undefined, this.socketGeneration);
+        }
+        return;
+      }
+      if (frame.kind === 'response') {
+        const pending = this.pendingRequests.get(frame.id);
+        if (!pending) return;
+        this.pendingRequests.delete(frame.id);
+        clearTimeout(pending.timer);
+        if (frame.error) {
+          pending.reject(frame.error);
+        } else {
+          pending.resolve(frame.result);
+        }
+        return;
+      }
+      if (frame.kind === 'notification') {
+        const handlers = this.notificationHandlers.get(frame.method);
         if (handlers) {
-          handlers.forEach((fn) => fn(data.params));
+          handlers.forEach((fn) => fn(frame.params));
         }
       }
     } catch (e) {

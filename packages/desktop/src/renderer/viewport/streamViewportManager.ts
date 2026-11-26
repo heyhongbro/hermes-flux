@@ -208,6 +208,8 @@ export class StreamViewportManager {
 
   private dockInsetObserver: ResizeObserver | null = null;
   private dockInsetTarget: HTMLElement | null = null;
+  private promptInsetTarget: HTMLElement | null = null;
+  private lastInteractivePromptHeight = 0;
   private insetSyncScheduled = false;
 
   constructor(private readonly host: StreamViewportHost) {}
@@ -430,11 +432,28 @@ export class StreamViewportManager {
     const stream = this.host.getStreamElement();
     if (!pod || !dock || !stream) return;
 
-    const presenceReserve = this.host.getPresenceLayout() === 'dock' ? 40 : 32;
-    const baseInset = Math.round(pod.getBoundingClientRect().bottom - dock.getBoundingClientRect().top) + presenceReserve;
-    const distance = stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+    const promptHost =
+      typeof pod.querySelector === 'function'
+        ? pod.querySelector<HTMLElement>('#react-interactive-prompt-host')
+        : null;
+    const podRect = pod.getBoundingClientRect();
+    const dockRect = dock.getBoundingClientRect();
+    const promptRect = promptHost ? promptHost.getBoundingClientRect() : null;
+    const dockHeight = Math.round(dockRect.height);
+    const promptHeight = promptRect ? Math.round(promptRect.height) : 0;
+    pod.style?.setProperty?.('--flux-input-dock-h', `${dockHeight}px`);
+    pod.style?.setProperty?.('--flux-interactive-prompt-h', `${promptHeight}px`);
+    pod.style?.setProperty?.('--flux-dock-occupied-h', `${dockHeight + promptHeight}px`);
 
-    if (distance <= STICK_TO_BOTTOM_THRESHOLD_PX) {
+    const presenceReserve = this.host.getPresenceLayout() === 'dock' ? 40 : 32;
+    const topOccupied =
+      promptRect && promptHeight > 0 ? Math.min(dockRect.top, promptRect.top) : dockRect.top;
+    const baseInset = Math.round(podRect.bottom - topOccupied) + presenceReserve;
+    const distance = stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+    const isNearBottom = distance <= STICK_TO_BOTTOM_THRESHOLD_PX;
+
+    let targetPx = baseInset;
+    if (isNearBottom) {
       const virtualWindow = this.host.getVirtualWindowElement
         ? this.host.getVirtualWindowElement()
         : document.querySelector<HTMLElement>('.conv-virtual-window');
@@ -445,17 +464,24 @@ export class StreamViewportManager {
         const visibleBottom = stream.getBoundingClientRect().bottom - baseInset;
         const need = Math.ceil(contentBottom - visibleBottom);
         const currentPx = Math.round(parseFloat(stream.style.getPropertyValue('--conv-gutter-bottom')) || baseInset);
-        const targetPx = Math.abs(need) > 4 ? Math.max(baseInset, currentPx + need) : currentPx;
-        const next = `${targetPx}px`;
-        const prev = stream.style.getPropertyValue('--conv-gutter-bottom');
-        if (next !== prev) {
-          stream.style.setProperty('--conv-gutter-bottom', next);
-          this.host.onViewportSettled?.();
-          if (!this.isSessionEnterPending()) {
-            this.setInitialBottomSettling(true);
-            this.settleInitialBottom();
-          }
-        }
+        targetPx = Math.abs(need) > 4 ? Math.max(baseInset, currentPx + need) : Math.max(baseInset, currentPx);
+      }
+    }
+
+    const promptHeightChanged = promptHeight !== this.lastInteractivePromptHeight;
+    this.lastInteractivePromptHeight = promptHeight;
+    const shouldUpdateGutter = isNearBottom || promptHeight > 0 || promptHeightChanged;
+
+    // 停靠卡展开/收起时即使正在回滚历史，也必须同步刷新底部留白避免气泡被卡片遮挡；
+    // 无停靠卡且读者主动离开底部浏览历史时不触碰 --conv-gutter-bottom，防止顶动阅读视口。
+    const next = `${targetPx}px`;
+    const prev = stream.style.getPropertyValue('--conv-gutter-bottom');
+    if (shouldUpdateGutter && next !== prev) {
+      stream.style.setProperty('--conv-gutter-bottom', next);
+      this.host.onViewportSettled?.();
+      if (isNearBottom && !this.isSessionEnterPending()) {
+        this.setInitialBottomSettling(true);
+        this.settleInitialBottom();
       }
     }
 
@@ -463,10 +489,15 @@ export class StreamViewportManager {
     if (!this.dockInsetObserver) {
       this.dockInsetObserver = new ResizeObserver(() => this.syncStreamBottomInset());
     }
-    if (this.dockInsetTarget !== dock) {
+    const nextPromptTarget = promptHost ?? null;
+    if (this.dockInsetTarget !== dock || this.promptInsetTarget !== nextPromptTarget) {
       this.dockInsetObserver.disconnect();
       this.dockInsetObserver.observe(dock);
+      if (nextPromptTarget) {
+        this.dockInsetObserver.observe(nextPromptTarget);
+      }
       this.dockInsetTarget = dock;
+      this.promptInsetTarget = nextPromptTarget;
     }
   }
 

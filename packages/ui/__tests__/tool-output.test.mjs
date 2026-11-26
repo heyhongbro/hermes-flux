@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { normalizeToolOutput, hasToolOutput } from '../dist/lib/toolOutput.js';
+import { ToolOutput } from '../dist/components-react/conversation/ToolOutput.js';
 import { renderOne } from './helpers/renderMessages.mjs';
 
 const terminal = (output, extra = {}) => JSON.stringify({ output, exit_code: 0, error: null, ...extra });
@@ -177,5 +180,19 @@ test('Tool output rendering - 折叠区严禁泄露协议 JSON', async (t) => {
     const html = renderOne(assistantWithTool('search_files', '{"total_count":0}'));
     assert.ok(html.includes('conv-tool-output__empty'), '零命中必须有空态容器');
     assert.ok(!html.includes('total_count'), '严禁泄露 total_count 键名');
+  });
+
+  await t.test('5. ToolOutput 空视图与仅携带 riskInfo 的全分支渲染', () => {
+    const emptyMarkup = renderToStaticMarkup(React.createElement(ToolOutput, { view: { kind: 'empty' } }));
+    assert.equal(emptyMarkup, '');
+    const riskOnly = renderToStaticMarkup(
+      React.createElement(ToolOutput, {
+        view: { kind: 'empty' },
+        riskInfo: { risk: 'high', redacted: true, findings: ['token leaked'] },
+      }),
+    );
+    assert.match(riskOnly, /conv-tool-risk-box/);
+    assert.match(riskOnly, /conv-tool-risk__redacted/);
+    assert.match(riskOnly, /token leaked/);
   });
 });

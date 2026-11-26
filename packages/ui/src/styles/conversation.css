@@ -4097,6 +4097,16 @@ details[open] > summary > .tool-row__expand {
 }
 .conv-presence[data-presence="interrupted"] .conv-presence__halo { display: none; }
 
+/* waiting：等待用户操作，静止琥珀指示环，零无限旋转 */
+.conv-presence[data-presence="waiting"] .conv-presence__ring {
+  animation: none;
+  background: conic-gradient(from 0deg, var(--warning) 0deg, transparent 360deg);
+}
+.conv-presence[data-presence="waiting"] .conv-presence__halo {
+  animation: none;
+  opacity: 0.45;
+}
+
 /* idle：头像常驻但弱化，光晕压到 40% */
 .conv-presence[data-presence="idle"] .conv-presence__face { opacity: 0.78; }
 .conv-presence[data-presence="idle"] .conv-presence__halo { opacity: 0.4; }
@@ -4388,7 +4398,7 @@ details[open] > summary > .tool-row__expand {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + var(--flux-interactive-prompt-h, 0px) + 8px);
   z-index: 1;
   display: flex;
   justify-content: center;
@@ -4800,6 +4810,29 @@ html[data-app-hidden="true"] .conv-presence *::after {
 .flux-activity-dot--settle {
   background: var(--flux-activity-ink);
   animation: fluxActivitySettle var(--duration-fast, 140ms) var(--ease-spring) 1 forwards;
+}
+
+.flux-activity-dot--waiting {
+  background: var(--warning);
+}
+
+.flux-cloud-indicator--waiting {
+  gap: 4px;
+}
+
+.flux-waiting-glyph {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill, 9999px);
+  background: var(--warning);
+  flex-shrink: 0;
+}
+
+.flux-cloud-label--waiting {
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--warning);
 }
 
 @keyframes fluxActivitySettle {
@@ -13146,6 +13179,550 @@ html[data-platform="macos"] .flux-lightbox__topbar {
 .conv-deliverable-video__loading-sub {
   font-size: var(--fs-caption);
   color: var(--muted-foreground);
+}
+
+/* ==========================================================================
+   人机协同贴舱停靠卡片与后台提醒胶囊 (Interactive Prompt Dock & Top Pill)
+   ========================================================================== */
+
+#react-interactive-top-pill-host {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 12px;
+  z-index: 34;
+  display: flex;
+  justify-content: center;
+  padding: 0 24px;
+  pointer-events: none;
+}
+
+#react-interactive-top-pill-host[data-top-offset="below-connection"] {
+  top: 56px;
+}
+
+#react-interactive-top-pill-host[data-top-offset="below-presence"] {
+  top: 128px;
+}
+
+#react-interactive-top-pill-host > * {
+  pointer-events: auto;
+}
+
+#react-interactive-prompt-host {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(20px + var(--flux-input-dock-h, 80px) + 8px);
+  z-index: 38;
+  display: flex;
+  justify-content: center;
+  padding: 0 24px;
+  pointer-events: none;
+}
+
+#react-interactive-prompt-host:empty {
+  display: none;
+}
+
+.flux-interact__host {
+  width: 100%;
+  max-width: 740px;
+  pointer-events: auto;
+}
+
+.flux-interact__top-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 480px;
+  padding: 0 12px;
+  border-color: color-mix(in oklab, var(--warning) 35%, var(--border-strong));
+  background: var(--popover);
+}
+
+.flux-interact__top-pill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-aux);
+  color: var(--foreground);
+}
+
+.flux-interact__top-pill-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.flux-interact__card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border-radius: var(--radius-panel);
+  border: 1px solid var(--border);
+  background: var(--popover);
+  box-shadow: var(--shadow-card);
+  overflow: visible;
+}
+
+.flux-interact__status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--warning);
+  flex-shrink: 0;
+}
+
+.flux-interact__collapsed-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px 4px 12px;
+}
+
+.flux-interact__collapsed-trigger {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--foreground);
+}
+
+.flux-interact__collapsed-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-aux);
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.flux-interact__hidden-draft {
+  display: none;
+}
+
+.flux-interact__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 8px 8px 4px 12px;
+}
+
+.flux-interact__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-size: var(--fs-aux);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--foreground);
+}
+
+.flux-interact__subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-caption);
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}
+
+.flux-interact__subtitle::before {
+  content: '·';
+  margin-right: 4px;
+}
+
+.flux-interact__stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.flux-interact__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 12px;
+}
+
+.flux-interact__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.flux-interact__tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.flux-interact__tab[data-active="true"] {
+  border-color: var(--primary-border);
+  background: var(--primary-subtle);
+  color: var(--foreground);
+}
+
+.flux-interact__question-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flux-interact__question-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.flux-interact__question-text {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--foreground);
+}
+
+.flux-interact__locked-answer {
+  padding: 4px 8px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--card);
+  font-size: var(--fs-aux);
+  color: var(--secondary-foreground);
+}
+
+.flux-interact__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.flux-interact__choice-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-aux);
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.flux-interact__choice-chip:hover {
+  background: var(--card-hover);
+}
+
+.flux-interact__choice-chip[data-selected="true"] {
+  border-color: var(--primary);
+  background: var(--primary-subtle);
+}
+
+.flux-interact__desc {
+  margin: 0;
+  font-size: var(--fs-aux);
+  line-height: 1.45;
+  color: var(--secondary-foreground);
+}
+
+.flux-interact__hint {
+  margin: 0;
+  font-size: var(--fs-caption);
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}
+
+.flux-interact__meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-aux);
+  color: var(--secondary-foreground);
+}
+
+.flux-interact__code-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.flux-interact__code-pre {
+  margin: 0;
+  padding: 4px 8px;
+  max-height: 72px;
+  overflow-y: auto;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--code);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-aux);
+  line-height: 1.45;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.flux-interact__diff-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.flux-interact__diff-scroll {
+  max-height: 160px;
+  overflow: auto;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--code);
+}
+
+.flux-interact__notice-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--radius-card);
+  border: 1px solid color-mix(in oklab, var(--warning) 30%, var(--border-subtle));
+  background: color-mix(in oklab, var(--warning) 10%, var(--card));
+  font-size: var(--fs-caption);
+  color: var(--foreground);
+}
+
+.flux-interact__cred-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flux-interact__field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.flux-interact__field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.flux-interact__secret-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flux-interact__security-note {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--muted-foreground);
+}
+
+.flux-interact__conn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.flux-interact__conn-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--card);
+}
+
+.flux-interact__conn-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.flux-interact__conn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.flux-interact__error {
+  margin: 4px 12px 0;
+  padding: 4px 8px;
+  border-radius: var(--radius-card);
+  border: 1px solid color-mix(in oklab, var(--destructive) 35%, var(--border-subtle));
+  background: color-mix(in oklab, var(--destructive) 12%, var(--popover));
+  font-size: var(--fs-aux);
+  color: var(--destructive);
+}
+
+.flux-interact__inline-warn {
+  margin-right: auto;
+  font-size: var(--fs-aux);
+  font-weight: 500;
+  color: var(--destructive);
+}
+
+.flux-interact__footer {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 4px 12px 8px;
+}
+
+.flux-interact__footer button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.conv-tool-risk-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-inner);
+  border: 1px solid color-mix(in oklab, var(--warning) 35%, var(--border-subtle));
+  background: color-mix(in oklab, var(--warning) 10%, var(--card));
+  font-size: var(--fs-caption);
+  color: var(--foreground);
+}
+
+.conv-tool-risk-box[data-risk-level="high"],
+.conv-tool-risk-box[data-risk-level="critical"] {
+  border-color: color-mix(in oklab, var(--destructive) 40%, var(--border-subtle));
+  background: color-mix(in oklab, var(--destructive) 10%, var(--card));
+}
+
+.conv-tool-risk__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.conv-tool-risk-box[data-risk-level="high"] .conv-tool-risk__head,
+.conv-tool-risk-box[data-risk-level="critical"] .conv-tool-risk__head {
+  color: var(--destructive);
+}
+
+.conv-tool-risk__redacted {
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.conv-tool-risk__findings {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: var(--fs-aux);
+  color: var(--secondary-foreground);
+}
+
+.conv-row__risk {
+  margin-left: 8px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill, 9999px);
+  border: 1px solid color-mix(in oklab, var(--warning) 38%, var(--border-subtle));
+  background: color-mix(in oklab, var(--warning) 12%, var(--card));
+  font-size: var(--fs-micro);
+  color: var(--warning);
+}
+
+.conv-row__risk[data-risk-level="high"],
+.conv-row__risk[data-risk-level="critical"] {
+  border-color: color-mix(in oklab, var(--destructive) 40%, var(--border-subtle));
+  background: color-mix(in oklab, var(--destructive) 12%, var(--card));
+  color: var(--destructive);
+}
+
+@media (max-width: 768px), (hover: none) and (pointer: coarse) {
+  .flux-interact__top-pill,
+  .flux-interact__tab,
+  .flux-interact__choice-chip,
+  .flux-interact__collapsed-trigger,
+  .flux-interact__card button {
+    position: relative;
+  }
+
+  .flux-interact__top-pill,
+  .flux-interact__tab,
+  .flux-interact__choice-chip {
+    min-height: 32px;
+  }
+
+  .flux-interact__collapsed-trigger {
+    min-height: 36px;
+    align-self: stretch;
+  }
+
+  .flux-interact__card .flux-interact__icon-btn {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .flux-interact__top-pill::after,
+  .flux-interact__tab::after,
+  .flux-interact__choice-chip::after,
+  .flux-interact__collapsed-trigger::after,
+  .flux-interact__card button::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+  }
 }
 
 
