@@ -44,6 +44,7 @@
 | **测试体系与门禁策略** | [`docs/testing-strategy.md`](docs/testing-strategy.md) | **【强制】凡涉及测试、覆盖率、门禁改动必读**。六层门禁架构、新增代码 100% 覆盖机制、测试执行性能红线（`testAware` 门禁）、Stryker 领域变异与认知边界 |
 | **不变量映射表** | [`docs/invariants.json`](docs/invariants.json) | **新增 core 逻辑必须登记**。不变量编号 → 源码锚点（路径+符号）→ 守护测试 → 用户可见失效模式。**单一真值源是 JSON，`docs/invariants.md` 由 `npm run invariants:render` 生成，禁止手改**，由 `npm run gates:invariants` 校验 |
 | **macOS/iOS联调流** | [`docs/testing/mac-and-ios-automation-workflow.md`](docs/testing/mac-and-ios-automation-workflow.md) | **全端自动化联调工作流总纲**。无头 Mac Runner 配置（合盖不休眠）、SSH 免密、macOS Electron CDP 真机双态物理截屏、iOS Capacitor 8 SPM 原生工程集成与凭据绝对物理隔离 |
+| **全端发行签名指南** | [`docs/testing/cross-platform-release-signing.md`](docs/testing/cross-platform-release-signing.md) | **Android / iOS / macOS / Windows 四端正式签名与 Apple 公证配置总纲**。含 `npm run signing:check` 体检、严格发行门禁、各平台开发者账号与指纹备案要求 |
 | **研发路线图** | [`docs/roadmap.md`](docs/roadmap.md) | 全局研发路线图、已落地特性看板、已知缺陷跟踪 |
 
 ### 3. 本地专属自动化验证技能 (`.agents/skills/`)

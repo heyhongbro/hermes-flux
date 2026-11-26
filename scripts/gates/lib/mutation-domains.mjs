@@ -256,10 +256,34 @@ export const MUTATION_DOMAINS = {
     minScore: 80,
   },
   androidSigning: {
-    // 实测 (androidSigning): 116 mutant / 103 killed / 13 survived / 0 noCov = 88.79%
+    // 实测 (androidSigning): 326 mutant / 284 killed / 1 timeout / 41 survived / 0 noCov = 87.42%
     title: 'Android Release 签名配置解析与密钥隔离守卫 (Android Release Signing)',
     mutate: ['packages/mobile/scripts/android-signing-config.mjs'],
     testFiles: ['packages/mobile/__tests__/unit/android-signing-config.test.mjs'],
+    buildCommand: 'node -e ""',
+    minScore: 80,
+  },
+  iosSigning: {
+    // 实测 (iosSigning): 620 mutant / 569 killed / 51 survived / 0 noCov = 91.77%
+    title: 'iOS Release 签名配置解析与 ExportOptions 生成 (iOS Release Signing)',
+    mutate: ['packages/mobile/scripts/ios-signing-config.mjs'],
+    testFiles: ['packages/mobile/__tests__/unit/ios-signing-config.test.mjs'],
+    buildCommand: 'node -e ""',
+    minScore: 80,
+  },
+  desktopSigning: {
+    // 实测 (desktopSigning): 850 mutant / 780 killed / 69 survived / 1 noCov = 91.76%
+    title: 'Desktop Win/macOS 签名公证配置与安全参数构造 (Desktop Release Signing)',
+    mutate: ['packages/desktop/scripts/desktop-signing-config.mjs'],
+    testFiles: ['packages/desktop/__tests__/unit/desktop-signing-config.test.mjs'],
+    buildCommand: 'node -e ""',
+    minScore: 80,
+  },
+  releaseSigningCheck: {
+    // 实测 (releaseSigningCheck): 203 mutant / 179 killed / 7 survived / 17 noCov = 88.18%
+    title: '全平台发行签名诊断聚合器 (Cross-Platform Signing Doctor)',
+    mutate: ['scripts/signing/check-signing.mjs'],
+    testFiles: ['scripts/__tests__/release-signing-check.test.mjs'],
     buildCommand: 'node -e ""',
     minScore: 80,
   },

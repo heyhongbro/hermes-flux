@@ -9,7 +9,10 @@
     "cap:sync": "npm run sync:assets && cap sync android",
     "cap:sync:ios": "npm run sync:assets && cap sync ios",
     "cap:sync:all": "npm run sync:assets && cap sync",
-    "build:android": "node scripts/build-android.mjs"
+    "build:android": "node scripts/build-android.mjs",
+    "build:android:release": "node scripts/build-android.mjs --require-signing",
+    "build:ios": "node scripts/build-ios.mjs",
+    "build:ios:release": "node scripts/build-ios.mjs --require-signing"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.0",
