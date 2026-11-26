@@ -87,6 +87,7 @@ export function ClarifyCard({
   const questions = prompt.questions;
   const safeQIdx = Math.max(0, Math.min(questions.length - 1, activeQIdx));
   const currentQ = questions[safeQIdx];
+  const qKey = currentQ ? currentQ.qid || String(safeQIdx) : '0';
   const btnSize = surface === 'mobile-dock' ? 'sm' : 'xs';
   const mobileBtnCls = surface === 'mobile-dock' ? 'm-interact__btn px-2 text-aux' : '';
 
@@ -94,7 +95,7 @@ export function ClarifyCard({
     ? resolveClarifyQuestionAnswer(currentQ, prompt.lockedAnswers, draft, safeQIdx)
     : '';
   const isCurrentLocked = currentQ
-    ? typeof prompt.lockedAnswers[currentQ.qid] === 'string' && prompt.lockedAnswers[currentQ.qid] !== null
+    ? typeof prompt.lockedAnswers[qKey] === 'string' && prompt.lockedAnswers[qKey] !== null
     : false;
 
   const toggleChoice = (qKey: string, choice: string, multiSelect: boolean): void => {
@@ -175,7 +176,6 @@ export function ClarifyCard({
   };
 
   const mergedError = localError || validationError;
-  const qKey = currentQ ? currentQ.qid || String(safeQIdx) : '0';
 
   const handleTextareaKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -236,10 +236,11 @@ export function ClarifyCard({
       {questions.length > 1 ? (
         <div className="flux-interact__tabs" role="tablist">
           {questions.map((q, idx) => {
-            const locked = typeof prompt.lockedAnswers[q.qid] === 'string' && prompt.lockedAnswers[q.qid] !== null;
+            const tabKey = q.qid || String(idx);
+            const locked = typeof prompt.lockedAnswers[tabKey] === 'string' && prompt.lockedAnswers[tabKey] !== null;
             return (
               <button
-                key={q.qid || idx}
+                key={tabKey}
                 type="button"
                 role="tab"
                 aria-selected={idx === safeQIdx}
@@ -329,7 +330,7 @@ export function ClarifyCard({
                     size={btnSize}
                     className={mobileBtnCls}
                     disabled={submitting}
-                    onClick={() => void handleLockAndNext(currentQ.qid, currentAnswerText)}
+                    onClick={() => void handleLockAndNext(qKey, currentAnswerText)}
                   >
                     {t('interactive.nextPrompt')}
                   </Button>

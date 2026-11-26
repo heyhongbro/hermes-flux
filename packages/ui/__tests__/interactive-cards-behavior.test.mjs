@@ -427,6 +427,29 @@ test('ClarifyCard 选项、Other、锁定、快捷键与草稿重置全交互驱
   ta().props.onKeyDown({ key: 'Enter', shiftKey: false, nativeEvent: { isComposing: false }, preventDefault() {} });
   await flushMicrotasks();
 
+  // Multi-question with empty qid -> tabKey / qKey fallback '0' & Next button consistency
+  prompt = basePrompt({
+    kind: 'clarify',
+    waitingReason: 'clarify',
+    canonicalKey: 'cl-blank-qid',
+    questions: [
+      { qid: '', question: 'Blank 0?', choices: null },
+      { qid: 'q-second', question: 'Second?', choices: null },
+    ],
+    lockedAnswers: {},
+  });
+  m.rerender();
+  m.rerender();
+  ta().props.onChange({ currentTarget: { value: 'fallback ans' } });
+  m.rerender();
+  const nextBlankBtn = findAll(
+    m.tree,
+    (n) => typeof n?.props?.onClick === 'function' && JSON.stringify(n.props.children).includes(t('interactive.nextPrompt')),
+  )[0];
+  await nextBlankBtn.props.onClick();
+  await flushMicrotasks();
+  assert.deepEqual(locked.at(-1), ['0', 'fallback ans']);
+
   // Empty questions fallback (!currentQ) + submitting=true guard
   prompt = { ...prompt, canonicalKey: 'cl-3', questions: [] };
   submitting = true;

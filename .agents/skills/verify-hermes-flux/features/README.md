@@ -39,6 +39,7 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 - [Activity indicator preference](./activity-indicator-preference.md) covers the six activity-indicator variants in Settings › Appearance: live previews, apply-and-persist, reduced-motion and hidden-page behavior.
 - [BOT config center](./bot-config-center.md) covers Settings › BOT: the 204px/64px roster rail, basic identity, provider-grouped model binding, SOUL.md studio editor, flat capability tabs, MCP/skills admin, cognitive star map tab, and the draft/save guard.
 - [Cognitive star map](./cognitive-star-map.md) covers per-bot isolated star maps, unpaginated zoom/pan canvas, invocation-sorted skill list, status-pod shortcut, and xl skill/memory detail modal across Desktop & Mobile.
+- [Live interactive E2E & docked prompts](./live-interactive-e2e.md) covers non-modal docked Clarify/Approval/Credential cards, background waiting top pill, rail/presence waiting indicators, mobile approval mode sheet, and inline MCP OAuth panel.
 
 ## Feature File vs. Registered Runner ID Mapping (Naming Debt)
 
@@ -59,4 +60,5 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 | `activity-indicator-preference.md` | `activity-indicator-preference` | — | 名称一致（驱动真实 renderer，非 E2E harness） |
 | `bot-config-center.md` | `bot-config-center` | — | 名称一致（驱动真实 renderer，非 E2E harness） |
 | `cognitive-star-map.md` | `bot-config-center` | — | 复用 `bot-config-center` Step 5b 覆盖桌面端星图页签与 `xl` 详情弹窗离线 CDP 校验 |
+| `live-interactive-e2e.md` | — (Live Gateway CDP + Unit/Formal) | — | 依赖真实网关或无头单测/形式化套件验证；实证截图与 `evidence.json` 归档于 `artifacts/verification/live-interactive-e2e/` |
 

@@ -702,31 +702,58 @@ test('bindSessionHandle 无碰撞直迁、碰撞 submitting/rpcId 合并与 appl
 test('InteractiveRequestCoordinator: open_requests/approval_pending 升级 live_ws 抬升 arrivalSeq 且 clearForSession 返回被删键列表', () => {
   const coord = new InteractiveRequestCoordinator();
 
-  // Case 1: pre-fence open_requests (rpcId: null) upgraded by post-fence live_ws (non-null rpcId) survives slow reconcileFromResume
+  // Case 1: pre-fence open_requests (rpcId: null) upgraded by post-fence live_ws (non-null rpcId) hits commitUpsert merge on the exact same canonicalKey and survives slow reconcileFromResume
   const preFence = coord.upsertServerRequest({
     rpcId: null,
     socketGeneration: -1,
-    method: 'clarify',
-    params: { session_id: 'lv-upg', request_id: 'req-upg', question: 'Keep?' },
+    method: 'approval',
+    params: { session_id: 'lv-upg', request_id: 'req-upg', command: 'echo ok' },
     storedSessionId: 'st-upg',
     origin: 'open_requests',
   });
   assert.ok(preFence);
+  assert.equal(preFence.canonicalKey, 'session:st-upg::approval::req-upg');
   assert.equal(preFence.rpcId, null);
+
+  const preClarify = coord.upsertServerRequest({
+    rpcId: 'req-cl-upg',
+    socketGeneration: -1,
+    method: 'clarify',
+    params: { session_id: 'lv-upg', question: 'Keep?' },
+    storedSessionId: 'st-upg',
+    origin: 'open_requests',
+  });
+  assert.ok(preClarify);
+  assert.equal(preClarify.canonicalKey, 'session:st-upg::clarify::req-cl-upg');
+  assert.equal(preClarify.rpcId, null);
 
   const fence = coord.captureSyncFence();
 
   const upgraded = coord.upsertServerRequest({
     rpcId: 'live-upg-rpc',
     socketGeneration: 2,
-    method: 'clarify',
-    params: { session_id: 'lv-upg', request_id: 'req-upg', question: 'Keep?' },
+    method: 'approval',
+    params: { session_id: 'lv-upg', request_id: 'req-upg', command: 'echo ok' },
     storedSessionId: 'st-upg',
     origin: 'live_ws',
   });
   assert.ok(upgraded);
+  assert.equal(upgraded.canonicalKey, preFence.canonicalKey);
   assert.equal(upgraded.rpcId, 'live-upg-rpc');
   assert.equal(upgraded.arrivalSeq > fence, true);
+
+  const upgradedClarify = coord.upsertServerRequest({
+    rpcId: 'req-cl-upg',
+    socketGeneration: 2,
+    method: 'clarify',
+    params: { session_id: 'lv-upg', question: 'Keep?' },
+    storedSessionId: 'st-upg',
+    origin: 'live_ws',
+  });
+  assert.ok(upgradedClarify);
+  assert.equal(upgradedClarify.canonicalKey, preClarify.canonicalKey);
+  assert.equal(upgradedClarify.rpcId, 'req-cl-upg');
+  assert.equal(upgradedClarify.arrivalSeq > fence, true);
 
   coord.reconcileFromResume({
     storedSessionId: 'st-upg',
@@ -734,10 +761,15 @@ test('InteractiveRequestCoordinator: open_requests/approval_pending 升级 live_
     resume: { running: true, open_requests: [] },
     fence,
   });
-  const survived = coord.getPrompt(upgraded.canonicalKey);
+  const survived = coord.getPrompt(preFence.canonicalKey);
   assert.ok(survived);
   assert.equal(survived.rpcId, 'live-upg-rpc');
   assert.equal(survived.arrivalSeq > fence, true);
+
+  const survivedClarify = coord.getPrompt(preClarify.canonicalKey);
+  assert.ok(survivedClarify);
+  assert.equal(survivedClarify.rpcId, 'req-cl-upg');
+  assert.equal(survivedClarify.arrivalSeq > fence, true);
 
   // Case 2: non-live re-upsert (rpcId: null -> rpcId: null) keeps original arrivalSeq
   coord.reconcileApprovalPending(
@@ -761,6 +793,9 @@ test('InteractiveRequestCoordinator: open_requests/approval_pending 升级 live_
 
   // Case 3: clearForSession returns exact removed canonical keys (and [] when empty)
   const removed = coord.clearForSession('st-upg', 'lv-upg');
-  assert.deepEqual(removed.sort(), [pendKey, upgraded.canonicalKey].sort());
+  assert.deepEqual(
+    removed.sort(),
+    [pendKey, upgraded.canonicalKey, upgradedClarify.canonicalKey].sort(),
+  );
   assert.deepEqual(coord.clearForSession('st-upg', 'lv-upg'), []);
 });
