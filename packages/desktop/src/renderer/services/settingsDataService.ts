@@ -663,7 +663,10 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     describeError: deps.describeRpcError,
   });
 
+  const loadedGatewayBySection = new Map<string, string>();
+
   function applySettingsGatewaySwitch(nextGatewayId: string): void {
+    loadedGatewayBySection.clear();
     const state = deps.getState();
     const prevKey = resolveGatewayBucketKey(state.settingsGatewayId);
     if (Object.keys(state.botDrafts).length > 0) {
@@ -896,23 +899,33 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
   function ensureSettingsSectionData(section: SettingsSectionId, force = false): void {
     const state = deps.getState();
     const gwId = resolveSelectedGatewayId() || undefined;
+    const gwKey = gwId ?? '';
+    const gatewayChanged = isMultiGatewayConfigMode() && loadedGatewayBySection.get(section) !== gwKey;
+    const effectiveForce = force || gatewayChanged;
+    if (isMultiGatewayConfigMode() && isSettingsGatewayConnected()) {
+      loadedGatewayBySection.set(section, gwKey);
+    }
     if (section === 'projects') {
-      if (force || state.settingsProjects.status === 'idle') void deps.fetchProjects?.(gwId);
+      if (gatewayChanged) state.settingsProjects = { status: 'idle' };
+      if (effectiveForce || state.settingsProjects.status === 'idle') void deps.fetchProjects?.(gwId);
       return;
     }
     if (section === 'agents') {
-      getBotManagementController().ensureLoaded(force);
-      if (force || state.settingsProviderViews.status === 'idle') {
-        void reloadProviderCatalog();
+      if (gatewayChanged) {
+        state.botManagementStatus = { status: 'uninitialized' };
+        state.botManagementActiveBotId = '';
+        state.botManagementDetail = undefined;
       }
+      getBotManagementController().ensureLoaded(effectiveForce);
+      if (effectiveForce || state.settingsProviderViews.status === 'idle') void reloadProviderCatalog();
       return;
     }
-    getSettingsController().ensureSection(section, force);
+    getSettingsController().ensureSection(section, effectiveForce);
     if (section !== 'providers') return;
-    if (force || state.profiles.length === 0 || (isMultiGatewayConfigMode() && state.settingsProfiles.status !== 'ready')) {
+    if (effectiveForce || state.profiles.length === 0 || (isMultiGatewayConfigMode() && state.settingsProfiles.status !== 'ready')) {
       void getSettingsController().loadProfiles();
     }
-    if (force || (!providerCatalogInFlight && state.settingsProviderViews.status !== 'loading')) {
+    if (effectiveForce || (!providerCatalogInFlight && state.settingsProviderViews.status !== 'loading')) {
       void reloadProviderCatalog();
     }
   }

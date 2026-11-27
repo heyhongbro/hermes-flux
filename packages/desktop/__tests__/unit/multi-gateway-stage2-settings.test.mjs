@@ -405,6 +405,18 @@ test('settingsDataService multi-gateway scoped routing, drafts isolation, learni
   await flushMicrotasks();
   assert.ok(fetchedProjectsFor.includes('gw-b'));
 
+  // Implicit settingsGatewayId change (e.g. adding 2nd gateway) must invalidate cached settingsProjects and reload for new gw
+  isMultiConnected['gw-b'] = true;
+  state.settingsProjects = { status: 'ready', data: [{ id: 'p-a', name: 'Alpha Project', path: '/a' }] };
+  state.settingsGatewayId = 'gw-a';
+  svc.ensureSettingsSectionData('projects', false);
+  await flushMicrotasks();
+  assert.ok(fetchedProjectsFor.includes('gw-a'));
+  state.settingsGatewayId = 'gw-b';
+  isMultiConnected['gw-b'] = false;
+  svc.ensureSettingsSectionData('projects', true);
+  await flushMicrotasks();
+
   // 2. getSettingsSnapshot projects selected gw status across offline / connected / connecting
   assert.equal(svc.getSettingsSnapshot().gateway.status, 'disconnected');
   isMultiConnected['gw-b'] = true;
