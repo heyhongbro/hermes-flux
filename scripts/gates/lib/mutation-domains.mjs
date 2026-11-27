@@ -367,7 +367,7 @@ export const MUTATION_DOMAINS = {
     title: '多端协同状态与桌面/移动端钩子 (Multidevice Hooks)',
     mutate: [
       'packages/desktop/src/renderer/events/presenceController.ts:94-150',
-      'packages/desktop/src/renderer/mobile/mobileShellCoordinator.ts:544-557',
+      'packages/desktop/src/renderer/mobile/mobileShellCoordinator.ts:559-576',
     ],
     testFiles: [
       'packages/desktop/__tests__/unit/presenceController.test.mjs',

@@ -66,6 +66,7 @@ export function buildInspectorProps(
     fileTreeExpandedPaths: state.fileTreeExpandedPaths ?? [],
     fileTreeFilterQuery: state.fileTreeFilterQuery ?? '',
     fileTreeCollapsed: state.fileTreeCollapsed ?? false,
+    workspaceRoot: cwd || (state.fileTreeState?.status === 'ready' ? state.fileTreeState.rootPath : undefined),
     workspaceRootName: extractPathBasename(
       cwd || (state.fileTreeState?.status === 'ready' ? state.fileTreeState.rootPath : ''),
     ),

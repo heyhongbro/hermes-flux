@@ -62,7 +62,7 @@ export interface MobileWorkspaceShellProps {
 
 function shouldIgnoreSwipeTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
-  if (target.closest('[data-gesture-ignore="pan-x"], .m-no-swipe, input, textarea, select')) {
+  if (target.closest('[data-gesture-ignore="pan-x"], .m-no-swipe, input, textarea, select, video, audio')) {
     return true;
   }
   const scrollBlock = target.closest('pre, code, .conv-code-block, table');
@@ -453,7 +453,9 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
             fileTreeExpandedPaths={snapshot.fileTreeExpandedPaths}
             fileTreeFilterQuery={snapshot.fileTreeFilterQuery}
             activeFilePath={snapshot.activeFilePath}
+            workspaceRoot={snapshot.workspaceRoot}
             workspaceRootName={snapshot.workspaceRootName}
+            resolveMediaUrl={actions.resolveMediaUrl}
             memories={snapshot.memories}
             inspectorBotProfile={snapshot.inspectorBotProfile}
             inspectorBotLabel={snapshot.inspectorBotLabel}

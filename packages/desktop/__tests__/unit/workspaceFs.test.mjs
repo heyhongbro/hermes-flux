@@ -287,12 +287,14 @@ test('Main IPC fs:list-directory 与 Preload listDirectory 真实链路覆盖', 
 
   const registeredHandlers = new Map();
   const protocolHandlers = new Map();
+  let protocolHandleCalls = 0;
   const invokedCalls = [];
   let exposedBridge = null;
 
   const electronMock = {
     protocol: {
       handle(scheme, fn) {
+        protocolHandleCalls += 1;
         protocolHandlers.set(scheme, fn);
       },
     },
@@ -607,6 +609,13 @@ test('Main IPC fs:list-directory 与 Preload listDirectory 真实链路覆盖', 
       // hermes-media:// 流式协议绑定、media:resolve-stream-url IPC 通道及重复 registerIpcHandlers 热替换控制器
       const sampleVideoAbs = path.join(tmpDir, 'stream-demo.mp4');
       fs.writeFileSync(sampleVideoAbs, Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]));
+      const readAudioAbs = path.join(tmpDir, 'note.mp3');
+      fs.writeFileSync(readAudioAbs, Buffer.from('ID3AUDIO'));
+      const readAudioUrl = await exposedBridge.readFile(readAudioAbs);
+      assert.ok(typeof readAudioUrl === 'string' && readAudioUrl.startsWith('data:audio/mpeg;base64,'));
+      const readPlainAbs = path.join(tmpDir, 'plain.txt');
+      fs.writeFileSync(readPlainAbs, 'hello utf8 text', 'utf8');
+      assert.equal(await exposedBridge.readFile(readPlainAbs), 'hello utf8 text');
       const streamUrl = await exposedBridge.resolveMediaStreamUrl({
         filePath: sampleVideoAbs,
         gatewayUrl: 'http://127.0.0.1:9999',
@@ -621,8 +630,10 @@ test('Main IPC fs:list-directory 与 Preload listDirectory 真实链路覆盖', 
       assert.equal(mediaRes.headers.get('content-type'), 'video/mp4');
       await mediaRes.arrayBuffer();
 
+      const callsBeforeSecondInit = protocolHandleCalls;
       ipcMod.registerIpcHandlers(mockWin);
-      assert.equal(protocolHandlers.size, 1, '二次注册窗口时不得重复调用 protocol.handle');
+      assert.equal(protocolHandlers.size, 2, '应注册 hermes-media 与 hermes-preview 两套协议');
+      assert.equal(protocolHandleCalls, callsBeforeSecondInit, '二次注册窗口时不得重复调用 protocol.handle');
     } finally {
       globalThis.fetch = origFetch;
       console.warn = origWarn;
@@ -741,5 +752,130 @@ test('createWorkspaceDirectory / renameWorkspaceDirectory 安全新建、重命�
     });
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test('Main IPC preview:register-session / revoke-session、工作区外安全音频字体 DataURL 与 gateway:http-proxy 扩展 MIME', async () => {
+  const req = createRequire(import.meta.url);
+  const origLoad = Module._load;
+  const origFetch = globalThis.fetch;
+  const handlers = new Map();
+  const protocolHandlers = new Map();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flux-ipc-preview-'));
+  const externalWsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flux-ext-ws-'));
+
+  const extAudioPath = path.join(externalWsDir, 'voice.mp3');
+  const extFontPath = path.join(externalWsDir, 'font.woff2');
+  const extAvifPath = path.join(externalWsDir, 'pic.avif');
+  const htmlEntryPath = path.join(externalWsDir, 'index.html');
+  fs.writeFileSync(extAudioPath, Buffer.from('ID3AUDIO'));
+  fs.writeFileSync(extFontPath, Buffer.from('wOF2FONT'));
+  fs.writeFileSync(extAvifPath, Buffer.from('AVIFIMG'));
+  fs.writeFileSync(htmlEntryPath, '<html><img src="./pic.avif"></html>', 'utf8');
+
+  const electronMock = {
+    ipcMain: {
+      on() {},
+      removeHandler(channel) {
+        handlers.delete(channel);
+      },
+      handle(channel, fn) {
+        handlers.set(channel, fn);
+      },
+    },
+    protocol: {
+      handle(scheme, fn) {
+        protocolHandlers.set(scheme, fn);
+      },
+    },
+    BrowserWindow: class {},
+    shell: { openExternal: async () => {}, openPath: async () => '' },
+    dialog: { showOpenDialog: async () => ({ filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+    app: { getPath: () => tmpDir, getVersion: () => '0.0.0-test' },
+    clipboard: { writeText() {}, readText: () => '' },
+    contextBridge: { exposeInMainWorld() {} },
+    ipcRenderer: { invoke: async () => null, on() {}, removeListener() {}, send() {} },
+  };
+
+  let ipcPath;
+  try {
+    Module._load = function patchedLoad(request) {
+      if (request === 'electron') return electronMock;
+      return origLoad.apply(this, arguments);
+    };
+    ipcPath = req.resolve('../../dist/main/ipc.cjs');
+    delete req.cache[ipcPath];
+    const ipcMod = req(ipcPath);
+    const mockWin = {
+      isDestroyed: () => false,
+      isFullScreen: () => false,
+      isMaximized: () => false,
+      webContents: { send() {}, isDestroyed: () => false },
+      on() {},
+      minimize() {},
+      maximize() {},
+      unmaximize() {},
+      close() {},
+    };
+    ipcMod.registerIpcHandlers(mockWin);
+
+    const registerPreview = handlers.get('preview:register-session');
+    const revokePreview = handlers.get('preview:revoke-session');
+    const readFileHandler = handlers.get('fs:read-file');
+    const proxyHandler = handlers.get('gateway:http-proxy');
+    assert.ok(registerPreview && revokePreview && readFileHandler && proxyHandler);
+    const protoHandler = protocolHandlers.get('hermes-preview');
+    assert.ok(protoHandler, '必须注册 hermes-preview:// protocol handler');
+
+    // 通过 resolveSafeLocalSourceFile 回退读取安全扩展名工作区外资产并产出精准 MIME Data URL
+    assert.ok((await readFileHandler({}, extAudioPath))?.startsWith('data:audio/mpeg;base64,'));
+    assert.ok((await readFileHandler({}, extFontPath))?.startsWith('data:font/woff2;base64,'));
+    assert.ok((await readFileHandler({}, extAvifPath))?.startsWith('data:image/avif;base64,'));
+
+    // 预览会话注册与吊销闭环
+    const reg = await registerPreview({}, {
+      entryPath: htmlEntryPath,
+      entryContent: '<html><img src="./pic.avif"></html>',
+      workspaceRoot: externalWsDir,
+    });
+    assert.ok(reg && reg.token && reg.entryUrl.startsWith(`hermes-preview://${reg.token}.preview/`));
+
+    const entryResp = await protoHandler(new Request(reg.entryUrl));
+    assert.equal(entryResp.status, 200);
+    assert.equal(await entryResp.text(), '<html><img src="./pic.avif"></html>');
+
+    const avifResp = await protoHandler(new Request(new URL('./pic.avif', reg.entryUrl).href));
+    assert.equal(avifResp.status, 200);
+    assert.equal(avifResp.headers.get('content-type'), 'image/avif');
+
+    await revokePreview({}, reg.token);
+    const afterRevoke = await protoHandler(new Request(reg.entryUrl));
+    assert.equal(afterRevoke.status, 404);
+
+    // gateway:http-proxy 支持音频与字体转 Data URL
+    globalThis.fetch = async (url) => {
+      const targetUrl = String(url);
+      if (targetUrl.includes('voice.mp3')) {
+        return new Response(Uint8Array.from([1, 2, 3]), {
+          status: 200,
+          headers: { 'content-type': 'audio/mpeg' },
+        });
+      }
+      return new Response(Uint8Array.from([4, 5, 6]), {
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+    };
+
+    const gwAudio = await proxyHandler({}, { baseUrl: 'https://gw.example.com', path: '/api/fs/download?path=voice.mp3' });
+    assert.ok(String(gwAudio).startsWith('data:audio/mpeg;base64,'));
+    const gwFont = await proxyHandler({}, { baseUrl: 'https://gw.example.com', path: '/api/fs/download?path=inter.woff2' });
+    assert.ok(String(gwFont).startsWith('data:font/woff2;base64,'));
+  } finally {
+    globalThis.fetch = origFetch;
+    Module._load = origLoad;
+    if (ipcPath) delete req.cache[ipcPath];
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(externalWsDir, { recursive: true, force: true });
   }
 });

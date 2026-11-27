@@ -1048,6 +1048,42 @@ test('Capacitor Network 原生网络切换监听、getNetworkStatus 降级与鉴
     } finally {
       globalThis.setTimeout = prevSetTimeout;
     }
+
+    // 验证 httpProxy 正确转码音频与字体二进制响应为精确 MIME Data URL（含 octet-stream 兜底纠偏）
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('song.mp3')) {
+        return new Response(Uint8Array.from([73, 68, 51]), {
+          status: 200,
+          headers: { 'content-type': 'audio/mpeg' },
+        });
+      }
+      return new Response(Uint8Array.from([119, 79, 70, 50]), {
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+    };
+    const prevFrAudio = globalThis.FileReader;
+    globalThis.FileReader = class {
+      readAsDataURL(blob) {
+        this.result = `data:${blob.type};base64,VEVT`;
+        this.onloadend?.();
+      }
+    };
+    try {
+      const audioRes = await defaultTimeoutBridge.httpProxy({
+        baseUrl: 'https://gw.example',
+        path: '/api/fs/download?path=%2Faudio%2Fsong.mp3',
+      });
+      assert.equal(audioRes, 'data:audio/mpeg;base64,VEVT');
+
+      const fontRes = await defaultTimeoutBridge.httpProxy({
+        baseUrl: 'https://gw.example',
+        path: '/api/fs/download?path=%2Ffonts%2Fui.woff2',
+      });
+      assert.equal(fontRes, 'data:font/woff2;base64,VEVT');
+    } finally {
+      globalThis.FileReader = prevFrAudio;
+    }
   } finally {
     globalThis.fetch = prevFetch;
     env.restore();

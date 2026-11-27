@@ -1403,3 +1403,52 @@ test('14. refillStageComposer 与移动端回滚横幅/取消联动', () => {
   assert.equal(afterCancel.stageComposerDraft, null);
   assert.equal(afterCancel.rollbackBanner, null);
 });
+
+test('15. buildSnapshot workspaceRoot 与 workspaceRootName 精确遵循 cwd 优先、ready 树兜底与空态收敛', () => {
+  const cases = [
+    {
+      sessions: [{ id: 's-1', cwd: '/work/repo' }],
+      fileTreeState: { status: 'ready', rootPath: '/tree/other' },
+      root: '/work/repo',
+      name: 'repo',
+    },
+    {
+      sessions: [{ id: 's-1', cwd: '' }],
+      fileTreeState: { status: 'ready', rootPath: '/tree/demo' },
+      root: '/tree/demo',
+      name: 'demo',
+    },
+    {
+      sessions: [{ id: 's-1', cwd: '' }],
+      fileTreeState: { status: 'loading', rootPath: '/tree/stale' },
+      root: undefined,
+      name: undefined,
+    },
+    {
+      sessions: [{ id: 's-1', cwd: '' }],
+      fileTreeState: { status: '', rootPath: '/tree/blank-status' },
+      root: undefined,
+      name: undefined,
+    },
+    {
+      sessions: [{ id: 's-1', cwd: '' }],
+      fileTreeState: undefined,
+      root: undefined,
+      name: undefined,
+    },
+    {
+      sessions: [{ id: 's-1', cwd: '' }],
+      fileTreeState: { status: 'ready', rootPath: '' },
+      root: undefined,
+      name: undefined,
+    },
+  ];
+  for (const c of cases) {
+    const h = createHarness({
+      state: { sessions: c.sessions, fileTreeState: c.fileTreeState },
+    });
+    const snap = h.coordinator.buildSnapshot();
+    assert.strictEqual(snap.workspaceRoot, c.root);
+    assert.strictEqual(snap.workspaceRootName, c.name);
+  }
+});

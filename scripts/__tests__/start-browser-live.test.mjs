@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -96,6 +97,22 @@ test('浏览器直跑 /__gw/auth 凭据透传与失败显式化', { timeout: 400
     if (url.pathname === '/api/probe') {
       seen.proxy.push({ headers: req.headers, method: req.method });
       return send(200, { reached: true });
+    }
+
+    if (url.pathname === '/api/fs/download') {
+      const dlTarget = url.searchParams.get('path') || '';
+      if (dlTarget.endsWith('app.css')) {
+        res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8' });
+        return res.end('body{margin:0}');
+      }
+      if (dlTarget.endsWith('voice.mp3')) {
+        res.writeHead(200, { 'Content-Type': 'audio/mpeg' });
+        return res.end(Buffer.from('ID3MP3'));
+      }
+      if (dlTarget.endsWith('ui.woff2')) {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        return res.end(Buffer.from('wOF2TEST'));
+      }
     }
 
     return send(404, { error: 'not_found' });
@@ -589,5 +606,81 @@ test('浏览器直跑 /__gw/auth 凭据透传与失败显式化', { timeout: 400
     });
     await openWsOnce(openProxyPort);
     assert.equal(wsCookiesSeen.at(-1), 'session=legacy');
+  });
+
+  await t.test('8. /__preview/* 富文档预览会话注册/CORS/Origin:null/.env拦截/吊销 与 扩展媒体代理', async () => {
+    const gwOrigin = `http://127.0.0.1:${gwPort}`;
+    // 重新以 alice 认证建立 cookie 以验证同源预览代理
+    const authRes = await postJson('/__gw/auth', {
+      url: gwOrigin,
+      username: 'alice',
+      password: 'correct-horse',
+    });
+    assert.equal(authRes.data.ok, true);
+
+    const reg = await postJson('/__preview/register', {
+      entryPath: 'docs/report.html',
+      entryContent: '<html><link rel="stylesheet" href="./app.css"></html>',
+      gatewayUrl: gwOrigin,
+    });
+    assert.equal(reg.status, 200);
+    assert.ok(reg.data.token && String(reg.data.entryUrl).startsWith(`/__preview/${reg.data.token}/`));
+
+    const entryRes = await fetch(`${baseUrl}${reg.data.entryUrl}`);
+    assert.equal(entryRes.status, 200);
+    assert.equal(await entryRes.text(), '<html><link rel="stylesheet" href="./app.css"></html>');
+
+    const cssUrl = new URL('./app.css', `${baseUrl}${reg.data.entryUrl}`).href;
+    const cssRes = await fetch(cssUrl, {
+      headers: { Origin: 'null' },
+    });
+    assert.equal(cssRes.status, 200);
+    assert.equal(cssRes.headers.get('access-control-allow-origin'), '*');
+    assert.equal(await cssRes.text(), 'body{margin:0}');
+
+    const evilOriginRes = await fetch(cssUrl, {
+      headers: { Origin: 'https://evil.example' },
+    });
+    assert.equal(evilOriginRes.status, 403);
+
+    // 无工作区映射时，脱离 /__rel__/ 尝试根相对逃逸必须返 403
+    const escapeModeBRes = await fetch(`${baseUrl}/__preview/${reg.data.token}/docs/app.css`);
+    assert.equal(escapeModeBRes.status, 403);
+
+    const envRes = await fetch(`${baseUrl}/__preview/${reg.data.token}/.env`);
+    assert.equal(envRes.status, 403);
+
+    const injectRes = await fetch(`${baseUrl}/inject.js`);
+    const injectCode = await injectRes.text();
+    assert.ok(injectCode.includes('registerPreviewSession'));
+    assert.ok(injectCode.includes('revokePreviewSession'));
+
+    const revokeRes = await postJson('/__preview/revoke', { token: reg.data.token });
+    assert.equal(revokeRes.status, 200);
+    const afterRevoke = await fetch(`${baseUrl}${reg.data.entryUrl}`);
+    assert.equal(afterRevoke.status, 404);
+
+    // proxy 与 /__fs/read-file 支持音频与字体转精确 MIME Data URL
+    const audioProxy = await postJson('/__gw/proxy', {
+      baseUrl: gwOrigin,
+      path: '/api/fs/download?path=voice.mp3',
+      method: 'GET',
+    });
+    assert.ok(String(audioProxy.data).startsWith('data:audio/mpeg;base64,'));
+
+    const fontProxy = await postJson('/__gw/proxy', {
+      baseUrl: gwOrigin,
+      path: '/api/fs/download?path=ui.woff2',
+      method: 'GET',
+    });
+    assert.ok(String(fontProxy.data).startsWith('data:font/woff2;base64,'));
+
+    const rendererDistDir = path.join(ROOT, 'packages', 'desktop', 'dist', 'renderer');
+    const sampleFontRel = fs.readdirSync(rendererDistDir, { recursive: true }).find((p) => String(p).endsWith('.woff2'));
+    assert.ok(sampleFontRel, 'dist/renderer 应包含 .woff2 字体用于 /__fs/read-file 测试');
+    const localFontRes = await postJson('/__fs/read-file', {
+      filePath: path.join(rendererDistDir, String(sampleFontRel)),
+    });
+    assert.ok(String(localFontRes.data?.content).startsWith('data:font/woff2;base64,'));
   });
 });

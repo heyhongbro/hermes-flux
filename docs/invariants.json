@@ -408,6 +408,22 @@
       "failure": "Traversal/control chars/`.env` bypass validation or locked workspace roots get renamed"
     },
     {
+      "id": "INV-FS-07",
+      "topic": "Relative resource path resolution stays scoped to workspace/docDir, passes external http(s) URLs through, and blocks .env/sensitive/null-byte paths",
+      "source": "packages/core/src/fs/previewResourceResolver.ts",
+      "symbol": "resolvePreviewResourceRef",
+      "test": "packages/core/__tests__/formal/preview-resources-formal.test.mjs",
+      "failure": "Relative ../ or /root refs in Markdown/HTML/SVG leak .env secrets or system files, or external CDN URLs get mistakenly rewritten"
+    },
+    {
+      "id": "INV-FS-08",
+      "topic": "HTML/CSS/SVG preview bundling is non-destructive and strictly bounded in asset count, total bytes, and recursion depth",
+      "source": "packages/core/src/fs/htmlPreviewBundler.ts",
+      "symbol": "buildInlinedHtmlPreview",
+      "test": "packages/core/__tests__/formal/preview-resources-formal.test.mjs",
+      "failure": "Cyclic CSS @import hangs desktop, oversized asset bundles exhaust renderer memory, or source files get overwritten"
+    },
+    {
       "id": "INV-MSG-01",
       "topic": "User message attachment parsing round-trips multimodal parts without loss or duplication",
       "source": "packages/core/src/session/messageAttachments.ts",

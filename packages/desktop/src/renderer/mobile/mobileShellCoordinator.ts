@@ -536,7 +536,22 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       dockNotice: state.dockNotice,
       inspectorTab,
       inspectorReaderOpen,
-      inspectorReaderItem,
+      inspectorReaderItem: (() => {
+        if (!inspectorReaderItem?.filePath) return inspectorReaderItem;
+        const normTarget = inspectorReaderItem.filePath.replace(/\\/g, '/');
+        const matched = state.openFiles.find(
+          (f) => f.path === inspectorReaderItem!.filePath || f.path.replace(/\\/g, '/') === normTarget,
+        );
+        if (!matched) return inspectorReaderItem;
+        if (matched.preview === inspectorReaderItem.preview && matched.content === inspectorReaderItem.content) {
+          return inspectorReaderItem;
+        }
+        return {
+          ...inspectorReaderItem,
+          content: matched.isLoading ? inspectorReaderItem.content : matched.content,
+          preview: matched.preview,
+        };
+      })(),
       artifacts: buildArtifactsList(state),
       gitDiffs: state.gitDiffs,
       openFiles: state.openFiles,
@@ -545,6 +560,10 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       fileTreeExpandedPaths: Array.from(state.fileTreeExpandedPaths),
       fileTreeFilterQuery: state.fileTreeFilterQuery,
       activeFilePath: state.activeFilePath,
+      workspaceRoot:
+        resolveActiveWorkspaceCwd(state) ||
+        (state.fileTreeState?.status === 'ready' ? state.fileTreeState.rootPath : '') ||
+        undefined,
       workspaceRootName:
         extractPathBasename(
           resolveActiveWorkspaceCwd(state) ||
@@ -1162,6 +1181,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
           isLoading: false,
           byteSize: cachedReady.byteSize,
           canDownload: true,
+          preview: cachedReady.preview,
         }
       : {
           kind: inspectorTab === 'artifacts' ? 'artifacts' : 'files',
@@ -1209,6 +1229,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
         isLoading: target.isLoading,
         byteSize: target.byteSize,
         canDownload: true,
+        preview: target.preview,
       };
       inspectorReaderOpen = true;
       deps.render();

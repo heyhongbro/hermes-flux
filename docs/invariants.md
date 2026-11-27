@@ -25,7 +25,7 @@ so uncovered logic can be computed systematically.
 | `source` is an existing source file path | FAIL on violation |
 | `source` + `symbol` pair is unique | FAIL on violation |
 
-## Overview (90 invariants across 20 areas)
+## Overview (92 invariants across 20 areas)
 
 ### ATTACH (5)
 
@@ -75,7 +75,7 @@ so uncovered logic can be computed systematically.
 | `INV-DELIV-03` | Read-only tools and dangerous URIs are blocked from deliverables | `packages/core/src/session/deliverables.ts` → `extractSessionDeliverables` | `deliverables-formal.test.mjs` | Read-only paths like /etc/hosts or javascript:/data:text/html URIs enter deliverables |
 | `INV-DELIV-04` | Read/write separation and non-circular dual-lock path existence verification | `packages/core/src/fs/pathVerifier.ts` → `createDirectoryPathVerifier` | `deliverables-formal.test.mjs` | Unread/phantom paths enter deliverables or inline cards duplicate turn-end deliverable cards |
 
-### FS (6)
+### FS (8)
 
 | ID | Topic | Source Anchor | Property Test | Failure Mode |
 |---|---|---|---|---|
@@ -85,6 +85,8 @@ so uncovered logic can be computed systematically.
 | `INV-FS-04` | File tree filter leaves no empty ancestors and preserves ancestor paths for matches | `packages/core/src/fs/fileTreeService.ts` → `filterFileTree` | `file-tree-formal.test.mjs` | Filtering leaves empty directories behind or drops deeply nested matching leaves |
 | `INV-FS-05` | Binary and oversized file preview guards block binaries before size checks without blocking images | `packages/core/src/fs/fileService.ts` → `evaluateFilePreviewGuard` | `file-tree-formal.test.mjs` | Binary executables render as garbled text or huge files freeze the DOM viewer |
 | `INV-FS-06` | Directory picker sanitizes single segment names, POSIX-quotes safely, and protects locked roots | `packages/core/src/fs/directoryPickerService.ts` → `validateDirectoryName` | `file-tree-formal.test.mjs` | Traversal/control chars/`.env` bypass validation or locked workspace roots get renamed |
+| `INV-FS-07` | Relative resource path resolution stays scoped to workspace/docDir, passes external http(s) URLs through, and blocks .env/sensitive/null-byte paths | `packages/core/src/fs/previewResourceResolver.ts` → `resolvePreviewResourceRef` | `preview-resources-formal.test.mjs` | Relative ../ or /root refs in Markdown/HTML/SVG leak .env secrets or system files, or external CDN URLs get mistakenly rewritten |
+| `INV-FS-08` | HTML/CSS/SVG preview bundling is non-destructive and strictly bounded in asset count, total bytes, and recursion depth | `packages/core/src/fs/htmlPreviewBundler.ts` → `buildInlinedHtmlPreview` | `preview-resources-formal.test.mjs` | Cyclic CSS @import hangs desktop, oversized asset bundles exhaust renderer memory, or source files get overwritten |
 
 ### INTERACT (9)
 

@@ -21,6 +21,7 @@ import type { MediaLightboxItem } from '../conversation/MediaLightbox.js';
 import type { SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
 import type { ConversationOrgPrefs } from '../../tokens/conversationOrgPrefs.js';
 import type { SkinId } from '../../tokens/skins.js';
+import type { OpenFileItem, OpenFilePreviewProjection } from '../../lib/inspectorViewHelpers.js';
 import type {
   MobileAppearancePreference,
   MobileBotSubpage,
@@ -57,6 +58,7 @@ export interface MobileInspectorReaderItem {
   isTooLarge?: boolean;
   byteSize?: number;
   canDownload?: boolean;
+  preview?: OpenFilePreviewProjection;
 }
 
 export interface MobileInspectorArtifactItem {
@@ -164,12 +166,13 @@ export interface MobileWorkspaceSnapshot {
   inspectorReaderItem: MobileInspectorReaderItem | null;
   artifacts: MobileInspectorArtifactItem[];
   gitDiffs: Array<{ file: string; additions: number; deletions: number; patch?: string }>;
-  openFiles: Array<{ id?: string; path: string; content: string; language?: string; isDiff?: boolean; isVideo?: boolean }>;
+  openFiles: OpenFileItem[];
   mediaLightbox?: MobileMediaLightboxState | null;
   fileTreeState: FileTreeLoadState;
   fileTreeExpandedPaths: string[];
   fileTreeFilterQuery: string;
   activeFilePath: string;
+  workspaceRoot?: string;
   workspaceRootName?: string;
   memories: Array<{ category: string; content: string; updated?: string }>;
   learningState: LearningLoadState;

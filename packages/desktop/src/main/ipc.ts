@@ -20,7 +20,17 @@ import {
   HERMES_MEDIA_SCHEME,
   type MediaStreamController,
 } from './mediaStreamProtocol';
-import { detectMediaMimeFromRequestPath, type LogRecord } from '@hermes-flux/core';
+import {
+  createPreviewProtocolController,
+  HERMES_PREVIEW_SCHEME,
+  type PreviewProtocolController,
+} from './previewProtocol';
+import {
+  detectMediaMimeFromRequestPath,
+  detectPreviewBinaryMimeFromRequestPath,
+  type LogRecord,
+  type RegisterPreviewSessionOptions,
+} from '@hermes-flux/core';
 
 /**
  * 读取标题栏应呈现的"还原"语义位。
@@ -90,7 +100,12 @@ interface MediaControllerSlot {
   controller: MediaStreamController;
 }
 
+interface PreviewControllerSlot {
+  controller: PreviewProtocolController;
+}
+
 let activeMediaSlot: MediaControllerSlot | undefined;
+let activePreviewSlot: PreviewControllerSlot | undefined;
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   let activeGatewayCookies = '';
@@ -112,6 +127,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   }
 
+  const previewProtocolController = createPreviewProtocolController({
+    getGatewayAuth: () => ({ cookies: activeGatewayCookies, origin: activeGatewayOrigin }),
+    getFallbackCwd: () => process.cwd(),
+  });
+  if (activePreviewSlot) {
+    activePreviewSlot.controller = previewProtocolController;
+  } else {
+    const previewSlot: PreviewControllerSlot = { controller: previewProtocolController };
+    activePreviewSlot = previewSlot;
+    if (typeof protocol?.handle === 'function') {
+      protocol.handle(HERMES_PREVIEW_SCHEME, (request) =>
+        previewSlot.controller.handleProtocolRequest(request),
+      );
+    }
+  }
+
   ipcMain.removeHandler('media:resolve-stream-url');
   ipcMain.handle('media:resolve-stream-url', (_event, options: {
     filePath: string;
@@ -120,6 +151,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     sessionId?: string;
   }) => {
     return mediaStreamController.buildStreamUrl(options);
+  });
+
+  ipcMain.removeHandler('preview:register-session');
+  ipcMain.handle('preview:register-session', (_event, options: RegisterPreviewSessionOptions) => {
+    return previewProtocolController.registerSession(options);
+  });
+
+  ipcMain.removeHandler('preview:revoke-session');
+  ipcMain.handle('preview:revoke-session', (_event, token: string) => {
+    previewProtocolController.revokeSession(token);
   });
 
   const shouldAttachGatewayCookies = (targetUrl: string): boolean => {
@@ -462,10 +503,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     if (contentType.includes('application/json')) {
       return await res.json();
     }
-    // 图像与可内联视频二进制自动转换为 Base64 Data URL（排除 text/html SPA fallback 页误判，上限 50MB）
+    // 图像与可内联音视频/字体/WASM 二进制自动转换为 Base64 Data URL（排除 text/html SPA fallback 页误判，上限 50MB）
     const rawMime = contentType.split(';')[0].trim();
-    const isMediaContentType = rawMime.startsWith('image/') || rawMime.startsWith('video/');
-    const detectedExtMime = detectMediaMimeFromRequestPath(options.path);
+    const isMediaContentType =
+      rawMime.startsWith('image/') ||
+      rawMime.startsWith('video/') ||
+      rawMime.startsWith('audio/') ||
+      rawMime.startsWith('font/') ||
+      rawMime.startsWith('application/font-') ||
+      rawMime === 'application/vnd.ms-fontobject' ||
+      rawMime === 'application/wasm';
+    const detectedExtMime =
+      detectPreviewBinaryMimeFromRequestPath(options.path) ??
+      detectMediaMimeFromRequestPath(options.path);
     if (isMediaContentType || (detectedExtMime !== null && !rawMime.includes('text/html'))) {
       const arrayBuffer = await res.arrayBuffer();
       if (arrayBuffer.byteLength > 50 * 1024 * 1024) {
@@ -613,26 +663,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         return null;
       }
 
-      const ext = path.extname(absoluteFilePath).toLowerCase();
-      const mediaMimeMap: Record<string, string> = {
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif',
-        '.webp': 'image/webp',
-        '.svg': 'image/svg+xml',
-        '.ico': 'image/x-icon',
-        '.bmp': 'image/bmp',
-        '.mp4': 'video/mp4',
-        '.m4v': 'video/mp4',
-        '.webm': 'video/webm',
-        '.mov': 'video/quicktime',
-        '.ogv': 'video/ogg',
-      };
-
-      if (mediaMimeMap[ext]) {
+      const binaryMime = detectPreviewBinaryMimeFromRequestPath(absoluteFilePath);
+      if (binaryMime) {
         const buffer = fs.readFileSync(absoluteFilePath);
-        return `data:${mediaMimeMap[ext]};base64,${buffer.toString('base64')}`;
+        return `data:${binaryMime};base64,${buffer.toString('base64')}`;
       }
 
       return fs.readFileSync(absoluteFilePath, 'utf8');
@@ -645,7 +679,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // Local File System Read for Inspection Pod
   ipcMain.handle('fs:read-file', async (_event, targetPath: string) => {
-    if (!targetPath || typeof targetPath !== 'string') return null;
+    if (!targetPath || typeof targetPath !== 'string' || targetPath.includes('\0') || hasEnvSecretSegment(targetPath)) {
+      return null;
+    }
     try {
       const cwd = process.cwd();
 
@@ -694,6 +730,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
             if (candResult !== null) return candResult;
           }
         }
+      }
+
+      // 6. Fallback to arbitrary safe user workspace files outside process.cwd()
+      const safeWorkspaceFile = resolveSafeLocalSourceFile(targetPath, cwd);
+      if (safeWorkspaceFile) {
+        const safeResult = readPhysicalFileSafely(safeWorkspaceFile);
+        if (safeResult !== null) return safeResult;
       }
 
       return null;

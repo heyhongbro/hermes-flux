@@ -36,6 +36,8 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  detectPreviewAssetMime,
+  encodeUtf8ToBase64,
   filterFileTree,
   formatFileSize,
   isImageExtension,
@@ -53,6 +55,7 @@ import type { SettingsActions } from '../settings/settingsModel.js';
 import type { MobileInspectorTab } from './mobileShellModel.js';
 import { MobileConstellationPanel } from './MobileConstellationPanel.js';
 import { MobileFloatingBackBar } from './MobileMenuPrimitives.js';
+import type { OpenFileItem } from '../../lib/inspectorViewHelpers.js';
 import type { MobileInspectorArtifactItem, MobileInspectorReaderItem } from './types.js';
 import { MarkdownBlock } from '../conversation/MarkdownBlock.js';
 import type { MediaLightboxItem } from '../conversation/MediaLightbox.js';
@@ -65,12 +68,14 @@ export interface MobileInspectorScreenProps {
   readerItem: MobileInspectorReaderItem | null;
   artifacts: MobileInspectorArtifactItem[];
   gitDiffs: Array<{ file: string; additions: number; deletions: number; patch?: string }>;
-  openFiles: Array<{ id?: string; path: string; content: string; language?: string; isDiff?: boolean; isVideo?: boolean }>;
+  openFiles: OpenFileItem[];
   fileTreeState: FileTreeLoadState;
   fileTreeExpandedPaths: string[];
   fileTreeFilterQuery: string;
   activeFilePath: string;
+  workspaceRoot?: string;
   workspaceRootName?: string;
+  resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   memories: Array<{ category: string; content: string; updated?: string }>;
   inspectorBotProfile?: string;
   inspectorBotLabel?: string;
@@ -110,7 +115,9 @@ export function MobileInspectorScreen({
   fileTreeExpandedPaths,
   fileTreeFilterQuery,
   activeFilePath,
+  workspaceRoot,
   workspaceRootName,
+  resolveMediaUrl,
   inspectorBotProfile,
   inspectorBotLabel,
   learningState,
@@ -268,7 +275,9 @@ export function MobileInspectorScreen({
                   content: file.content,
                   language: file.language,
                   isDiff: file.isDiff,
+                  isImage: isImageExtension(file.path),
                   isVideo: file.isVideo,
+                  preview: file.preview,
                   filePath: file.path,
                   canDownload: true,
                 })
@@ -533,13 +542,16 @@ export function MobileInspectorScreen({
     const ext = (targetRef.split('.').pop() || '').toLowerCase();
     const isHtmlFile = !item.isDiff && (ext === 'html' || ext === 'htm');
     const isMarkdownFile = !item.isDiff && (ext === 'md' || ext === 'markdown');
+    const targetMime = detectPreviewAssetMime(targetRef);
+    const isAudioFile = !item.isDiff && Boolean(targetMime && targetMime.startsWith('audio/'));
 
     const isSafeVideoSrc =
       lowerContent.startsWith('data:video/') ||
       lowerContent.startsWith('https://') ||
       lowerContent.startsWith('http://') ||
       lowerContent.startsWith('blob:') ||
-      lowerContent.startsWith('hermes-media://');
+      lowerContent.startsWith('hermes-media://') ||
+      lowerContent.startsWith('hermes-preview://');
     if (item.isVideo || isVideoExtension(targetRef) || lowerContent.startsWith('data:video/')) {
       if (!isSafeVideoSrc) {
         return (
@@ -574,12 +586,55 @@ export function MobileInspectorScreen({
       );
     }
 
+    const isSafeAudioSrc =
+      lowerContent.startsWith('data:audio/') ||
+      lowerContent.startsWith('https://') ||
+      lowerContent.startsWith('http://') ||
+      lowerContent.startsWith('blob:') ||
+      lowerContent.startsWith('hermes-media://') ||
+      lowerContent.startsWith('hermes-preview://');
+    if (isAudioFile || lowerContent.startsWith('data:audio/')) {
+      if (!isSafeAudioSrc) {
+        return (
+          <div className="m-inspector__tree-state">
+            <div className="m-inspector__reader-loading-title">{t('inspector.audioLoadError')}</div>
+            <p className="m-inspector__reader-notice">{t('inspector.audioLoadErrorSub')}</p>
+            {item.canDownload ? (
+              <button
+                type="button"
+                className="m-primary-btn"
+                onClick={onDownloadInspectorFile}
+              >
+                <Download size={16} aria-hidden="true" />
+                <span>{t('mobile.inspector.downloadFile')}</span>
+              </button>
+            ) : null}
+          </div>
+        );
+      }
+      return (
+        <div className="m-inspector__reader-video-wrap m-no-swipe" data-testid="mobile-inspector-audio">
+          <audio controls preload="metadata" className="inspector-audio-player" src={item.content} />
+        </div>
+      );
+    }
+
     const isSafeImageSrc =
       lowerContent.startsWith('data:image/') ||
       lowerContent.startsWith('https://') ||
       lowerContent.startsWith('http://') ||
-      lowerContent.startsWith('blob:');
-    if ((item.isImage && isSafeImageSrc) || lowerContent.startsWith('data:image/')) {
+      lowerContent.startsWith('blob:') ||
+      lowerContent.startsWith('hermes-preview://');
+    const rawSvgDataUrl =
+      ext === 'svg' && !isSafeImageSrc && item.content.includes('<svg')
+        ? `data:image/svg+xml;base64,${encodeUtf8ToBase64(item.content)}`
+        : '';
+    const resolvedReaderImageSrc =
+      item.preview?.inlinedImageUrl || (isSafeImageSrc ? item.content : rawSvgDataUrl);
+    const showRawSvgSource =
+      ext === 'svg' && readerViewMode === 'raw' && !lowerContent.startsWith('data:');
+    if (((item.isImage && Boolean(resolvedReaderImageSrc)) || lowerContent.startsWith('data:image/')) && !showRawSvgSource) {
+      const displaySrc = resolvedReaderImageSrc;
       return (
         <div className="m-inspector__reader-image-wrap">
           <button
@@ -591,7 +646,7 @@ export function MobileInspectorScreen({
                 [
                   {
                     id: item.filePath || item.title,
-                    src: item.content,
+                    src: displaySrc,
                     path: item.filePath,
                     name: item.title,
                     alt: item.title,
@@ -601,20 +656,23 @@ export function MobileInspectorScreen({
               )
             }
           >
-            <img className="m-inspector__reader-image" src={item.content} alt={item.title} />
+            <img className="m-inspector__reader-image" src={displaySrc} alt={item.title} />
           </button>
         </div>
       );
     }
 
     if (isHtmlFile && readerViewMode === 'rendered') {
+      const iframeProps = item.preview?.frameUrl
+        ? { src: item.preview.frameUrl }
+        : { srcDoc: item.preview?.inlinedHtml ?? item.content };
       return (
         <div className="m-inspector__reader-html-wrap m-no-swipe" data-gesture-ignore="pan-x">
           <iframe
             className="m-inspector__reader-iframe"
             data-testid="mobile-inspector-html-frame"
             sandbox="allow-scripts"
-            srcDoc={item.content}
+            {...iframeProps}
             title={item.title}
           />
         </div>
@@ -639,6 +697,11 @@ export function MobileInspectorScreen({
             <MarkdownBlock
               content={body}
               className="flux-doc-markdown"
+              documentBasePath={item.filePath}
+              workspaceRoot={item.preview?.workspaceRoot ?? workspaceRoot}
+              resolvedAssetUrls={item.preview?.resolvedAssets}
+              resolveMediaUrl={resolveMediaUrl}
+              onOpenFile={(targetPath) => onOpenWorkspaceFile(targetPath)}
               onOpenMediaLightbox={onOpenMediaLightbox}
             />
           </div>
@@ -653,16 +716,25 @@ export function MobileInspectorScreen({
     );
   };
 
-  const readerExt = ((readerItem?.filePath || readerItem?.title || '').split(/[?#]/)[0].split('.').pop() || '').toLowerCase();
+  const readerRef = (readerItem?.filePath || readerItem?.title || '').split(/[?#]/)[0];
+  const readerExt = (readerRef.split('.').pop() || '').toLowerCase();
+  const readerMime = readerRef ? detectPreviewAssetMime(readerRef) : null;
+  const isReaderAudio =
+    Boolean(readerItem) &&
+    !readerItem?.isDiff &&
+    (Boolean(readerMime && readerMime.startsWith('audio/')) ||
+      Boolean(readerItem?.content?.trimStart().toLowerCase().startsWith('data:audio/')));
+  const isRawSvgText =
+    readerExt === 'svg' && Boolean(readerItem?.content) && !readerItem!.content.trimStart().toLowerCase().startsWith('data:');
   const canToggleRichMode =
     Boolean(readerItem) &&
     !readerItem?.isLoading &&
     !readerItem?.isBinary &&
     !readerItem?.isTooLarge &&
-    !readerItem?.isImage &&
+    (!readerItem?.isImage || isRawSvgText) &&
     !readerItem?.isVideo &&
     !readerItem?.isDiff &&
-    (readerExt === 'html' || readerExt === 'htm' || readerExt === 'md' || readerExt === 'markdown');
+    (readerExt === 'html' || readerExt === 'htm' || readerExt === 'md' || readerExt === 'markdown' || isRawSvgText);
 
   return (
     <section
@@ -740,7 +812,7 @@ export function MobileInspectorScreen({
                       <Download size={16} />
                     </button>
                   ) : null}
-                  {!readerItem.isLoading && !readerItem.isImage && !readerItem.isVideo && !readerItem.isBinary && !readerItem.isTooLarge ? (
+                  {!readerItem.isLoading && (!readerItem.isImage || isRawSvgText) && !readerItem.isVideo && !isReaderAudio && !readerItem.isBinary && !readerItem.isTooLarge ? (
                     <button
                       type="button"
                       className="m-float-circle-btn"

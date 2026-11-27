@@ -24,6 +24,13 @@ export type { LeftRailProject } from './components/LeftRail/types.js';
 export * from './components/MiddlePod/MiddlePod.js';
 export { mountFileTypeSprite, renderFileTypeIcon, resolveFileTypeIcon } from './lib/fileTypeIcons.js';
 export { handleCodeBlockCopyClick } from './lib/codeCopy.js';
+export {
+  handleMarkdownPreviewClick,
+  hydrateMarkdownPreviewAssets,
+  SAFE_HYDRATE_MEDIA_URL_RE,
+  type HydrateMarkdownDomOptions,
+  type MarkdownPreviewClickOptions,
+} from './lib/markdownDomHydrator.js';
 export { warmUpHighlighting, isHighlightReady } from './lib/highlight.js';
 export { extractToolTarget, isLikelyFilePath } from './lib/text.js';
 export { collectTouchedFiles } from './lib/fileRefs.js';

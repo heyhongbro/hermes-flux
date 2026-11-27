@@ -1280,7 +1280,7 @@ const fileViewerService = createFileViewerService({
   getState: renderCoordinator.getState, render, getDesktopApi: () => desktopApi, getGatewayClient: () => gatewayClient, safeCopyText, t,
   onBackFromFiles: () => statusIntegration.onBackFromFiles(), onInspectorStateChange: () => statusIntegration.onInspectorStateChange(),
   onMobileOpenFile: async (p, u) => { if (!renderCoordinator.isMobileShellActive()) return false; await mobileShellCoordinator.openFileInReader(p, u); return true; },
-  onOpenMediaLightbox: renderCoordinator.openMediaLightbox, getSessionDeliverables: deliverableCoordinator.getSessionDeliverables,
+  onOpenMediaLightbox: renderCoordinator.openMediaLightbox, resolveMediaUrl: mediaResolver.resolveMediaUrl, getSessionDeliverables: deliverableCoordinator.getSessionDeliverables,
 });
 const handleOpenFilePreview = fileViewerService.handleOpenFilePreview;
 const mobileShellCoordinator = createMobileShellCoordinator({
