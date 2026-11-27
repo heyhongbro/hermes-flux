@@ -658,3 +658,67 @@ test('D6: gatewayEventDispatcher - 交互 TurnAction 分发、approval_mode 同�
     dispatcher.disconnect();
   }
 });
+
+test('GatewayEventDispatcher 多网关帧路由：handleGatewayEvent / projects.changed / session-info 按 sourceGatewayId 严格隔离', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const regA = new LiveStreamRegistry();
+  const regB = new LiveStreamRegistry();
+  let fetchProjectsCalls = 0;
+  let idleSyncCalls = 0;
+  const { deps, state, watchdogEvents } = createMockDispatcherDeps({
+    state: {
+      gatewayCount: 2,
+      gatewayConnected: true,
+      activeSessionId: 'sess-dup',
+      activeLiveSessionId: 'live-dup',
+      activeGatewayId: 'gw-a',
+      activeFocus: { type: 'session', sessionId: 'sess-dup', gatewayId: 'gw-a' },
+      sessions: [
+        { id: 'sess-dup', gatewayId: 'gw-a', title: 'Alpha Dup', botName: 'alpha-bot', preview: '', timestamp: 10 },
+        { id: 'sess-dup', gatewayId: 'gw-b', title: 'Beta Dup', botName: 'beta-bot', preview: '', timestamp: 20 },
+      ],
+    },
+  });
+  deps.getLiveStreamRegistry = () => regA;
+  deps.getLiveStreamRegistryForGateway = (gw) => (gw === 'gw-a' ? regA : gw === 'gw-b' ? regB : undefined);
+  deps.getSessionHandleRegistryForGateway = () => ({
+    getLiveIds: (ids) => ids.map((id) => `live-${id}`),
+    toLiveId: (id) => `live-${id}`,
+    toStoredId: (id) => (id === 'live-dup' ? 'sess-dup' : id.replace(/^live-/, '')),
+    register: () => {},
+    clear: () => {},
+  });
+  deps.fetchProjects = async () => { fetchProjectsCalls += 1; };
+  deps.resolveBotNameForSession = () => null;
+  deps.refreshActiveSession = async () => { idleSyncCalls += 1; };
+  const dispatcher = createGatewayEventDispatcher(deps);
+  try {
+    // 1. projects.changed from non-active gw-b must NOT refresh projects; from active gw-a MUST
+    dispatcher.handleGatewayEvent({ type: 'projects.changed', payload: {} }, 'gw-b');
+    assert.equal(fetchProjectsCalls, 0);
+    dispatcher.handleGatewayEvent({ type: 'projects.changed', payload: {} }, 'gw-a');
+    assert.equal(fetchProjectsCalls, 1);
+
+    // 2. message.start from gw-b matching known session 'sess-dup' attaches observer to regB ONLY without hijacking Alpha active state
+    state.isStreaming = false;
+    dispatcher.handleGatewayEvent({ type: 'message.start', session_id: 'live-dup', payload: { turn_id: 't-b', text: 'bg user' } }, 'gw-b');
+    assert.equal(regB.hasSession('sess-dup'), true, 'gw-b 已知会话应挂载到 regB');
+    assert.equal(regA.hasSession('sess-dup'), false, 'gw-b 帧不得污染 regA');
+    assert.equal(state.isStreaming, false, '非焦点网关 gw-b 不得激活 gw-a 前台流状态');
+
+    // 3. session-info with running=true feeds regB watchdog without scheduling focused idle sync; focused gw-a schedules idle sync without mutating regA
+    watchdogEvents.length = 0;
+    dispatcher.applyTurnActions([{ type: 'session-info', sessionId: 'sess-dup', info: { running: true } }], 'gw-b');
+    assert.ok(watchdogEvents.includes('feed'), 'regB 存在会话流时 gw-b session-info 应触发看门狗续期');
+    t.mock.timers.tick(100);
+    assert.equal(idleSyncCalls, 0, '非焦点网关 gw-b 不得触发前台闲置同步');
+
+    dispatcher.applyTurnActions([{ type: 'session-info', sessionId: 'sess-dup', info: { running: true } }], 'gw-a');
+    assert.equal(idleSyncCalls, 0);
+    t.mock.timers.tick(60);
+    assert.equal(idleSyncCalls, 1);
+    assert.equal(regA.hasSession('sess-dup'), false);
+  } finally {
+    dispatcher.disconnect();
+  }
+});

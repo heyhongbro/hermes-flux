@@ -944,3 +944,148 @@ test('MessageLoadingService 流式重连对账传递 onCaptureInteractiveFence �
   await svcNoFence.loadMessagesInner('sess-1', undefined, { silent: true, checkLiveTurn: true });
   assert.equal(reconciledNoFence.length, reconBeforeAbort);
 });
+
+test('MessageLoadingService 多网关场景：refreshActiveSession 与 loadMessagesInner 按 gatewayId 隔离路由与缓存回退', async () => {
+  const callsA = [];
+  const callsB = [];
+  const clientA = {
+    fetchSessionMessages: async () => ({ status: 'success', messages: [{ id: 'a1', row_id: 1, role: 'user', content: 'from-a' }], pagination: { returned: 1, total: 1 } }),
+    call: async (m, p) => { callsA.push({ m, p }); return { session_id: 'live-a', messages: [] }; },
+  };
+  const clientB = {
+    fetchSessionMessages: async () => { throw new Error('rest down'); },
+    call: async (m, p) => { callsB.push({ m, p }); return { session_id: 'live-b', messages: 'non-array' }; },
+  };
+  const { deps, state, sessionMessagesCache } = createMockDeps({
+    state: {
+      gatewayCount: 2,
+      activeSessionId: 'sess-dup',
+      activeGatewayId: 'gw-b',
+      activeFocus: { type: 'session', sessionId: 'sess-dup', gatewayId: 'gw-b' },
+      sessions: [
+        { id: 'sess-dup', gatewayId: 'gw-a', botName: 'alpha-bot', timestamp: 10 },
+        { id: 'sess-dup', gatewayId: 'gw-b', botName: 'beta-bot', timestamp: 20 },
+      ],
+    },
+  });
+  sessionMessagesCache.set('gw-b::sess-dup', [{ id: 'cached-b', role: 'assistant', content: 'from-cache-b', timestamp: '10:00' }]);
+  deps.getClientForGateway = (gw) => (gw === 'gw-a' ? clientA : gw === 'gw-b' ? clientB : null);
+  const svc = createMessageLoadingService(deps);
+
+  // activeFocus has gw-b -> routes to clientB with beta-bot & falls back to gw-b::sess-dup cache when REST+resume yield no messages
+  await svc.refreshActiveSession({ checkLiveTurn: true });
+  assert.equal(callsB.at(-1)?.p?.profile, 'beta-bot');
+  assert.equal(callsA.length, 0);
+  assert.equal(state.messages[0]?.id, 'cached-b');
+
+  // activeFocus omits gatewayId -> falls back to activeGatewayId ('gw-a') and routes to clientA with alpha-bot
+  state.activeFocus = { type: 'session', sessionId: 'sess-dup' };
+  state.activeGatewayId = 'gw-a';
+  await svc.refreshActiveSession({ checkLiveTurn: true });
+  assert.equal(callsA.at(-1)?.p?.profile, 'alpha-bot');
+  assert.equal(state.messages[0]?.content, 'from-a');
+});
+
+test('MessageLoadingService 变异边界强化：null checkRes / onInteractiveResumeReconciled / activeFocus 缺失 / activeGatewayId 空回退', async () => {
+  const reconciled = [];
+  const readyCalls = [];
+  const registeredHandles = [];
+  const reconnectStill = [];
+  const reconnectFinished = [];
+  let forceSyncCalls = 0;
+
+  let nextResumeRes = null;
+  let activeStreamingSid = null;
+  let restRows = [{ id: 'u1', row_id: 1, role: 'user', content: 'hi' }];
+  const clientA = {
+    fetchSessionMessages: async () => ({
+      status: 'success',
+      messages: restRows,
+      pagination: { returned: restRows.length, total: 10 },
+    }),
+    call: async (method) => {
+      if (method === 'session.resume') return nextResumeRes;
+      return {};
+    },
+  };
+
+  const { deps, state } = createMockDeps({
+    state: {
+      gatewayCount: 2,
+      activeSessionId: 'sess-a',
+      activeLiveSessionId: 'stale-live',
+      activeGatewayId: '',
+      activeFocus: { type: 'session', sessionId: 'sess-a', gatewayId: 'gw-a' },
+      sessions: [{ id: 'sess-a', gatewayId: 'gw-a', botName: 'alpha-bot', timestamp: 10 }],
+    },
+    defaultSessionHandleRegistry: {
+      register: (h) => registeredHandles.push(h),
+      unregister: () => {},
+      toStoredSessionId: (id) => id,
+      toLiveId: () => '',
+    },
+    getClientForGateway: (gw) => (gw === 'gw-a' ? clientA : null),
+    getActiveStreamingStoredSessionId: () => activeStreamingSid,
+    onCaptureInteractiveFence: () => 9,
+    onLiveSessionReady: (storedId, liveId, _info, prof) => readyCalls.push({ storedId, liveId, prof }),
+    onInteractiveResumeReconciled: (payload) => reconciled.push(payload),
+    onForceSyncMessageList: () => { forceSyncCalls += 1; },
+    onReconnectStillStreaming: (sid, liveId, res, gw) => reconnectStill.push({ sid, liveId, res, gw }),
+    onReconnectStreamFinished: (sid, gw) => reconnectFinished.push({ sid, gw }),
+  });
+
+  const svc = createMessageLoadingService(deps);
+
+  // 1. activeFocus.gatewayId='gw-a' 且 activeGatewayId=''，同时 session.resume 返回 null（!checkRes 时仍会由 fallbackStoredId 绑定 liveId 但不触发 onInteractiveResumeReconciled）
+  await svc.refreshActiveSession({ checkLiveTurn: true });
+  assert.equal(state.activeLiveSessionId, 'sess-a');
+  assert.equal(reconciled.length, 0);
+  assert.equal(readyCalls.length, 1);
+  assert.equal(readyCalls[0].liveId, 'sess-a');
+
+  // 2. session.resume 返回合法 handles 且非静默加载 -> onLiveSessionReady / onInteractiveResumeReconciled / 清空 dockNotice（普通加载不误调 forceSync）
+  nextResumeRes = {
+    session_id: 'live-rec-1',
+    stored_session_id: 'sess-a',
+    info: { running: false },
+  };
+  state.activeFocus = { type: 'session', sessionId: 'sess-a' };
+  state.activeGatewayId = 'gw-a';
+  state.dockNotice = 'stale-notice';
+  restRows = [
+    { id: 'u1', row_id: 1, role: 'user', content: 'hi' },
+    { id: 'a1', row_id: 2, role: 'assistant', content: 'reply', tool_calls: [{ id: 't1', name: 'bash', status: 'done', args: '{}', result: 'ok' }] },
+  ];
+  await svc.loadMessages('sess-a', undefined, 'gw-a');
+  assert.equal(registeredHandles.at(-1)?.liveId, 'live-rec-1');
+  assert.equal(readyCalls.at(-1)?.liveId, 'live-rec-1');
+  assert.equal(readyCalls.at(-1)?.prof, 'alpha-bot');
+  assert.equal(reconciled.at(-1)?.fence, 9);
+  assert.equal(reconciled.at(-1)?.profile, 'alpha-bot');
+  assert.equal(reconciled.at(-1)?.liveSessionId, 'live-rec-1');
+  assert.equal(forceSyncCalls, 0);
+  assert.equal(state.dockNotice, '');
+
+  // 3. 在途流重连探活分支 (running=true -> onReconnectStillStreaming; running=false -> onReconnectStreamFinished + forceSync)
+  state.isStreaming = true;
+  activeStreamingSid = 'sess-a';
+  nextResumeRes = {
+    session_id: 'live-rec-2',
+    stored_session_id: 'sess-a',
+    running: true,
+    inflight: { streaming: true },
+  };
+  await svc.refreshActiveSession({ checkLiveTurn: true });
+  assert.equal(reconnectStill.at(-1)?.sid, 'sess-a');
+  assert.equal(reconnectStill.at(-1)?.gw, 'gw-a');
+
+  nextResumeRes = {
+    session_id: 'live-rec-2',
+    stored_session_id: 'sess-a',
+    running: false,
+  };
+  await svc.refreshActiveSession({ checkLiveTurn: true });
+  assert.equal(reconnectFinished.at(-1)?.sid, 'sess-a');
+  assert.equal(reconnectFinished.at(-1)?.gw, 'gw-a');
+  assert.ok(forceSyncCalls >= 1);
+});

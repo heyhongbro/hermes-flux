@@ -811,3 +811,270 @@ test('LiveStreamCoordinator 变异消杀全边界：resolveBot/resolveId/idleSyn
     t.mock.timers.reset();
   }
 });
+
+test('LiveStreamCoordinator 多网关场景：resolveBotNameForSession / resolveStoredSessionId / hydration 按 gatewayId 严格隔离', async () => {
+  const botCache = new Map([
+    ['gw-a:alpha-bot', 's-dup'],
+    ['gw-b:beta-bot', 's-dup'],
+    ['legacy-bot', 's-leg'],
+  ]);
+  const baseFocusState = {
+    gatewayCount: 2,
+    activeGatewayId: 'gw-a',
+    activeFocus: { type: 'bot', botName: 'focus-bot', gatewayId: 'gw-b' },
+    activeSessionId: 's-dup',
+  };
+  assert.equal(resolveBotNameForSession('s-dup', botCache, baseFocusState), 'beta-bot');
+  assert.equal(resolveBotNameForSession('s-dup', botCache, { ...baseFocusState, activeFocus: { type: 'session', sessionId: 's-dup' } }), 'alpha-bot');
+  assert.equal(resolveBotNameForSession('s-dup', botCache, baseFocusState, 'gw-b'), 'beta-bot');
+  assert.equal(resolveBotNameForSession('s-dup', botCache, baseFocusState, 'gw-a'), 'alpha-bot');
+  assert.equal(resolveBotNameForSession('s-leg', botCache, baseFocusState, 'gw-a'), 'legacy-bot');
+  assert.equal(resolveBotNameForSession('s-none', new Map(), baseFocusState, 'gw-a'), null, '不匹配的 activeFocus.gatewayId 不得返回 focus-bot');
+  assert.equal(resolveBotNameForSession('s-none', new Map(), { ...baseFocusState, activeSessionId: 's-none' }, 'gw-b'), 'focus-bot');
+
+  const resumeCalls = [];
+  const cacheMap = new Map();
+  const regA = new LiveStreamRegistry();
+  const regB = new LiveStreamRegistry();
+  const state = {
+    gatewayCount: 2,
+    gatewayConnected: true,
+    profileName: 'def-prof',
+    activeGatewayId: 'gw-a',
+    activeSessionId: 's-dup',
+    activeLiveSessionId: 'live-same',
+    activeFocus: { type: 'session', sessionId: 's-dup', gatewayId: 'gw-a' },
+    sessions: [
+      { id: 's-dup', gatewayId: 'gw-a', botName: 'alpha-bot', title: 'A', preview: '', timestamp: 1 },
+      { id: 's-dup', gatewayId: 'gw-b', botName: 'beta-bot', title: 'B', preview: '', timestamp: 2 },
+    ],
+    messages: [],
+    isStreaming: false,
+  };
+  const clientA = { call: async (_m, p) => { resumeCalls.push(['gw-a', p]); return { running: false }; } };
+  const clientB = { call: async (_m, p) => { resumeCalls.push(['gw-b', p]); return { running: true, inflight: { streaming: true, user: 'hi-b', assistant: '' } }; } };
+  const coord = createLiveStreamCoordinator({
+    getConnectionEpoch: () => 1,
+    getState: () => state,
+    getGatewayClient: () => clientA,
+    getClientForGateway: (gw) => (gw === 'gw-a' ? clientA : gw === 'gw-b' ? clientB : null),
+    getLiveStreamRegistry: () => regA,
+    getLiveStreamRegistryForGateway: (gw) => (gw === 'gw-a' ? regA : gw === 'gw-b' ? regB : undefined),
+    getSessionHandleRegistryForGateway: (gw) => ({
+      toStoredId: (id) => (gw === 'gw-a' && id === 'h-a' ? 's-dup' : null),
+      toLiveId: () => '',
+      register: () => {},
+      unregister: () => {},
+      getLiveIds: () => [],
+      clear: () => {},
+    }),
+    getSessionMessagesCache: () => cacheMap,
+    getActiveRunningSessionIds: () => new Set(),
+    getActiveRunningBotNames: () => new Set(),
+    setActiveStreamingContext: () => {},
+    setTurnStartedSessionId: () => {},
+    toStoredSessionId: () => null,
+    setMessageContent: () => {},
+    clearPresenceTerminal: () => {},
+    syncAgentPresence: () => {},
+    render: () => {},
+    armTurnWatchdog: () => {},
+    disarmTurnWatchdog: () => {},
+  });
+
+  // activeLiveSessionId matches gw-a, NOT gw-b
+  assert.equal(coord.resolveStoredSessionId('live-same', 'gw-b'), 'live-same', '非激活网关 gw-b 不得把同串 liveId 折叠成 activeSessionId');
+  assert.equal(coord.resolveStoredSessionId('live-same', 'gw-a'), 's-dup');
+
+  // syncFocusedStreamingProjection without gatewayId uses activeFocus.gatewayId (gw-a), ignoring regB
+  regB.registerStream({ storedSessionId: 's-dup', liveSessionId: 'lv-b', messageId: 'm-b', origin: 'remote' });
+  coord.syncFocusedStreamingProjection('s-dup');
+  assert.equal(state.isStreaming, false, 'regB 的流不得投射到 gw-a 焦点');
+  regB.removeSession('s-dup');
+
+  // Hydration for gw-b picks clientB & beta-bot from gw-b session entry
+  coord.ensureRemoteObserverStream('s-dup', 'lv-b-hyd', {}, 'gw-b');
+  await flushMicrotasks();
+  assert.equal(resumeCalls.length, 1);
+  assert.equal(resumeCalls[0][0], 'gw-b');
+  assert.equal(resumeCalls[0][1].profile, 'beta-bot');
+  assert.equal(cacheMap.get('gw-b::s-dup')?.some((m) => m.role === 'user' && m.content === 'hi-b'), true);
+  assert.equal(state.messages.length, 0);
+});
+
+test('LiveStreamCoordinator Hydration 变异边界强化：resolveBot/resolveId/idleSync/projection/fetchSessionMessages 回退与 epoch 守卫', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    // 1. resolveBotNameForSession gatewayCount=1 vs 2 边界及纯 key fallback
+    const plainCache = new Map([['plain-bot', 's-plain']]);
+    assert.equal(resolveBotNameForSession('s-plain', plainCache, { activeFocus: { type: 'bot', botName: 'f' } }), 'plain-bot');
+    assert.equal(
+      resolveBotNameForSession(
+        's-miss',
+        new Map(),
+        { gatewayCount: 1, activeFocus: { type: 'bot', botName: 'focus-bot', gatewayId: 'gw-a' }, activeSessionId: 's-miss' },
+        'gw-b',
+      ),
+      'focus-bot',
+      'gatewayCount < 2 时忽略网关隔离并回退 focus-bot',
+    );
+
+    // 2. idleSync / projection / hydration 完整生命周期（onInteractiveResumeReconciled + fetchSessionMessages + inflightAssistant + epoch guard）
+    const regA = new LiveStreamRegistry();
+    const regB = new LiveStreamRegistry();
+    const cacheMap = new Map();
+    const reconciled = [];
+    let epoch = 1;
+    let clientMode = 'fetch-fallback';
+    let refreshCalls = 0;
+    let disarmCalls = 0;
+    let ensureWindowLast = 0;
+    let forceSyncLast = false;
+    let renderCalls = 0;
+    let syncPresenceCalls = 0;
+    const setMsgCalls = [];
+    const activeRunningSessions = new Set();
+    const activeRunningBots = new Set();
+
+    const state = {
+      gatewayCount: 2,
+      gatewayConnected: true,
+      profileName: 'def-prof',
+      activeGatewayId: 'gw-a',
+      activeSessionId: 's-idle',
+      activeLiveSessionId: 'lv-active',
+      activeFocus: { type: 'session', sessionId: 's-idle' },
+      sessions: [{ id: 's-hyd', gatewayId: 'gw-b', botName: 'beta-bot', title: 'B', preview: '', timestamp: 2 }],
+      messages: [],
+      isStreaming: true,
+      turnStartedAt: 123,
+    };
+
+    const clientA = {
+      call: async () => ({ running: false }),
+    };
+    const clientB = {
+      call: async () => {
+        if (clientMode === 'bump-epoch-resume') {
+          epoch += 1;
+        }
+        return {
+          session_id: 'lv-hyd-ret',
+          stored_session_id: 's-hyd',
+          running: true,
+          inflight: { streaming: true, user: '', assistant: 'reconciled-assistant' },
+        };
+      },
+      fetchSessionMessages: async () => {
+        if (clientMode === 'bump-epoch-fetch') {
+          epoch += 1;
+        }
+        return {
+          status: 'success',
+          messages: [
+            { id: 'u-empty', row_id: 1, role: 'user', content: '   ' },
+            { id: 'u-real', row_id: 42, role: 'user', content: 'fetched-user-prompt' },
+          ],
+        };
+      },
+    };
+
+    const coord = createLiveStreamCoordinator({
+      getConnectionEpoch: () => epoch,
+      getState: () => state,
+      getGatewayClient: () => clientA,
+      getClientForGateway: (gw) => (gw === 'gw-a' ? clientA : gw === 'gw-b' ? clientB : null),
+      getLiveStreamRegistry: () => regA,
+      getLiveStreamRegistryForGateway: (gw) => (gw === 'gw-a' ? regA : gw === 'gw-b' ? regB : undefined),
+      getSessionHandleRegistryForGateway: () => ({
+        toStoredId: (id) => (id === 'h-mapped' ? 's-mapped' : null),
+        toLiveId: () => '',
+        register: () => {},
+        unregister: () => {},
+        getLiveIds: () => [],
+        clear: () => {},
+      }),
+      getSessionMessagesCache: () => cacheMap,
+      getActiveRunningSessionIds: () => activeRunningSessions,
+      getActiveRunningBotNames: () => activeRunningBots,
+      setActiveStreamingContext: () => {},
+      setTurnStartedSessionId: () => {},
+      toStoredSessionId: () => null,
+      setMessageContent: (mid, text) => setMsgCalls.push({ mid, text }),
+      clearPresenceTerminal: () => {},
+      syncAgentPresence: () => { syncPresenceCalls += 1; },
+      render: () => { renderCalls += 1; },
+      armTurnWatchdog: () => {},
+      disarmTurnWatchdog: () => { disarmCalls += 1; },
+      refreshActiveSession: async () => { refreshCalls += 1; },
+      ensureMessageWindow: (n) => { ensureWindowLast = n; },
+      onForceSyncMessageList: (v) => { forceSyncLast = v; },
+      onCaptureInteractiveFence: () => 7,
+      onInteractiveResumeReconciled: (info) => reconciled.push(info),
+    });
+
+    // resolveStoredSessionId: mapped in streamRegistry & gatewayCount < 2 fallback
+    regA.registerStream({ storedSessionId: 's-mapped', liveSessionId: 'lv-m', messageId: 'm-m', origin: 'remote' });
+    assert.equal(coord.resolveStoredSessionId('lv-m', 'gw-a'), 's-mapped');
+    assert.equal(coord.resolveStoredSessionId('h-mapped', 'gw-a'), 's-mapped');
+    state.gatewayCount = 1;
+    assert.equal(coord.resolveStoredSessionId('lv-active', 'gw-b'), 's-idle');
+    state.gatewayCount = 2;
+    regA.removeSession('s-mapped');
+
+    // syncFocusedStreamingProjection(undefined): resets streaming state and disarms watchdog when focused reg is empty
+    state.isStreaming = true;
+    coord.syncFocusedStreamingProjection();
+    assert.equal(state.isStreaming, false);
+    assert.equal(disarmCalls, 1);
+
+    // scheduleActiveSessionIdleSync skips if streamRegistry already has activeSessionId, triggers when absent
+    regA.registerStream({ storedSessionId: 's-idle', liveSessionId: 'lv-i', messageId: 'm-i', origin: 'remote' });
+    coord.scheduleActiveSessionIdleSync(30);
+    t.mock.timers.tick(50);
+    assert.equal(refreshCalls, 0);
+    regA.removeSession('s-idle');
+
+    coord.scheduleActiveSessionIdleSync(30);
+    t.mock.timers.tick(50);
+    assert.equal(refreshCalls, 1);
+
+    // ensureRemoteObserverStream when focused on gw-b::s-hyd: fetchSessionMessages fallback + onInteractiveResumeReconciled + inflightAssistant
+    state.activeFocus = { type: 'session', sessionId: 's-hyd', gatewayId: 'gw-b' };
+    state.activeSessionId = 's-hyd';
+    state.activeGatewayId = 'gw-b';
+    coord.ensureRemoteObserverStream('s-hyd', 'lv-hyd', {}, 'gw-b');
+    await flushMicrotasks();
+
+    assert.equal(reconciled.length, 1);
+    assert.equal(reconciled[0].storedSessionId, 's-hyd');
+    assert.equal(reconciled[0].liveSessionId, 'lv-hyd-ret');
+    assert.equal(reconciled[0].fence, 7);
+    assert.equal(state.messages.some((m) => m.role === 'user' && m.content === 'fetched-user-prompt' && m.rowId === 42), true);
+    assert.ok(setMsgCalls.some((c) => c.text === 'reconciled-assistant'));
+    assert.ok(ensureWindowLast >= 2);
+    assert.equal(forceSyncLast, true);
+    assert.ok(renderCalls > 0);
+    assert.ok(syncPresenceCalls > 0);
+
+    // Epoch changed during fetchSessionMessages -> aborts before inserting
+    regB.removeSession('s-hyd');
+    cacheMap.delete('gw-b::s-hyd');
+    state.messages = [];
+    clientMode = 'bump-epoch-fetch';
+    coord.ensureRemoteObserverStream('s-hyd', 'lv-hyd-2', {}, 'gw-b');
+    await flushMicrotasks();
+    assert.equal(state.messages.some((m) => m.role === 'user'), false);
+
+    // Epoch changed during callSessionResumeQuick -> skips reconciler & fetchSessionMessages
+    regB.removeSession('s-hyd');
+    cacheMap.delete('gw-b::s-hyd');
+    state.messages = [];
+    clientMode = 'bump-epoch-resume';
+    coord.ensureRemoteObserverStream('s-hyd', 'lv-hyd-3', {}, 'gw-b');
+    await flushMicrotasks();
+    assert.equal(state.messages.some((m) => m.role === 'user'), false);
+  } finally {
+    t.mock.timers.reset();
+  }
+});

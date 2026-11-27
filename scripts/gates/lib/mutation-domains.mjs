@@ -120,7 +120,10 @@ export const MUTATION_DOMAINS = {
   },
   turnSettlement: {
     title: '流式回合收口与状态收敛 (Turn Settlement)',
-    mutate: ['packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:559-785'],
+    mutate: [
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:589-770',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:869-912',
+    ],
     testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.settlement.test.mjs'],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
@@ -129,7 +132,7 @@ export const MUTATION_DOMAINS = {
   },
   turnExecutionWatchdog: {
     title: '回合看门狗探活续期与离线收敛 (Turn Execution Watchdog)',
-    mutate: ['packages/desktop/src/renderer/services/turnExecutionService.ts:243-509'],
+    mutate: ['packages/desktop/src/renderer/services/turnExecutionService.ts:275-552'],
     testFiles: ['packages/desktop/__tests__/unit/turnExecutionService.watchdog.test.mjs'],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/services/turnExecutionService.ts',
@@ -139,9 +142,9 @@ export const MUTATION_DOMAINS = {
   turnExecutionSubmit: {
     title: '回合并发提交、打断与流式绑定 (Turn Execution Submit & Interrupt)',
     mutate: [
-      'packages/desktop/src/renderer/services/turnExecutionService.ts:798-804',
-      'packages/desktop/src/renderer/services/turnExecutionService.ts:966-1040',
-      'packages/desktop/src/renderer/services/turnExecutionService.ts:1119-1190',
+      'packages/desktop/src/renderer/services/turnExecutionService.ts:877-882',
+      'packages/desktop/src/renderer/services/turnExecutionService.ts:1063-1139',
+      'packages/desktop/src/renderer/services/turnExecutionService.ts:1218-1290',
     ],
     testFiles: [
       'packages/desktop/__tests__/unit/turnExecutionService.submit.test.mjs',
@@ -155,11 +158,11 @@ export const MUTATION_DOMAINS = {
   sessionSelectToolPatch: {
     title: '会话切回流式工具补刷与删除清理 (Session Select & Delete Cleanup)',
     mutate: [
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:421-427',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:458-464',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:754-763',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:791-809',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:837-850',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:386-387',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:400-407',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:835-844',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:875-899',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:922-935',
     ],
     testFiles: ['packages/desktop/__tests__/unit/sessionOperationService.test.mjs'],
     buildCommand:
@@ -226,7 +229,10 @@ export const MUTATION_DOMAINS = {
       'packages/desktop/src/renderer/learningRest.ts',
       'packages/desktop/src/renderer/services/learningService.ts',
     ],
-    testFiles: ['packages/desktop/__tests__/unit/learning-service.test.mjs'],
+    testFiles: [
+      'packages/desktop/__tests__/unit/learning-service.test.mjs',
+      'packages/desktop/__tests__/unit/learning-service-multigateway.test.mjs',
+    ],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/learningRest.ts src/renderer/services/learningService.ts',
     minScore: 80,
@@ -325,7 +331,7 @@ export const MUTATION_DOMAINS = {
   },
   liveStreamCoordHydration: {
     title: '实时流解析、同步与远端补全协调器 (Live Stream Hydration)',
-    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:99-411'],
+    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:200-561'],
     testFiles: [
       'packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs',
       'packages/desktop/__tests__/unit/liveStreamCoordinator.boundaries.test.mjs',
@@ -337,7 +343,7 @@ export const MUTATION_DOMAINS = {
   },
   liveStreamCoordAttach: {
     title: '实时流恢复挂载与观察者投影协调器 (Live Stream Attach & Observer)',
-    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:411-656'],
+    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:563-848'],
     testFiles: [
       'packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs',
       'packages/desktop/__tests__/unit/liveStreamCoordinator.boundaries.test.mjs',
@@ -350,12 +356,12 @@ export const MUTATION_DOMAINS = {
   messageLoadingStreaming: {
     title: '会话加载权威对账与恢复状态机 (Message Loading Streaming)',
     mutate: [
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:178-203',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:230-283',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:361-424',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:474-553',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:656-691',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:789-814',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:184-209',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:235-275',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:427-492',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:547-629',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:736-770',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:860-888',
     ],
     testFiles: ['packages/desktop/__tests__/unit/messageLoadingService.test.mjs'],
     buildCommand:
@@ -381,9 +387,9 @@ export const MUTATION_DOMAINS = {
   gatewayStreamingDispatch: {
     title: '网关流式事件动作分发 (Gateway Streaming Dispatch)',
     mutate: [
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:207-236',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:293-401',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:428-552',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:236-270',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:331-451',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:470-583',
     ],
     testFiles: [
       'packages/desktop/__tests__/unit/gatewayEventDispatcher.dispatch.test.mjs',
@@ -397,10 +403,11 @@ export const MUTATION_DOMAINS = {
   gatewayFrameAndReconnect: {
     title: '网关帧解析与重连续流 (Gateway Frame & Reconnect)',
     mutate: [
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:195-205',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:811-974',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1297-1299',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1401-1459',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:224-234',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:801-867',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:914-1001',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1321-1323',
+      'packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:850-918',
     ],
     testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.reconnect.test.mjs'],
     buildCommand:
