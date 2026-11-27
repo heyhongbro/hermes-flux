@@ -53,7 +53,15 @@ export interface SettingsProfileRow {
   uiMeta?: ProfileUiMeta;
 }
 
-export type SettingsSectionId = 'appearance' | 'projects' | 'providers' | 'agents' | 'extensions' | 'connection' | 'about';
+export type SettingsSectionId =
+  | 'general'
+  | 'appearance'
+  | 'gateway'
+  | 'projects'
+  | 'providers'
+  | 'agents'
+  | 'extensions'
+  | 'about';
 
 export interface SettingsOperationResult {
   ok: boolean;

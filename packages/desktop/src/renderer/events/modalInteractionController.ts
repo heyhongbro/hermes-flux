@@ -40,6 +40,7 @@ export interface ModalInteractionDeps {
     projectId?: string;
     containerId?: string;
     title?: string;
+    gatewayId?: string;
   }) => Promise<string | null>;
   readonly deleteSession: (id: string, gatewayId?: string) => Promise<void>;
   readonly renameSession: (id: string, title: string, gatewayId?: string) => Promise<void>;
@@ -48,9 +49,13 @@ export interface ModalInteractionDeps {
   readonly exportMarkdown: (id: string, gatewayId?: string) => Promise<void>;
   readonly copySessionId: (id: string) => Promise<void>;
   readonly openBotChat: (profile: string, gatewayId?: string) => Promise<void> | void;
-  readonly openBotSettings: (profile: string) => void;
+  readonly openBotSettings: (profile: string, options?: { gatewayId?: string }) => void;
   readonly openGroupRoom: (roomId: string, gatewayId?: string) => Promise<void>;
-  readonly createGroupRoom: (title: string, members: string[]) => Promise<{ room_id?: string; room?: { room_id?: string } } | null>;
+  readonly createGroupRoom: (
+    title: string,
+    members: string[],
+    gatewayId?: string,
+  ) => Promise<{ room_id?: string; room?: { room_id?: string } } | null>;
   readonly disbandGroupRoom: (roomId: string, gatewayId?: string) => Promise<void>;
   readonly fetchGroupRooms: () => Promise<void>;
   readonly routeSend?: (text: string) => Promise<void>;
@@ -239,6 +244,7 @@ export class ModalInteractionController {
           profile: selectedAgent,
           projectId: projSelect || undefined,
           ...(targetContainerId ? { containerId: targetContainerId } : {}),
+          ...(input?.gatewayId ? { gatewayId: input.gatewayId } : {}),
           title: titleInput || this.deps.t('chat.defaultTaskTitle'),
         });
         if (!createdSessionId) {
@@ -284,9 +290,11 @@ export class ModalInteractionController {
           : [input?.agent || this.selectedModalAgent || state.profileName || 'default', 'default'];
 
       try {
+        const targetGw = input?.gatewayId || state.activeFocus?.gatewayId || state.activeGatewayId;
         const room = await this.deps.createGroupRoom(
           titleInput || this.deps.t('chat.defaultGroupTitle'),
           finalMembers,
+          targetGw,
         );
         const roomId = room?.room?.room_id || room?.room_id || '';
         if (!roomId) {
@@ -310,7 +318,6 @@ export class ModalInteractionController {
             containerId: targetContainerId || undefined,
           });
         }
-        const targetGw = input?.gatewayId || state.activeFocus?.gatewayId || state.activeGatewayId;
         await this.deps.openGroupRoom(roomId, targetGw);
         this.deps.restoreComposerFocus();
         if (firstMessage && this.deps.sendGroupMessage) {
@@ -344,7 +351,7 @@ export class ModalInteractionController {
     if (action === 'bot-chat') {
       void this.deps.openBotChat(ctx.targetId, ctx.gatewayId);
     } else if (action === 'bot-edit') {
-      this.deps.openBotSettings(ctx.targetId);
+      this.deps.openBotSettings(ctx.targetId, ctx.gatewayId ? { gatewayId: ctx.gatewayId } : undefined);
     } else if (action === 'group-rename') {
       this.deps.commitState({ editingGroupRoomId: ctx.targetId, editingGroupGatewayId: ctx.gatewayId });
       this.deps.requestRender();

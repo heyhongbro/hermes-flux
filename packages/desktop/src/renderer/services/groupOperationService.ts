@@ -95,7 +95,11 @@ export interface GroupOperationService {
   refreshGroupRoomLog(roomId: string): Promise<number>;
   syncGroupRoomLogsToState(roomId: string, logs: readonly GroupMessageEntry[]): void;
   sendGroupMessage(roomId: string, text: string): Promise<void>;
-  createGroupRoom(title: string, members: string[]): Promise<{ room_id?: string; room?: { room_id?: string } } | null>;
+  createGroupRoom(
+    title: string,
+    members: string[],
+    gatewayId?: string,
+  ): Promise<{ room_id?: string; room?: { room_id?: string } } | null>;
   disbandGroupRoom(roomId: string, gatewayId?: string): Promise<void>;
 }
 
@@ -366,10 +370,12 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
   async function createGroupRoom(
     title: string,
     members: string[],
+    gatewayId?: string,
   ): Promise<{ room_id?: string; room?: { room_id?: string } } | null> {
     const state = deps.getState();
+    const targetGw = gatewayId || state.activeGatewayId;
     const client = deps.getClientForGateway
-      ? deps.getClientForGateway(state.activeGatewayId)
+      ? deps.getClientForGateway(targetGw)
       : deps.getGatewayClient();
     if (!client) return null;
     return await groupRoomStore.createRoom(title, members, client);

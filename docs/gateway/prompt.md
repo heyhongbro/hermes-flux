@@ -5,9 +5,9 @@
 
 | Method | Params (Contract) | Result (Contract) | Call Sites | Live Probe |
 | --- | --- | --- | --- | --- |
-| `command.dispatch` | `name` `arg` `session_id` `profile` | `type` `output` `target` `message` `notice` `display` `name` `status` | `packages/core/src/session/interactiveService.ts:308`<br>`packages/core/src/session/interactiveService.ts:338`<br>`packages/desktop/src/renderer/services/learningService.ts:285`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:1405` | Skipped: Command dispatch requires an active session and live command dispatcher (exec/send/skill/prefill); explicitly skipped in offline probes and guarded by the contract table and domain unit tests. |
+| `command.dispatch` | `name` `arg` `session_id` `profile` | `type` `output` `target` `message` `notice` `display` `name` `status` | `packages/core/src/session/interactiveService.ts:308`<br>`packages/core/src/session/interactiveService.ts:338`<br>`packages/desktop/src/renderer/services/learningService.ts:318`<br>`packages/desktop/src/renderer/services/settingsExtensionsActions.ts:234` | Skipped: Command dispatch requires an active session and live command dispatcher (exec/send/skill/prefill); explicitly skipped in offline probes and guarded by the contract table and domain unit tests. |
 | `complete.path` | `profile` `word` `cwd` `session_id` | `items` | `packages/core/src/session/interactiveService.ts:251` | Skipped: File path completion requires an active session cwd and live workspace filesystem traversal; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios. |
-| `complete.slash` | `text` `session_id` `profile` | `items` `replace_from` | `packages/core/src/session/interactiveService.ts:231`<br>`packages/desktop/src/renderer/services/learningService.ts:113`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:399` | Skipped: Live slash completion requires binding to an active session's profile and project skills context; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios. |
+| `complete.slash` | `text` `session_id` `profile` | `items` `replace_from` | `packages/core/src/session/interactiveService.ts:231`<br>`packages/desktop/src/renderer/services/learningService.ts:141`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:521` | Skipped: Live slash completion requires binding to an active session's profile and project skills context; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios. |
 | `file.attach` | `session_id` `profile` `path` `data_url` `name` `staged_upload` | `attached` `name` `path` `ref_path` `ref_text` `uploaded` | `packages/desktop/src/renderer/services/turnExecutionService.ts:1177` | Skipped: File attachment upload channel requires an active session staging area and live model context; explicitly skipped in offline probes and guarded by the contract table and send unit tests. |
 | `image.attach_bytes` | `session_id` `profile` `content_base64` `data` `filename` `ext` | `name` `width` `height` `token_estimate` `attached` `path` `count` `remainder` `text` `bytes` `message` | `packages/desktop/src/renderer/services/turnExecutionService.ts:1163` | Skipped: Binary image attachment channel requires an active session channel and vision-capable model; explicitly skipped in offline probes and guarded by the contract table and CDP tests. |
 | `prompt.background` | `session_id` `profile` `text` | `task_id` | `packages/desktop/src/renderer/services/turnSideAgentHelper.ts:114` | Skipped: Background subagent side-call requires an active session and cross-profile compute host with async event responses; explicitly skipped in offline probes and guarded by the contract table and routing unit tests. |
@@ -27,8 +27,8 @@
 - Call sites:
   - `packages/core/src/session/interactiveService.ts:308`
   - `packages/core/src/session/interactiveService.ts:338`
-  - `packages/desktop/src/renderer/services/learningService.ts:285`
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1405`
+  - `packages/desktop/src/renderer/services/learningService.ts:318`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:234`
 
 ### `complete.path`
 
@@ -45,8 +45,8 @@
 - Live probe: Skipped — Live slash completion requires binding to an active session's profile and project skills context; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios.
 - Call sites:
   - `packages/core/src/session/interactiveService.ts:231`
-  - `packages/desktop/src/renderer/services/learningService.ts:113`
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:399`
+  - `packages/desktop/src/renderer/services/learningService.ts:141`
+  - `packages/desktop/src/renderer/services/settingsDataService.ts:521`
 
 ### `file.attach`
 

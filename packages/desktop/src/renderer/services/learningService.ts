@@ -46,9 +46,12 @@ export interface LearningServiceDeps {
   getState: () => AppState;
   render: () => void;
   getGatewayClient: () => HermesGatewayClient | null;
+  getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
   getDesktopApi?: () => HermesDesktopBridge | undefined;
   getCurrentTicket?: () => string | null;
+  getTicketForGateway?: (gatewayId?: string) => string | null;
   getEffectiveUrl?: (url?: string) => string;
+  getUrlForGateway?: (gatewayId?: string) => string;
   learningRest?: LearningRest;
   t: (key: I18nKey, params?: Record<string, string | number>) => string;
   describeRpcError: (error: unknown) => string;
@@ -56,14 +59,15 @@ export interface LearningServiceDeps {
 
 export interface LoadLearningGraphOptions {
   profile?: string;
+  gatewayId?: string;
   force?: boolean;
 }
 
 export interface LearningService {
   loadLearningGraph(forceOrOptions?: boolean | LoadLearningGraphOptions, profile?: string): Promise<void>;
-  loadLearningDetail(id: string, profile?: string): Promise<void>;
-  editLearningNode(id: string, content: string, profile?: string): Promise<{ ok: boolean; message?: string }>;
-  deleteLearningNode(id: string, profile?: string): Promise<{ ok: boolean; message?: string }>;
+  loadLearningDetail(id: string, profile?: string, gatewayId?: string): Promise<void>;
+  editLearningNode(id: string, content: string, profile?: string, gatewayId?: string): Promise<{ ok: boolean; message?: string }>;
+  deleteLearningNode(id: string, profile?: string, gatewayId?: string): Promise<{ ok: boolean; message?: string }>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -75,28 +79,52 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 export function createLearningService(deps: LearningServiceDeps): LearningService {
   let framesGen = 0;
   let detailGen = 0;
-  let lastClient: HermesGatewayClient | null = null;
+  const lastClientByGw = new Map<string, HermesGatewayClient | null>();
   const graphCache = new Map<string, ConstellationGraph>();
 
-  function syncClientFence(client: HermesGatewayClient | null): void {
-    if (client === lastClient) return;
-    lastClient = client;
-    graphCache.clear();
+  function resolveTargetGatewayId(explicitGatewayId?: string): string {
+    const state = deps.getState();
+    return explicitGatewayId || state.activeFocus?.gatewayId || state.activeGatewayId || '';
   }
 
-  function resolveRestAdapter(): LearningRest | null {
+  function resolveClient(gatewayId?: string): HermesGatewayClient | null {
+    if (gatewayId && deps.getClientForGateway) {
+      return deps.getClientForGateway(gatewayId);
+    }
+    return deps.getGatewayClient();
+  }
+
+  function buildCacheKey(profile: string, gatewayId?: string): string {
+    return `${gatewayId || 'default'}::${profile}`;
+  }
+
+  function syncClientFence(client: HermesGatewayClient | null, gatewayId?: string): void {
+    const scopeKey = gatewayId || 'default';
+    if (lastClientByGw.has(scopeKey) && lastClientByGw.get(scopeKey) === client) return;
+    lastClientByGw.set(scopeKey, client);
+    const prefix = `${scopeKey}::`;
+    for (const key of Array.from(graphCache.keys())) {
+      if (key.startsWith(prefix)) graphCache.delete(key);
+    }
+  }
+
+  function resolveRestAdapter(gatewayId?: string): LearningRest | null {
     if (deps.learningRest) return deps.learningRest;
     const api = deps.getDesktopApi?.();
     if (!api?.httpProxy) return null;
-    const rawUrl = deps.getState().gatewayUrl;
+    const resolveRawUrl = (): string =>
+      (gatewayId && deps.getUrlForGateway ? deps.getUrlForGateway(gatewayId) : '') ||
+      deps.getState().gatewayUrl;
+    const rawUrl = resolveRawUrl();
     const resolvedUrl = deps.getEffectiveUrl ? deps.getEffectiveUrl(rawUrl) : (rawUrl || '').trim();
     if (!resolvedUrl) return null;
     return createLearningRest({
       baseUrl: () => {
-        const currentUrl = deps.getState().gatewayUrl;
+        const currentUrl = resolveRawUrl();
         return deps.getEffectiveUrl ? deps.getEffectiveUrl(currentUrl) : (currentUrl || '').trim();
       },
-      ticket: () => deps.getCurrentTicket?.() || '',
+      ticket: () =>
+        (gatewayId && deps.getTicketForGateway ? deps.getTicketForGateway(gatewayId) : deps.getCurrentTicket?.()) || '',
       proxy: (opts) => api.httpProxy(opts),
     });
   }
@@ -146,39 +174,44 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
   ): Promise<void> {
     const force = typeof forceOrOptions === 'boolean' ? forceOrOptions : Boolean(forceOrOptions?.force);
     const optionProfile = typeof forceOrOptions === 'object' ? forceOrOptions?.profile : explicitProfile;
+    const targetGatewayId = resolveTargetGatewayId(
+      typeof forceOrOptions === 'object' ? forceOrOptions?.gatewayId : undefined,
+    );
 
     const state = deps.getState();
     const targetProfile = normalizeLearningProfile(optionProfile ?? state.profileName);
-    const client = deps.getGatewayClient();
-    syncClientFence(client);
+    const cacheKey = buildCacheKey(targetProfile, targetGatewayId);
+    const client = resolveClient(targetGatewayId);
+    syncClientFence(client, targetGatewayId);
 
     const activeStateProfile =
       state.learningState.status !== 'idle' && state.learningState.profile
         ? normalizeLearningProfile(state.learningState.profile)
         : undefined;
 
-    if (!force) {
+    if (!force && !targetGatewayId) {
       if (state.learningState.status === 'ready' && activeStateProfile === targetProfile) {
         return;
       }
       if (state.learningState.status === 'loading' && activeStateProfile === targetProfile) {
         return;
       }
-      if (client && graphCache.has(targetProfile)) {
-        const cached = graphCache.get(targetProfile)!;
-        if (
-          state.learningDetail.status !== 'idle' &&
-          normalizeLearningProfile(state.learningDetail.profile) !== targetProfile
-        ) {
-          ++detailGen;
-          state.learningDetail = { status: 'idle' };
-        }
-        state.learningState = { status: 'ready', profile: targetProfile, graph: cached };
-        deps.render();
-        return;
+    }
+    if (!force && client && graphCache.has(cacheKey)) {
+      const cached = graphCache.get(cacheKey)!;
+      if (
+        state.learningDetail.status !== 'idle' &&
+        normalizeLearningProfile(state.learningDetail.profile) !== targetProfile
+      ) {
+        ++detailGen;
+        state.learningDetail = { status: 'idle' };
       }
-    } else {
-      graphCache.delete(targetProfile);
+      state.learningState = { status: 'ready', profile: targetProfile, graph: cached };
+      deps.render();
+      return;
+    }
+    if (force) {
+      graphCache.delete(cacheKey);
     }
 
     if (
@@ -205,7 +238,7 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
     deps.render();
 
     const isDefaultProfile = targetProfile.toLowerCase() === 'default';
-    const rest = resolveRestAdapter();
+    const rest = resolveRestAdapter(targetGatewayId);
 
     try {
       let graph: ConstellationGraph;
@@ -251,8 +284,8 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
         graph = await fetchProfileSkillsFallback(client, targetProfile);
       }
 
-      if (expectedGen !== framesGen || deps.getGatewayClient() !== client) return;
-      graphCache.set(targetProfile, graph);
+      if (expectedGen !== framesGen || resolveClient(targetGatewayId) !== client) return;
+      graphCache.set(cacheKey, graph);
       deps.getState().learningState = {
         status: 'ready',
         profile: targetProfile,
@@ -260,7 +293,7 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
       };
       deps.render();
     } catch (err) {
-      if (expectedGen !== framesGen || deps.getGatewayClient() !== client) return;
+      if (expectedGen !== framesGen || resolveClient(targetGatewayId) !== client) return;
       deps.getState().learningState = {
         status: 'error',
         profile: targetProfile,
@@ -303,12 +336,13 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
     };
   }
 
-  async function loadLearningDetail(id: string, explicitProfile?: string): Promise<void> {
+  async function loadLearningDetail(id: string, explicitProfile?: string, explicitGatewayId?: string): Promise<void> {
     const nodeId = id.trim();
     if (!nodeId) return;
 
-    const client = deps.getGatewayClient();
-    syncClientFence(client);
+    const targetGatewayId = resolveTargetGatewayId(explicitGatewayId);
+    const client = resolveClient(targetGatewayId);
+    syncClientFence(client, targetGatewayId);
     const state = deps.getState();
     const activeGraphProfile =
       state.learningState.status !== 'idle' ? state.learningState.profile : undefined;
@@ -331,7 +365,7 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
     deps.render();
 
     const isDefaultProfile = targetProfile.toLowerCase() === 'default';
-    const rest = resolveRestAdapter();
+    const rest = resolveRestAdapter(targetGatewayId);
 
     try {
       let res: LearningDetailResult;
@@ -358,7 +392,7 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
         res = { ok: false, message: deps.t('mobile.memory.loadError') };
       }
 
-      if (expectedGen !== detailGen || deps.getGatewayClient() !== client) return;
+      if (expectedGen !== detailGen || resolveClient(targetGatewayId) !== client) return;
       if (!res?.ok) {
         deps.getState().learningDetail = {
           status: 'error',
@@ -383,7 +417,7 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
       };
       deps.render();
     } catch (err) {
-      if (expectedGen !== detailGen || deps.getGatewayClient() !== client) return;
+      if (expectedGen !== detailGen || resolveClient(targetGatewayId) !== client) return;
       deps.getState().learningDetail = {
         status: 'error',
         id: nodeId,
@@ -405,15 +439,18 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
     id: string,
     content: string,
     explicitProfile?: string,
+    explicitGatewayId?: string,
   ): Promise<{ ok: boolean; message?: string }> {
-    const client = deps.getGatewayClient();
-    syncClientFence(client);
+    const targetGatewayId = resolveTargetGatewayId(explicitGatewayId);
+    const client = resolveClient(targetGatewayId);
+    syncClientFence(client, targetGatewayId);
     if (!client) {
       return { ok: false, message: deps.t('chat.gatewayNotConnected') };
     }
     const targetProfile = resolveMutationProfile(explicitProfile);
+    const cacheKey = buildCacheKey(targetProfile, targetGatewayId);
     const isDefaultProfile = targetProfile.toLowerCase() === 'default';
-    const rest = resolveRestAdapter();
+    const rest = resolveRestAdapter(targetGatewayId);
 
     try {
       let res: LearningMutationResult;
@@ -434,18 +471,18 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
         res = await client.call<LearningMutationResult>('learning.edit', { id, content });
       }
 
-      if (deps.getGatewayClient() !== client) {
+      if (resolveClient(targetGatewayId) !== client) {
         return { ok: false, message: deps.t('chat.gatewayNotConnected') };
       }
       if (!res?.ok) {
         return { ok: false, message: res?.message || deps.t('settings.loadFailed') };
       }
-      graphCache.delete(targetProfile);
-      await loadLearningDetail(id, targetProfile);
-      if (deps.getGatewayClient() !== client) {
+      graphCache.delete(cacheKey);
+      await loadLearningDetail(id, targetProfile, targetGatewayId || undefined);
+      if (resolveClient(targetGatewayId) !== client) {
         return { ok: true };
       }
-      await loadLearningGraph({ profile: targetProfile, force: true });
+      await loadLearningGraph({ profile: targetProfile, gatewayId: targetGatewayId || undefined, force: true });
       return { ok: true };
     } catch (err) {
       return { ok: false, message: deps.describeRpcError(err) };
@@ -455,15 +492,18 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
   async function deleteLearningNode(
     id: string,
     explicitProfile?: string,
+    explicitGatewayId?: string,
   ): Promise<{ ok: boolean; message?: string }> {
-    const client = deps.getGatewayClient();
-    syncClientFence(client);
+    const targetGatewayId = resolveTargetGatewayId(explicitGatewayId);
+    const client = resolveClient(targetGatewayId);
+    syncClientFence(client, targetGatewayId);
     if (!client) {
       return { ok: false, message: deps.t('chat.gatewayNotConnected') };
     }
     const targetProfile = resolveMutationProfile(explicitProfile);
+    const cacheKey = buildCacheKey(targetProfile, targetGatewayId);
     const isDefaultProfile = targetProfile.toLowerCase() === 'default';
-    const rest = resolveRestAdapter();
+    const rest = resolveRestAdapter(targetGatewayId);
 
     try {
       let res: LearningMutationResult;
@@ -484,19 +524,19 @@ export function createLearningService(deps: LearningServiceDeps): LearningServic
         res = await client.call<LearningMutationResult>('learning.delete', { id });
       }
 
-      if (deps.getGatewayClient() !== client) {
+      if (resolveClient(targetGatewayId) !== client) {
         return { ok: false, message: deps.t('chat.gatewayNotConnected') };
       }
       if (!res?.ok) {
         return { ok: false, message: res?.message || deps.t('settings.loadFailed') };
       }
-      graphCache.delete(targetProfile);
+      graphCache.delete(cacheKey);
       const state = deps.getState();
       if (state.learningDetail.status !== 'idle' && state.learningDetail.id === id) {
         ++detailGen;
         state.learningDetail = { status: 'idle' };
       }
-      await loadLearningGraph({ profile: targetProfile, force: true });
+      await loadLearningGraph({ profile: targetProfile, gatewayId: targetGatewayId || undefined, force: true });
       return { ok: true };
     } catch (err) {
       return { ok: false, message: deps.describeRpcError(err) };

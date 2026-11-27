@@ -7,9 +7,9 @@
 | --- | --- | --- | --- | --- |
 | `profiles.configure` | `profile` `name` `ui_meta` `ui_meta_expected_revisions` `soul` `description` `model` `provider` `confirm_expensive_model` `disabled_skills` `enabled_toolsets` `enabled_mcp_servers` | `ok` `applied` `confirm_required` `confirm_message` | `packages/core/src/organization/profileMetaAdapter.ts:130`<br>`packages/core/src/organization/profileMetaAdapter.ts:184`<br>`packages/core/src/profile/profileService.ts:274` | ✅ 0.22.5 |
 | `profiles.create` | `profile` `name` `description` `clone_from` `clone_all` `clone_channels` `no_skills` `no_alias` `soul` `model` `provider` `share_auth` `mirror_credentials` | `ok` `name` `path` `soul_written` `model_set` `mirrored` `warnings` | `packages/core/src/profile/profileService.ts:215` | ✅ 0.22.5 |
-| `profiles.describe` | `profile` `name` | `name` `description` `soul` `model` `skills` `toolsets` `toolsets_pinned` `mcp_servers` | `packages/core/src/profile/profileService.ts:128`<br>`packages/core/src/profile/profileService.ts:184`<br>`packages/desktop/src/renderer/services/learningService.ts:111` | ✅ 0.22.5 |
+| `profiles.describe` | `profile` `name` | `name` `description` `soul` `model` `skills` `toolsets` `toolsets_pinned` `mcp_servers` | `packages/core/src/profile/profileService.ts:128`<br>`packages/core/src/profile/profileService.ts:184`<br>`packages/desktop/src/renderer/services/learningService.ts:139` | ✅ 0.22.5 |
 | `profiles.get_asset` | `profile` `name` `asset` | `found` `mime` `size` `data` | `packages/core/src/profile/profileService.ts:299` | ✅ 0.22.5 |
-| `profiles.list` | `profile` `include_sessions` | `profiles` `bot_mode_protocol` `install_id` | `packages/core/src/organization/profileMetaAdapter.ts:111`<br>`packages/core/src/profile/profileService.ts:96`<br>`packages/core/src/rpc/clientChannelHelpers.ts:310`<br>`packages/desktop/src/renderer/settingsController.ts:162` | ✅ 0.22.5 |
+| `profiles.list` | `profile` `include_sessions` | `profiles` `bot_mode_protocol` `install_id` | `packages/core/src/organization/profileMetaAdapter.ts:111`<br>`packages/core/src/profile/profileService.ts:96`<br>`packages/core/src/rpc/clientChannelHelpers.ts:310`<br>`packages/desktop/src/renderer/settingsController.ts:170` | ✅ 0.22.5 |
 | `profiles.set_asset` | `profile` `name` `asset` `data` `clear` | `ok` `asset` `size` `removed` | `packages/core/src/profile/profileService.ts:324` | ✅ 0.22.5 |
 
 ## Details
@@ -41,7 +41,7 @@
 - Call sites:
   - `packages/core/src/profile/profileService.ts:128`
   - `packages/core/src/profile/profileService.ts:184`
-  - `packages/desktop/src/renderer/services/learningService.ts:111`
+  - `packages/desktop/src/renderer/services/learningService.ts:139`
 
 ### `profiles.get_asset`
 
@@ -60,7 +60,7 @@
   - `packages/core/src/organization/profileMetaAdapter.ts:111`
   - `packages/core/src/profile/profileService.ts:96`
   - `packages/core/src/rpc/clientChannelHelpers.ts:310`
-  - `packages/desktop/src/renderer/settingsController.ts:162`
+  - `packages/desktop/src/renderer/settingsController.ts:170`
 
 ### `profiles.set_asset`
 

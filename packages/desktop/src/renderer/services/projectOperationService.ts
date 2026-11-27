@@ -56,6 +56,7 @@ export interface ProjectsListResponse {
 export interface ProjectOperationDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
   readonly render: () => void;
   readonly botActivityStore: BotActivityStore;
   readonly botForeverChatCache: Map<string, string>;
@@ -64,19 +65,22 @@ export interface ProjectOperationDeps {
 }
 
 export interface ProjectOperationService {
-  fetchProjects(): Promise<void>;
-  createProject(params: { name: string; path: string }): Promise<{ ok: boolean; message?: string }>;
+  fetchProjects(gatewayId?: string): Promise<void>;
+  createProject(params: { name: string; path: string }, gatewayId?: string): Promise<{ ok: boolean; message?: string }>;
   updateProject(
     projectId: string,
     patch: { name?: string; path?: string; boardSlug?: string },
+    gatewayId?: string,
   ): Promise<{ ok: boolean; message?: string }>;
-  deleteProject(projectId: string): Promise<{ ok: boolean; message?: string }>;
+  deleteProject(projectId: string, gatewayId?: string): Promise<{ ok: boolean; message?: string }>;
   syncProfileLastMessages(): void;
   getProjectService(): ProjectService;
 }
 
 export function createProjectOperationService(deps: ProjectOperationDeps): ProjectOperationService {
   const projectService = new ProjectService();
+  const resolveTargetClient = (gatewayId?: string): HermesGatewayClient | null =>
+    gatewayId && deps.getClientForGateway ? deps.getClientForGateway(gatewayId) : deps.getGatewayClient();
 
   function syncProfileLastMessages(): void {
     const state = deps.getState();
@@ -91,8 +95,8 @@ export function createProjectOperationService(deps: ProjectOperationDeps): Proje
     });
   }
 
-  async function fetchProjects(): Promise<void> {
-    const client = deps.getGatewayClient();
+  async function fetchProjects(gatewayId?: string): Promise<void> {
+    const client = resolveTargetClient(gatewayId);
     if (!client) return;
     const state = deps.getState();
     if (!state.settingsProjects || state.settingsProjects.status === 'idle') {
@@ -153,9 +157,13 @@ export function createProjectOperationService(deps: ProjectOperationDeps): Proje
             ...(s.boardSlug ? { boardSlug: s.boardSlug } : {}),
             ...(s.icon ? { icon: s.icon } : {}),
             ...(s.color ? { color: s.color } : {}),
+            ...(gatewayId ? { gatewayId } : {}),
             archived: false,
           }));
-        state.projects = activeProjects;
+        const isMultiGateway = (state.gatewayCount ?? 1) >= 2 && Boolean(gatewayId);
+        state.projects = isMultiGateway
+          ? [...state.projects.filter((p) => p.gatewayId !== gatewayId), ...activeProjects]
+          : activeProjects;
         state.settingsProjects = {
           status: 'ready',
           data: activeProjects.map((p) => ({
@@ -166,6 +174,7 @@ export function createProjectOperationService(deps: ProjectOperationDeps): Proje
             ...(p.boardSlug ? { boardSlug: p.boardSlug } : {}),
             ...(p.icon ? { icon: p.icon } : {}),
             ...(p.color ? { color: p.color } : {}),
+            ...(gatewayId ? { gatewayId } : {}),
             archived: false,
           })),
         };
@@ -185,8 +194,11 @@ export function createProjectOperationService(deps: ProjectOperationDeps): Proje
     }
   }
 
-  async function createProject(params: { name: string; path: string }): Promise<{ ok: boolean; message?: string }> {
-    const client = deps.getGatewayClient();
+  async function createProject(
+    params: { name: string; path: string },
+    gatewayId?: string,
+  ): Promise<{ ok: boolean; message?: string }> {
+    const client = resolveTargetClient(gatewayId);
     if (!client) {
       return { ok: false, message: 'Gateway not connected' };
     }
@@ -196,7 +208,7 @@ export function createProjectOperationService(deps: ProjectOperationDeps): Proje
         client,
         'default',
       );
-      await fetchProjects();
+      await fetchProjects(gatewayId);
       return { ok: true };
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : String(err) };
@@ -206,8 +218,9 @@ export function createProjectOperationService(deps: ProjectOperationDeps): Proje
   async function updateProject(
     projectId: string,
     patch: { name?: string; path?: string; boardSlug?: string },
+    gatewayId?: string,
   ): Promise<{ ok: boolean; message?: string }> {
-    const client = deps.getGatewayClient();
+    const client = resolveTargetClient(gatewayId);
     if (!client) {
       return { ok: false, message: 'Gateway not connected' };
     }
@@ -220,21 +233,24 @@ export function createProjectOperationService(deps: ProjectOperationDeps): Proje
         },
         client,
       );
-      await fetchProjects();
+      await fetchProjects(gatewayId);
       return { ok: true };
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : String(err) };
     }
   }
 
-  async function deleteProject(projectId: string): Promise<{ ok: boolean; message?: string }> {
-    const client = deps.getGatewayClient();
+  async function deleteProject(
+    projectId: string,
+    gatewayId?: string,
+  ): Promise<{ ok: boolean; message?: string }> {
+    const client = resolveTargetClient(gatewayId);
     if (!client) {
       return { ok: false, message: 'Gateway not connected' };
     }
     try {
       await projectService.deleteProject(projectId, client, 'default');
-      await fetchProjects();
+      await fetchProjects(gatewayId);
       return { ok: true };
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : String(err) };

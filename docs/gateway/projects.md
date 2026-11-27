@@ -9,7 +9,7 @@
 | `projects.create` | `profile` `name` `folders` `slug` `primary_path` `description` `icon` `color` `board_slug` `use` | `project` | `packages/core/src/project/projectService.ts:181` | ✅ 0.22.5 |
 | `projects.delete` | `profile` `id` | `projects` `active_id` | `packages/core/src/project/projectService.ts:228` | ✅ 0.22.5 |
 | `projects.get` | `profile` `id` | `project` | `packages/core/src/project/projectService.ts:122` | ✅ 0.22.5 |
-| `projects.list` | `profile` | `projects` `active_id` | `packages/core/src/project/projectService.ts:71`<br>`packages/desktop/src/renderer/services/projectOperationService.ts:111` | ✅ 0.22.5 |
+| `projects.list` | `profile` | `projects` `active_id` | `packages/core/src/project/projectService.ts:71`<br>`packages/desktop/src/renderer/services/projectOperationService.ts:115` | ✅ 0.22.5 |
 | `projects.remove_folder` | `profile` `id` `path` | `project` | `packages/core/src/project/projectService.ts:294` | ✅ 0.22.5 |
 | `projects.set_active` | `profile` `id` | `active_id` | `packages/core/src/project/projectService.ts:248` | ✅ 0.22.5 |
 | `projects.tree` | `profile` `preview_limit` `session_limit` | `projects` `active_id` `scoped_session_ids` | `packages/core/src/project/projectService.ts:311` | ✅ 0.22.5 |
@@ -56,7 +56,7 @@
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
   - `packages/core/src/project/projectService.ts:71`
-  - `packages/desktop/src/renderer/services/projectOperationService.ts:111`
+  - `packages/desktop/src/renderer/services/projectOperationService.ts:115`
 
 ### `projects.remove_folder`
 

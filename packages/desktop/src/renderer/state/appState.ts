@@ -156,6 +156,7 @@ export interface AppState {
   password: string;
   isSettingsOpen: boolean;
   settingsSection: SettingsSectionId;
+  settingsGatewayId: string;
   presenceLayout: 'stage' | 'dock';
   conversationWidth: ConversationWidthMode;
   leftRailLayout: LeftRailLayoutMode;
@@ -376,7 +377,8 @@ export function createInitialState(params: InitialStateParams): AppState {
     username: savedUser,
     password: savedPass,
     isSettingsOpen: false,
-    settingsSection: 'appearance',
+    settingsSection: 'general',
+    settingsGatewayId: '',
     presenceLayout: readPresenceLayout(),
     conversationWidth: loadConversationWidthMode(),
     leftRailLayout: loadLeftRailLayout(),

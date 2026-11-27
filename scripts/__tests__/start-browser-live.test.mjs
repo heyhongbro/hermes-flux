@@ -77,6 +77,10 @@ test('浏览器直跑 /__gw/auth 凭据透传与失败显式化', { timeout: 400
       res.end(JSON.stringify(obj));
     };
 
+    if (url.pathname.endsWith('/api/status')) {
+      return send(200, { auth_required: !url.pathname.includes('noauth') });
+    }
+
     if (url.pathname === '/auth/password-login') {
       seen.login.push({ body, headers: req.headers });
       if (body.password !== 'correct-horse') return send(401, { detail: 'Invalid credentials' });
@@ -526,12 +530,18 @@ test('浏览器直跑 /__gw/auth 凭据透传与失败显式化', { timeout: 400
     await postJson('/__gw/proxy', { baseUrl: `http://127.0.0.1:${gwPort}`, path: '/api/probe', method: 'GET' });
     assert.equal(seen.proxy.at(-1).headers.cookie, undefined, '登录 401 后必须清空残留 sessionCookie');
 
-    // 重新登录再切换免密服务时，也必须清空旧 Cookie
+    // 重新登录 gwPort 后再连接免密 binGwPort：双网关 Cookie 按 Origin 隔离（gwPort 保留、binGwPort 绝不带 Cookie）；同源切换免密则清理自身 Cookie
     await postJson('/__gw/auth', { url: `http://127.0.0.1:${gwPort}`, username: 'alice', password: 'correct-horse' });
     const noAuthSwitch = await postJson('/__gw/auth', { url: `http://127.0.0.1:${binGwPort}/noauth` });
     assert.equal(noAuthSwitch.data.ok, true);
     await postJson('/__gw/proxy', { baseUrl: `http://127.0.0.1:${gwPort}`, path: '/api/probe', method: 'GET' });
-    assert.equal(seen.proxy.at(-1).headers.cookie, undefined, '切换免密网关时必须清理旧 sessionCookie');
+    assert.equal(seen.proxy.at(-1).headers.cookie, 'session=sid-42', '连接免密副网关不得清除主网关已登录 Cookie');
+    await postJson('/__gw/proxy', { baseUrl: `http://127.0.0.1:${binGwPort}`, path: '/api/spa-fake.png', method: 'GET' });
+    assert.equal(binGwSeenHeaders.at(-1).cookie, undefined, '免密副网关绝不得接收主网关 Cookie');
+    const sameOriginNoAuth = await postJson('/__gw/auth', { url: `http://127.0.0.1:${gwPort}/noauth` });
+    assert.equal(sameOriginNoAuth.data.ok, true);
+    await postJson('/__gw/proxy', { baseUrl: `http://127.0.0.1:${gwPort}`, path: '/api/probe', method: 'GET' });
+    assert.equal(seen.proxy.at(-1).headers.cookie, undefined, '同源切换免密网关时必须清理该 Origin 的旧 sessionCookie');
   });
 
   await t.test('7. ws-proxy.mjs getAllowedCookieOrigin 严格闭环策略（空值/不匹配 fail-closed，大小写匹配与未传守卫放行）', async () => {

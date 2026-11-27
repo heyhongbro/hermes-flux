@@ -37,7 +37,7 @@ import {
   createInteractivePromptService,
   type InteractivePromptService,
 } from './services/interactivePromptService.js';
-import { createLogger, type HermesGatewayClient, type SessionHandleRegistry } from '@hermes-flux/core';
+import { createLogger, type HermesGatewayClient, type ServerRequestFrame, type SessionHandleRegistry } from '@hermes-flux/core';
 import type { I18nKey } from '@hermes-flux/ui';
 
 const interactiveLog = createLogger('interactive');
@@ -46,9 +46,9 @@ export interface InteractiveWiringDeps {
   readonly service: InteractivePromptService;
   readonly getState: () => AppState;
   readonly getDesktopApi: () => HermesDesktopBridge | undefined;
-  readonly selectSession: (sessionId: string, opts?: { botName?: string }) => Promise<void> | void;
-  readonly openBotChat: (botName: string) => Promise<void> | void;
-  readonly openGroupRoom: (roomId: string) => Promise<void> | void;
+  readonly selectSession: (sessionId: string, opts?: { botName?: string; gatewayId?: string }) => Promise<void> | void;
+  readonly openBotChat: (botName: string, gatewayId?: string) => Promise<void> | void;
+  readonly openGroupRoom: (roomId: string, gatewayId?: string) => Promise<void> | void;
   readonly syncStreamBottomInset: () => void;
   readonly render: () => void;
   readonly mountPromptHost?: typeof mountInteractivePromptHost;
@@ -273,19 +273,25 @@ export function createInteractiveWiring(
     if (summary.scope.kind === 'session') {
       deps.service.expandScope(`session:${summary.scope.storedSessionId || summary.entityId}`);
     }
+    const state = deps.getState();
     if (summary.entityType === 'group') {
-      void deps.openGroupRoom(summary.entityId);
+      const room = state.groupRooms.find((r) => r.roomId === summary.entityId);
+      void deps.openGroupRoom(summary.entityId, room?.gatewayId);
       return;
     }
     if (summary.entityType === 'bot') {
-      void deps.openBotChat(summary.entityId);
+      const profile = state.profiles.find((p) => p.name === summary.entityId);
+      void deps.openBotChat(summary.entityId, profile?.gatewayId);
       return;
     }
     const storedId = summary.scope.kind === 'session'
       ? (summary.scope.storedSessionId || summary.entityId)
       : summary.entityId;
-    const sess = deps.getState().sessions.find((s) => s.id === storedId);
-    void deps.selectSession(storedId, { botName: sess?.botName });
+    const sess = state.sessions.find((s) => s.id === storedId);
+    void deps.selectSession(storedId, {
+      ...(sess?.botName ? { botName: sess.botName } : {}),
+      ...(sess?.gatewayId ? { gatewayId: sess.gatewayId } : {}),
+    });
   };
 
   const buildPromptHostSnapshot = (): InteractivePromptHostSnapshot => {
@@ -389,18 +395,19 @@ export function createInteractiveWiring(
 export interface DesktopInteractiveSubsystemDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
   readonly getDesktopApi: () => HermesDesktopBridge | undefined;
   readonly getSessionHandleRegistry: () => SessionHandleRegistry;
   readonly botForeverChatCache: ReadonlyMap<string, string>;
-  readonly toStoredSessionId: (id?: string | null) => string | null;
-  readonly resolveBotNameForSession: (storedSessionId: string) => string | null;
+  readonly toStoredSessionId: (id?: string | null, gatewayId?: string) => string | null;
+  readonly resolveBotNameForSession: (storedSessionId: string, gatewayId?: string) => string | null;
   readonly describeRpcError: (err: unknown) => string;
   readonly t: (key: I18nKey, params?: Record<string, string | number>) => string;
   readonly setTimedDockNotice: (msg: string, durationMs?: number) => void;
   readonly clearTimedDockNotice?: (options?: { skipRender?: boolean }) => void;
-  readonly selectSession: (sessionId: string, opts?: { botName?: string }) => Promise<void> | void;
-  readonly openBotChat: (botName: string) => Promise<void> | void;
-  readonly openGroupRoom: (roomId: string) => Promise<void> | void;
+  readonly selectSession: (sessionId: string, opts?: { botName?: string; gatewayId?: string }) => Promise<void> | void;
+  readonly openBotChat: (botName: string, gatewayId?: string) => Promise<void> | void;
+  readonly openGroupRoom: (roomId: string, gatewayId?: string) => Promise<void> | void;
   readonly syncAgentPresence: () => void;
   readonly syncStreamBottomInset: () => void;
   readonly render: () => void;
@@ -411,13 +418,20 @@ export interface DesktopInteractiveSubsystem {
   readonly wiring: InteractiveWiringController;
   readonly reconcileResume: (input: {
     client: HermesGatewayClient;
+    gatewayId?: string;
     storedSessionId: string;
     liveSessionId: string | null;
     profile?: string;
     resume: Record<string, unknown>;
     fence: number;
   }) => void;
-  readonly attachClient: (client: HermesGatewayClient) => void;
+  readonly attachClient: (client: HermesGatewayClient, gatewayId?: string) => void;
+  readonly handleSlotServerRequest: (
+    gatewayId: string,
+    frame: ServerRequestFrame,
+    client: HermesGatewayClient,
+  ) => boolean;
+  readonly handleSlotSocketClosed: (gatewayId: string, closedGeneration: number) => void;
   readonly getBotForeverSessionMap: () => Map<string, string>;
   readonly handleNotificationAction: (action: TurnAction) => void;
 }
@@ -527,6 +541,7 @@ export function createDesktopInteractiveSubsystem(
   const service = createInteractivePromptService({
     getState: deps.getState,
     getGatewayClient: deps.getGatewayClient,
+    getClientForGateway: deps.getClientForGateway,
     getSessionHandleRegistry: deps.getSessionHandleRegistry,
     toStoredSessionId: deps.toStoredSessionId,
     resolveBotForeverSessionMap: () => collectBotForeverSessionMap(deps.getState(), deps.botForeverChatCache),
@@ -570,10 +585,14 @@ export function createDesktopInteractiveSubsystem(
       service.reconcileSessionResume(input);
       void service.probeClassicPendingApprovalsIfRunning(input);
     },
-    attachClient: (client) => {
-      client.onServerRequest((req) => service.handleServerRequest(req, client));
-      client.onSocketClosed((gen) => service.handleSocketClosed(gen));
+    attachClient: (client, gatewayId) => {
+      client.onServerRequest((req) => service.handleServerRequest(req, client, gatewayId));
+      client.onSocketClosed((gen) => service.handleSocketClosed(gen, gatewayId));
     },
+    handleSlotServerRequest: (gatewayId, frame, client) =>
+      service.handleServerRequest(frame, client, gatewayId),
+    handleSlotSocketClosed: (gatewayId, closedGeneration) =>
+      service.handleSocketClosed(closedGeneration, gatewayId),
     getBotForeverSessionMap: () => collectBotForeverSessionMap(deps.getState(), deps.botForeverChatCache),
     handleNotificationAction: (action) => notificationBridge.handleAction(action),
   };

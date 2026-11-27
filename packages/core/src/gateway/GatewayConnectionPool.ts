@@ -29,7 +29,9 @@ import {
   type GatewayConnectionPhase,
 } from '../rpc/connectionPhase.js';
 import { HermesGatewayClient, type RestFallbackOptions } from '../rpc/client.js';
+import type { ClientCapabilitiesParams } from '../rpc/contracts/gateway-contract.generated.js';
 import { parseGatewayReadyParams, type IncomingServerRequest } from '../rpc/gatewayProtocol.js';
+import type { ServerRequestFrame } from '../rpc/serverRequestRouter.js';
 import type { RpcSocketFactory } from '../rpc/socket.js';
 import { LiveStreamRegistry } from '../session/liveStreamSync.js';
 import { SessionHandleRegistry } from '../session/sessionRegistry.js';
@@ -103,13 +105,24 @@ export interface GatewayConnectionPoolOptions {
   readonly clientTimeoutMs?: number;
   readonly enableHeartbeat?: boolean;
   readonly enableLifecycleWake?: boolean;
+  readonly clientCapabilities?: ClientCapabilitiesParams;
 }
 
 export type PoolSlotEventListener = (gatewayId: GatewayInstanceId, params: unknown) => void;
 export type PoolServerRequestListener = (
   gatewayId: GatewayInstanceId,
   request: IncomingServerRequest,
+  client: HermesGatewayClient,
 ) => Promise<unknown> | unknown;
+export type PoolInteractiveRequestListener = (
+  gatewayId: GatewayInstanceId,
+  frame: ServerRequestFrame,
+  client: HermesGatewayClient,
+) => boolean | void;
+export type PoolSocketClosedListener = (
+  gatewayId: GatewayInstanceId,
+  closedGeneration: number,
+) => void;
 export type PoolHealthListener = (summary: GatewayPoolHealthSummary) => void;
 
 interface SlotInternalRecord {
@@ -140,6 +153,8 @@ export class GatewayConnectionPool {
   private readonly slots = new Map<GatewayInstanceId, SlotInternalRecord>();
   private readonly eventListeners = new Set<PoolSlotEventListener>();
   private readonly serverRequestListeners = new Set<PoolServerRequestListener>();
+  private readonly interactiveListeners = new Set<PoolInteractiveRequestListener>();
+  private readonly socketClosedListeners = new Set<PoolSocketClosedListener>();
   private readonly healthListeners = new Set<PoolHealthListener>();
 
   constructor(options: GatewayConnectionPoolOptions = {}) {
@@ -405,6 +420,20 @@ export class GatewayConnectionPool {
     };
   }
 
+  public onSlotInteractiveRequest(listener: PoolInteractiveRequestListener): () => void {
+    this.interactiveListeners.add(listener);
+    return () => {
+      this.interactiveListeners.delete(listener);
+    };
+  }
+
+  public onSlotSocketClosed(listener: PoolSocketClosedListener): () => void {
+    this.socketClosedListeners.add(listener);
+    return () => {
+      this.socketClosedListeners.delete(listener);
+    };
+  }
+
   public onHealthChange(listener: PoolHealthListener): () => void {
     this.healthListeners.add(listener);
     return () => {
@@ -442,6 +471,10 @@ export class GatewayConnectionPool {
       timeoutMs: this.options.clientTimeoutMs ?? 25_000,
       enableHeartbeat: this.options.enableHeartbeat ?? true,
       enableLifecycleWake: this.options.enableLifecycleWake ?? true,
+      clientCapabilities: this.options.clientCapabilities ?? {
+        server_requests: true,
+        desktop_local: false,
+      },
       ...(shouldRefreshUrl
         ? {
             resolveUrl: async (): Promise<string | null> => {
@@ -549,6 +582,16 @@ export class GatewayConnectionPool {
       this.emitHealth();
     });
 
+    const unsubInteractiveReq = client.onServerRequest((frame) => {
+      let claimed = false;
+      for (const listener of this.interactiveListeners) {
+        if (listener(slot.gatewayId, frame, client) === true) {
+          claimed = true;
+        }
+      }
+      return claimed;
+    });
+
     const unsubServerReq = client.setDefaultServerRequestHandler(async (req) => {
       if (this.serverRequestListeners.size === 0) {
         const err: { code: number; message: string } = {
@@ -559,16 +602,24 @@ export class GatewayConnectionPool {
       }
       let result: unknown;
       for (const listener of this.serverRequestListeners) {
-        result = await listener(slot.gatewayId, req);
+        result = await listener(slot.gatewayId, req, client);
       }
       return result;
+    });
+
+    const unsubSocketClosed = client.onSocketClosed((closedGeneration) => {
+      for (const listener of this.socketClosedListeners) {
+        listener(slot.gatewayId, closedGeneration);
+      }
     });
 
     record.unbindClient = () => {
       unsubReady();
       unsubEvent();
       unsubFsm();
+      unsubInteractiveReq();
       unsubServerReq();
+      unsubSocketClosed();
     };
   }
 

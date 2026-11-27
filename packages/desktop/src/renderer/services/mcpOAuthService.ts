@@ -39,6 +39,7 @@ import type { AppState } from '../state/appState.js';
 export interface McpOAuthServiceDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly isGatewayConnected?: () => boolean;
   readonly getDesktopApi?: () => HermesDesktopBridge | undefined;
   readonly describeRpcError: (error: unknown) => string;
   readonly t: (key: I18nKey, params?: Record<string, string | number>) => string;
@@ -79,11 +80,14 @@ export function createMcpOAuthActions(deps: McpOAuthServiceDeps): McpOAuthAction
     }
   };
 
+  const isConnected = (state: AppState): boolean =>
+    deps.isGatewayConnected ? deps.isGatewayConnected() : state.gatewayConnected;
+
   return {
     onReloadMcp: async (options) => {
       const client = deps.getGatewayClient();
       const state = deps.getState();
-      if (!client || !state.gatewayConnected) {
+      if (!client || !isConnected(state)) {
         return { ok: false, message: deps.t('settings.notConnected') };
       }
       const params: ReloadMcpParams = {
@@ -124,7 +128,7 @@ export function createMcpOAuthActions(deps: McpOAuthServiceDeps): McpOAuthAction
     onStartMcpOAuth: async (profile, name) => {
       const client = deps.getGatewayClient();
       const state = deps.getState();
-      if (!client || !state.gatewayConnected) {
+      if (!client || !isConnected(state)) {
         return { ok: false, message: deps.t('settings.notConnected') };
       }
       const targetProfile = profile || state.profileName || 'default';
@@ -157,7 +161,7 @@ export function createMcpOAuthActions(deps: McpOAuthServiceDeps): McpOAuthAction
     onPollMcpOAuth: async (profile, name, sessionId) => {
       const client = deps.getGatewayClient();
       const state = deps.getState();
-      if (!client || !state.gatewayConnected) {
+      if (!client || !isConnected(state)) {
         return { ok: false, status: 'error', message: deps.t('settings.notConnected') };
       }
       const targetProfile = profile || state.profileName || 'default';
@@ -190,7 +194,7 @@ export function createMcpOAuthActions(deps: McpOAuthServiceDeps): McpOAuthAction
     onCancelMcpOAuth: async (profile, name, sessionId) => {
       const client = deps.getGatewayClient();
       const state = deps.getState();
-      if (!client || !state.gatewayConnected) {
+      if (!client || !isConnected(state)) {
         return { ok: false, message: deps.t('settings.notConnected') };
       }
       const targetProfile = profile || state.profileName || 'default';

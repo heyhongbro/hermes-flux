@@ -286,7 +286,7 @@ test('M1.3 Coordinator helpers: matchesForeverChatSession / resolveActiveLiveSes
       assert.equal(renderCalls, 0);
       wiringSingle.coordinator.onManageGateways?.();
       assert.equal(baseState.isSettingsOpen, true);
-      assert.equal(baseState.settingsSection, 'connection');
+      assert.equal(baseState.settingsSection, 'gateway');
       assert.equal(renderCalls, 1);
 
       assert.equal(wiringSingle.coordinator.resolveClient('gw-solo'), fallbackClient);

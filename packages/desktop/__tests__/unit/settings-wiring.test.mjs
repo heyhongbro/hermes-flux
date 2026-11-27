@@ -17,18 +17,26 @@ import path from 'node:path';
 const RENDERER = path.resolve(import.meta.dirname, '../../src/renderer/index.ts');
 const RENDER_COORD = path.resolve(import.meta.dirname, '../../src/renderer/renderCoordinator.ts');
 const SETTINGS_DATA = path.resolve(import.meta.dirname, '../../src/renderer/services/settingsDataService.ts');
+const SETTINGS_EXT = path.resolve(import.meta.dirname, '../../src/renderer/services/settingsExtensionsActions.ts');
+const SETTINGS_GW = path.resolve(import.meta.dirname, '../../src/renderer/services/settingsGatewayActions.ts');
 const LEFTRAIL_DOMAIN = path.resolve(import.meta.dirname, '../../src/renderer/leftrail/leftRailSnapshotManager.ts');
 const CONTROLLER = path.resolve(import.meta.dirname, '../../src/renderer/settingsController.ts');
 const SETTINGS_UI = path.resolve(import.meta.dirname, '../../../ui/src/components-react/settings/SettingsModal.tsx');
+const GENERAL_UI = path.resolve(import.meta.dirname, '../../../ui/src/components-react/settings/GeneralSettingsPanel.tsx');
 const UI_INDEX = path.resolve(import.meta.dirname, '../../../ui/src/index.ts');
 const source = [
   fs.readFileSync(RENDERER, 'utf8'),
   fs.existsSync(RENDER_COORD) ? fs.readFileSync(RENDER_COORD, 'utf8') : '',
   fs.existsSync(SETTINGS_DATA) ? fs.readFileSync(SETTINGS_DATA, 'utf8') : '',
+  fs.existsSync(SETTINGS_EXT) ? fs.readFileSync(SETTINGS_EXT, 'utf8') : '',
+  fs.existsSync(SETTINGS_GW) ? fs.readFileSync(SETTINGS_GW, 'utf8') : '',
 ].join('\n');
 const leftRailDomain = fs.existsSync(LEFTRAIL_DOMAIN) ? fs.readFileSync(LEFTRAIL_DOMAIN, 'utf8') : '';
 const controller = fs.readFileSync(CONTROLLER, 'utf8');
-const settingsUi = fs.readFileSync(SETTINGS_UI, 'utf8');
+const settingsUi = [
+  fs.readFileSync(SETTINGS_UI, 'utf8'),
+  fs.existsSync(GENERAL_UI) ? fs.readFileSync(GENERAL_UI, 'utf8') : '',
+].join('\n');
 
 test('左轨活动指示器变体必须可配置、持久化，并真的推进左轨快照', () => {
   assert.ok(settingsUi.includes('data-activity-variant'), '外观页必须提供变体选择卡');
@@ -276,7 +284,7 @@ test('ui barrel 必须导出设置岛入口，且旧模板文件已删除', () =
 
 test('扩展新增/删除/探活与技能市场浏览/搜索/安装动作必须真实接线至网关 RPC 与控制器重对账', () => {
   const fetchStart = source.indexOf('onFetchMcpCatalog:');
-  const installEnd = source.indexOf('onTestGateway:', fetchStart);
+  const installEnd = source.indexOf('export interface GatewayTestResult', fetchStart);
   assert.ok(fetchStart !== -1 && installEnd > fetchStart, '必须声明 6 个扩展运维 SettingsActions 回调');
   const extBlock = source.slice(fetchStart, installEnd);
 
@@ -296,11 +304,11 @@ test('扩展新增/删除/探活与技能市场浏览/搜索/安装动作必须�
     );
   }
   assert.ok(
-    extBlock.includes('getBotManagementController().refreshActiveCapabilities(targetProfile)'),
+    extBlock.includes('refreshActiveCapabilities(targetProfile)'),
     '新增 MCP / 安装技能后必须同步刷新激活 BOT 能力详情',
   );
   assert.ok(
-    extBlock.includes('getBotManagementController().refreshActiveCapabilities(targetProfile, { removedMcpName: name })'),
+    extBlock.includes('refreshActiveCapabilities(targetProfile, { removedMcpName: name })'),
     '删除 MCP 后必须带 removedMcpName 清理草稿残留并重拉能力详情',
   );
   for (const symbol of [

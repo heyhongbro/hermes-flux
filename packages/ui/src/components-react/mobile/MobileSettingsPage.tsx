@@ -30,6 +30,7 @@ import {
   Plug,
   Plus,
   RefreshCw,
+  SlidersHorizontal,
   Trash2,
   X,
   Zap,
@@ -49,7 +50,15 @@ import { McpRemoveConfirmDialog } from '../settings/McpRemoveConfirmDialog.js';
 import { SkillDetailDialog } from '../settings/SkillDetailDialog.js';
 import { SkillInstallDialog } from '../settings/SkillInstallDialog.js';
 import { ProjectDirectoryPicker, remapPathPrefix } from '../settings/ProjectDirectoryPicker.js';
-import type { SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
+import { GatewaySettingsPanel, type GatewayFormBinding } from '../settings/GatewaySettingsPanel.js';
+import { SettingsGatewayScopeBar } from '../settings/SettingsGatewayScopeBar.js';
+import {
+  formatSkillCategoryLabel,
+  isSelectedSettingsGatewayConnected,
+  type GatewayDraft,
+  type SettingsActions,
+  type SettingsSnapshot,
+} from '../settings/settingsModel.js';
 import type { MobileAppearancePreference, MobileSettingsSubpage } from './mobileShellModel.js';
 import {
   MobileFloatingBackBar,
@@ -112,6 +121,7 @@ const MOBILE_ACTIVITY_OPTIONS: ReadonlyArray<{
 ];
 
 const SUBPAGE_TITLE_KEY: Record<Exclude<MobileSettingsSubpage, null>, I18nKey> = {
+  general: 'mobile.settings.sectionGeneral',
   appearance: 'mobile.settings.rowAppearance',
   projects: 'mobile.settings.rowProjects',
   gateway: 'mobile.settings.rowGateway',
@@ -142,6 +152,7 @@ export function MobileSettingsPage({
   const [editingProjectName, setEditingProjectName] = React.useState('');
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = React.useState<string | null>(null);
   const [profileDraft, setProfileDraft] = React.useState(snapshot.gateway.profileName || 'default');
+  const [testedGatewayDraft, setTestedGatewayDraft] = React.useState<GatewayDraft | null>(null);
 
   const [mcpAddOpen, setMcpAddOpen] = React.useState(false);
   const [skillHubOpen, setSkillHubOpen] = React.useState(false);
@@ -154,8 +165,27 @@ export function MobileSettingsPage({
     setUrlDraft(snapshot.gateway.url);
     setUserDraft(snapshot.gateway.username);
     setProfileDraft(snapshot.gateway.profileName || 'default');
+    setTestedGatewayDraft(null);
   }, [snapshot.gateway.url, snapshot.gateway.username, snapshot.gateway.profileName]);
 
+  const gatewayForm: GatewayFormBinding = {
+    draft: {
+      url: urlDraft,
+      username: userDraft,
+      password: passDraft,
+      profileName: profileDraft,
+    },
+    onDraftChange: (next) => {
+      setUrlDraft(next.url);
+      setUserDraft(next.username);
+      setPassDraft(next.password);
+      setProfileDraft(next.profileName);
+    },
+    testedDraft: testedGatewayDraft,
+    onTested: setTestedGatewayDraft,
+  };
+
+  const selectedGwConnected = isSelectedSettingsGatewayConnected(snapshot);
   const statusText =
     snapshot.gateway.status === 'connected'
       ? t('mobile.settings.statusConnected')
@@ -182,7 +212,8 @@ export function MobileSettingsPage({
   };
   const targetProfile = snapshot.gateway.profileName || 'default';
 
-  const appearanceSummary = `${t(MOBILE_SKIN_LABEL_KEY[appearancePref])} · ${snapshot.locale === 'en' ? t('mobile.settings.langEn') : t('mobile.settings.langZh')}`;
+  const generalSummary = snapshot.locale === 'en' ? t('mobile.settings.langEn') : t('mobile.settings.langZh');
+  const appearanceSummary = t(MOBILE_SKIN_LABEL_KEY[appearancePref]);
   const extensionsSummary = `${mcpRows.length} MCP · ${skillsRows.length} Skills`;
 
   const handleTestMcp = (name: string): Promise<void> =>
@@ -211,6 +242,13 @@ export function MobileSettingsPage({
     <>
       <MobileMenuGroup title={t('mobile.settings.groupSystem')}>
         <MobileMenuCard>
+          <MobileMenuRow
+            icon={<SlidersHorizontal size={18} strokeWidth={1.85} />}
+            title={t('mobile.settings.rowGeneral')}
+            summary={generalSummary}
+            testId="mobile-settings-row-general"
+            onClick={() => onSelectSubpage('general')}
+          />
           <MobileMenuRow
             icon={<Palette size={18} strokeWidth={1.85} />}
             title={t('mobile.settings.rowAppearance')}
@@ -268,28 +306,11 @@ export function MobileSettingsPage({
     </>
   );
 
-  const renderAppearanceSubpage = (): React.ReactElement => (
+  const renderGeneralSubpage = (): React.ReactElement => (
     <>
       <section className="m-settings-group">
-        <h2 className="m-settings-group__title">{t('mobile.settings.skinGroup')}</h2>
+        <h2 className="m-settings-group__title">{t('mobile.settings.language')}</h2>
         <div className="m-settings-card">
-          <div className="m-settings-seg-row" role="radiogroup" aria-label={t('mobile.settings.skinGroup')}>
-            {MOBILE_SKIN_OPTIONS.map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                role="radio"
-                aria-checked={appearancePref === opt.id}
-                data-appearance-opt={opt.id}
-                className="m-settings-seg-btn"
-                data-active={appearancePref === opt.id ? 'true' : 'false'}
-                onClick={() => onSetAppearancePreference(opt.id)}
-              >
-                {t(opt.labelKey)}
-              </button>
-            ))}
-          </div>
-
           <div className="m-settings-kv-row">
             <span className="m-settings-kv-row__label">{t('mobile.settings.language')}</span>
             <div className="m-settings-lang-pills">
@@ -310,6 +331,68 @@ export function MobileSettingsPage({
                 {t('mobile.settings.langEn')}
               </button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="m-settings-group">
+        <h2 className="m-settings-group__title">{t('mobile.settings.orgGroup')}</h2>
+        <div className="m-settings-card">
+          <div className="m-settings-kv-row">
+            <span className="m-settings-kv-row__label">{t('mobile.settings.showDoneSection')}</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={orgPrefs.showDoneSection}
+              data-state={orgPrefs.showDoneSection ? 'checked' : 'unchecked'}
+              aria-label={t('mobile.settings.showDoneSection')}
+              data-testid="mobile-org-show-done-switch"
+              className="m-toggle-switch"
+              onClick={() => updateOrgPrefs({ showDoneSection: !orgPrefs.showDoneSection })}
+            >
+              <span className="m-toggle-switch__thumb" />
+            </button>
+          </div>
+          <div className="m-settings-kv-row">
+            <span className="m-settings-kv-row__label">{t('mobile.settings.autoReopenOnSend')}</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={orgPrefs.autoReopenOnSend}
+              data-state={orgPrefs.autoReopenOnSend ? 'checked' : 'unchecked'}
+              aria-label={t('mobile.settings.autoReopenOnSend')}
+              data-testid="mobile-org-auto-reopen-switch"
+              className="m-toggle-switch"
+              onClick={() => updateOrgPrefs({ autoReopenOnSend: !orgPrefs.autoReopenOnSend })}
+            >
+              <span className="m-toggle-switch__thumb" />
+            </button>
+          </div>
+        </div>
+      </section>
+    </>
+  );
+
+  const renderAppearanceSubpage = (): React.ReactElement => (
+    <>
+      <section className="m-settings-group">
+        <h2 className="m-settings-group__title">{t('mobile.settings.skinGroup')}</h2>
+        <div className="m-settings-card">
+          <div className="m-settings-seg-row" role="radiogroup" aria-label={t('mobile.settings.skinGroup')}>
+            {MOBILE_SKIN_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={appearancePref === opt.id}
+                data-appearance-opt={opt.id}
+                className="m-settings-seg-btn"
+                data-active={appearancePref === opt.id ? 'true' : 'false'}
+                onClick={() => onSetAppearancePreference(opt.id)}
+              >
+                {t(opt.labelKey)}
+              </button>
+            ))}
           </div>
         </div>
       </section>
@@ -361,48 +444,12 @@ export function MobileSettingsPage({
           </div>
         </div>
       </section>
-
-      <section className="m-settings-group">
-        <h2 className="m-settings-group__title">{t('mobile.settings.orgGroup')}</h2>
-        <div className="m-settings-card">
-          <div className="m-settings-kv-row">
-            <span className="m-settings-kv-row__label">{t('mobile.settings.showDoneSection')}</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={orgPrefs.showDoneSection}
-              data-state={orgPrefs.showDoneSection ? 'checked' : 'unchecked'}
-              aria-label={t('mobile.settings.showDoneSection')}
-              data-testid="mobile-org-show-done-switch"
-              className="m-toggle-switch"
-              onClick={() => updateOrgPrefs({ showDoneSection: !orgPrefs.showDoneSection })}
-            >
-              <span className="m-toggle-switch__thumb" />
-            </button>
-          </div>
-          <div className="m-settings-kv-row">
-            <span className="m-settings-kv-row__label">{t('mobile.settings.autoReopenOnSend')}</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={orgPrefs.autoReopenOnSend}
-              data-state={orgPrefs.autoReopenOnSend ? 'checked' : 'unchecked'}
-              aria-label={t('mobile.settings.autoReopenOnSend')}
-              data-testid="mobile-org-auto-reopen-switch"
-              className="m-toggle-switch"
-              onClick={() => updateOrgPrefs({ autoReopenOnSend: !orgPrefs.autoReopenOnSend })}
-            >
-              <span className="m-toggle-switch__thumb" />
-            </button>
-          </div>
-        </div>
-      </section>
     </>
   );
 
   const handleCreateProject = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault();
-    if (!settingsActions.onCreateProject || projectBusy || snapshot.gateway.status !== 'connected') {
+    if (!settingsActions.onCreateProject || projectBusy || !selectedGwConnected) {
       return;
     }
     const cleanName = projectNameDraft.trim();
@@ -474,11 +521,24 @@ export function MobileSettingsPage({
     }
   };
 
+  const wrapScope = (node: React.ReactNode): React.ReactElement => (
+    <SettingsGatewayScopeBar
+      gateways={snapshot.gateways}
+      selectedGatewayId={snapshot.selectedGatewayId}
+      onSelectGateway={settingsActions.onSelectSettingsGateway}
+      onConnectGateway={settingsActions.onConnectGatewayInstance}
+      onToggleGatewayEnabled={settingsActions.onToggleGatewayEnabled}
+      onOpenGatewaySettings={() => onSelectSubpage('gateway')}
+    >
+      {node}
+    </SettingsGatewayScopeBar>
+  );
+
   const renderProjectsSubpage = (): React.ReactElement => {
-    const isConnected = snapshot.gateway.status === 'connected';
+    const isConnected = selectedGwConnected;
     const projectsState = snapshot.projects;
     const confirmingProject = activeProjects.find((p) => p.id === confirmDeleteProjectId);
-    return (
+    return wrapScope(
       <div className="flux-settings m-settings-embedded-panel m-settings-projects" data-testid="mobile-settings-projects">
         <section className="m-settings-group">
           <div className="m-settings-group__header">
@@ -729,109 +789,21 @@ export function MobileSettingsPage({
   };
 
   const renderGatewaySubpage = (): React.ReactElement => (
-    <section className="m-settings-group">
-      <div className="m-settings-group__header">
-        <h2 className="m-settings-group__title">{t('mobile.settings.gatewayGroup')}</h2>
-        <span className="m-settings-status-pill" data-status={snapshot.gateway.status}>
-          {statusText}
-        </span>
-      </div>
-      <div className="m-settings-card m-settings-card--form">
-        <label className="m-settings-field">
-          <span className="m-settings-field__label">{t('mobile.settings.gatewayUrl')}</span>
-          <input
-            type="url"
-            className="m-matte-input"
-            value={urlDraft}
-            onChange={(e) => setUrlDraft(e.target.value)}
-          />
-        </label>
-        <label className="m-settings-field">
-          <span className="m-settings-field__label">{t('mobile.settings.gatewayUser')}</span>
-          <input
-            type="text"
-            className="m-matte-input"
-            value={userDraft}
-            onChange={(e) => setUserDraft(e.target.value)}
-          />
-        </label>
-        <label className="m-settings-field">
-          <span className="m-settings-field__label">{t('mobile.settings.gatewayPass')}</span>
-          <input
-            type="password"
-            className="m-matte-input"
-            value={passDraft}
-            placeholder={snapshot.gateway.hasStoredPassword ? t('mobile.settings.gatewayPassPlaceholder') : ''}
-            onChange={(e) => setPassDraft(e.target.value)}
-          />
-        </label>
-        <label className="m-settings-field">
-          <span className="m-settings-field__label">{t('mobile.settings.gatewayProfile')}</span>
-          <input
-            type="text"
-            className="m-matte-input"
-            value={profileDraft}
-            onChange={(e) => setProfileDraft(e.target.value)}
-          />
-        </label>
-
-        {snapshot.gateway.test?.message ? (
-          <div className="m-settings-test-msg" data-ok={snapshot.gateway.test.ok ? 'true' : 'false'}>
-            {snapshot.gateway.test.message}
-          </div>
-        ) : null}
-
-        <div className="m-settings-btn-row">
-          <button
-            type="button"
-            className="m-secondary-btn"
-            onClick={() =>
-              settingsActions.onTestGateway({
-                url: urlDraft,
-                username: userDraft,
-                password: passDraft,
-                profileName: profileDraft.trim() || 'default',
-              })
-            }
-          >
-            {t('mobile.settings.testBtn')}
-          </button>
-          <button
-            type="button"
-            className="m-primary-btn"
-            onClick={() =>
-              settingsActions.onConnectGateway({
-                url: urlDraft,
-                username: userDraft,
-                password: passDraft,
-                profileName: profileDraft.trim() || 'default',
-              })
-            }
-          >
-            {t('mobile.settings.connectBtn')}
-          </button>
-        </div>
-        {snapshot.gateway.status === 'connected' ? (
-          <button
-            type="button"
-            className="m-danger-btn"
-            onClick={() => settingsActions.onDisconnectGateway()}
-          >
-            {t('mobile.settings.disconnectBtn')}
-          </button>
-        ) : null}
-      </div>
-    </section>
-  );
-
-  const renderProvidersSubpage = (): React.ReactElement => (
-    <div className="flux-settings m-settings-embedded-panel" data-testid="mobile-settings-providers">
-      <ProvidersAdminPanel snapshot={snapshot} actions={settingsActions} />
+    <div className="flux-settings m-settings-embedded-panel" data-testid="mobile-settings-gateway">
+      <GatewaySettingsPanel snapshot={snapshot} actions={settingsActions} gateway={gatewayForm} />
     </div>
   );
 
-  const renderExtensionsSubpage = (): React.ReactElement => (
-    <div className="flux-settings m-settings-embedded-panel">
+  const renderProvidersSubpage = (): React.ReactElement =>
+    wrapScope(
+      <div className="flux-settings m-settings-embedded-panel" data-testid="mobile-settings-providers">
+        <ProvidersAdminPanel snapshot={snapshot} actions={settingsActions} />
+      </div>,
+    );
+
+  const renderExtensionsSubpage = (): React.ReactElement =>
+    wrapScope(
+      <div className="flux-settings m-settings-embedded-panel">
       <section className="m-settings-group">
         <div className="m-settings-group__header">
           <h2 className="m-settings-group__title">{t('settings.mcpTitle')}</h2>
@@ -919,7 +891,7 @@ export function MobileSettingsPage({
                 key={row.name}
                 icon={<Blocks size={17} strokeWidth={1.85} />}
                 title={row.name}
-                summary={row.category}
+                summary={formatSkillCategoryLabel(row.category, t)}
                 onClick={() => setInspectingSkill(row.name)}
               />
             ))}
@@ -964,7 +936,7 @@ export function MobileSettingsPage({
         onConfirm={() => void handleConfirmRemoveMcp()}
       />
     </div>
-  );
+    );
 
   const renderAboutSubpage = (): React.ReactElement => (
     <section className="m-settings-group">
@@ -993,6 +965,8 @@ export function MobileSettingsPage({
 
   const renderContent = (): React.ReactElement => {
     switch (subpage) {
+      case 'general':
+        return renderGeneralSubpage();
       case 'appearance':
         return renderAppearanceSubpage();
       case 'projects':

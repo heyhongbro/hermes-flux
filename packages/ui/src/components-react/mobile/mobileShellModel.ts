@@ -51,6 +51,7 @@ export type MobileAppearancePreference = 'dark' | 'light' | 'system';
 export type MobileSkinId = 'obsidian-gold' | 'jade-white';
 export type MobileNewChatStep = 'compose' | 'group-members';
 export type MobileSettingsSubpage =
+  | 'general'
   | 'appearance'
   | 'projects'
   | 'gateway'

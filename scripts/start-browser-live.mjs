@@ -31,8 +31,7 @@ const ROOT = path.resolve(__dirname, '..');
 const GW_BASE = (process.env.FLUX_GATEWAY_URL || process.env.HERMES_GATEWAY_URL || '').replace(/\/+$/, '');
 const PORT = Number(process.env.PORT) || 9120;
 
-let sessionCookie = '';
-let authenticatedOrigin = '';
+const cookieByOrigin = new Map();
 let lastKnownBaseUrl = '';
 
 function getUrlOrigin(rawUrl) {
@@ -43,9 +42,21 @@ function getUrlOrigin(rawUrl) {
   }
 }
 
-function shouldAttachSessionCookie(targetUrl) {
-  if (!sessionCookie || !authenticatedOrigin) return false;
-  return getUrlOrigin(targetUrl) === authenticatedOrigin.toLowerCase();
+function getOriginCookie(targetUrl) {
+  const origin = getUrlOrigin(targetUrl);
+  return origin ? (cookieByOrigin.get(origin) || '') : '';
+}
+
+function setOriginCookie(targetUrl, cookie) {
+  const origin = getUrlOrigin(targetUrl);
+  if (!origin) return;
+  if (cookie) cookieByOrigin.set(origin, cookie);
+  else cookieByOrigin.delete(origin);
+}
+
+function clearOriginCookie(targetUrl) {
+  const origin = getUrlOrigin(targetUrl);
+  if (origin) cookieByOrigin.delete(origin);
 }
 
 process.on('uncaughtException', (err) => {
@@ -91,19 +102,19 @@ async function authenticateWithCredentials(baseUrl, username, password) {
     // 忽略 status 探测错误，继续走认证通道
   }
 
-  // 免密网关判定：如果不需要认证，且用户没有输入密码，清理旧凭据后直接放行无需 Basic Auth
+  // 免密网关判定：如果不需要认证，且用户没有输入密码，清理对应 Origin 旧凭据后直接放行无需 Basic Auth
   if (statusData && statusData.auth_required === false && !password) {
-    sessionCookie = '';
-    authenticatedOrigin = '';
+    clearOriginCookie(base);
     return null;
   }
 
-  // 仅当目标与已认证 Origin 严格一致时，才复用已建立的会话 Cookie 换取 ticket
-  if (shouldAttachSessionCookie(base) && !username && !password) {
+  // 仅按目标网关 Origin 检索会话 Cookie 换取 ticket
+  const existingCookie = getOriginCookie(base);
+  if (existingCookie && !username && !password) {
     try {
       const ticketRes = await fetch(`${base}/api/auth/ws-ticket`, {
         method: 'POST',
-        headers: { Accept: 'application/json', Cookie: sessionCookie, Origin: base },
+        headers: { Accept: 'application/json', Cookie: existingCookie, Origin: base },
       });
       if (ticketRes.ok) {
         const ticketData = await ticketRes.json().catch(() => ({}));
@@ -127,34 +138,28 @@ async function authenticateWithCredentials(baseUrl, username, password) {
     body: JSON.stringify({ username, password, provider: 'basic' }),
   });
   if (loginRes.status === 401) {
-    sessionCookie = '';
-    authenticatedOrigin = '';
+    clearOriginCookie(base);
     throw new Error('认证失败: 用户名或密码错误 (HTTP 401)');
   }
   if (!loginRes.ok) {
-    sessionCookie = '';
-    authenticatedOrigin = '';
+    clearOriginCookie(base);
     throw new Error(`登录接口异常 HTTP ${loginRes.status}`);
   }
 
-  // 仅取每条 Set-Cookie 的 name=value 段，剥离 Path/Expires/HttpOnly 等属性后拼成请求头
+  // 仅取每条 Set-Cookie 的 name=value 段，剥离 Path/Expires/HttpOnly 等属性后拼成请求头并按 Origin 隔离落表
   const setCookies = typeof loginRes.headers.getSetCookie === 'function'
     ? loginRes.headers.getSetCookie()
     : [loginRes.headers.get('set-cookie') || ''];
-  sessionCookie = setCookies.map((c) => c.split(';')[0].trim()).filter(Boolean).join('; ');
-  if (!sessionCookie) {
-    authenticatedOrigin = '';
+  const nextCookie = setCookies.map((c) => c.split(';')[0].trim()).filter(Boolean).join('; ');
+  if (!nextCookie) {
+    clearOriginCookie(base);
     throw new Error('登录成功但网关未下发会话 Cookie，无法换取 WS ticket');
   }
-  try {
-    authenticatedOrigin = new URL(base).origin;
-  } catch {
-    authenticatedOrigin = '';
-  }
+  setOriginCookie(base, nextCookie);
 
   const ticketRes = await fetch(`${base}/api/auth/ws-ticket`, {
     method: 'POST',
-    headers: { Accept: 'application/json', Cookie: sessionCookie, Origin: base },
+    headers: { Accept: 'application/json', Cookie: nextCookie, Origin: base },
   });
   if (!ticketRes.ok) {
     throw new Error(`获取 WebSocket 凭证失败 HTTP ${ticketRes.status}`);
@@ -182,7 +187,7 @@ async function httpProxy(cookie, { baseUrl, path: p = '', method = 'GET', params
   }
 
   // REST 降级通道与桌面主进程 ipc.ts 对齐，注入 Origin、同源 Cookie 与 X-WS-Ticket
-  const effectiveCookie = shouldAttachSessionCookie(b) ? cookie : '';
+  const effectiveCookie = typeof cookie === 'string' && cookie ? cookie : getOriginCookie(b);
   const headers = {
     Accept: 'application/json',
     Origin: b,
@@ -401,7 +406,10 @@ async function start() {
     if (!previewController) {
       const { createPreviewProtocolController } = await getPreviewProtocolModule();
       previewController = createPreviewProtocolController({
-        getGatewayAuth: () => ({ cookies: sessionCookie, origin: authenticatedOrigin }),
+        getGatewayAuth: (targetOrigin) => {
+          const origin = getUrlOrigin(targetOrigin || lastKnownBaseUrl || GW_BASE);
+          return { cookies: origin ? (cookieByOrigin.get(origin) || '') : '', origin };
+        },
         getFallbackCwd: () => ROOT,
         fetchImpl: fetch,
         resolveLocalFile: (rawPath) =>
@@ -454,7 +462,7 @@ async function start() {
         body = await readBody(req);
         const targetBase = body?.baseUrl || lastKnownBaseUrl || GW_BASE;
         if (body?.baseUrl) lastKnownBaseUrl = body.baseUrl;
-        const result = await httpProxy(sessionCookie, {
+        const result = await httpProxy(getOriginCookie(targetBase), {
           baseUrl: targetBase,
           path: body.path,
           method: body.method,
@@ -660,9 +668,10 @@ async function start() {
         const qPrimary = new URLSearchParams({ path: filePath });
         if (profile) qPrimary.set('profile', profile);
         if (sessionId) qPrimary.set('session_id', sessionId);
+        const cookie = getOriginCookie(base);
         const upstreamHeaders = {
           Origin: base,
-          ...(shouldAttachSessionCookie(base) ? { Cookie: sessionCookie } : {}),
+          ...(cookie ? { Cookie: cookie } : {}),
         };
         const upstreamMethod = req.method === 'HEAD' ? 'HEAD' : 'GET';
         let dlRes = await fetch(`${base}/api/fs/download?${qPrimary.toString()}`, {
@@ -948,7 +957,7 @@ async function start() {
     fs.createReadStream(fullPath).pipe(res);
   });
 
-  attachGatewayWsProxy(server, () => sessionCookie, () => authenticatedOrigin);
+  attachGatewayWsProxy(server, (upstreamOrigin) => getOriginCookie(upstreamOrigin));
 
   /**
    * 启动自检（Preflight）：端口占用与产物新鲜度。

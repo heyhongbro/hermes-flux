@@ -286,8 +286,10 @@ export function createForegroundSyncCoordinator(deps: ForegroundSyncDeps): Foreg
 }
 
 const MOBILE_SUBPAGE_TO_SECTION: Readonly<Record<string, SettingsSectionId>> = {
+  general: 'general',
   appearance: 'appearance',
-  gateway: 'connection',
+  gateway: 'gateway',
+  projects: 'projects',
   providers: 'providers',
   extensions: 'extensions',
   about: 'about',

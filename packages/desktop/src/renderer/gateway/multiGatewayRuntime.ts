@@ -24,6 +24,7 @@ import {
   buildSlotDefaultWsUrl,
   type AggregatedMultiGatewayView,
   type AgentProfile,
+  type ClientCapabilitiesParams,
   type GatewayInstanceConfig,
   type GatewayInstanceId,
   type GatewayPoolHealthSummary,
@@ -35,6 +36,7 @@ import {
   type IncomingServerRequest,
   type NormalizedSession,
   type RpcSocketFactory,
+  type ServerRequestFrame,
 } from '@hermes-flux/core';
 import type { HermesDesktopBridge } from '../../preload/index.js';
 
@@ -51,7 +53,18 @@ export interface MultiGatewayRuntimeDeps {
   readonly onSlotServerRequest?: (
     gatewayId: GatewayInstanceId,
     request: IncomingServerRequest,
+    client: HermesGatewayClient,
   ) => Promise<unknown> | unknown;
+  readonly onSlotInteractiveRequest?: (
+    gatewayId: GatewayInstanceId,
+    frame: ServerRequestFrame,
+    client: HermesGatewayClient,
+  ) => boolean | void;
+  readonly onSlotSocketClosed?: (
+    gatewayId: GatewayInstanceId,
+    closedGeneration: number,
+  ) => void;
+  readonly clientCapabilities?: ClientCapabilitiesParams;
   readonly onHealthChange?: (summary: GatewayPoolHealthSummary) => void;
   readonly onSlicesUpdated?: (view: AggregatedMultiGatewayView) => void;
   readonly socketFactory?: RpcSocketFactory;
@@ -96,6 +109,7 @@ export function createMultiGatewayRuntime(deps: MultiGatewayRuntimeDeps): MultiG
     clientTimeoutMs: deps.clientTimeoutMs,
     enableHeartbeat: deps.enableHeartbeat,
     enableLifecycleWake: deps.enableLifecycleWake,
+    clientCapabilities: deps.clientCapabilities,
     authenticateGateway: async (config) => {
       const desktopApi = deps.getDesktopApi();
       if (!desktopApi?.authenticateGateway) {
@@ -150,6 +164,12 @@ export function createMultiGatewayRuntime(deps: MultiGatewayRuntimeDeps): MultiG
   });
   const unsubServerReq = deps.onSlotServerRequest
     ? pool.onSlotServerRequest(deps.onSlotServerRequest)
+    : () => {};
+  const unsubInteractiveReq = deps.onSlotInteractiveRequest
+    ? pool.onSlotInteractiveRequest(deps.onSlotInteractiveRequest)
+    : () => {};
+  const unsubSocketClosed = deps.onSlotSocketClosed
+    ? pool.onSlotSocketClosed(deps.onSlotSocketClosed)
     : () => {};
 
   function syncGateways(configs: readonly GatewayInstanceConfig[]): void {
@@ -254,6 +274,8 @@ export function createMultiGatewayRuntime(deps: MultiGatewayRuntimeDeps): MultiG
     unsubHealth();
     unsubEvent();
     unsubServerReq();
+    unsubInteractiveReq();
+    unsubSocketClosed();
     pool.disconnectAll(true);
     sliceCache.clear();
   }

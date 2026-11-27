@@ -26,7 +26,9 @@ import {
   runGuarded,
   type AggregatedMultiGatewayView,
   type AgentProfile,
+  type ClientCapabilitiesParams,
   type FluxLogger,
+  type GatewayInstanceConfig,
   type GatewayPoolHealthSummary,
   type GroupRoomSummary,
   type GuardedRunLogger,
@@ -37,6 +39,7 @@ import {
   type ModelDetail,
   type NormalizedSession,
   type ProbeOrWakeResult,
+  type ServerRequestFrame,
 } from '@hermes-flux/core';
 import { renderToolCapsuleSlot, type I18nKey, type MessageViewModel } from '@hermes-flux/ui';
 import type { HermesDesktopBridge } from '../../preload/index.js';
@@ -598,13 +601,26 @@ export function createDesktopMultiGatewayWiring(deps: {
   readonly onSlotServerRequest?: (
     gatewayId: string,
     request: IncomingServerRequest,
+    client: HermesGatewayClient,
   ) => Promise<unknown> | unknown;
+  readonly onSlotInteractiveRequest?: (
+    gatewayId: string,
+    frame: ServerRequestFrame,
+    client: HermesGatewayClient,
+  ) => boolean | void;
+  readonly onSlotSocketClosed?: (gatewayId: string, closedGeneration: number) => void;
+  readonly clientCapabilities?: ClientCapabilitiesParams;
   readonly isLegacyClientConnected?: () => boolean;
   readonly onPrimaryClientChange?: (client: HermesGatewayClient | null) => void;
 }): {
   readonly runtime: MultiGatewayRuntime;
   readonly coordinator: MultiGatewayCoordinator;
   bootstrap(): Promise<void>;
+  syncConfiguredGateways(options?: {
+    configs?: readonly GatewayInstanceConfig[];
+    connectIds?: readonly string[];
+    disconnectIds?: readonly string[];
+  }): Promise<void>;
   isMultiGatewayConfigured(): boolean;
   wakeAllSlots(): Promise<ProbeOrWakeResult>;
 } {
@@ -618,7 +634,7 @@ export function createDesktopMultiGatewayWiring(deps: {
       const st = deps.getState();
       if ('isSettingsOpen' in st) {
         (st as AppState).isSettingsOpen = true;
-        (st as AppState).settingsSection = 'connection';
+        (st as AppState).settingsSection = 'gateway';
       }
       deps.render();
     });
@@ -654,6 +670,9 @@ export function createDesktopMultiGatewayWiring(deps: {
       }
     },
     onSlotServerRequest: deps.onSlotServerRequest,
+    onSlotInteractiveRequest: deps.onSlotInteractiveRequest,
+    onSlotSocketClosed: deps.onSlotSocketClosed,
+    clientCapabilities: deps.clientCapabilities,
     onHealthChange: (summary) => {
       if (!started) return;
       for (const slot of summary.slots) {
@@ -716,6 +735,39 @@ export function createDesktopMultiGatewayWiring(deps: {
     }
   }
 
+  async function syncConfiguredGateways(options?: {
+    configs?: readonly GatewayInstanceConfig[];
+    connectIds?: readonly string[];
+    disconnectIds?: readonly string[];
+  }): Promise<void> {
+    started = true;
+    const configured = [...(options?.configs ?? loadGatewayConfigs())];
+    await migrateLegacyGatewaySecrets(configured, deps.getDesktopApi());
+    runtime.syncGateways(configured);
+    if (options?.disconnectIds) {
+      for (const gwId of options.disconnectIds) {
+        runtime.disconnectGateway(gwId, true);
+      }
+    }
+    const connectTargets = options?.connectIds
+      ? configured.filter((cfg) => options.connectIds?.includes(cfg.id) && cfg.enabled !== false)
+      : configured.filter((cfg) => cfg.enabled !== false && !runtime.getSlot(cfg.id)?.connected);
+    if (configured.length >= 2) {
+      coordinator.seedCachedSlicesFromState();
+      await Promise.allSettled(connectTargets.map((cfg) => runtime.connectGateway(cfg.id)));
+      const st = deps.getState();
+      st.profilesPhase = 'ready';
+      st.sessionsPhase = 'ready';
+    } else if (connectTargets.length > 0 && options?.connectIds && options.connectIds.length > 0) {
+      await Promise.allSettled(connectTargets.map((cfg) => runtime.connectGateway(cfg.id)));
+    }
+    coordinator.syncPoolToState();
+    if (configured.length >= 2) {
+      deps.onPrimaryClientChange?.(runtime.getClient());
+    }
+    deps.render();
+  }
+
   async function wakeAllSlots(): Promise<ProbeOrWakeResult> {
     const before = runtime.getHealthSummary();
     const offlineSlots = before.slots.filter((s) => !s.connected);
@@ -730,7 +782,7 @@ export function createDesktopMultiGatewayWiring(deps: {
     return 'alive';
   }
 
-  return { runtime, coordinator, bootstrap, isMultiGatewayConfigured, wakeAllSlots };
+  return { runtime, coordinator, bootstrap, syncConfiguredGateways, isMultiGatewayConfigured, wakeAllSlots };
 }
 
 /** 读取已配置的多网关 ID 列表（供冷启动缓存恢复与分桶持久化复用）。 */
@@ -782,6 +834,7 @@ export function createActiveGatewayRpcCaller(resolveClient: () => HermesGatewayC
 /** 将网关侧实时短 ID 按当前焦点网关句柄表归一化为持久化会话 ID。 */
 export function resolveGatewayScopedStoredSessionId(input: {
   id: string | null | undefined;
+  gatewayId?: string;
   state: Pick<
     AppState,
     'sessions' | 'gatewayCount' | 'activeFocus' | 'activeGatewayId' | 'activeLiveSessionId' | 'activeSessionId'
@@ -790,9 +843,9 @@ export function resolveGatewayScopedStoredSessionId(input: {
   activeStreamingLiveId: string | null;
   activeStreamingStoredSessionId: string | null;
 }): string | null {
-  const { id, state, coordinator, activeStreamingLiveId, activeStreamingStoredSessionId } = input;
+  const { id, gatewayId, state, coordinator, activeStreamingLiveId, activeStreamingStoredSessionId } = input;
   if (!id) return null;
-  const activeGw = resolveFocusedGatewayId(state);
+  const activeGw = gatewayId || resolveFocusedGatewayId(state);
   const known = state.sessions
     .filter((s) => !activeGw || (state.gatewayCount ?? 1) < 2 || !s.gatewayId || s.gatewayId === activeGw)
     .map((s) => s.id);
@@ -880,6 +933,27 @@ export function createColdStartFocusRunner(deps: {
   }
 
   return { applyColdStartFocus, cancelColdStartFocus };
+}
+
+/** 创建激活焦点切换处理器：同步离线门禁并在跨网关切换到在线节点时刷新模型与斜杠目录。 */
+export function createActiveFocusChangeHandler(deps: {
+  readonly getState: () => Pick<AppState, 'activeFocus' | 'activeGatewayId'>;
+  readonly refreshActiveOfflineState: () => void;
+  readonly resolveActiveClient: () => HermesGatewayClient | null;
+  readonly fetchModelOptions: (options?: { clearNotice?: boolean }) => Promise<void>;
+  readonly prefetchSlashCatalog: () => Promise<void> | void;
+}): () => void {
+  let lastFocusedGatewayId = resolveFocusedGatewayId(deps.getState()) ?? '';
+  return () => {
+    deps.refreshActiveOfflineState();
+    const nextGatewayId = resolveFocusedGatewayId(deps.getState()) ?? '';
+    const switchedGateway = Boolean(nextGatewayId && nextGatewayId !== lastFocusedGatewayId);
+    lastFocusedGatewayId = nextGatewayId;
+    if (switchedGateway && deps.resolveActiveClient()) {
+      void deps.fetchModelOptions({ clearNotice: false });
+      void deps.prefetchSlashCatalog();
+    }
+  };
 }
 
 /** 创建模型目录拉取器，失连或失败时必须清空陈旧目录与指纹。 */

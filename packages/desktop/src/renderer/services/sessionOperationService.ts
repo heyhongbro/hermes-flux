@@ -53,26 +53,14 @@ import type { RpcConfirmRequestOptions } from './interactivePromptService.js';
 import { safeSetItem, type I18nKey, type MessageViewModel, type StorageWriteFailure } from '@hermes-flux/ui';
 import { planRollbackLeaveRestore } from '../rollbackTransaction.js';
 import { isCorruptedSystemErrorDraft, type SessionDraftStore } from '../persistence/sessionDrafts.js';
+import {
+  describeRpcError,
+  executeSessionCreateRpc,
+  isExtraInputsError,
+  rpcErrorCode,
+} from './sessionCreatePayload.js';
 
-export function rpcErrorCode(error: unknown): number | null {
-  if (error instanceof Error && 'code' in error && typeof error.code === 'number') return error.code;
-  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'number') return error.code;
-  return null;
-}
-
-export function describeRpcError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === 'object') {
-    if ('message' in error && typeof error.message === 'string') return error.message;
-    if ('code' in error && typeof error.code === 'number') return `RPC error ${error.code}`;
-  }
-  return String(error);
-}
-
-export function isExtraInputsError(error: unknown): boolean {
-  const msg = describeRpcError(error);
-  return msg.includes('Extra inputs');
-}
+export { rpcErrorCode, describeRpcError, isExtraInputsError };
 
 function matchesSessionTarget(
   session: NormalizedSession,
@@ -250,9 +238,10 @@ export class SessionOperationService {
     projectId?: string;
     containerId?: string;
     title?: string;
+    gatewayId?: string;
   }): Promise<string | null> {
     const state = this.deps.getState();
-    const targetGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const targetGw = options?.gatewayId || state.activeFocus?.gatewayId || state.activeGatewayId;
     const gatewayClient = this.resolveTargetClient(targetGw);
 
     if (!gatewayClient) {
@@ -268,7 +257,10 @@ export class SessionOperationService {
 
     let targetCwd: string | undefined;
     if (targetProjectId) {
-      const proj = state.projects.find((p) => p.id === targetProjectId && !p.archived);
+      const proj =
+        state.projects.find(
+          (p) => p.id === targetProjectId && !p.archived && (!targetGw || !p.gatewayId || p.gatewayId === targetGw),
+        ) ?? state.projects.find((p) => p.id === targetProjectId && !p.archived);
       if (proj?.path) targetCwd = proj.path;
     }
 
@@ -281,42 +273,11 @@ export class SessionOperationService {
     }
 
     try {
-      // 【网关契约约束】session.create 不接受 project_id；选定项目时传 cwd + cwd_explicit:true，默认则两者省略
-      const createPayload: Record<string, unknown> = {
+      const res = await executeSessionCreateRpc(gatewayClient, {
         title: targetTitle,
         profile: targetProfile,
-      };
-      if (targetCwd) {
-        createPayload.cwd = targetCwd;
-        createPayload.cwd_explicit = true;
-      }
-
-      let res: Record<string, unknown> | null = null;
-      try {
-        res = await gatewayClient.call<Record<string, unknown>>('session.create', createPayload);
-      } catch (firstErr) {
-        if (isExtraInputsError(firstErr)) {
-          console.warn('[Flux] Gateway rejected extra params on session.create, retrying compatible payload');
-          try {
-            res = await gatewayClient.call<Record<string, unknown>>('session.create', {
-              title: targetTitle,
-              profile: targetProfile,
-              ...(targetCwd ? { cwd: targetCwd } : {}),
-            });
-          } catch (secondErr) {
-            if (isExtraInputsError(secondErr)) {
-              res = await gatewayClient.call<Record<string, unknown>>('session.create', {
-                title: targetTitle,
-                profile: targetProfile,
-              });
-            } else {
-              throw secondErr;
-            }
-          }
-        } else {
-          throw firstErr;
-        }
-      }
+        ...(targetCwd ? { cwd: targetCwd } : {}),
+      });
 
       const handles = readSessionHandles(res);
       if (!handles) {
@@ -351,7 +312,10 @@ export class SessionOperationService {
       if (!state.pendingSessionIds.includes(handles.storedId)) {
         state.pendingSessionIds = [handles.storedId, ...state.pendingSessionIds];
       }
-      const matchingProfile = state.profiles.find((p) => p.name === targetProfile);
+      const matchingProfile =
+        state.profiles.find(
+          (p) => p.name === targetProfile && (!targetGw || !p.gatewayId || p.gatewayId === targetGw),
+        ) ?? state.profiles.find((p) => p.name === targetProfile);
       const normTargetCwd = targetCwd ? normalizeWorkspacePath(targetCwd) : '';
       if (normTargetCwd) {
         state.sessionCwds = { ...(state.sessionCwds ?? {}), [createdCacheKey]: normTargetCwd };

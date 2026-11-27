@@ -30,6 +30,8 @@ import type { AppState } from '../state/appState.js';
 export interface ProjectDirectoryActionsDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getGatewayUrl?: () => string;
+  readonly isGatewayConnected?: () => boolean;
   readonly getDesktopApi?: () => HermesDesktopBridge | undefined;
   readonly getEffectiveUrl: (url: string) => string;
 }
@@ -40,10 +42,16 @@ export function createProjectDirectoryActions(
   SettingsActions,
   'onBrowseProjectDirectory' | 'onCreateProjectDirectory' | 'onRenameProjectDirectory'
 > {
+  const resolveGatewayUrl = (): string => {
+    const raw = deps.getGatewayUrl ? deps.getGatewayUrl() : deps.getState().gatewayUrl;
+    return deps.getEffectiveUrl(raw);
+  };
+
   function buildExecShell() {
     const client = deps.getGatewayClient();
     const state = deps.getState();
-    if (!client || !state.gatewayConnected) return undefined;
+    const connected = deps.isGatewayConnected ? deps.isGatewayConnected() : state.gatewayConnected;
+    if (!client || !connected) return undefined;
     return async (command: string, targetProfile?: string) =>
       await client.request<{ stdout?: string; stderr?: string; code?: number }>('shell.exec', {
         command,
@@ -56,7 +64,7 @@ export function createProjectDirectoryActions(
       const state = deps.getState();
       return await browseProjectDirectory(dirPath, {
         platformBridge: deps.getDesktopApi?.(),
-        gatewayUrl: deps.getEffectiveUrl(state.gatewayUrl),
+        gatewayUrl: resolveGatewayUrl(),
         profile: state.profileName || 'default',
         execShell: buildExecShell(),
       });
@@ -70,7 +78,7 @@ export function createProjectDirectoryActions(
       const state = deps.getState();
       return await createProjectDirectory(parentPath, folderName, {
         platformBridge: deps.getDesktopApi?.(),
-        gatewayUrl: deps.getEffectiveUrl(state.gatewayUrl),
+        gatewayUrl: resolveGatewayUrl(),
         profile: state.profileName || 'default',
         source: options?.source,
         lockedRoot: options?.lockedRoot,
@@ -86,7 +94,7 @@ export function createProjectDirectoryActions(
       const state = deps.getState();
       return await renameProjectDirectory(dirPath, newName, {
         platformBridge: deps.getDesktopApi?.(),
-        gatewayUrl: deps.getEffectiveUrl(state.gatewayUrl),
+        gatewayUrl: resolveGatewayUrl(),
         profile: state.profileName || 'default',
         source: options?.source,
         lockedRoot: options?.lockedRoot,

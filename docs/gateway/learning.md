@@ -5,10 +5,10 @@
 
 | Method | Params (Contract) | Result (Contract) | Call Sites | Live Probe |
 | --- | --- | --- | --- | --- |
-| `learning.delete` | `id` | `ok` `message` | `packages/desktop/src/renderer/services/learningService.ts:478`<br>`packages/desktop/src/renderer/services/learningService.ts:484` | Skipped: Deleting learning memories or skills is a destructive write operation forbidden on live gateways; guarded by learning service unit tests and the contract allowlist. |
-| `learning.detail` | `id` | `ok` `message` `kind` `id` `label` `content` | `packages/desktop/src/renderer/services/learningService.ts:346`<br>`packages/desktop/src/renderer/services/learningService.ts:354` | ✅ 0.22.5 |
-| `learning.edit` | `id` `content` | `ok` `message` | `packages/desktop/src/renderer/services/learningService.ts:428`<br>`packages/desktop/src/renderer/services/learningService.ts:434` | Skipped: Editing learning memory is a write operation that must not overwrite user memories on a live gateway; guarded by learning service unit tests and the contract allowlist. |
-| `learning.frames` | `cols` `rows` `frames` | `frames` `legend` `categories` `buckets` `summary` `axis` `count` `cols` `rows` | `packages/desktop/src/renderer/services/learningService.ts:233`<br>`packages/desktop/src/renderer/services/learningService.ts:244` | ✅ 0.22.5 |
+| `learning.delete` | `id` | `ok` `message` | `packages/desktop/src/renderer/services/learningService.ts:518`<br>`packages/desktop/src/renderer/services/learningService.ts:524` | Skipped: Deleting learning memories or skills is a destructive write operation forbidden on live gateways; guarded by learning service unit tests and the contract allowlist. |
+| `learning.detail` | `id` | `ok` `message` `kind` `id` `label` `content` | `packages/desktop/src/renderer/services/learningService.ts:380`<br>`packages/desktop/src/renderer/services/learningService.ts:388` | ✅ 0.22.5 |
+| `learning.edit` | `id` `content` | `ok` `message` | `packages/desktop/src/renderer/services/learningService.ts:465`<br>`packages/desktop/src/renderer/services/learningService.ts:471` | Skipped: Editing learning memory is a write operation that must not overwrite user memories on a live gateway; guarded by learning service unit tests and the contract allowlist. |
+| `learning.frames` | `cols` `rows` `frames` | `frames` `legend` `categories` `buckets` `summary` `axis` `count` `cols` `rows` | `packages/desktop/src/renderer/services/learningService.ts:266`<br>`packages/desktop/src/renderer/services/learningService.ts:277` | ✅ 0.22.5 |
 
 ## Details
 
@@ -18,8 +18,8 @@
 - Result type: `LearningMutationResult`
 - Live probe: Skipped — Deleting learning memories or skills is a destructive write operation forbidden on live gateways; guarded by learning service unit tests and the contract allowlist.
 - Call sites:
-  - `packages/desktop/src/renderer/services/learningService.ts:478`
-  - `packages/desktop/src/renderer/services/learningService.ts:484`
+  - `packages/desktop/src/renderer/services/learningService.ts:518`
+  - `packages/desktop/src/renderer/services/learningService.ts:524`
 
 ### `learning.detail`
 
@@ -27,8 +27,8 @@
 - Result type: `LearningDetailResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/desktop/src/renderer/services/learningService.ts:346`
-  - `packages/desktop/src/renderer/services/learningService.ts:354`
+  - `packages/desktop/src/renderer/services/learningService.ts:380`
+  - `packages/desktop/src/renderer/services/learningService.ts:388`
 
 ### `learning.edit`
 
@@ -36,8 +36,8 @@
 - Result type: `LearningMutationResult`
 - Live probe: Skipped — Editing learning memory is a write operation that must not overwrite user memories on a live gateway; guarded by learning service unit tests and the contract allowlist.
 - Call sites:
-  - `packages/desktop/src/renderer/services/learningService.ts:428`
-  - `packages/desktop/src/renderer/services/learningService.ts:434`
+  - `packages/desktop/src/renderer/services/learningService.ts:465`
+  - `packages/desktop/src/renderer/services/learningService.ts:471`
 
 ### `learning.frames`
 
@@ -45,6 +45,6 @@
 - Result type: `LearningFramesResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/desktop/src/renderer/services/learningService.ts:233`
-  - `packages/desktop/src/renderer/services/learningService.ts:244`
+  - `packages/desktop/src/renderer/services/learningService.ts:266`
+  - `packages/desktop/src/renderer/services/learningService.ts:277`
 

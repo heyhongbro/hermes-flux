@@ -758,6 +758,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
         Array.isArray(railProfiles) && railProfiles.length > 0
           ? railProfiles
           : (state.profiles ?? []).map((p) => ({ ...p, displayName: p.displayName || p.name }));
+      const gatewaySlots = state.gatewayHealthSummary?.slots ?? [];
       return {
         isOpen: Boolean(state.isNewTaskModalOpen),
         initialMode: state.newTaskModalTab === 'group' ? 'group' : 'solo',
@@ -768,6 +769,16 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
         selectedProjectId: state.selectedNewTaskProjectId,
         selectedContainerId: state.selectedNewTaskContainerId,
         gatewayConnected: Boolean(state.gatewayConnected),
+        ...(gatewaySlots.length > 0
+          ? {
+              gateways: gatewaySlots.map((slot) => ({
+                id: slot.gatewayId,
+                label: slot.name || slot.shortLabel || slot.url,
+                connected: slot.connected,
+              })),
+              defaultGatewayId: state.activeFocus?.gatewayId || state.activeGatewayId || undefined,
+            }
+          : {}),
       };
     };
     if (!updateReactNewChat || reactNewChatHost !== host) {

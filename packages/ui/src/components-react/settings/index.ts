@@ -1,4 +1,7 @@
 export { SettingsModal } from './SettingsModal.js';
+export { SettingsGatewayScopeBar, type SettingsGatewayScopeBarProps } from './SettingsGatewayScopeBar.js';
+export { GeneralSettingsPanel } from './GeneralSettingsPanel.js';
+export { GatewaySettingsPanel, type GatewayFormBinding } from './GatewaySettingsPanel.js';
 export {
   ProjectDirectoryPicker,
   remapPathPrefix,
@@ -78,8 +81,11 @@ export {
   buildModelSelectGroups,
   filterSettingsEntries,
   filterSettingsSections,
+  formatSkillCategoryLabel,
   isGatewayTestStale,
+  isSelectedSettingsGatewayConnected,
   resolveSettingsSection,
+  resolveSkillCategoryLabelKey,
   type SettingsSearchEntry,
   type SettingsActions,
   type SettingsActionResult,
@@ -95,6 +101,9 @@ export {
   type SettingsProfileRow,
   type SettingsProjectRow,
   type SettingsBotRow,
+  type SettingsGatewayItem,
+  type SettingsGatewayStatus,
+  type GatewayInstanceDraft,
   type BotExitTarget,
   type CustomEndpointRow,
   type OauthProviderRow,

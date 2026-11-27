@@ -1,5 +1,5 @@
 ﻿import * as React from 'react';
-import { Blocks, Bot, Check, Download, Folder, Info, KeyRound, Palette, Pencil, Plug, Plus, RefreshCw, Search, Trash2, X, Zap } from 'lucide-react';
+import { Blocks, Bot, Check, Download, Folder, Info, KeyRound, Palette, Pencil, Plug, Plus, RefreshCw, Search, SlidersHorizontal, Trash2, X, Zap } from 'lucide-react';
 import { t } from '../../i18n/index.js';
 import type { I18nKey } from '../../i18n/index.js';
 import { SKINS, SKIN_ALIASES, type SkinId } from '../../tokens/skins.js';
@@ -37,7 +37,8 @@ import {
   SETTINGS_SEARCH_ENTRIES,
   filterSettingsEntries,
   filterSettingsSections,
-  isGatewayTestStale,
+  formatSkillCategoryLabel,
+  isSelectedSettingsGatewayConnected,
   type GatewayDraft,
   type SettingsSearchEntry,
   type SettingsActions,
@@ -48,9 +49,13 @@ import {
   type SettingsSectionId,
   type SettingsSnapshot,
 } from './settingsModel.js';
+import { SettingsGatewayScopeBar } from './SettingsGatewayScopeBar.js';
+import { GeneralSettingsPanel } from './GeneralSettingsPanel.js';
+import { GatewaySettingsPanel, type GatewayFormBinding } from './GatewaySettingsPanel.js';
 import { createJumpScheduler, type JumpScheduler } from './jumpScheduler.js';
 
 const ICONS: Record<SettingsIconName, React.ComponentType<{ size?: number; className?: string }>> = {
+  sliders: SlidersHorizontal,
   palette: Palette,
   folder: Folder,
   key: KeyRound,
@@ -245,106 +250,6 @@ function AppearancePanel({
           </SettingRow>
         </SettingInset>
       </SettingSection>
-
-      <SettingSection>
-        <SettingsSectionHeading title={t('settings.sidebarLayoutTitle')} hint={t('settings.sidebarLayoutHint')} />
-        <SettingInset>
-          <SettingRow label={t('settings.leftRailLayout')} anchorId="left-rail-layout">
-            <SegmentedControl
-              ariaLabel={t('settings.leftRailLayout')}
-              value={snapshot.leftRailLayout}
-              onChange={(layout) => actions.onLeftRailLayoutChange(layout)}
-              options={[
-                { value: 'dual-rail', label: t('settings.leftRailLayoutDual') },
-                { value: 'grouped', label: t('settings.leftRailLayoutGrouped') },
-              ]}
-            />
-          </SettingRow>
-        </SettingInset>
-      </SettingSection>
-
-      <SettingSection>
-        <SettingsSectionHeading title={t('settings.presenceTitle')} hint={t('settings.presenceHint')} />
-        <SettingInset>
-          <SettingRow label={t('settings.presenceLayout')} anchorId="presence-layout">
-            <SegmentedControl
-              ariaLabel={t('settings.presenceLayout')}
-              value={snapshot.presenceLayout}
-              onChange={(layout) => actions.onPresenceLayoutChange(layout)}
-              options={[
-                { value: 'stage', label: t('settings.presenceLayoutStage') },
-                { value: 'dock', label: t('settings.presenceLayoutDock') },
-              ]}
-            />
-          </SettingRow>
-        </SettingInset>
-      </SettingSection>
-
-      <SettingSection>
-        <SettingsSectionHeading title={t('settings.languageTitle')} hint={t('settings.languageHint')} />
-        <SettingInset>
-          <SettingRow label={t('settings.languageLabel')} anchorId="language">
-            <SegmentedControl
-              ariaLabel={t('settings.languageLabel')}
-              value={snapshot.locale}
-              onChange={(locale) => actions.onLocaleChange(locale)}
-              options={[
-                { value: 'zh', label: t('settings.languageZh') },
-                { value: 'en', label: t('settings.languageEn') },
-              ]}
-            />
-          </SettingRow>
-        </SettingInset>
-      </SettingSection>
-
-      <SettingSection>
-        <SettingsSectionHeading title={t('settings.orgGroupTitle')} />
-        <SettingInset>
-          {(() => {
-            const orgPrefs = snapshot.orgPrefs ?? DEFAULT_CONVERSATION_ORG_PREFS;
-            return (
-              <>
-                <SettingRow
-                  label={t('settings.showDoneSection')}
-                  hint={t('settings.showDoneSectionDesc')}
-                  anchorId="show-done-section"
-                  onLabelActivate={() =>
-                    actions.onConversationOrgPrefsChange?.({
-                      showDoneSection: !orgPrefs.showDoneSection,
-                    })
-                  }
-                >
-                  <Switch
-                    checked={orgPrefs.showDoneSection}
-                    aria-label={t('settings.showDoneSection')}
-                    onCheckedChange={(checked) =>
-                      actions.onConversationOrgPrefsChange?.({ showDoneSection: checked })
-                    }
-                  />
-                </SettingRow>
-                <SettingRow
-                  label={t('settings.autoReopenOnSend')}
-                  hint={t('settings.autoReopenOnSendDesc')}
-                  anchorId="auto-reopen-on-send"
-                  onLabelActivate={() =>
-                    actions.onConversationOrgPrefsChange?.({
-                      autoReopenOnSend: !orgPrefs.autoReopenOnSend,
-                    })
-                  }
-                >
-                  <Switch
-                    checked={orgPrefs.autoReopenOnSend}
-                    aria-label={t('settings.autoReopenOnSend')}
-                    onCheckedChange={(checked) =>
-                      actions.onConversationOrgPrefsChange?.({ autoReopenOnSend: checked })
-                    }
-                  />
-                </SettingRow>
-              </>
-            );
-          })()}
-        </SettingInset>
-      </SettingSection>
     </div>
   );
 }
@@ -366,7 +271,7 @@ export function ProjectsPanel({
   const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null);
   const [formError, setFormError] = React.useState<string | null>(null);
 
-  const isConnected = snapshot.gateway.status === 'connected';
+  const isConnected = isSelectedSettingsGatewayConnected(snapshot);
   const projectsState = snapshot.projects ?? { status: 'ready' as const, data: [] };
 
   const handleCreate = async (event: React.FormEvent): Promise<void> => {
@@ -921,7 +826,7 @@ function ExtensionsPanel({
                 {Array.from(groups.entries()).map(([category, list]) => (
                   <div key={category} className="flex flex-col gap-2" data-skill-group={category}>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-aux font-medium text-secondary-foreground">{category}</span>
+                      <span className="text-aux font-medium text-secondary-foreground">{formatSkillCategoryLabel(category, t)}</span>
                       <span className="font-code text-micro text-muted-foreground">{list.length}</span>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -994,125 +899,6 @@ function ExtensionsPanel({
   );
 }
 
-/**
- * 连接表单在弹窗层的受控绑定。
- * 草稿与测试指纹必须同属一个生命周期，否则切 Tab 后旧结论会被挂到新草稿上。
- */
-interface GatewayFormBinding {
-  draft: GatewayDraft;
-  onDraftChange: (draft: GatewayDraft) => void;
-  testedDraft: GatewayDraft | null;
-  onTested: (draft: GatewayDraft) => void;
-}
-
-function ConnectionPanel({
-  snapshot,
-  actions,
-  gateway,
-}: {
-  snapshot: SettingsSnapshot;
-  actions: SettingsActions;
-  gateway: GatewayFormBinding;
-}): React.ReactElement {
-  /**
-   * 本地点测指纹：草稿一旦变动，旧的「连通性正常/失败」必须立即失效。
-   *
-   * 【为什么不在壳层清空】testStatus 由壳层持有，组件无权回写；在显示条件上做一致性比较，
-   *   既不改动快照结构，也不会把上一次的结果误挂到新地址/新账号上。
-   * 【规则】只有本组件发起过测试才参与比较；外部（连接流程）产生的 test 状态照常显示。
-   */
-  const { draft, onDraftChange: setDraft, testedDraft } = gateway;
-  const testStale = isGatewayTestStale(testedDraft, draft);
-
-  const status = snapshot.gateway.status;
-  const statusLabel =
-    status === 'connected' ? t('settings.gatewayConnected') : status === 'connecting' ? t('settings.gatewayConnecting') : t('settings.gatewayDisconnected');
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="flex items-center justify-between gap-3 rounded-panel surface-raised px-4 py-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <StatusDot tone={status === 'connected' ? 'success' : status === 'connecting' ? 'warning' : 'destructive'} />
-          <span className="text-body text-foreground">{statusLabel}</span>
-          {status === 'connected' ? (
-            <span className="font-code text-caption text-muted-foreground">{snapshot.gateway.latencyMs}ms</span>
-          ) : null}
-        </div>
-        {status === 'connected' ? (
-          <Button variant="outline" size="sm" type="button" onClick={actions.onDisconnectGateway}>
-            {t('settings.disconnect')}
-          </Button>
-        ) : null}
-      </div>
-
-      <SettingInset className="gap-3 py-4">
-        <SettingField label={t('settings.gatewayUrl')} htmlFor="settings-gateway-url" anchorId="gateway-url">
-          <Input
-            id="settings-gateway-url"
-            value={draft.url}
-            placeholder={t('settings.gatewayUrlPlaceholder')}
-            onChange={(event) => setDraft({ ...draft, url: event.target.value })}
-            className="font-code"
-          />
-        </SettingField>
-        <SettingTwoColumn>
-          <SettingField label={t('settings.gatewayUsername')} htmlFor="settings-gateway-username" anchorId="gateway-username">
-            <Input
-              id="settings-gateway-username"
-              value={draft.username}
-              autoComplete="off"
-              onChange={(event) => setDraft({ ...draft, username: event.target.value })}
-              className="font-code"
-            />
-          </SettingField>
-          <SettingField label={t('settings.gatewayPassword')} htmlFor="settings-gateway-password" anchorId="gateway-password">
-            <Input
-              id="settings-gateway-password"
-              type="password"
-              value={draft.password}
-              autoComplete="new-password"
-              placeholder={snapshot.gateway.hasStoredPassword ? t('settings.gatewayPasswordSaved') : undefined}
-              onChange={(event) => setDraft({ ...draft, password: event.target.value })}
-              className="font-code"
-            />
-          </SettingField>
-        </SettingTwoColumn>
-        <SettingField label={t('settings.gatewayProfile')} htmlFor="settings-gateway-profile" anchorId="gateway-profile">
-          <Input
-            id="settings-gateway-profile"
-            value={draft.profileName}
-            onChange={(event) => setDraft({ ...draft, profileName: event.target.value })}
-            className="font-code"
-          />
-        </SettingField>
-      </SettingInset>
-
-      {snapshot.gateway.test && !testStale ? (
-        <p className={`text-caption ${snapshot.gateway.test.ok ? 'text-success' : 'text-destructive'}`}>
-          {snapshot.gateway.test.message || (snapshot.gateway.test.ok ? t('settings.testOk') : t('settings.testFailed'))}
-        </p>
-      ) : null}
-
-      <div className="flex items-center justify-end gap-2">
-        <Button
-          variant="outline"
-          type="button"
-          disabled={snapshot.busy}
-          onClick={() => {
-            gateway.onTested(draft);
-            actions.onTestGateway(draft);
-          }}
-        >
-          {t('settings.testConnection')}
-        </Button>
-        <Button type="button" disabled={snapshot.busy} onClick={() => actions.onConnectGateway(draft)}>
-          {t('settings.saveAndConnect')}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 function AboutPanel({ snapshot }: { snapshot: SettingsSnapshot }): React.ReactElement {
   return (
     <div className="flex flex-col gap-3">
@@ -1142,23 +928,39 @@ function renderPanel(
   gateway: GatewayFormBinding,
   botFocusAnchor: { anchorId: string; seq: number } | null,
 ): React.ReactElement {
+  const wrapGatewayScope = (node: React.ReactNode, fillHeight = false): React.ReactElement => (
+    <SettingsGatewayScopeBar
+      gateways={snapshot.gateways}
+      selectedGatewayId={snapshot.selectedGatewayId}
+      onSelectGateway={actions.onSelectSettingsGateway}
+      onConnectGateway={actions.onConnectGatewayInstance}
+      onToggleGatewayEnabled={actions.onToggleGatewayEnabled}
+      onOpenGatewaySettings={() => actions.onSelectSection('gateway')}
+      fillHeight={fillHeight}
+    >
+      {node}
+    </SettingsGatewayScopeBar>
+  );
+
   switch (section) {
+    case 'general':
+      return <GeneralSettingsPanel snapshot={snapshot} actions={actions} />;
     case 'appearance':
       return <AppearancePanel snapshot={snapshot} actions={actions} />;
+    case 'gateway':
+      return <GatewaySettingsPanel snapshot={snapshot} actions={actions} gateway={gateway} />;
     case 'projects':
-      return <ProjectsPanel snapshot={snapshot} actions={actions} />;
+      return wrapGatewayScope(<ProjectsPanel snapshot={snapshot} actions={actions} />);
     case 'providers':
-      return <ProvidersPanel snapshot={snapshot} actions={actions} />;
+      return wrapGatewayScope(<ProvidersPanel snapshot={snapshot} actions={actions} />);
     case 'agents':
-      return <BotManagerView snapshot={snapshot} actions={actions} focusAnchor={botFocusAnchor} />;
+      return wrapGatewayScope(<BotManagerView snapshot={snapshot} actions={actions} focusAnchor={botFocusAnchor} />, true);
     case 'extensions':
-      return <ExtensionsPanel snapshot={snapshot} actions={actions} />;
-    case 'connection':
-      return <ConnectionPanel snapshot={snapshot} actions={actions} gateway={gateway} />;
+      return wrapGatewayScope(<ExtensionsPanel snapshot={snapshot} actions={actions} />);
     case 'about':
       return <AboutPanel snapshot={snapshot} />;
     default:
-      return <AppearancePanel snapshot={snapshot} actions={actions} />;
+      return <GeneralSettingsPanel snapshot={snapshot} actions={actions} />;
   }
 }
 
@@ -1453,11 +1255,8 @@ export function SettingsModal({
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-start justify-between gap-4 px-6 pb-2 pt-5">
-            <div className="min-w-0">
-              <h3 className="text-title text-foreground">{t(active.titleKey)}</h3>
-              <DialogDescription className="mt-1 text-caption text-muted-foreground">{t(active.descKey)}</DialogDescription>
-            </div>
+          <header className="flex shrink-0 items-center justify-end px-6 pb-1 pt-4">
+            <DialogDescription className="sr-only">{t(active.descKey)}</DialogDescription>
             <Tooltip content={t('settings.close')} placement="bottom">
               <Button
                 variant="ghost"

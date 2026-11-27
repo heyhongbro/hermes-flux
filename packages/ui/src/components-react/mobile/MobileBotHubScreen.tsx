@@ -37,6 +37,7 @@ import { t } from '../../i18n/index.js';
 import { renderBotAvatar } from '../../utils/botAvatar.js';
 import type { LeftRailProfile } from '../leftRailModel.js';
 import type { BotRosterEntry, SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
+import { SettingsGatewayScopeBar } from '../settings/SettingsGatewayScopeBar.js';
 import {
   computeSoulLineCount,
   countEnabledCapabilities,
@@ -109,7 +110,13 @@ export function MobileBotHubScreen({
   settingsActions,
 }: MobileBotHubScreenProps): React.ReactElement {
   const view = settingsSnapshot.botManagement;
-  const roster = view.roster.length > 0 ? view.roster : toFallbackRoster(allProfiles, settingsSnapshot.profiles);
+  const isMultiGateway = (settingsSnapshot.gateways?.length ?? 0) >= 2;
+  const selectedGatewayId = settingsSnapshot.selectedGatewayId;
+  const scopedProfiles =
+    isMultiGateway && selectedGatewayId
+      ? allProfiles.filter((p) => !p.gatewayId || p.gatewayId === selectedGatewayId)
+      : allProfiles;
+  const roster = view.roster.length > 0 ? view.roster : toFallbackRoster(scopedProfiles, settingsSnapshot.profiles);
   const targetId = view.activeBotId || activeBotName || roster[0]?.id || '';
   const matchedIdx = roster.findIndex((b) => b.id.toLowerCase() === targetId.toLowerCase());
   const settledIdx = matchedIdx >= 0 ? matchedIdx : 0;
@@ -369,7 +376,16 @@ export function MobileBotHubScreen({
   return (
     <div className="m-bot-hub" data-testid="mobile-bot-hub">
       <div className="m-bot-hub__scroll">
-        {showOfflineBanner ? (
+        <div className="flux-settings m-settings-embedded-panel">
+          <SettingsGatewayScopeBar
+            gateways={settingsSnapshot.gateways}
+            selectedGatewayId={selectedGatewayId}
+            onSelectGateway={settingsActions.onSelectSettingsGateway}
+            onConnectGateway={settingsActions.onConnectGatewayInstance}
+            onToggleGatewayEnabled={settingsActions.onToggleGatewayEnabled}
+            onOpenGatewaySettings={onOpenSettingsGateway}
+          >
+            {showOfflineBanner ? (
           <button
             type="button"
             className="m-home__offline-banner"
@@ -517,7 +533,7 @@ export function MobileBotHubScreen({
             data-testid="mobile-bot-open-chat"
             onClick={() => {
               const currentProfileGw = allProfiles.find((p) => p.name.toLowerCase() === current.id.toLowerCase())?.gatewayId;
-              onOpenBotChat(current.id, currentProfileGw);
+              onOpenBotChat(current.id, selectedGatewayId || currentProfileGw);
             }}
           >
             <MessageSquare size={14} aria-hidden="true" />
@@ -590,6 +606,8 @@ export function MobileBotHubScreen({
               />
             </MobileMenuCard>
           </MobileMenuGroup>
+        </div>
+          </SettingsGatewayScopeBar>
         </div>
       </div>
 

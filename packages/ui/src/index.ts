@@ -120,6 +120,9 @@ export { NewChatDialog, type NewChatDialogProps } from './components-react/NewCh
 export {
   resolveDefaultBotName,
   resolveInitialGroupMembers,
+  resolveInitialGatewayId,
+  filterProfilesForGateway,
+  filterProjectsForGateway,
   resolveValidProjectId,
   shouldSubmitNewChatComposerKey,
   syncDialogSelectionOnProfiles,
@@ -128,6 +131,7 @@ export {
   buildAutoGroupTitle,
   createNewChatSubmitGate,
   type NewChatMode,
+  type NewChatGatewayOption,
   type NewChatProjectOption,
   type NewChatDialogSnapshot,
   type NewChatSubmitPayload,

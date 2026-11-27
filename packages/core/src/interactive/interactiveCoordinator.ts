@@ -431,10 +431,14 @@ export class InteractiveRequestCoordinator {
    * 底层 WebSocket 断开/切换时，立即解绑所有过期 `rpcId` 与 `socketGeneration`，
    * 保留卡片在内存中待重连后走 RPC（request.answer / approval.respond / clarify.respond）或对账收敛。
    */
-  public onSocketClosed(closedGeneration?: number): void {
+  public onSocketClosed(
+    closedGeneration?: number,
+    filter?: (prompt: InteractivePrompt) => boolean,
+  ): void {
     for (const [key, prompt] of this.prompts.entries()) {
       if (prompt.rpcId === null) continue;
       if (closedGeneration !== undefined && prompt.socketGeneration !== closedGeneration) continue;
+      if (filter && !filter(prompt)) continue;
       this.prompts.set(key, {
         ...prompt,
         rpcId: null,
