@@ -566,7 +566,16 @@ test('settingsExtensionsActions, mcpOAuthService, projectDirectoryActions, proje
   assert.equal(lState.learningState.status, 'ready');
 });
 
-import { saveGatewayConfigs, upsertGatewayConfig } from '../../dist/renderer/gateway/gatewayRegistryStore.mjs';
+import {
+  clearRuntimeGatewaySecrets,
+  deleteGatewayPassword,
+  resolveGatewayPassword,
+  saveGatewayConfigs,
+  saveGatewayPassword,
+  upsertGatewayConfig,
+} from '../../dist/renderer/gateway/gatewayRegistryStore.mjs';
+import { createDesktopMultiGatewayWiring } from '../../dist/renderer/gateway/multiGatewayCoordinator.mjs';
+import { LiveStreamRegistry, SessionHandleRegistry } from '@hermes-flux/core';
 
 test('Stage 2B coverage top-up: registry upsert invalid, gateway actions fallback branches, dataService slot/wizard/project branches & extensions/dir/learning', async () => {
   // 1. gatewayRegistryStore upsertGatewayConfig & saveGatewayConfigs invalid entry
@@ -862,4 +871,78 @@ test('Stage 2B coverage top-up: registry upsert invalid, gateway actions fallbac
     describeRpcError: (e) => String(e),
   });
   await learn2.loadLearningGraph({ profile: 'x' });
+});
+
+test('Non-keychain runtime gateway secret isolation & cross-origin fallback guard (Browser Live & Mobile)', async () => {
+  clearRuntimeGatewaySecrets();
+  const prevStorage = globalThis.localStorage;
+  const lsData = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (lsData.has(k) ? lsData.get(k) : null),
+    setItem: (k, v) => lsData.set(k, String(v)),
+    removeItem: (k) => lsData.delete(k),
+  };
+  try {
+    const alphaCfg = { id: '__default__', url: 'http://127.0.0.1:18642' };
+    const betaCfg = { id: 'beta', url: 'http://127.0.0.1:18643' };
+
+    // Save distinct secrets without OS keychain bridge -> isolated in runtime memory only (zero localStorage writes)
+    await saveGatewayPassword(alphaCfg, 'alpha-pass', undefined);
+    await saveGatewayPassword(betaCfg, 'beta-pass', undefined);
+    assert.equal(lsData.size, 0);
+    assert.equal(await resolveGatewayPassword(alphaCfg, undefined, ''), 'alpha-pass');
+    assert.equal(await resolveGatewayPassword(betaCfg, undefined, 'alpha-pass'), 'beta-pass');
+
+    // Throwing keychain bridge also falls back to runtime secret cleanly
+    const throwingBridge = {
+      getGatewaySecret: async () => { throw new Error('keychain locked'); },
+      setGatewaySecret: async () => { throw new Error('keychain locked'); },
+    };
+    await saveGatewayPassword(betaCfg, 'beta-pass-2', throwingBridge);
+    assert.equal(await resolveGatewayPassword(betaCfg, throwingBridge, 'alpha-pass'), 'beta-pass-2');
+
+    // Deleting target gateway secret leaves primary untouched
+    await deleteGatewayPassword(betaCfg, undefined);
+    assert.equal(await resolveGatewayPassword(betaCfg, undefined, ''), '');
+    assert.equal(await resolveGatewayPassword(alphaCfg, undefined, ''), 'alpha-pass');
+
+    // Cross-origin fallback guard inside multiGatewayCoordinator: primary state.password must NEVER leak to secondary gateway
+    const seenAuthPasswords = [];
+    const coordState = makeBaseState({
+      gatewayUrl: 'http://127.0.0.1:18642',
+      username: 'alpha',
+      password: 'alpha-only-password',
+      gatewayCount: 2,
+      activeFocus: { type: 'session', sessionId: 's1', gatewayId: '__default__' },
+      activeGatewayId: '__default__',
+      sessions: [],
+    });
+    const wiring = createDesktopMultiGatewayWiring({
+      getState: () => coordState,
+      render: () => {},
+      getDesktopApi: () => ({
+        authenticateGateway: async (opts) => {
+          seenAuthPasswords.push([opts.url, opts.password]);
+          return { ok: false, message: 'auth check captured', latency: 1 };
+        },
+      }),
+      getFallbackHandleRegistry: () => new SessionHandleRegistry(),
+      getFallbackLiveStreamRegistry: () => new LiveStreamRegistry(),
+    });
+    await wiring.syncConfiguredGateways({
+      configs: [
+        { id: '__default__', name: 'Alpha', url: 'http://127.0.0.1:18642', username: 'alpha', enabled: true, routeKind: 'direct' },
+        { id: 'beta', name: 'Beta', url: 'http://127.0.0.1:18643', username: 'beta', enabled: true, routeKind: 'direct' },
+      ],
+      connectIds: ['__default__', 'beta'],
+    });
+    const alphaAuth = seenAuthPasswords.find(([u]) => u.includes('18642'));
+    const betaAuth = seenAuthPasswords.find(([u]) => u.includes('18643'));
+    assert.equal(alphaAuth?.[1], 'alpha-only-password');
+    assert.equal(betaAuth?.[1], '');
+  } finally {
+    clearRuntimeGatewaySecrets();
+    if (prevStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = prevStorage;
+  }
 });

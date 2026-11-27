@@ -17,6 +17,7 @@
  */
 
 import {
+  DEFAULT_CACHE_GATEWAY_ID,
   LiveStreamRegistry,
   SessionHandleRegistry,
   modelCatalogFingerprint,
@@ -643,7 +644,14 @@ export function createDesktopMultiGatewayWiring(deps: {
     getDesktopApi: deps.getDesktopApi,
     resolvePassword: (cfg) => {
       const st = deps.getState();
-      const fallbackPwd = deps.getFallbackPassword?.() ?? ('password' in st ? String((st as AppState).password || '') : '');
+      const slotOrigin = normalizeGatewayOriginUrl(cfg.url || '');
+      const legacyOrigin = normalizeGatewayOriginUrl(st.gatewayUrl || '');
+      const isSameLegacyOrigin =
+        cfg.id === DEFAULT_CACHE_GATEWAY_ID ||
+        (Boolean(slotOrigin) && Boolean(legacyOrigin) && slotOrigin === legacyOrigin);
+      const fallbackPwd =
+        deps.getFallbackPassword?.() ??
+        (isSameLegacyOrigin && 'password' in st ? String((st as AppState).password || '') : '');
       return resolveGatewayPassword(cfg, deps.getDesktopApi(), fallbackPwd);
     },
     onSlotEvent: (gwId, params) => {

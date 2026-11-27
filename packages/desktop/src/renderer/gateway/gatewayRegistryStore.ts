@@ -191,40 +191,60 @@ export function buildGatewaySecretIdKey(gatewayId: string): string {
   return clean ? `gw-id:${clean}` : '';
 }
 
-/** 按「实例 ID 主键 ➔ 遗留 Origin 键 ➔ 显式兜底值」顺序从 OS 密钥库解析网关口令。 */
+const runtimeGatewaySecrets = new Map<string, string>();
+
+/** 清空非持久化运行时口令缓存（仅供测试环境与退出清理调用）。 */
+export function clearRuntimeGatewaySecrets(): void {
+  runtimeGatewaySecrets.clear();
+}
+
+function buildGatewaySecretKeys(config: Pick<GatewayInstanceConfig, 'id' | 'url'>): string[] {
+  return [buildGatewaySecretIdKey(config.id), buildGatewaySecretKey(config.url)].filter(Boolean);
+}
+
+/** 按「OS 密钥库 ➔ 运行时内存隔离缓存 ➔ 显式兜底值」顺序解析网关口令。 */
 export async function resolveGatewayPassword(
   config: Pick<GatewayInstanceConfig, 'id' | 'url'>,
   secretBridge?: Pick<HermesDesktopBridge, 'getGatewaySecret'> | null,
   fallbackPassword = '',
 ): Promise<string> {
-  if (!secretBridge?.getGatewaySecret) return fallbackPassword;
-  try {
-    const idKey = buildGatewaySecretIdKey(config.id);
-    if (idKey) {
-      const byId = await secretBridge.getGatewaySecret(idKey);
-      if (byId) return byId;
+  const keys = buildGatewaySecretKeys(config);
+  const readRuntimeSecret = (): string => {
+    for (const key of keys) {
+      const value = runtimeGatewaySecrets.get(key);
+      if (value) return value;
     }
-    const originKey = buildGatewaySecretKey(config.url);
-    if (originKey) {
-      const byOrigin = await secretBridge.getGatewaySecret(originKey);
-      if (byOrigin) return byOrigin;
+    return '';
+  };
+
+  if (secretBridge?.getGatewaySecret) {
+    try {
+      for (const key of keys) {
+        const stored = await secretBridge.getGatewaySecret(key);
+        if (stored) return stored;
+      }
+    // gate-degrade: 安全密钥库 IPC 不可用时回退运行时内存隔离缓存或显式兜底口令，防止阻塞并发连接
+    } catch {
+      return readRuntimeSecret() || fallbackPassword;
     }
-    return fallbackPassword;
-  // gate-degrade: 安全密钥库 IPC 不可用时回退兜底密码或空串，防止阻塞并发连接
-  } catch {
-    return fallbackPassword;
   }
+  return readRuntimeSecret() || fallbackPassword;
 }
 
-/** 将网关口令同步写入安全密钥库（口令为空时执行双键抹除）。 */
+/** 将网关口令同步写入运行时内存隔离缓存与 OS 安全密钥库（口令为空时执行双键抹除）。 */
 export async function saveGatewayPassword(
   config: Pick<GatewayInstanceConfig, 'id' | 'url'>,
   password: string,
   secretBridge?: Partial<Pick<HermesDesktopBridge, 'setGatewaySecret' | 'deleteGatewaySecret'>> | null,
 ): Promise<void> {
-  if (!secretBridge) return;
-  const keys = [buildGatewaySecretIdKey(config.id), buildGatewaySecretKey(config.url)].filter(Boolean);
+  const keys = buildGatewaySecretKeys(config);
   for (const key of keys) {
+    if (password) {
+      runtimeGatewaySecrets.set(key, password);
+    } else {
+      runtimeGatewaySecrets.delete(key);
+    }
+    if (!secretBridge) continue;
     try {
       if (password) {
         await secretBridge.setGatewaySecret?.(key, password);
