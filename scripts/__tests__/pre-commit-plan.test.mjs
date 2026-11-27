@@ -36,13 +36,19 @@ test('pre-commit-plan · empty 与 PRECOMMIT_FULL=1 边界', () => {
 });
 
 test('pre-commit-plan · docs 档位按文档域最小运行，不触发编译与单测', () => {
-  const plainDocs = planPreCommitGates(['README.md', 'README.zh-CN.md', 'LICENSE', '.env.example'], {
+  const plainDocs = planPreCommitGates(['AGENTS.md', 'README.md', 'README.zh-CN.md', 'LICENSE', '.env.example'], {
     npmCmd: 'npm',
     env: {},
   });
   assert.equal(plainDocs.mode, 'docs');
   assert.equal(plainDocs.gates.length, 1);
   assert.equal(hasCmd(plainDocs, 'scripts/gates/run.mjs --staged'), true);
+
+  const agentsOnly = planPreCommitGates(['AGENTS.md'], {
+    npmCmd: 'npm',
+    env: {},
+  });
+  assert.equal(agentsOnly.mode, 'docs');
 
   const invDocs = planPreCommitGates(['docs/invariants.json', 'docs/invariants.md'], {
     npmCmd: 'npm',
@@ -163,6 +169,7 @@ test('pre-commit-plan · scoped 档位按变更包精确缩放构建、类型检
 });
 
 test('detect-ci-scope · 仅对纯文档/模板 PR 放行 docs 快速通道，其余全部落回 full', () => {
+  assert.equal(isDocsOnlyPath('AGENTS.md'), true);
   assert.equal(isDocsOnlyPath('README.md'), true);
   assert.equal(isDocsOnlyPath('README.zh-CN.md'), true);
   assert.equal(isDocsOnlyPath('LICENSE'), true);

@@ -20,7 +20,7 @@ export function isDocsOnlyPath(rel) {
   const p = String(rel || '').replace(/\\/g, '/').trim();
   if (!p) return false;
   if (/^README(?:\.[A-Za-z0-9-]+)?\.md$/.test(p)) return true;
-  if (p === 'LICENSE' || p === '.env.example') return true;
+  if (p === 'AGENTS.md' || p === 'LICENSE' || p === '.env.example') return true;
   if (/^packages\/mobile\/.*\.example$/.test(p)) return true;
   if (/^docs\/.*\.md$/.test(p)) return true;
   if (p === 'docs/invariants.json') return true;
