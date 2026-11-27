@@ -89,6 +89,7 @@ test('M1.3 remaining branch closure: coordinator, mediaResolver, services, turnE
     getLastStreamScrollTop: () => 0, setLastStreamScrollTop: scNoop, getProgrammaticScrollTarget: () => null,
     setProgrammaticScrollTarget: scNoop, getProgrammaticScrollIgnoreUntil: () => 0, getLayoutDriftUntil: () => 0,
     getReaderScrolledSessionId: () => '', setReaderScrolledSessionId: scNoop, setSettledLayoutSignature: scNoop,
+    onRefillMobileComposer: () => true,
     STICK_TO_BOTTOM_THRESHOLD_PX: 80, MESSAGE_WINDOW_CAPACITY: 100,
   };
   const makeSc = () => createConversationStreamController(scBase);

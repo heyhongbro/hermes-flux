@@ -37,6 +37,8 @@ export * from './fs/fileService.js';
 export * from './fs/fileTreeService.js';
 export * from './fs/directoryPickerService.js';
 export * from './fs/pathVerifier.js';
+export * from './fs/previewResourceResolver.js';
+export * from './fs/htmlPreviewBundler.js';
 export * from './log/logger.js';
 export * from './log/redact.js';
 export * from './log/fileLogPolicy.js';
@@ -72,6 +74,8 @@ export * from './viewport/scrollEndMachine.js';
 export * from './turn/slidingWatchdog.js';
 export * from './session/liveStreamSync.js';
 export * from './session/sessionStatusStore.js';
+export * from './rpc/serverRequestRouter.js';
+export * from './interactive/index.js';
 export type {
   AttachedImageResult,
   FileAttachResult,

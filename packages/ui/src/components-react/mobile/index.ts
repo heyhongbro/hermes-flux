@@ -80,6 +80,11 @@ export {
   type MobileMorphingComposerProps,
   type MobileModelPickerSheetProps,
 } from './MobileMorphingComposer.js';
+export {
+  MobileApprovalModeSheet,
+  type MobileApprovalMode,
+  type MobileApprovalModeSheetProps,
+} from './MobileApprovalModeSheet.js';
 export { MobileHomeScreen, type MobileHomeScreenProps } from './MobileHomeScreen.js';
 export { MobileNewChatSheet, type MobileNewChatSheetProps } from './MobileNewChatSheet.js';
 export { MobileConversationScreen, type MobileConversationScreenProps } from './MobileConversationScreen.js';

@@ -111,6 +111,15 @@ test('Capacitor Mobile PlatformBridge - Live Headless Mobile CDP & Gateway Test'
     return;
   }
 
+  const configSetCalls = [];
+  const mockSessions = Array.from({ length: 18 }, (_, idx) => ({
+    session_id: `sess_mob_${idx + 1}`,
+    stored_session_id: `sess_mob_${idx + 1}`,
+    title: idx === 0 ? 'Mobile Test Session' : `Session Item ${idx + 1}`,
+    profile: 'default',
+    last_active: Math.floor(Date.now() / 1000) - idx * 60,
+  }));
+
   // 1. 启动真实的 Mock Gateway HTTP 服务
   const gatewayServer = http.createServer((req, res) => {
     const url = req.url?.split('?')[0] || '';
@@ -163,7 +172,14 @@ test('Capacitor Mobile PlatformBridge - Live Headless Mobile CDP & Gateway Test'
     }
 
     if (url === '/api/sessions') {
+      const profileParam = new URL(req.url || '/api/sessions', 'http://127.0.0.1').searchParams.get('profile');
       res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (profileParam !== null) {
+        res.end(JSON.stringify({
+          sessions: profileParam !== 'default' ? [] : mockSessions,
+        }));
+        return;
+      }
       res.end(JSON.stringify({
         sessions: [
           { id: 'sess_mob_1', title: 'Mobile Test Session', created_at: Date.now() },
@@ -182,15 +198,6 @@ test('Capacitor Mobile PlatformBridge - Live Headless Mobile CDP & Gateway Test'
     res.writeHead(404);
     res.end('Not Found');
   });
-
-  const configSetCalls = [];
-  const mockSessions = Array.from({ length: 18 }, (_, idx) => ({
-    session_id: `sess_mob_${idx + 1}`,
-    stored_session_id: `sess_mob_${idx + 1}`,
-    title: idx === 0 ? 'Mobile Test Session' : `Session Item ${idx + 1}`,
-    profile: 'default',
-    last_active: Math.floor(Date.now() / 1000) - idx * 60,
-  }));
 
   attachSimpleWsServer(gatewayServer, (msg, sendReply) => {
     const { id, method, params } = msg;
@@ -523,7 +530,9 @@ test('Capacitor Mobile PlatformBridge - Live Headless Mobile CDP & Gateway Test'
   assert.equal(shellMount.result.value.mounted, true, 'MobileWorkspaceShell must mount on Android 390x844 viewport');
   assert.equal(shellMount.result.value.activePane, 'home', 'Initial pane must be home');
   assert.equal(shellMount.result.value.hasDesktopBody, false, 'Desktop 3-rail .flux-body-container must not mount on mobile');
-  assert.equal(shellMount.result.value.hasBots && shellMount.result.value.hasGroups && shellMount.result.value.hasSessions, true);
+  assert.equal(shellMount.result.value.hasBots, true);
+  assert.equal(shellMount.result.value.hasGroups, false, 'Empty groupRooms must hide [data-section="groups"]');
+  assert.equal(shellMount.result.value.hasSessions, true);
 
   // 14a. 验证悬浮顶栏胶囊、纯净浅白皮肤 (jade-white)、设置分级菜单与 Bot Hub 页面零横向溢出
   const floatTopCheck = await send('Runtime.evaluate', {

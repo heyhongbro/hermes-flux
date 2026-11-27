@@ -47,7 +47,7 @@ export const LIGHTBOX_SWIPE_COMMIT_PX = 56;
 export const LIGHTBOX_SWIPE_FLICK_PX_MS = 0.35;
 export const LIGHTBOX_DISMISS_DY_PX = 110;
 
-const SAFE_MEDIA_SRC_RE = /^(?:data:image\/|https?:\/\/|blob:)/i;
+const SAFE_MEDIA_SRC_RE = /^(?:data:image\/|https?:\/\/|blob:|hermes-preview:\/\/)/i;
 
 /** 夹取灯箱缩放比例至合法区间 `[0.5, 4]`。 */
 export function clampLightboxScale(scale: number): number {

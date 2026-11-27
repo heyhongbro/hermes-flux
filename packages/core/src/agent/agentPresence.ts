@@ -24,10 +24,14 @@
  */
 
 import { classifyToolName } from './toolTaxonomy.js';
+import type { WaitingPromptReason } from '../session/activityState.js';
+
+export type { WaitingPromptReason } from '../session/activityState.js';
 
 /** 在场状态种类（互斥） */
 export type AgentPresenceKind =
   | 'idle'
+  | 'waiting'
   | 'thinking'
   | 'tool'
   | 'writing'
@@ -54,6 +58,7 @@ export type PresenceToolKind =
 /** 在场状态：判别联合，非法状态不可表达 */
 export type AgentPresence =
   | { kind: 'idle' }
+  | { kind: 'waiting'; reason: WaitingPromptReason; sinceMs: number }
   | { kind: 'thinking'; sinceMs: number }
   | {
       kind: 'tool';
@@ -94,6 +99,8 @@ export interface AgentPresenceInput {
   lastError?: string;
   /** 回合被用户或看门狗终止 */
   interrupted?: boolean;
+  /** 当前会话/群聊挂起等待人类交互的原因；存在时优先级高于运行与流式工具 */
+  waitingReason?: WaitingPromptReason | null;
   /** 回合开始的本地毫秒时间戳；缺失时 sinceMs 记 0 */
   turnStartedAt?: number;
   /** 当前本地毫秒时间戳 */
@@ -198,6 +205,9 @@ export function deriveAgentPresence(input: AgentPresenceInput): AgentPresence {
   const error = (input.lastError || '').trim();
   if (error) return { kind: 'failed', message: error };
   if (input.interrupted) return { kind: 'interrupted' };
+  if (input.waitingReason) {
+    return { kind: 'waiting', reason: input.waitingReason, sinceMs };
+  }
 
   const subagentCount = Math.max(0, Math.floor(input.activeSubagents ?? 0));
   if (subagentCount > 0) {

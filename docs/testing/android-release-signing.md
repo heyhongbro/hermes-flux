@@ -1,21 +1,21 @@
-# Android Release 签名配置与开发者身份验证说明
+# Android Release Signing & Developer Verification Guide
 
-## 一、为什么安装 APK 会提示“开发者身份未验证”
+## 1. Why Sideloaded APKs Show "Unverified Developer"
 
-Android 侧载安装出现“开发者身份未验证 / Unknown developer / Unverified developer”通常由**两层原因**共同触发：
+Two separate layers control whether Android trusts an installed APK:
 
-1. **构建层：Release APK 使用了 Debug Keystore 签名（工程缺陷，已修复）**
-   - 此前 `packages/mobile/android/app/build.gradle` 将 `buildTypes.release` 硬编码为 `signingConfig signingConfigs.debug`。
-   - Android 系统、Play Protect 及国内各手机厂商安装器会直接把调试签名识别为不可信开发包。
-2. **系统 / 分发层：OS 与厂商级开发者身份核验（需要开发者账号备案）**
-   - 从 **Android 15 / 16+ Google Android Developer Verification** 以及国内主流厂商（小米 HyperOS、OPPO ColorOS、vivo OriginOS、华为 HarmonyOS 等）的安全安装策略开始，即使包体已经使用了自签名 Release Keystore，**未在对应开发者平台备案绑定“包名 (`com.hermesflux.app`) + 正式发布证书 SHA-256 指纹”的侧载 APK**，系统安装器仍可能弹窗提示开发者身份未验证或风险应用。
-   - 因此，**先启用固定 Release Keystore 签名**，再把同一份正式证书的 **SHA-256 指纹** 登记到 Google Play Console / Android Developer Verification 或各厂商开放平台，才能彻底消除警告并保障后续版本覆盖升级签名一致。
+1. **Build Layer: Release APK Signed with Debug Keystore (Fixed in Repo)**
+   - Previously `packages/mobile/android/app/build.gradle` hardcoded `signingConfig signingConfigs.debug` in `buildTypes.release`.
+   - Android, Google Play Protect, and OEM package installers automatically reject or warn on debug-signed builds.
+2. **OS / Distribution Layer: Platform Developer Identity Registration**
+   - Under **Android 15/16+ Google Android Developer Verification** and OEM security policies (Xiaomi HyperOS, OPPO ColorOS, vivo OriginOS, Huawei HarmonyOS, etc.), even a properly signed release APK triggers an unverified developer prompt during sideloading unless the pair **`com.hermesflux.app` + release certificate SHA-256 fingerprint** is registered with those developer consoles.
+   - Always sign releases with a persistent Release Keystore and register its **SHA-256 fingerprint** to enable smooth future upgrades without signature mismatches.
 
 ---
 
-## 二、生成本地 Release Keystore（仅需执行一次）
+## 2. Generate a Release Keystore (One-Time Setup)
 
-使用 JDK 自带的 `keytool` 生成 `.keystore`（请妥善备份文件与口令；一旦丢失，已安装旧版的设备将无法覆盖升级）：
+Generate a `.keystore` using JDK `keytool` and back up both the keystore file and passwords securely (losing them prevents upgrading existing installs):
 
 ```bash
 keytool -genkeypair -v \
@@ -24,50 +24,65 @@ keytool -genkeypair -v \
   -keyalg RSA -keysize 2048 -validity 10000
 ```
 
-> `*.keystore`、`*.jks` 与 `keystore.properties` 均已被 [`packages/mobile/android/.gitignore`](../../packages/mobile/android/.gitignore) 忽略，严禁强制 `git add -f`。
+> `*.keystore`, `*.jks`, and `keystore.properties` are ignored by [`packages/mobile/android/.gitignore`](../../packages/mobile/android/.gitignore) and must never be committed to Git.
 
 ---
 
-## 三、两种配置方式（任选其一）
+## 3. Configuration Options (Choose One)
 
-### 方式 1：本地 `keystore.properties`（推荐个人本地打包）
+### Option 1: Local `keystore.properties` (Recommended for Local Builds)
 
 ```bash
 cp packages/mobile/android/keystore.properties.example packages/mobile/android/keystore.properties
 ```
 
-填入：
+Fill in:
 
 ```properties
 storeFile=release.keystore
-storePassword=你的密钥库密码
+storePassword=YOUR_KEYSTORE_PASSWORD
 keyAlias=hermes-flux-release
-keyPassword=你的别名密码
+keyPassword=YOUR_KEY_PASSWORD
 ```
 
-### 方式 2：环境变量注入（推荐 CI / 自动化脚本）
+### Option 2: Environment Variables (Recommended for CI / Automation)
 
-在环境变量（或 `.env` 并通过 `--env-file` / CI Secret 注入）中设置：
+Set these variables in your environment (or `.env` / GitHub Secrets):
 
-- `ANDROID_KEYSTORE_PATH`（keystore 文件路径，绝对路径或相对 `packages/mobile/android`）
+- `ANDROID_KEYSTORE_PATH` (absolute path or relative to `packages/mobile/android`)
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-未配置上述任意一项时，`assembleRelease` 与 `npm run build:android`（位于 `packages/mobile`）会显式打印告警并安全降级回 `signingConfigs.debug`，保证本地调试构建不阻塞。
+When any field is missing, `assembleRelease` and `npm run package:mobile:android` (or `npm run build:android` in `packages/mobile`) print a warning and fall back to `signingConfigs.debug` so local development builds remain unblocked.
+
+For release builds (strict fail-closed verification that exits non-zero if credentials are missing or the output still uses `CN=Android Debug`):
+
+```bash
+# Option A: Root workspace strict release command
+npm run package:mobile:android:release
+
+# Option B: Strict mode via environment variable
+FLUX_REQUIRE_SIGNING=1 npm run package:mobile:android
+
+# Option C: Check readiness across platforms
+npm run signing:check -- --platform=android --strict
+```
+
+> See [`cross-platform-release-signing.md`](cross-platform-release-signing.md) for iOS, macOS, and Windows signing instructions.
 
 ---
 
-## 四、查看正式证书 SHA-256 指纹（用于平台认证 / 备案）
+## 4. Inspect Release Certificate SHA-256 Fingerprint
 
 ```bash
 keytool -list -v -keystore packages/mobile/android/release.keystore -alias hermes-flux-release
 ```
 
-或在打包完成后直接校验证书：
+Or verify the packaged APK directly:
 
 ```bash
 apksigner verify --print-certs packages/mobile/release/Hermes-Flux-0.1.0-release.apk
 ```
 
-将输出中的 **`SHA-256`** 指纹与包名 `com.hermesflux.app` 提交至 Google Developer Verification / 各厂商开放平台完成开发者身份认证绑定即可。
+Submit the **`SHA-256`** fingerprint together with package ID `com.hermesflux.app` to Google Developer Verification and OEM app consoles.

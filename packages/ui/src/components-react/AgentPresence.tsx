@@ -34,6 +34,7 @@ import {
   pickIdleQuipIndex,
   type AgentPresence,
   type PresenceToolKind,
+  type WaitingPromptReason,
 } from '@hermes-flux/core';
 import { t, type I18nKey } from '../i18n/index.js';
 import { renderBotAvatar } from '../utils/botAvatar.js';
@@ -262,6 +263,14 @@ interface PresenceTextModel {
  *      以便目标走等宽字体与二级色，动词保持前景色；
  *   4. 失败原因先截断再交给 i18n（截断是表现层职责，不进字典）。
  */
+const WAITING_PRESENCE_KEYS = {
+  clarify: 'presence.waiting.clarify',
+  approval: 'presence.waiting.approval',
+  credential: 'presence.waiting.credential',
+  connection: 'presence.waiting.connection',
+  confirm: 'presence.waiting.confirm',
+} as const satisfies Record<WaitingPromptReason, I18nKey>;
+
 function buildTextModel(
   presence: AgentPresence,
   tone: 'fresh' | 'patient' | 'long',
@@ -280,6 +289,9 @@ function buildTextModel(
     case 'idle':
       // 空闲态播报「它在闲着」的轮播短句：头像完全静止读起来像进程挂了
       return { ...empty, verbBefore: idleQuip, isIdleQuip: true };
+
+    case 'waiting':
+      return { ...empty, verbBefore: t(WAITING_PRESENCE_KEYS[presence.reason]) };
 
     case 'thinking':
       return { ...empty, verbBefore: t(`presence.thinking.${tone}`) };
@@ -542,7 +554,7 @@ export function AgentPresence(props: { snapshot: AgentPresenceSnapshot }): React
       */}
       <span
         className="conv-presence__text"
-        key={`${presence.kind}:${tone}:${text.isIdleQuip ? idleQuip.tick : ''}`}
+        key={`${presence.kind}:${tone}:${text.isIdleQuip ? idleQuip.tick : ''}:${presence.kind === 'waiting' ? presence.reason : ''}`}
         data-idle-quip={text.isIdleQuip ? 'true' : 'false'}
         aria-hidden={text.isIdleQuip ? 'true' : undefined}
       >

@@ -8,7 +8,14 @@ export { ConversationMessageFooter } from './MessageFooter.js';
 export { MessageAttachments, type MessageAttachmentsProps } from './MessageAttachments.js';
 export { MarkdownBlock } from './MarkdownBlock.js';
 export { ToolCapsule, ToolSection, ToolBlocks, classifyTool } from './ToolCapsule.js';
-export { CompactTraceCapsule, isSubagentTool, partitionMobileTools } from './CompactTraceCapsule.js';
+export {
+  CompactTraceCapsule,
+  consolidateMobileTurnTraces,
+  isSubagentTool,
+  partitionMobileTools,
+  type CompactTraceStep,
+  type ConsolidatedMobileTurnRow,
+} from './CompactTraceCapsule.js';
 export { TurnGroup, groupTurns } from './TurnGroup.js';
 export { TurnDeliverables, type TurnDeliverablesProps } from './TurnDeliverables.js';
 export {

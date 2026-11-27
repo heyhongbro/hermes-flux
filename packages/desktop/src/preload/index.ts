@@ -40,6 +40,19 @@ export interface HermesDesktopBridge extends IPlatformBridge {
     newName: string,
   ) => Promise<{ ok: boolean; path?: string; error?: string }>;
   readFile: (path: string) => Promise<string | null>;
+  registerPreviewSession?: (options: {
+    entryPath: string;
+    entryContent: string;
+    workspaceRoot?: string;
+    gatewayUrl?: string;
+    profile?: string;
+    sessionId?: string;
+    source?: 'session_tool' | 'local_fs' | 'remote_http' | 'gateway_api' | 'fallback';
+  }) => Promise<{
+    token: string;
+    entryUrl: string;
+  } | null>;
+  revokePreviewSession?: (token: string) => Promise<void>;
   resolveMediaStreamUrl?: (options: {
     filePath: string;
     gatewayUrl?: string;
@@ -122,6 +135,8 @@ const bridge: HermesDesktopBridge = {
   renameDirectory: (dirPath: string, newName: string) =>
     ipcRenderer.invoke('fs:rename-directory', dirPath, newName),
   readFile: (filePath: string) => ipcRenderer.invoke('fs:read-file', filePath),
+  registerPreviewSession: (options) => ipcRenderer.invoke('preview:register-session', options),
+  revokePreviewSession: (token) => ipcRenderer.invoke('preview:revoke-session', token),
   resolveMediaStreamUrl: (options) => ipcRenderer.invoke('media:resolve-stream-url', options),
   saveFile: (options) => ipcRenderer.invoke('fs:save-file', options),
   clipboardWrite: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),

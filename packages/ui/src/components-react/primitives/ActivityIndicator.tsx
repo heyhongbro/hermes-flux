@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { t, type I18nKey } from '../../i18n/index.js';
 import { cn } from '../../lib/utils.js';
-import type { ActivityState, ActivityTransition } from '../../components/LeftRail/types.js';
+import type { ActivityState, ActivityTransition, WaitingPromptReason } from '../../components/LeftRail/types.js';
 import { getPointCloudSpec, type ActivityIndicatorVariant } from '../../tokens/activityIndicator.js';
 
 export type ActivityIndicatorPlacement = 'inline' | 'corner';
@@ -10,6 +10,7 @@ export type ActivityEntityKind = 'session' | 'bot' | 'group';
 
 export interface ActivityIndicatorProps {
   state?: ActivityState;
+  waitingReason?: WaitingPromptReason;
   transition?: ActivityTransition;
   transitionToken?: number;
   placement?: ActivityIndicatorPlacement;
@@ -23,6 +24,14 @@ const RUNNING_STATUS_KEY_BY_KIND: Readonly<Record<ActivityEntityKind, I18nKey>> 
   session: 'rail.activityStatusRunning',
   bot: 'rail.activityStatusThinking',
   group: 'rail.activityStatusCollaborating',
+};
+
+const WAITING_STATUS_KEY_BY_REASON: Readonly<Record<WaitingPromptReason, I18nKey>> = {
+  clarify: 'rail.activityStatusWaitingReply',
+  approval: 'rail.activityStatusWaitingApproval',
+  credential: 'rail.activityStatusWaitingCredential',
+  connection: 'rail.activityStatusWaitingConnection',
+  confirm: 'rail.activityStatusWaitingConfirm',
 };
 
 const CORNER_DOT_BASE_CLASS = 'absolute right-0 top-0 inline-flex size-2 items-center justify-center rounded-full ring-2 ring-sidebar';
@@ -48,6 +57,7 @@ const CORNER_DOT_BASE_CLASS = 'absolute right-0 top-0 inline-flex size-2 items-c
  */
 export function ActivityIndicator({
   state,
+  waitingReason,
   transition = 'none',
   transitionToken,
   placement = 'inline',
@@ -97,11 +107,32 @@ export function ActivityIndicator({
     return null;
   }
 
+  const isWaiting = state === 'waiting';
   const isRunning = state === 'running';
-  const resolvedLabel = title ?? t(isRunning ? 'rail.activityRunning' : 'rail.activityUnread');
+  const resolvedLabel = title ?? t(isWaiting ? 'rail.activityWaiting' : isRunning ? 'rail.activityRunning' : 'rail.activityUnread');
   const effectiveTransition: ActivityTransition = transition ?? 'none';
 
   if (placement === 'corner') {
+    if (isWaiting) {
+      return (
+        <span
+          className={cn(
+            'activity-waiting-indicator flux-activity-dot flux-activity-dot--waiting',
+            CORNER_DOT_BASE_CLASS,
+            className,
+          )}
+          data-status="waiting"
+          data-waiting-reason={waitingReason || ''}
+          data-placement="corner"
+          data-variant={variant}
+          title={resolvedLabel}
+          aria-label={resolvedLabel}
+          role="status"
+          aria-live="off"
+        />
+      );
+    }
+
     if (isRunning) {
       return (
         <span
@@ -316,6 +347,33 @@ export function ActivityIndicator({
       </span>
     );
   };
+
+  if (isWaiting) {
+    const waitKey: I18nKey = waitingReason
+      ? WAITING_STATUS_KEY_BY_REASON[waitingReason]
+      : 'rail.activityStatusWaiting';
+    const waitWord = t(waitKey);
+    return (
+      <span
+        className={cn(
+          'activity-waiting-indicator flux-cloud-indicator flux-cloud-indicator--waiting inline-flex items-center gap-1 shrink-0 pointer-events-none',
+          `flux-variant-${variant}`,
+          className,
+        )}
+        data-status="waiting"
+        data-waiting-reason={waitingReason || ''}
+        data-placement="inline"
+        data-variant={variant}
+        title={resolvedLabel}
+        aria-label={resolvedLabel}
+        role="status"
+        aria-live="off"
+      >
+        <span className="flux-waiting-glyph" aria-hidden="true" />
+        <span className="flux-cloud-label flux-cloud-label--waiting">{waitWord}</span>
+      </span>
+    );
+  }
 
   if (isRunning) {
     const statusWord = t(RUNNING_STATUS_KEY_BY_KIND[entityKind]);

@@ -19,6 +19,8 @@
 
 import { CONTRACT_EVENTS } from '../rpc/contracts/contractTable.generated.js';
 import type {
+  ConnectionRequestPayload,
+  ConnectionUpdatePayload,
   SessionLiveInfo,
   SessionUsagePayload,
   SubagentLifecycleStatus,
@@ -26,6 +28,10 @@ import type {
   SubagentOutputTailEntry,
 } from '../rpc/types.js';
 import { createLogger } from '../log/logger.js';
+import {
+  parseConnectionRequestPayload,
+  parseConnectionUpdatePayload,
+} from '../interactive/connectionParser.js';
 
 const log = createLogger('events');
 
@@ -222,6 +228,60 @@ export type TurnAction =
       channel: 'btw' | 'background';
       taskId: string;
       text: string;
+    }
+  | {
+      type: 'request-cancel';
+      id: string;
+      method: string;
+      reason: string;
+      sessionId?: string;
+    }
+  | {
+      type: 'approval-cancelled';
+      sessionId: string;
+      storedSessionId?: string;
+      reason: string;
+      cancelledCount: number;
+      requestIds: string[];
+    }
+  | {
+      type: 'connection-request';
+      sessionId?: string;
+      payload: ConnectionRequestPayload;
+    }
+  | {
+      type: 'connection-update';
+      sessionId?: string;
+      payload: ConnectionUpdatePayload;
+    }
+  | {
+      type: 'gateway-ready';
+      replayEpoch: string;
+      sessionAuthority?: boolean | null;
+    }
+  | {
+      type: 'tool-output-risk';
+      sessionId?: string;
+      messageId?: string;
+      toolCallId: string;
+      toolName?: string;
+      risk: string;
+      findings: string[];
+      redacted: boolean;
+    }
+  | {
+      type: 'notification-show';
+      text: string;
+      level: string;
+      kind: string;
+      ttlMs?: number;
+      key?: string;
+      id?: string;
+      detail?: string;
+    }
+  | {
+      type: 'notification-clear';
+      key: string;
     };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -429,6 +489,94 @@ export function reduceGatewayEvent(params: unknown, ctx: TurnEventContext): Turn
     const sessionId = frameSessionId || asText(payload.session_id);
     if (!sessionId) return [];
     return [{ type: 'session-usage', sessionId, payload: payload as SessionUsagePayload }];
+  }
+
+  // 交互式挂起取消/连接操作/就绪声明必须越过 activeSessionIds 焦点过滤，确保后台会话与全局请求及时收敛
+  if (type === 'request.cancel') {
+    const id = payload.id !== undefined && payload.id !== null ? String(payload.id) : '';
+    if (!id) return [];
+    return [{
+      type: 'request-cancel',
+      id,
+      method: asText(payload.method),
+      reason: asText(payload.reason),
+      ...(frameSessionId ? { sessionId: frameSessionId } : {}),
+    }];
+  }
+
+  if (type === 'approval.cancelled') {
+    const sessionId = frameSessionId || asText(payload.session_id);
+    const storedSessionId = asText(payload.stored_session_id) || undefined;
+    if (!sessionId && !storedSessionId) return [];
+    const requestIds = Array.isArray(payload.request_ids)
+      ? payload.request_ids.map((v) => String(v)).filter((v) => v.length > 0)
+      : [];
+    const cancelledCount = asFiniteNumber(payload.cancelled_count) ?? requestIds.length;
+    return [{
+      type: 'approval-cancelled',
+      sessionId,
+      ...(storedSessionId ? { storedSessionId } : {}),
+      reason: asText(payload.reason),
+      cancelledCount,
+      requestIds,
+    }];
+  }
+
+  if (type === 'connection.request') {
+    const parsed = parseConnectionRequestPayload(payload);
+    if (!parsed) return [];
+    return [{
+      type: 'connection-request',
+      ...(frameSessionId ? { sessionId: frameSessionId } : {}),
+      payload: parsed,
+    }];
+  }
+
+  if (type === 'connection.update') {
+    const parsed = parseConnectionUpdatePayload(payload);
+    if (!parsed) return [];
+    return [{
+      type: 'connection-update',
+      ...(frameSessionId ? { sessionId: frameSessionId } : {}),
+      payload: parsed,
+    }];
+  }
+
+  if (type === 'gateway.ready') {
+    const replayEpoch = asText(payload.replay_epoch);
+    const sessionAuthority =
+      typeof payload.session_authority === 'boolean' || payload.session_authority === null
+        ? payload.session_authority
+        : undefined;
+    return [{
+      type: 'gateway-ready',
+      replayEpoch,
+      ...(sessionAuthority !== undefined ? { sessionAuthority } : {}),
+    }];
+  }
+
+  if (type === 'notification.show') {
+    const text = asText(payload.text).trim();
+    if (!text) return [];
+    const ttlMs = asFiniteNumber(payload.ttl_ms);
+    const key = asText(payload.key).trim() || undefined;
+    const id = asText(payload.id).trim() || undefined;
+    const detail = asText(payload.detail).trim() || undefined;
+    return [{
+      type: 'notification-show',
+      text,
+      level: asText(payload.level) || 'info',
+      kind: asText(payload.kind) || 'notice',
+      ...(ttlMs !== undefined ? { ttlMs } : {}),
+      ...(key ? { key } : {}),
+      ...(id ? { id } : {}),
+      ...(detail ? { detail } : {}),
+    }];
+  }
+
+  if (type === 'notification.clear') {
+    const key = asText(payload.key).trim();
+    return key ? [{ type: 'notification-clear', key }] : [];
   }
 
   // 子代理事件按所属父会话入账：必须在 activeSessionIds 焦点过滤之前分发以支持后台进度统计，
@@ -708,6 +856,22 @@ export function reduceGatewayEvent(params: unknown, ctx: TurnEventContext): Turn
         });
       }
       return actions;
+    }
+
+    case 'tool.output_risk': {
+      const toolCallId = asText(payload.tool_id) || asText(payload.id) || asText(payload.tool_call_id);
+      if (!toolCallId) return [];
+      const toolName = asText(payload.name).trim() || undefined;
+      return [{
+        type: 'tool-output-risk',
+        ...(frameSessionId ? { sessionId: frameSessionId } : {}),
+        ...(messageId ? { messageId } : {}),
+        toolCallId,
+        ...(toolName ? { toolName } : {}),
+        risk: asText(payload.risk).trim() || 'medium',
+        findings: asStringArray(payload.findings) ?? [],
+        redacted: Boolean(payload.redacted),
+      }];
     }
 
     case 'message.complete': {

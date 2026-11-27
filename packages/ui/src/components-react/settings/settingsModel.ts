@@ -467,6 +467,29 @@ export type ToggleProviderAgentResult = SettingsActionResult;
 export type ConversationWidthChangeHandler = (width: ConversationWidthMode) => void;
 
 /** 设置弹窗的全部副作用出口。壳层实现，组件只调用。 */
+export interface McpReloadActionResult extends SettingsActionResult {
+  confirmRequired?: boolean;
+  status?: 'confirm_required' | 'reloaded';
+  session?: 'applied' | 'unchanged' | 'busy' | null;
+  rev?: string | null;
+}
+
+export interface McpOauthStartViewResult {
+  ok: boolean;
+  sessionId?: string;
+  authUrl?: string;
+  flow?: string;
+  message?: string;
+}
+
+export interface McpOauthPollViewResult {
+  ok: boolean;
+  status: 'pending' | 'approved' | 'error';
+  sessionId?: string;
+  authUrl?: string;
+  message?: string;
+}
+
 export interface SettingsActions {
   onClose: () => void;
   onSelectSection: (id: SettingsSectionId) => void;
@@ -564,6 +587,28 @@ export interface SettingsActions {
     profile: string,
     name: string,
   ) => Promise<McpTestResultView & { message?: string }>;
+  /** 触发 Gateway reload.mcp 热重载（支持 confirm / always / rev 二次确认参数）。 */
+  onReloadMcp?: (options?: {
+    confirm?: boolean;
+    always?: boolean;
+    rev?: string | null;
+  }) => Promise<McpReloadActionResult>;
+  /** 发起 MCP 服务器 OAuth 授权流。 */
+  onStartMcpOAuth?: (profile: string, name: string) => Promise<McpOauthStartViewResult>;
+  /** 轮询 MCP 服务器 OAuth 授权状态。 */
+  onPollMcpOAuth?: (
+    profile: string,
+    name: string,
+    sessionId: string,
+  ) => Promise<McpOauthPollViewResult>;
+  /** 取消进行中的 MCP 服务器 OAuth 授权流。 */
+  onCancelMcpOAuth?: (
+    profile: string,
+    name: string,
+    sessionId: string,
+  ) => Promise<SettingsActionResult>;
+  /** 使用宿主安全链接打开器唤起外部授权链接。 */
+  onOpenExternalUrl?: (url: string) => void;
   /** 浏览或关键词搜索可安装技能目录。 */
   onSearchSkillsHub?: (
     profile: string,

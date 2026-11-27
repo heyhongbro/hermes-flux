@@ -18,6 +18,7 @@
 
 import type {
   HermesGatewayClient,
+  NormalizedGroupPendingAction,
   SessionHandleRegistry,
   SessionLiveInfo,
   TurnAction,
@@ -46,6 +47,7 @@ export interface StatusIntegrationDeps {
   readonly t: (key: I18nKey, params?: Record<string, string | number>) => string;
   readonly writeClipboardText?: (text: string) => Promise<void>;
   readonly onOpenConstellation?: (profileName: string) => void;
+  readonly onGroupPendingActions?: (roomId: string, actions: readonly NormalizedGroupPendingAction[]) => void;
 }
 
 export interface StatusIntegration {
@@ -69,6 +71,7 @@ export interface StatusIntegration {
     profile?: string,
   ): void;
   onGroupActivated(roomId: string): void;
+  refreshGroupStateNow(roomId: string): Promise<void>;
   onSessionDeleted(storedSessionId: string): void;
   onGatewayTurnAction(action: TurnAction, toStoredSessionId: (id?: string | null) => string | null): void;
   dispose(): void;
@@ -110,6 +113,7 @@ export function createStatusIntegration(deps: StatusIntegrationDeps): StatusInte
     onOpenConstellation: deps.onOpenConstellation,
     writeClipboardText: deps.writeClipboardText,
     setTimedDockNotice: deps.setTimedDockNotice,
+    onGroupPendingActions: deps.onGroupPendingActions,
     render: deps.render,
     t: deps.t,
   });
@@ -147,6 +151,7 @@ export function createStatusIntegration(deps: StatusIntegrationDeps): StatusInte
     onLiveSessionReady: (storedSessionId, liveSessionId, info, profile) =>
       service.onLiveSessionReady(storedSessionId, liveSessionId, (info ?? null) as SessionLiveInfo | null, profile),
     onGroupActivated: (roomId: string) => service.onGroupActivated(roomId),
+    refreshGroupStateNow: (roomId: string) => service.refreshGroupStateNow(roomId),
     onSessionDeleted: (storedSessionId: string) => service.onSessionDeleted(storedSessionId),
     onGatewayTurnAction: (action, toStoredSessionId) =>
       service.onGatewayTurnAction(action, toStoredSessionId),

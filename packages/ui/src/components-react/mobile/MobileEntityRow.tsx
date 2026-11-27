@@ -13,7 +13,7 @@
 
 import * as React from 'react';
 import { ActivityIndicator, type ActivityEntityKind } from '../primitives/ActivityIndicator.js';
-import type { ActivityState, ActivityTransition } from '../leftRailModel.js';
+import type { ActivityState, ActivityTransition, WaitingPromptReason } from '../leftRailModel.js';
 import { EntityGatewayBadgePill } from '../RailEntityRow.js';
 import type { RailEntityGatewayBadge } from '../../components/LeftRail/types.js';
 
@@ -27,6 +27,7 @@ export interface MobileEntityRowProps {
   isActive: boolean;
   isPinned?: boolean;
   activityState: ActivityState;
+  waitingReason?: WaitingPromptReason;
   activityTransition: ActivityTransition;
   activityTransitionToken?: number;
   gatewayBadge?: RailEntityGatewayBadge;
@@ -48,6 +49,7 @@ export const MobileEntityRow = React.memo(function MobileEntityRow({
   isActive,
   isPinned,
   activityState,
+  waitingReason,
   activityTransition,
   activityTransitionToken,
   gatewayBadge,
@@ -134,6 +136,7 @@ export const MobileEntityRow = React.memo(function MobileEntityRow({
           <span className="m-entity-row__right">
             <ActivityIndicator
               state={activityState}
+              waitingReason={waitingReason}
               transition={activityTransition}
               transitionToken={activityTransitionToken}
               placement="inline"

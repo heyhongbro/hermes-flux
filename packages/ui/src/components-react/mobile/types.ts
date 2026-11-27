@@ -3,9 +3,14 @@
  */
 
 import type {
+  BackgroundWaitingSummary,
+  ClarifyPrompt,
+  ConnectionPrompt,
   DeliverableKind,
   FileTreeLoadState,
   GatewayConnectionPhase,
+  InteractivePrompt,
+  InteractiveReplyPayload,
   LearningDetailState,
   LearningLoadState,
 } from '@hermes-flux/core';
@@ -16,6 +21,7 @@ import type { MediaLightboxItem } from '../conversation/MediaLightbox.js';
 import type { SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
 import type { ConversationOrgPrefs } from '../../tokens/conversationOrgPrefs.js';
 import type { SkinId } from '../../tokens/skins.js';
+import type { OpenFileItem, OpenFilePreviewProjection } from '../../lib/inspectorViewHelpers.js';
 import type {
   MobileAppearancePreference,
   MobileBotSubpage,
@@ -52,6 +58,7 @@ export interface MobileInspectorReaderItem {
   isTooLarge?: boolean;
   byteSize?: number;
   canDownload?: boolean;
+  preview?: OpenFilePreviewProjection;
 }
 
 export interface MobileInspectorArtifactItem {
@@ -148,6 +155,11 @@ export interface MobileWorkspaceSnapshot {
   messagesCount: number;
   selectedModel: string;
   currentProvider?: string;
+  approvalMode?: 'manual' | 'smart' | 'off';
+  interactivePrompts?: readonly InteractivePrompt[];
+  activeInteractivePromptKey?: string | null;
+  interactiveDockCollapsed?: boolean;
+  backgroundWaitingSummaries?: readonly BackgroundWaitingSummary[];
   availableModels: string[];
   modelDetails: MobileModelOption[];
   attachments: InputAttachmentItem[];
@@ -157,12 +169,13 @@ export interface MobileWorkspaceSnapshot {
   inspectorReaderItem: MobileInspectorReaderItem | null;
   artifacts: MobileInspectorArtifactItem[];
   gitDiffs: Array<{ file: string; additions: number; deletions: number; patch?: string }>;
-  openFiles: Array<{ id?: string; path: string; content: string; language?: string; isDiff?: boolean; isVideo?: boolean }>;
+  openFiles: OpenFileItem[];
   mediaLightbox?: MobileMediaLightboxState | null;
   fileTreeState: FileTreeLoadState;
   fileTreeExpandedPaths: string[];
   fileTreeFilterQuery: string;
   activeFilePath: string;
+  workspaceRoot?: string;
   workspaceRootName?: string;
   memories: Array<{ category: string; content: string; updated?: string }>;
   learningState: LearningLoadState;
@@ -170,6 +183,8 @@ export interface MobileWorkspaceSnapshot {
   groupMembers: Array<{ name: string; displayName: string; avatar?: string }>;
   subagentSheet: MobileSubagentSheetState | null;
   actionSheet: MobileActionSheetState | null;
+  rollbackBanner?: { removedCount: number; anchorLabel: string } | null;
+  stageComposerDraft?: { text: string; version: number } | null;
   sideAgentCapsules: Array<{
     id: string;
     kind: 'btw' | 'delegation';
@@ -222,7 +237,16 @@ export interface MobileWorkspaceActions {
 
   onSendMessage: (text: string) => void;
   onInterruptTurn: () => void;
+  onCancelRollback?: () => void;
   onSelectModel: (model: string, provider?: string) => void;
+  onSelectApprovalMode?: (mode: 'manual' | 'smart' | 'off') => void;
+  onReplyInteractive?: (prompt: InteractivePrompt, payload: InteractiveReplyPayload) => Promise<boolean | void>;
+  onLockClarifyAnswer?: (prompt: ClarifyPrompt, questionId: string, answer: string) => Promise<void>;
+  onOpenInteractiveExternalUrl?: (url: string) => void;
+  onWakeConnection?: (prompt: ConnectionPrompt) => Promise<void>;
+  onToggleInteractiveDockCollapsed?: (collapsed: boolean) => void;
+  onSelectInteractivePrompt?: (canonicalKey: string) => void;
+  onSelectWaitingSummary?: (summary: BackgroundWaitingSummary) => void;
   onRefreshModels?: () => void;
   onOpenAttachmentPicker: () => void;
   onRemoveAttachment: (id: string) => void;

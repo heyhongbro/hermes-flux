@@ -34,7 +34,10 @@ import { Keyboard } from '@capacitor/keyboard';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { Haptics } from '@capacitor/haptics';
 import { Network } from '@capacitor/network';
-import { detectMediaMimeFromRequestPath } from '@hermes-flux/core';
+import {
+  detectMediaMimeFromRequestPath,
+  detectPreviewBinaryMimeFromRequestPath,
+} from '@hermes-flux/core';
 
 export type PlatformType = 'windows' | 'macos' | 'linux' | 'ios' | 'android' | 'web';
 
@@ -183,6 +186,7 @@ export interface CapacitorBridgePluginOverrides {
   userAgent?: string;
   isPluginAvailable?: (name: string) => boolean;
   app?: Pick<typeof App, 'getInfo' | 'minimizeApp' | 'addListener'>;
+  browser?: Pick<typeof Browser, 'open' | 'addListener'>;
   keyboard?: Pick<typeof Keyboard, 'addListener'>;
   statusBar?: Pick<typeof StatusBar, 'setStyle'>;
   haptics?: Pick<typeof Haptics, 'selectionChanged'>;
@@ -279,6 +283,7 @@ export function resolveVisualViewportKeyboardHeight(
 
 export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginOverrides): HermesMobileBridge {
   const capApp = overrides?.app ?? App;
+  const capBrowser = overrides?.browser ?? Browser;
   const capKeyboard = overrides?.keyboard ?? Keyboard;
   const capStatusBar = overrides?.statusBar ?? StatusBar;
   const capHaptics = overrides?.haptics ?? Haptics;
@@ -568,10 +573,17 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         return (await res.json()) as unknown;
       }
 
-      // 图像与可播放视频二进制安全转 Base64 Data URL（上限 50MB，排除 HTML SPA fallback）
+      // 图像与可内联音视频/字体/WASM 二进制安全转 Base64 Data URL（上限 50MB，排除 HTML SPA fallback）
       const rawMime = contentType.split(';')[0].trim();
-      const isMediaType = rawMime.startsWith('image/') || rawMime.startsWith('video/');
-      const detectedExtMime = detectMediaMimeFromRequestPath(options.path);
+      const isMediaType =
+        rawMime.startsWith('image/') ||
+        rawMime.startsWith('video/') ||
+        rawMime.startsWith('audio/') ||
+        rawMime.startsWith('font/') ||
+        rawMime.startsWith('application/font-') ||
+        rawMime === 'application/vnd.ms-fontobject' ||
+        rawMime === 'application/wasm';
+      const detectedExtMime = detectPreviewBinaryMimeFromRequestPath(options.path);
       if (isMediaType || (detectedExtMime !== null && !rawMime.includes('text/html'))) {
         const blob = await res.blob();
         if (blob.size > 50 * 1024 * 1024) {
@@ -580,7 +592,11 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         const resolvedMime = isMediaType ? rawMime : detectedExtMime!;
         const blobType = (blob.type || '').toLowerCase();
         const typedBlob =
-          blobType.startsWith('image/') || blobType.startsWith('video/')
+          blobType.startsWith('image/') ||
+          blobType.startsWith('video/') ||
+          blobType.startsWith('audio/') ||
+          blobType.startsWith('font/') ||
+          blobType.startsWith('application/font-')
             ? blob
             : blob.slice(0, blob.size, resolvedMime);
         // Why: >2MB 的视频若转 Base64 Data URL 会膨胀 ~33% 并长时间阻塞 JS 主线程，优先创建零拷贝 blob: URL 供 <video> 流式播放。
@@ -608,7 +624,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
       if (!url || typeof url !== 'string') return;
       if (url.startsWith('http://') || url.startsWith('https://')) {
         try {
-          await Browser.open({ url });
+          await capBrowser.open({ url });
         } catch {
           if (typeof window !== 'undefined') window.open(url, '_blank');
         }
@@ -996,6 +1012,15 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
     }).catch(logBridgeDegrade);
   }
 
+  // 系统外链 OAuth 浏览器关停事件转发：驱动 connectors.operation.wake 自动探测授权终态
+  if (checkPlugin('Browser')) {
+    capBrowser.addListener('browserFinished', () => {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('hermes-mobile-browser-finished'));
+      }
+    }).catch(logBridgeDegrade);
+  }
+
   // 原生网络接口变化监听：精确捕捉 Wi-Fi <-> 5G / VPN 静默切换与断开恢复
   if (checkPlugin('Network') || overrides?.network) {
     let previousType = 'unknown';
@@ -1029,6 +1054,49 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
   return bridge;
 }
 
+/**
+ * 冷启动阶段立即按移动端持久化偏好（默认跟随系统）推导双皮肤与状态栏极性，避免深浅闪烁。
+ */
+export function resolveInitialMobileAppearance(): {
+  skin: 'obsidian-gold' | 'jade-white';
+  appearance: 'dark' | 'light';
+} {
+  let savedPref: string | null = null;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      savedPref = window.localStorage.getItem('hermes_flux_mobile_appearance');
+    }
+  // gate-degrade: 隐私模式或测试桩禁用 localStorage 时回落系统深浅色判定
+  } catch {}
+  let appearance: 'dark' | 'light';
+  if (savedPref === 'light') {
+    appearance = 'light';
+  } else if (savedPref === 'dark') {
+    appearance = 'dark';
+  } else {
+    const prefersDark =
+      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+        : true;
+    appearance = prefersDark ? 'dark' : 'light';
+  }
+  return {
+    skin: appearance === 'light' ? 'jade-white' : 'obsidian-gold',
+    appearance,
+  };
+}
+
+function applyInitialMobileDocumentAppearance(bridge?: HermesMobileBridge): void {
+  const { skin, appearance } = resolveInitialMobileAppearance();
+  if (typeof document !== 'undefined' && document.documentElement) {
+    document.documentElement.setAttribute?.('data-theme', skin);
+    document.documentElement.setAttribute?.('data-appearance', appearance);
+  }
+  if (bridge?.syncStatusBarAppearance) {
+    void bridge.syncStatusBarAppearance(appearance);
+  }
+}
+
 // 自动向全局注入（同时注入 hermesMobile 与 hermesDesktop，彻底消灭未适配代码的报错与冲突）
 if (typeof window !== 'undefined') {
   const mobileBridge = createCapacitorPlatformBridge();
@@ -1036,4 +1104,5 @@ if (typeof window !== 'undefined') {
   if (!window.hermesDesktop) {
     window.hermesDesktop = mobileBridge;
   }
+  applyInitialMobileDocumentAppearance(mobileBridge);
 }

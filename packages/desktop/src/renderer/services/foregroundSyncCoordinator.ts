@@ -51,6 +51,7 @@ export interface ForegroundSyncDeps {
   refreshConversationOrgIfStale?: () => void;
   refreshActiveSession: (opts?: { forceRefreshAfterReconnect?: boolean }) => Promise<void>;
   refreshGroupRoomLog: (roomId: string) => Promise<unknown>;
+  refreshGroupState?: (roomId: string) => Promise<unknown> | void;
   ensureGroupPollerRunning?: (roomId: string) => void;
   openBotChat: (botName: string, gatewayId?: string) => Promise<void>;
   getActiveViewContext: () => ActiveViewContext;
@@ -150,7 +151,10 @@ export function createForegroundSyncCoordinator(deps: ForegroundSyncDeps): Foreg
     if (state.activeFocus.type === 'group' && state.activeFocus.roomId) {
       const roomId = state.activeFocus.roomId;
       deps.ensureGroupPollerRunning?.(roomId);
-      conversationTask = deps.refreshGroupRoomLog(roomId);
+      conversationTask = Promise.allSettled([
+        deps.refreshGroupRoomLog(roomId),
+        deps.refreshGroupState ? Promise.resolve(deps.refreshGroupState(roomId)) : Promise.resolve(),
+      ]);
     } else if (state.activeFocus.type === 'bot' && !state.activeSessionId) {
       conversationTask = deps.openBotChat(state.activeFocus.botName, state.activeFocus.gatewayId);
     } else if (state.activeSessionId) {

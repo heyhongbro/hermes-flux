@@ -334,3 +334,47 @@ test('INV-STREAM-06: decideWatchdogProbeAction 严守 hard-limit 止损与权威
     { numRuns: 250 },
   );
 });
+
+test('INV-STREAM-07: 等待交互阻塞期间 decideWatchdogProbeAction 对 inactivity 必须续期，hard-limit 仍止损', () => {
+  fc.assert(
+    fc.property(
+      fc.boolean(),
+      fc.boolean(),
+      fc.boolean(),
+      fc.integer({ min: 0, max: 5 }),
+      fc.integer({ min: 1, max: 4 }),
+      (isGatewayConnected, probeRunning, probeError, consecutiveProbeFailures, maxProbeFailures) => {
+        // 1. 交互等待态下 hard-limit 仍无条件止损，绝不永久挂死
+        assert.equal(
+          decideWatchdogProbeAction({
+            reason: 'hard-limit',
+            isGatewayConnected,
+            probeResult: { isRunning: probeRunning },
+            probeError,
+            consecutiveProbeFailures,
+            maxProbeFailures,
+            hasPendingInteractivePrompt: true,
+          }),
+          'settle-timeout',
+        );
+
+        // 2. 在线且存在未解决交互提示时，即使流式无 delta / probe.isRunning=false，inactivity 也必须续期
+        if (isGatewayConnected) {
+          assert.equal(
+            decideWatchdogProbeAction({
+              reason: 'inactivity',
+              isGatewayConnected: true,
+              probeResult: probeError ? null : { isRunning: probeRunning },
+              probeError,
+              consecutiveProbeFailures,
+              maxProbeFailures,
+              hasPendingInteractivePrompt: true,
+            }),
+            'renew',
+          );
+        }
+      },
+    ),
+    { numRuns: 250 },
+  );
+});

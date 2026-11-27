@@ -17,7 +17,7 @@
  */
 
 import * as React from 'react';
-import type { GatewayConnectionPhase } from '@hermes-flux/core';
+import type { BackgroundWaitingSummary, GatewayConnectionPhase } from '@hermes-flux/core';
 import { ChevronRight, MessageSquare, Plus, Search, Settings } from 'lucide-react';
 import { t } from '../../i18n/index.js';
 import { renderBotAvatar, renderGroupCollageAvatar } from '../../utils/botAvatar.js';
@@ -65,6 +65,9 @@ export interface MobileHomeScreenProps {
   onOpenActionSheet: (sheet: MobileActionSheetState) => void;
   onHapticSelection?: () => void;
   settingsActions: SettingsActions;
+  backgroundWaitingSummaries?: readonly BackgroundWaitingSummary[];
+  resolveWaitingEntityLabel?: (summary: BackgroundWaitingSummary) => string;
+  onSelectWaitingSummary?: (summary: BackgroundWaitingSummary) => void;
 }
 
 const FOLDER_LONG_PRESS_MS = 480;
@@ -190,6 +193,9 @@ export function MobileHomeScreen({
   onOpenActionSheet,
   onHapticSelection,
   settingsActions,
+  backgroundWaitingSummaries = [],
+  resolveWaitingEntityLabel,
+  onSelectWaitingSummary,
 }: MobileHomeScreenProps): React.ReactElement {
   const searchInputRef = React.useRef<HTMLInputElement | null>(null);
 
@@ -229,6 +235,7 @@ export function MobileHomeScreen({
           )}
           gatewayOffline={row.gatewayOffline}
           activityState={row.activityState}
+          waitingReason={row.waitingReason}
           activityTransition={row.activityTransition}
           activityTransitionToken={row.activityTransitionToken}
           onSelect={() => onSelectGroup(row.id, row.gatewayId)}
@@ -265,6 +272,7 @@ export function MobileHomeScreen({
         gatewayBadge={buildEntityGatewayBadge(model.isMultiGateway, row.gatewayLabel, row.gatewayOffline)}
         gatewayOffline={row.gatewayOffline}
         activityState={row.activityState}
+        waitingReason={row.waitingReason}
         activityTransition={row.activityTransition}
         activityTransitionToken={row.activityTransitionToken}
         onSelect={() => onSelectSession(row.id, row.ownerBotName, row.gatewayId)}
@@ -417,6 +425,26 @@ export function MobileHomeScreen({
           </button>
         ) : null}
 
+        {backgroundWaitingSummaries.length > 0 && onSelectWaitingSummary ? (
+          <button
+            type="button"
+            className="m-waiting-banner m-no-swipe"
+            data-testid="mobile-home-waiting-banner"
+            onClick={() => onSelectWaitingSummary(backgroundWaitingSummaries[0])}
+          >
+            <span className="flux-interact__status-dot" aria-hidden="true" />
+            <span className="m-waiting-banner__text">
+              {t('interactive.mobileHomeWaiting', {
+                count: String(backgroundWaitingSummaries.reduce((acc, item) => acc + item.promptCount, 0)),
+                entity: resolveWaitingEntityLabel
+                  ? resolveWaitingEntityLabel(backgroundWaitingSummaries[0])
+                  : backgroundWaitingSummaries[0].entityId,
+              })}
+            </span>
+            <span className="m-waiting-banner__cta">{t('interactive.jumpToWaiting')}</span>
+          </button>
+        ) : null}
+
         {/* 1. 智能体分区 */}
         <div className="m-section" data-section="bots" data-expanded={botsSection.effectiveExpanded ? 'true' : 'false'}>
           <button
@@ -430,7 +458,8 @@ export function MobileHomeScreen({
             <span className="m-section__tail">
               {botsSection.headerStatus ? (
                 <ActivityIndicator
-                  state="running"
+                  state={botsSection.headerStatus.state}
+                  waitingReason={botsSection.headerStatus.waitingReason}
                   placement="inline"
                   entityKind="bot"
                   variant="prolate-lattice"
@@ -457,6 +486,7 @@ export function MobileHomeScreen({
                     gatewayBadge={buildEntityGatewayBadge(model.isMultiGateway, row.gatewayLabel, row.gatewayOffline)}
                     gatewayOffline={row.gatewayOffline}
                     activityState={row.activityState}
+                    waitingReason={row.waitingReason}
                     activityTransition={row.activityTransition}
                     activityTransitionToken={row.activityTransitionToken}
                     onSelect={() => onSelectBot(row.id, row.gatewayId)}
@@ -502,11 +532,8 @@ export function MobileHomeScreen({
           </div>
         ))}
 
-        {/* 3. 未归类群聊分区（群聊全部被项目/文件夹收纳时隐藏空态噪声） */}
-        {(groupsSection.items.length > 0 ||
-          ![...projectSections, ...folderSections].some((b) =>
-            b.items.some((entry) => entry.kind === 'group'),
-          )) && (
+        {/* 3. 未归类群聊分区（群聊列表为空或全部已归入项目/文件夹时自动隐藏整个群聊分区） */}
+        {groupsSection.items.length > 0 && (
           <div className="m-section" data-section="groups" data-expanded={groupsSection.effectiveExpanded ? 'true' : 'false'}>
             <button
               type="button"
@@ -519,7 +546,8 @@ export function MobileHomeScreen({
               <span className="m-section__tail">
                 {groupsSection.headerStatus ? (
                   <ActivityIndicator
-                    state="running"
+                    state={groupsSection.headerStatus.state}
+                    waitingReason={groupsSection.headerStatus.waitingReason}
                     placement="inline"
                     entityKind="group"
                     variant="prolate-lattice"
@@ -530,11 +558,7 @@ export function MobileHomeScreen({
 
             <div className="m-section__body" data-expanded={groupsSection.effectiveExpanded ? 'true' : 'false'}>
               <div className="m-section__body-inner">
-                {groupsSection.items.length === 0 ? (
-                  !model.isSearching ? <div className="m-section__empty">{t('mobile.home.emptyGroups')}</div> : null
-                ) : (
-                  groupsSection.items.map((row) => renderOrgRow(row, 'unassigned'))
-                )}
+                {groupsSection.items.map((row) => renderOrgRow(row, 'unassigned'))}
               </div>
             </div>
           </div>

@@ -1084,3 +1084,58 @@ test('TurnExecutionService 边界: 默认 idle(60s)/hardLimit(120m)/throttle(500
     }
   });
 });
+
+test('TurnExecutionService 看门狗探活正确传递 onCaptureInteractiveFence 与 onInteractiveResumeReconciled', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
+  const reconciled = [];
+  const gwClient = {
+    call: async (method) => (method === 'session.resume' ? { running: true } : {}),
+  };
+  const { deps, state } = createMockTurnDeps({
+    gatewayClient: gwClient,
+    state: { gatewayConnected: true, activeLiveSessionId: 'lv-wd', isStreaming: true },
+  });
+  deps.watchdogIdleTimeoutMs = 20;
+  deps.watchdogHardLimitMs = 500;
+  deps.onCaptureInteractiveFence = () => 42;
+  deps.onInteractiveResumeReconciled = (info) => reconciled.push(info);
+  deps.setActiveStreamingContext({ activeStreamingStoredSessionId: 'sess-1', activeStreamingMessageId: 'ast-1', activeStreamingLiveId: 'lv-wd' });
+  const svc1 = createTurnExecutionService(deps);
+
+  // Also test missing onCaptureInteractiveFence & empty activeLiveSessionId -> fence=0, liveSessionId=null
+  const reconciledNoFence = [];
+  const { deps: deps2, state: state2 } = createMockTurnDeps({
+    gatewayClient: gwClient,
+    state: { gatewayConnected: true, activeLiveSessionId: '', isStreaming: true },
+  });
+  deps2.watchdogIdleTimeoutMs = 20;
+  deps2.watchdogHardLimitMs = 500;
+  deps2.onInteractiveResumeReconciled = (info) => reconciledNoFence.push(info);
+  deps2.setActiveStreamingContext({ activeStreamingStoredSessionId: 'sess-2', activeStreamingMessageId: 'ast-2', activeStreamingLiveId: '' });
+  const svc2 = createTurnExecutionService(deps2);
+
+  try {
+    svc1.armTurnWatchdog();
+    await advanceTimers(t, 20);
+    assert.equal(reconciled.length, 1);
+    assert.equal(reconciled[0].client, gwClient);
+    assert.equal(reconciled[0].storedSessionId, 'sess-1');
+    assert.equal(reconciled[0].liveSessionId, 'lv-wd');
+    assert.equal(reconciled[0].profile, 'default');
+    assert.deepEqual(reconciled[0].resume, { running: true });
+    assert.equal(reconciled[0].fence, 42);
+    assert.equal(state.isStreaming, true);
+
+    svc2.armTurnWatchdog();
+    await advanceTimers(t, 20);
+    assert.equal(reconciledNoFence.length, 1);
+    assert.equal(reconciledNoFence[0].storedSessionId, 'sess-2');
+    assert.equal(reconciledNoFence[0].liveSessionId, null);
+    assert.equal(reconciledNoFence[0].fence, 0);
+    assert.equal(state2.isStreaming, true);
+  } finally {
+    svc1.disarmTurnWatchdog(true);
+    svc2.disarmTurnWatchdog(true);
+    t.mock.timers.reset();
+  }
+});

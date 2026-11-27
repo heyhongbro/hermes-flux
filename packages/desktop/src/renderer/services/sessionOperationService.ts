@@ -48,6 +48,8 @@ import {
   SessionListGeneration,
   normalizeOrgProfileName,
 } from '@hermes-flux/core';
+import type { ConfigSetResult } from '@hermes-flux/core';
+import type { RpcConfirmRequestOptions } from './interactivePromptService.js';
 import { safeSetItem, type I18nKey, type MessageViewModel, type StorageWriteFailure } from '@hermes-flux/ui';
 import { planRollbackLeaveRestore } from '../rollbackTransaction.js';
 import { isCorruptedSystemErrorDraft, type SessionDraftStore } from '../persistence/sessionDrafts.js';
@@ -182,6 +184,10 @@ export interface SessionOperationDeps {
     containerId: string,
   ) => Promise<void> | void;
   readonly onSessionDeleted?: (storedSessionId: string, profile?: string) => void;
+  readonly onSessionInteractiveBound?: (storedSessionId: string, liveSessionId: string) => void;
+  readonly requestRpcConfirm?: (
+    options: RpcConfirmRequestOptions,
+  ) => Promise<'confirm' | 'confirm_always' | 'cancel'>;
 
   // 可选 DOM/环境抽象（便于脱离 DOM 纯逻辑单测）
   readonly getPromptInputValue?: () => string;
@@ -368,6 +374,7 @@ export class SessionOperationService {
           : null;
       this.deps.onSessionActivated?.(handles.storedId, targetProfile);
       this.deps.onLiveSessionReady?.(handles.storedId, handles.liveId, rawInfo, targetProfile);
+      this.deps.onSessionInteractiveBound?.(handles.storedId, handles.liveId);
       if (targetContainerId) {
         void this.deps.onSessionCreatedInContainer?.(targetProfile, handles.storedId, targetContainerId);
       }
@@ -984,6 +991,69 @@ export class SessionOperationService {
     }
   }
 
+  private async applyModelConfigSet(
+    gatewayClient: HermesGatewayClient,
+    liveId: string,
+    model: string,
+    storedSessionId: string,
+    profile?: string,
+  ): Promise<{ applied: boolean; cancelled: boolean; error?: string }> {
+    const state = this.deps.getState();
+    try {
+      // 【网关契约约束】config.set 只接受 [profile, key, value, session_id, scope, confirm_expensive_model]
+      // 严禁附加顶层 provider 字段
+      const res = await gatewayClient.call<ConfigSetResult>('config.set', {
+        session_id: liveId,
+        key: 'model',
+        value: model,
+      });
+      if (res?.confirm_required) {
+        if (!this.deps.requestRpcConfirm) {
+          return { applied: false, cancelled: true };
+        }
+        const scope =
+          state.activeFocus.type === 'group'
+            ? ({ kind: 'group', roomId: state.activeFocus.roomId || '' } as const)
+            : ({
+                kind: 'session',
+                storedSessionId,
+                liveSessionId: liveId,
+                ...(profile ? { profile } : {}),
+              } as const);
+        const outcome = await this.deps.requestRpcConfirm({
+          scope,
+          confirmKind: 'expensive_model',
+          key: `rpc_confirm:model:${storedSessionId || liveId}:${model}`,
+          title: this.deps.t('interactive.confirm.expensiveModelTitle'),
+          message:
+            res.confirm_message ||
+            this.deps.t('interactive.confirm.expensiveModelMessage', { model }),
+          confirmLabel: this.deps.t('interactive.confirm.confirmBtn'),
+          cancelLabel: this.deps.t('interactive.confirm.cancelBtn'),
+        });
+        if (outcome === 'cancel') {
+          return { applied: false, cancelled: true };
+        }
+        const confirmed = await gatewayClient.call<ConfigSetResult>('config.set', {
+          session_id: liveId,
+          key: 'model',
+          value: model,
+          confirm_expensive_model: true,
+        });
+        if (confirmed?.warning) {
+          this.deps.setTimedDockNotice(confirmed.warning, 5000);
+        }
+        return { applied: true, cancelled: false };
+      }
+      if (res?.warning) {
+        this.deps.setTimedDockNotice(res.warning, 5000);
+      }
+      return { applied: true, cancelled: false };
+    } catch (e) {
+      return { applied: false, cancelled: false, error: describeRpcError(e) };
+    }
+  }
+
   /** 将所选模型推送到活动实时会话 */
   async applyModelToLiveSession(model: string, _provider?: string): Promise<void> {
     const state = this.deps.getState();
@@ -993,16 +1063,15 @@ export class SessionOperationService {
     const liveId = await this.deps.ensureLiveSessionId();
     if (!liveId) return;
 
-    try {
-      // 【网关契约约束】config.set 只接受 [profile, key, value, session_id, scope, confirm_expensive_model]
-      // 严禁附加顶层 provider 字段
-      await gatewayClient.call('config.set', {
-        session_id: liveId,
-        key: 'model',
-        value: model,
-      });
-    } catch (e) {
-      state.dockNotice = `Switch model failed: ${describeRpcError(e)}`;
+    const outcome = await this.applyModelConfigSet(
+      gatewayClient,
+      liveId,
+      model,
+      state.activeSessionId,
+      state.profileName,
+    );
+    if (outcome.error) {
+      state.dockNotice = `Switch model failed: ${outcome.error}`;
       this.deps.render();
     }
   }
@@ -1059,15 +1128,18 @@ export class SessionOperationService {
       return;
     }
 
-    try {
-      await gatewayClient.call('config.set', {
-        session_id: liveId,
-        key: 'model',
-        value: model,
-      });
-    } catch (e) {
+    const outcome = await this.applyModelConfigSet(
+      gatewayClient,
+      liveId,
+      model,
+      state.activeSessionId,
+      state.profileName,
+    );
+    if (!outcome.applied) {
       state.selectedModel = previous;
-      state.dockNotice = `Switch model failed: ${describeRpcError(e)}`;
+      if (outcome.error) {
+        state.dockNotice = `Switch model failed: ${outcome.error}`;
+      }
       this.deps.render();
     }
   }
@@ -1118,6 +1190,7 @@ export class SessionOperationService {
     const state = this.deps.getState();
     const gatewayClient = this.resolveTargetClient(state.activeFocus.gatewayId || state.activeGatewayId);
 
+    const previous = state.approvalMode;
     state.approvalMode = mode;
     this.deps.render();
 
@@ -1125,6 +1198,7 @@ export class SessionOperationService {
 
     const liveId = await this.deps.ensureLiveSessionId();
     if (!liveId) {
+      state.approvalMode = previous;
       state.dockNotice = 'Cannot set approval mode: live session channel unavailable';
       this.deps.render();
       return;
@@ -1138,6 +1212,7 @@ export class SessionOperationService {
       });
       state.dockNotice = '';
     } catch (e) {
+      state.approvalMode = previous;
       state.dockNotice = `Set approval mode failed: ${describeRpcError(e)}`;
     }
     this.deps.render();

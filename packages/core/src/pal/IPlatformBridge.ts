@@ -49,6 +49,21 @@ export interface GatewayProcessStatus {
   lastHeartbeat?: number;
 }
 
+export interface RegisterPreviewSessionOptions {
+  entryPath: string;
+  entryContent: string;
+  workspaceRoot?: string;
+  gatewayUrl?: string;
+  profile?: string;
+  sessionId?: string;
+  source?: 'session_tool' | 'local_fs' | 'remote_http' | 'gateway_api' | 'fallback';
+}
+
+export interface PreviewSessionRegistration {
+  token: string;
+  entryUrl: string;
+}
+
 export interface IPlatformBridge {
   getSystemInfo(): Promise<SystemInfo>;
   
@@ -96,6 +111,8 @@ export interface IPlatformBridge {
     profile?: string;
     sessionId?: string;
   }): Promise<string | null>;
+  registerPreviewSession?(options: RegisterPreviewSessionOptions): Promise<PreviewSessionRegistration | null>;
+  revokePreviewSession?(token: string): Promise<void>;
   saveFile?(options: {
     fileName: string;
     content: string;

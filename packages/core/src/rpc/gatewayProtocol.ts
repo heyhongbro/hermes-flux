@@ -54,7 +54,7 @@ export interface IncomingServerRequest {
   readonly params: unknown;
 }
 
-export type ServerRequestHandler<TParams = unknown, TResult = unknown> = (
+export type GatewayMethodRequestHandler<TParams = unknown, TResult = unknown> = (
   params: TParams,
   request: IncomingServerRequest,
 ) => Promise<TResult> | TResult;
@@ -95,7 +95,7 @@ export function buildServerRequestErrorFrame(id: string | number, err: unknown):
 /** 执行单条服务端反向请求，并将结果或异常统一编码为 JSON-RPC 2.0 响应帧。 */
 export async function executeServerRequestFrame(
   req: IncomingServerRequest,
-  specificHandler: ServerRequestHandler | undefined,
+  specificHandler: GatewayMethodRequestHandler | undefined,
   defaultHandler: DefaultServerRequestHandler | null,
 ): Promise<string> {
   if (!specificHandler && !defaultHandler) {

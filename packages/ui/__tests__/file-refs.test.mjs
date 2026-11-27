@@ -145,13 +145,13 @@ test('File references - 只有会话真实读写过的文件才可点击', async
 
   await t.test('13. deliverableFiles 原地渲染紧凑成果物小卡片（反引号、裸路径、图片缩略槽位、代码块免疫、纯文件名展示）', async () => {
     const renderMarkdown = await loadMarkdown();
-    const htmlPath = '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-telemetry.html';
-    const mdPath = '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-xiaohongshu.md';
-    const pngPath = '/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png';
+    const htmlPath = '/workspace/demo-project/drafts/release-report.html';
+    const mdPath = '/workspace/demo-project/drafts/summary-post.md';
+    const pngPath = '/workspace/demo-project/drafts/img/release-timeline.png';
     const html = renderMarkdown(
       [
-        `- 公众号：\`${htmlPath}\``,
-        `- 小红书：${mdPath}`,
+        `- 报告：\`${htmlPath}\``,
+        `- 摘要：${mdPath}`,
         `- 信息图：\`${pngPath}\``,
         '只读源码参考 `/repo/src/readonly.ts`',
         '',
@@ -166,9 +166,9 @@ test('File references - 只有会话真实读写过的文件才可点击', async
     );
 
     assert.equal((html.match(/data-deliverable-card="true"/g) || []).length, 3, '正文中 3 个成果物（含裸路径）应原地渲染 3 张卡片，代码块不误替');
-    assert.ok(html.includes('<span class="conv-inline-deliverable__name">2026-11-23-t3code-telemetry.html</span>'));
-    assert.ok(html.includes('<span class="conv-inline-deliverable__name">2026-11-23-t3code-xiaohongshu.md</span>'));
-    assert.ok(html.includes('<span class="conv-inline-deliverable__name">t3-timeline.png</span>'));
+    assert.ok(html.includes('<span class="conv-inline-deliverable__name">release-report.html</span>'));
+    assert.ok(html.includes('<span class="conv-inline-deliverable__name">summary-post.md</span>'));
+    assert.ok(html.includes('<span class="conv-inline-deliverable__name">release-timeline.png</span>'));
     assert.ok(html.includes('<span class="conv-inline-deliverable__ext">HTML</span>'));
     assert.ok(html.includes('<span class="conv-inline-deliverable__ext">MD</span>'));
     assert.ok(html.includes('<span class="conv-inline-deliverable__ext">PNG</span>'));
@@ -177,7 +177,7 @@ test('File references - 只有会话真实读写过的文件才可点击', async
     const inlineCardMatch = html.match(/<button[^>]*data-deliverable-card="true"[^>]*>/)?.[0] || '';
     assert.equal(inlineCardMatch.includes('md-file-ref--linked'), false, '原地卡片禁止挂 md-file-ref--linked 以防悬停下划线');
     assert.equal(inlineCardMatch.includes('tool-file-link'), false, '原地卡片禁止挂 tool-file-link 以免主题变色漂移');
-    assert.equal(html.includes('<span class="conv-inline-deliverable__name">/opt/data/'), false, '小卡片可见文本仅显示文件名，不显示完整目录前缀');
+    assert.equal(html.includes('<span class="conv-inline-deliverable__name">/workspace/'), false, '小卡片可见文本仅显示文件名，不显示完整目录前缀');
     assert.ok(html.includes(`data-file-ref="/repo/src/readonly.ts"`) && html.includes('md-file-ref--linked'), '普通已读文件保留传统可点药丸而不误变成成果物卡片');
 
     // XSS 协议阻断优先于路径扩展名匹配，raw HTML 属性不被 wrapBareDeliverablePaths 误包反引号，图片小卡不含 data-preview-file
@@ -185,7 +185,7 @@ test('File references - 只有会话真实读写过的文件才可点击', async
       [
         '[bad](javascript:alert(1)//out.html)',
         '`javascript:alert(1)//out.html`',
-        `看图 \`t3-timeline.png\``,
+        `看图 \`release-timeline.png\``,
         `<a href="${htmlPath}">raw-link</a>`,
       ].join('\n\n'),
       { deliverableFiles: [htmlPath, pngPath] },
@@ -200,8 +200,8 @@ test('File references - 只有会话真实读写过的文件才可点击', async
       xssAndRaw.includes('<code class="md-code">javascript:alert(1)//out.html</code>'),
       '反引号内危险协议文本仅保留为惰性普通代码展示',
     );
-    assert.ok(xssAndRaw.includes('<span class="conv-inline-deliverable__name">t3-timeline.png</span>'), '唯一纯文件名引用也应原地渲染卡片');
-    assert.equal(xssAndRaw.includes('data-deliverable-kind="image" data-deliverable-path="/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png" data-deliverable-name="t3-timeline.png" data-preview-file='), false, '图片成果物卡片不挂 data-preview-file，确保点击专走灯箱');
+    assert.ok(xssAndRaw.includes('<span class="conv-inline-deliverable__name">release-timeline.png</span>'), '唯一纯文件名引用也应原地渲染卡片');
+    assert.equal(xssAndRaw.includes('data-deliverable-kind="image" data-deliverable-path="/workspace/demo-project/drafts/img/release-timeline.png" data-deliverable-name="release-timeline.png" data-preview-file='), false, '图片成果物卡片不挂 data-preview-file，确保点击专走灯箱');
     assert.equal(xssAndRaw.includes(`href="\`${htmlPath}\`"`), false, 'HTML 属性内部路径不得被裸路径扫描篡改');
   });
 });

@@ -1,27 +1,23 @@
 #!/usr/bin/env node
 /**
- * pre-commit 钩子（跨平台实现）
+ * pre-commit 钩子（跨平台分层快速门禁）
  *
  * 设计意图 (Why):
- *   原先的 .githooks/pre-commit 是 bash 脚本并调用 `npm`。
- *   在 Windows + PowerShell 环境下，`npm.ps1` 会被执行策略直接拒绝
- *   （实测报 UnauthorizedAccess: 禁止运行脚本），导致钩子完全失效——
- *   门禁看似存在，实际从未运行过。这是比「没有门禁」更危险的状态。
- *
- * 防范的历史坑 (Pitfall):
- *   1. 调用 `npm` / `npm.cmd` 在部分 shell 下解析不一致 -> 统一走
- *      `process.platform === 'win32' ? 'npm.cmd' : 'npm'`。
- *   2. 只跑全量门禁会让每次提交都很慢，最终被人 `--no-verify` 跳过。
- *      -> 静态门禁走「暂存区改动集」，测试与类型走全量（保证不退化）。
- *   3. 钩子内部抛出未捕获异常会让 git 显示一堆堆栈 -> 统一 try/catch 并给出可读结论。
- *
- * 用法：git 会在提交时自动调用本文件。
+ *   1. 全量 286+ 测试与全量构建交给 PR CI（Ubuntu/Windows 并行）和发版前 `npm run verify`；
+ *   2. 本地 `pre-commit` 按暂存区实际改动范围自动分层（docs / tests / scoped），
+ *      既守住契约、类型、静态规范与受影响域单测，又避免无改动包重复编译与回归阻塞开发；
+ *   3. 如需在本地强行跑完整 10 道全量门禁，可设置环境变量 `PRECOMMIT_FULL=1`。
  */
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  planPreCommitGates,
+  readDistReady,
+  readStagedFiles,
+} from '../scripts/gates/lib/pre-commit-plan.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -40,26 +36,25 @@ function banner(text) {
   console.log(`\n${C.blue}▌${C.reset} ${C.bold}${text}${C.reset}`);
 }
 
-function run(label, command, args) {
-  banner(label);
-  // Windows 上 .cmd 批处理必须经 shell 才能被 spawn 执行，
-  // 否则会抛 EINVAL（实测：spawnSync npm.cmd EINVAL）。
-  const needsShell = process.platform === 'win32' && /\.cmd$/i.test(command);
-  const result = spawnSync(command, args, {
+function run(gate) {
+  banner(gate.label);
+  const needsShell = process.platform === 'win32' && /\.cmd$/i.test(gate.command);
+  const childEnv = { ...process.env };
+  delete childEnv.NODE_TEST_CONTEXT;
+  const result = spawnSync(gate.command, gate.args, {
     cwd: REPO_ROOT,
     stdio: 'inherit',
     shell: needsShell,
+    env: childEnv,
   });
   if (result.error) {
-    console.error(`${C.red}✗ ${label} 无法执行: ${result.error.message}${C.reset}`);
+    console.error(`${C.red}✗ ${gate.label} 无法执行: ${result.error.message}${C.reset}`);
     return false;
   }
   return result.status === 0;
 }
 
 function main() {
-  // 防范历史坑：在交互式 rebase 或正在解决合并冲突时，Git 暂存区处于非稳态，
-  // 此时执行全量门禁不仅极慢，还容易引发幽灵冲突打断变基流程。
   const gitDir = path.join(REPO_ROOT, '.git');
   const isRebasing = fs.existsSync(path.join(gitDir, 'rebase-merge')) || fs.existsSync(path.join(gitDir, 'rebase-apply'));
   const isMerging = fs.existsSync(path.join(gitDir, 'MERGE_HEAD'));
@@ -68,41 +63,42 @@ function main() {
     process.exit(0);
   }
 
+  const { stagedFiles, existingFiles } = readStagedFiles(REPO_ROOT);
+  const distReady = readDistReady(REPO_ROOT);
+  const plan = planPreCommitGates(stagedFiles, {
+    existingFiles,
+    distReady,
+    env: process.env,
+    npmCmd: NPM,
+  });
+
+  const startedAt = Date.now();
   console.log(`${C.bold}══════════════════════════════════════════════════${C.reset}`);
-  console.log(`${C.bold}🛡️  Hermes Flux Gatekeeper · pre-commit${C.reset}`);
-  console.log(`${C.dim}   静态门禁走暂存区快照 (git show) · 类型与测试走全量${C.reset}`);
+  console.log(`${C.bold}🛡️  Hermes Flux Gatekeeper · pre-commit [${plan.mode}]${C.reset}`);
+  console.log(`${C.dim}   ${plan.summary}（全量回归请用 PRECOMMIT_FULL=1 或 npm run verify）${C.reset}`);
   console.log(`${C.bold}══════════════════════════════════════════════════${C.reset}`);
 
-  const gates = [
-    ['Gate 0/4 · 静态门禁（架构/失败静默/换肤/i18n/性能）', 'node', ['scripts/gates/run.mjs', '--staged']],
-    ['Gate 0b · 网关契约一致性（方法名与字段白名单）', 'node', ['scripts/contract/verify.mjs']],
-    ['Gate 0c · 探针覆盖率（每个调用点都要有真实响应证据）', 'node', ['scripts/contract/coverage.mjs']],
-    ['Gate 0d · 接口文档与契约同步', 'node', ['scripts/contract/doc.mjs', '--check']],
-    ['Gate 1 · 全栈严格类型', NPM, ['run', 'typecheck']],
-    ['Gate 2 · 单元与不变量测试', NPM, ['test']],
-    ['Gate 2b · 形式化安全不变量检验', NPM, ['run', 'verify:formal']],
-    ['Gate 2c · 不变量映射表（Markdown 与 JSON 一致）', NPM, ['run', 'gates:invariants']],
-    ['Gate 2d · 豁免敞口预算', NPM, ['run', 'gates:allow']],
-    ['Gate 2e · 通用 Agent 规范与只读审查契约', NPM, ['run', 'gates:config']],
-    ['Gate 2g · 增量覆盖率拦截自证（行与分支覆盖杀伤力）', NPM, ['run', 'gates:coverage-proof']],
-  ];
-
-  const failures = [];
-  for (const [label, cmd, args] of gates) {
-    if (!run(label, cmd, args)) failures.push(label);
+  if (plan.gates.length === 0) {
+    console.log(`${C.dim}无待检门禁，放行${C.reset}`);
+    process.exit(0);
   }
 
+  const failures = [];
+  for (const gate of plan.gates) {
+    if (!run(gate)) failures.push(gate.label);
+  }
+
+  const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
   console.log(`\n${C.bold}══════════════════════════════════════════════════${C.reset}`);
   if (failures.length > 0) {
-    console.log(`${C.red}${C.bold}✗ 提交被拒绝，以下门禁未通过：${C.reset}`);
+    console.log(`${C.red}${C.bold}✗ 提交被拒绝，以下门禁未通过 (${elapsedSec}s)：${C.reset}`);
     for (const f of failures) console.log(`  ${C.red}·${C.reset} ${f}`);
     console.log(`\n${C.yellow}修复后重新提交。禁止使用 --no-verify 绕过。${C.reset}`);
-    console.log(`${C.dim}若判定为门禁误报，请在代码中显式添加豁免注释并说明理由。${C.reset}`);
     console.log(`${C.bold}══════════════════════════════════════════════════${C.reset}\n`);
     process.exit(1);
   }
 
-  console.log(`${C.green}${C.bold}✓ 全部门禁通过，允许提交${C.reset}`);
+  console.log(`${C.green}${C.bold}✓ [${plan.mode}] 门禁全部通过，允许提交 (${elapsedSec}s)${C.reset}`);
   console.log(`${C.bold}══════════════════════════════════════════════════${C.reset}\n`);
   process.exit(0);
 }

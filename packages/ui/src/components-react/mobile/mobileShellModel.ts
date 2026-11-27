@@ -23,6 +23,7 @@
 import { SKINS, SKIN_ALIASES } from '../../tokens/skins.js';
 import type { I18nKey } from '../../i18n/index.js';
 import type { OrgContainerCollapseState } from '../../tokens/conversationOrgPrefs.js';
+import type { WaitingPromptReason } from '@hermes-flux/core';
 import type { MobileActionSheetStep } from './types.js';
 import {
   partitionRailOrgEntities,
@@ -164,6 +165,7 @@ export interface MobileBotRowVM {
   gatewayLabel?: string;
   gatewayOffline?: boolean;
   activityState: ActivityState;
+  waitingReason?: WaitingPromptReason;
   activityTransition: ActivityTransition;
   activityTransitionToken?: number;
   statusTextKey: I18nKey | null;
@@ -185,6 +187,7 @@ export interface MobileGroupRowVM {
   gatewayOffline?: boolean;
   crossGateway?: boolean;
   activityState: ActivityState;
+  waitingReason?: WaitingPromptReason;
   activityTransition: ActivityTransition;
   activityTransitionToken?: number;
   statusTextKey: I18nKey | null;
@@ -209,6 +212,7 @@ export interface MobileSessionRowVM {
   gatewayLabel?: string;
   gatewayOffline?: boolean;
   activityState: ActivityState;
+  waitingReason?: WaitingPromptReason;
   activityTransition: ActivityTransition;
   activityTransitionToken?: number;
   statusTextKey: I18nKey | null;
@@ -219,7 +223,8 @@ export type MobileHomeContainerEntryVM = MobileGroupRowVM | MobileSessionRowVM;
 export type MobileOrgContainerSectionVM = PartitionedContainerBucket<MobileHomeContainerEntryVM>;
 
 export interface MobileSectionHeaderStatus {
-  state: 'running';
+  state: 'running' | 'waiting';
+  waitingReason?: WaitingPromptReason;
   statusTextKey: I18nKey;
 }
 
@@ -261,7 +266,31 @@ export interface MobileHomeModel {
   hasAnyResult: boolean;
 }
 
-function resolveRowStatusKey(kind: MobileEntityKind, state: ActivityState): I18nKey | null {
+function resolveWaitingMobileStatusKey(reason?: WaitingPromptReason): I18nKey {
+  switch (reason) {
+    case 'clarify':
+      return 'mobile.status.waitingReply';
+    case 'approval':
+      return 'mobile.status.waitingApproval';
+    case 'credential':
+      return 'mobile.status.waitingCredential';
+    case 'connection':
+      return 'mobile.status.waitingConnection';
+    case 'confirm':
+      return 'mobile.status.waitingConfirm';
+    default:
+      return 'mobile.status.waiting';
+  }
+}
+
+function resolveRowStatusKey(
+  kind: MobileEntityKind,
+  state: ActivityState,
+  waitingReason?: WaitingPromptReason,
+): I18nKey | null {
+  if (state === 'waiting') {
+    return resolveWaitingMobileStatusKey(waitingReason);
+  }
   if (state === 'running') {
     if (kind === 'bot') return 'mobile.status.thinking';
     if (kind === 'group') return 'mobile.status.collaborating';
@@ -351,9 +380,10 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
         ...(p.gatewayLabel ? { gatewayLabel: p.gatewayLabel } : {}),
         ...(p.gatewayOffline ? { gatewayOffline: true } : {}),
         activityState,
+        waitingReason: p.waitingReason,
         activityTransition: p.activityTransition ?? 'none',
         activityTransitionToken: p.activityTransitionToken,
-        statusTextKey: resolveRowStatusKey('bot', activityState),
+        statusTextKey: resolveRowStatusKey('bot', activityState, p.waitingReason),
         profile: p,
       };
     });
@@ -397,9 +427,10 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
         ...(g.gatewayOffline ? { gatewayOffline: true } : {}),
         ...(g.crossGateway ? { crossGateway: true } : {}),
         activityState,
+        waitingReason: g.waitingReason,
         activityTransition: g.activityTransition ?? 'none',
         activityTransitionToken: g.activityTransitionToken,
-        statusTextKey: resolveRowStatusKey('group', activityState),
+        statusTextKey: resolveRowStatusKey('group', activityState, g.waitingReason),
         group: g,
         sortTimestamp: roomTs,
         isPinnedSort: false,
@@ -433,9 +464,10 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
         ...(s.gatewayLabel ? { gatewayLabel: s.gatewayLabel } : {}),
         ...(s.gatewayOffline ? { gatewayOffline: true } : {}),
         activityState,
+        waitingReason: s.waitingReason,
         activityTransition: s.activityTransition ?? 'none',
         activityTransitionToken: s.activityTransitionToken,
-        statusTextKey: resolveRowStatusKey('session', activityState),
+        statusTextKey: resolveRowStatusKey('session', activityState, s.waitingReason),
         session: s,
         sortTimestamp: s.timestamp || 0,
         isPinnedSort: Boolean(s.isPinned),
@@ -447,6 +479,8 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
   const sessionRows = partitioned.unassignedSessions;
   const showDoneSection = input.showDoneSection !== false;
 
+  const waitingBot = botRows.find((row) => row.activityState === 'waiting');
+  const waitingGroup = groupRows.find((row) => row.activityState === 'waiting');
   const botsHasRunning = botRows.some((row) => row.activityState === 'running');
   const groupsHasRunning = groupRows.some((row) => row.activityState === 'running');
   const hasContainerItemHits =
@@ -467,9 +501,15 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
       isCollapsed: input.collapsed.bots,
       effectiveExpanded: isSearching ? botRows.length > 0 : !input.collapsed.bots,
       headerStatus:
-        input.collapsed.bots && botsHasRunning
-          ? { state: 'running', statusTextKey: 'mobile.status.thinking' }
-          : null,
+        input.collapsed.bots && waitingBot
+          ? {
+              state: 'waiting',
+              waitingReason: waitingBot.waitingReason,
+              statusTextKey: resolveWaitingMobileStatusKey(waitingBot.waitingReason),
+            }
+          : input.collapsed.bots && botsHasRunning
+            ? { state: 'running', statusTextKey: 'mobile.status.thinking' }
+            : null,
       items: botRows,
     },
     projectSections: partitioned.projectContainers,
@@ -480,9 +520,15 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
       isCollapsed: input.collapsed.groups,
       effectiveExpanded: isSearching ? groupRows.length > 0 : !input.collapsed.groups,
       headerStatus:
-        input.collapsed.groups && groupsHasRunning
-          ? { state: 'running', statusTextKey: 'mobile.status.collaborating' }
-          : null,
+        input.collapsed.groups && waitingGroup
+          ? {
+              state: 'waiting',
+              waitingReason: waitingGroup.waitingReason,
+              statusTextKey: resolveWaitingMobileStatusKey(waitingGroup.waitingReason),
+            }
+          : input.collapsed.groups && groupsHasRunning
+            ? { state: 'running', statusTextKey: 'mobile.status.collaborating' }
+            : null,
       items: groupRows,
     },
     sessionsSection: {
@@ -524,7 +570,9 @@ export interface MobileBackNavState {
   hasActionSheet: boolean;
   actionSheetStep?: MobileActionSheetStep;
   hasModelSheet: boolean;
+  hasApprovalSheet?: boolean;
   hasSubagentSheet: boolean;
+  hasExpandedInteractiveDock?: boolean;
   botWizardOpen?: boolean;
   newChatOpen: boolean;
   newChatStep: MobileNewChatStep;
@@ -541,7 +589,9 @@ export type MobileBackAction =
   | { handled: true; effect: 'actionSheetBackToMenu' }
   | { handled: true; effect: 'closeActionSheet' }
   | { handled: true; effect: 'closeModelSheet' }
+  | { handled: true; effect: 'closeApprovalSheet' }
   | { handled: true; effect: 'closeSubagentSheet' }
+  | { handled: true; effect: 'collapseInteractiveDock' }
   | { handled: true; effect: 'closeBotWizard' }
   | { handled: true; effect: 'closeNewChatProjectPicker' }
   | { handled: true; effect: 'newChatBackToCompose' }
@@ -569,6 +619,7 @@ export function reduceMobileBackAction(state: MobileBackNavState): MobileBackAct
     return { handled: true, effect: 'closeActionSheet' };
   }
   if (state.hasModelSheet) return { handled: true, effect: 'closeModelSheet' };
+  if (state.hasApprovalSheet) return { handled: true, effect: 'closeApprovalSheet' };
   if (state.hasSubagentSheet) return { handled: true, effect: 'closeSubagentSheet' };
   if (state.botWizardOpen) return { handled: true, effect: 'closeBotWizard' };
   if (state.newChatOpen) {
@@ -594,6 +645,9 @@ export function reduceMobileBackAction(state: MobileBackNavState): MobileBackAct
     return { handled: true, effect: 'navigatePane', nextPane: 'stage' };
   }
   if (state.activePane === 'stage') {
+    if (state.hasExpandedInteractiveDock) {
+      return { handled: true, effect: 'collapseInteractiveDock' };
+    }
     return { handled: true, effect: 'navigatePane', nextPane: 'home' };
   }
   if (state.homeTab === 'bots') {

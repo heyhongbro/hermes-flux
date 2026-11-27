@@ -22,6 +22,7 @@ import type {
   GroupRoomStore,
   ActivityTransitionTracker,
   NormalizedSession,
+  WaitingPromptReason,
 } from '@hermes-flux/core';
 import {
   saveGroupedRailSections,
@@ -63,6 +64,11 @@ export interface LeftRailControllerDeps {
   unreadGroupRoomIds: ReadonlySet<string>;
   activeRunningBotNames: ReadonlySet<string>;
   unreadBotNames: ReadonlySet<string>;
+  getWaitingEntityMaps?: () => {
+    sessionWaitingReasons: Map<string, WaitingPromptReason>;
+    groupWaitingReasons: Map<string, WaitingPromptReason>;
+  };
+  getBotForeverSessionMap?: () => ReadonlyMap<string, string>;
   resolveAgentAvatar: (name?: string) => string;
   activityTransitionTracker: ActivityTransitionTracker;
   onToggleContainer?: (containerId: string) => void;
@@ -120,6 +126,12 @@ export class LeftRailController {
       getUnreadGroupRoomIds: () => deps.unreadGroupRoomIds,
       getActiveRunningBotNames: () => deps.activeRunningBotNames,
       getUnreadBotNames: () => deps.unreadBotNames,
+      getWaitingEntityMaps: () =>
+        deps.getWaitingEntityMaps?.() ?? {
+          sessionWaitingReasons: new Map(),
+          groupWaitingReasons: new Map(),
+        },
+      getBotForeverSessionMap: () => deps.getBotForeverSessionMap?.() ?? new Map(),
       resolveAgentAvatar: (name) => deps.resolveAgentAvatar(name),
       resolveTransition: (scope, id, st, now) => deps.activityTransitionTracker.resolveTransition(scope, id, st, now),
     });

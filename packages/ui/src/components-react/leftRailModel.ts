@@ -26,6 +26,7 @@ import type {
   LeftRailProject,
   LeftRailSession,
   RailEntityGatewayBadge,
+  WaitingPromptReason,
 } from '../components/LeftRail/types.js';
 
 export type {
@@ -39,6 +40,7 @@ export type {
   LeftRailProject,
   LeftRailSession,
   RailEntityGatewayBadge,
+  WaitingPromptReason,
 };
 
 export interface LeftRailSessionEntry {

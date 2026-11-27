@@ -1,9 +1,9 @@
 /**
- * Hermes Flux 全局极客美学 Tooltip 控制器 (Global Geek Aesthetic Tooltip Controller)
+ * Hermes Flux 全局自定义 Tooltip 控制器 (Global Tooltip Controller)
  *
  * 【设计意图 (Why)】
  * 原生浏览器 Chromium 的 `title` 属性会在鼠标停留时弹出固定的系统黑底方形气泡。
- * 在浅色模式下宛如墨渍，在深色模式下边缘生硬、字体与应用分裂，严重破坏极客美学与空间秩序。
+ * 在浅色模式下宛如墨渍，在深色模式下边缘生硬、字体与应用分裂，破坏界面一致性与空间秩序。
  * 本控制器采用全局委托 + 单例悬浮层范式：
  * 1. 自动接管全站 `[data-tooltip]` 及带有 `title` 属性的控件；
  * 2. 在 hover 期间临时将原生 `title` 属性换入 `data-flux-tooltip` 并清空，彻底物理阻断 Chromium 原生丑陋黑框；

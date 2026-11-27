@@ -17,9 +17,29 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 
-test('renderer index 顶层装配：入口必须真实构造视口管理器与看门狗接线', () => {
+test('renderer index 顶层装配：入口必须真实构造视口管理器与看门狗接线', async (t) => {
+  const windowListeners = new Map();
   if (!globalThis.window) {
-    globalThis.window = { addEventListener: () => {}, removeEventListener: () => {} };
+    globalThis.window = {
+      addEventListener: (ev, cb) => {
+        const list = windowListeners.get(ev) || [];
+        list.push(cb);
+        windowListeners.set(ev, list);
+      },
+      removeEventListener: (ev, cb) => {
+        const list = windowListeners.get(ev);
+        if (list) windowListeners.set(ev, list.filter((fn) => fn !== cb));
+      },
+      hermesDesktop: {
+        authenticateGateway: async () => ({ ok: true, message: 'ok', latency: 1, ticket: 'tk-wire' }),
+        getSystemInfo: async () => ({ platform: 'win32', isMaximized: false }),
+      },
+    };
+  } else if (!globalThis.window.hermesDesktop) {
+    globalThis.window.hermesDesktop = {
+      authenticateGateway: async () => ({ ok: true, message: 'ok', latency: 1, ticket: 'tk-wire' }),
+      getSystemInfo: async () => ({ platform: 'win32', isMaximized: false }),
+    };
   }
   if (!globalThis.document) {
     globalThis.document = {
@@ -62,6 +82,7 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
   assert.match(source, /onQueuedSubmitRace: \(sid, gw\) => \{ if \(isFocusedGatewaySession\(state, sid, gw\)\) return messageLoadingService\.refreshActiveSession\(\{ forceRefreshAfterReconnect: true, checkLiveTurn: true \}\); \}/);
   assert.match(source, /getTurnStartedSessionId: \(\) => turnStartedSessionId/);
   assert.match(source, /onEnterStage: \(\) => \{ void messageLoadingService\.refreshActiveSession\(\{ checkLiveTurn: true \}\); \}/);
+  assert.match(source, /resetActiveStreamingState:[\s\S]*?turnExecutionService\.disarmTurnWatchdog\(\)/);
 
   const req = createRequire(import.meta.url);
   try {
@@ -94,6 +115,7 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
       setAttribute() {},
       getAttribute: () => null,
       removeAttribute() {},
+      insertAdjacentHTML() {},
       querySelector: (sel) => (sel === '.flux-body-container' ? rootStub : null),
       querySelectorAll: () => [],
       getBoundingClientRect: () => ({ top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 }),
@@ -168,16 +190,208 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
         globalThis.window.__fluxState.gatewayUrl = prevDeskUrl;
       }
 
-      // 触发移动端 bindEvents() 早退分支，确保不绑定桌面 #dock-prompt-input 事件处理器
+      // 触发桌面与移动端回滚回填（onRefillMobileComposer false/true）与联网 __fluxMessageActions.handleForkMessage（覆盖 ensureLiveSessionId）
       const prevPlat = globalThis.window.__fluxState.platform;
-      globalThis.window.__fluxState.platform = 'android';
-      globalThis.window.__fluxState.gatewayConnected = false;
+      const prevFocus = globalThis.window.__fluxState.activeFocus;
+      const prevSid = globalThis.window.__fluxState.activeSessionId;
+      const prevLiveSid = globalThis.window.__fluxState.activeLiveSessionId;
+      const prevMsgs = globalThis.window.__fluxState.messages;
+      const prevSessions = globalThis.window.__fluxState.sessions;
+      const prevConfirmModal = globalThis.window.__fluxState.confirmModal;
+      const prevRollbackArmed = globalThis.window.__fluxState.rollbackArmed;
+      const prevWs = globalThis.WebSocket;
+      const prevFetch = globalThis.fetch;
+      const prevQsa = globalThis.document.querySelectorAll;
       try {
+        const rollbackBtn = {
+          closest: () => null,
+          getAttribute: (k) => (k === 'data-msg-id' ? 'm-refill-u' : k === 'data-row-id' ? '1' : null),
+        };
+        globalThis.window.__fluxState.platform = 'win32';
+        globalThis.window.__fluxState.activeFocus = { type: 'session', sessionId: 's-refill' };
+        globalThis.window.__fluxState.activeSessionId = 's-refill';
+        globalThis.window.__fluxState.messages = [
+          { id: 'm-refill-u', role: 'user', content: 'refill text', rowId: 1 },
+          { id: 'm-refill-a', role: 'assistant', content: 'reply', rowId: 2 },
+        ];
+        assert.doesNotThrow(() => globalThis.window.__fluxMessageActions?.handleRollbackMessage(rollbackBtn));
+        globalThis.window.__fluxState.rollbackArmed = null;
+
+        globalThis.window.__fluxState.platform = 'android';
+        globalThis.window.__fluxState.gatewayConnected = false;
         assert.doesNotThrow(() => globalThis.window.__fluxRender?.());
+        globalThis.window.__fluxState.activeFocus = { type: 'session', sessionId: 's-refill' };
+        globalThis.window.__fluxState.activeSessionId = 's-refill';
+        globalThis.window.__fluxState.messages = [
+          { id: 'm-refill-u', role: 'user', content: 'refill text', rowId: 1 },
+          { id: 'm-refill-a', role: 'assistant', content: 'reply', rowId: 2 },
+        ];
+        assert.doesNotThrow(() => globalThis.window.__fluxMessageActions?.handleRollbackMessage(rollbackBtn));
+        globalThis.window.__fluxState.rollbackArmed = null;
+
+        let latestWs = null;
+        class MockWiringWs {
+          static CONNECTING = 0;
+          static OPEN = 1;
+          static CLOSING = 2;
+          static CLOSED = 3;
+          constructor(url) {
+            latestWs = this;
+            this.url = url;
+            this.readyState = 0;
+            this.onopen = null;
+            this.onmessage = null;
+            this.onclose = null;
+            this.onerror = null;
+            queueMicrotask(() => {
+              this.readyState = 1;
+              this.onopen?.();
+            });
+          }
+          send(raw) {
+            const parsed = JSON.parse(String(raw));
+            const result =
+              parsed.method === 'session.resume'
+                ? { session_id: 'lv-wire', stored_session_id: 's-wire' }
+                : parsed.method === 'session.fork' || parsed.method === 'session.branch'
+                  ? { session_id: 'lv-forked', stored_session_id: 's-forked' }
+                  : parsed.method === 'session.delete' || parsed.method === 'sessions.delete'
+                    ? { ok: true, deleted: true }
+                    : parsed.method === 'sessions.list'
+                      ? { sessions: [] }
+                      : parsed.method === 'prompt.submit'
+                        ? { accepted: true }
+                        : { pong: true, capabilities: {} };
+            queueMicrotask(() => {
+              this.onmessage?.({ data: JSON.stringify({ jsonrpc: '2.0', id: parsed.id, result }) });
+            });
+          }
+          close() {
+            this.readyState = 3;
+            this.onclose?.({ code: 1000, reason: 'closed' });
+          }
+        }
+        globalThis.WebSocket = MockWiringWs;
+        globalThis.fetch = async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ ticket: 'tk-wire' }),
+        });
+        await globalThis.window.__fluxConnect?.('http://127.0.0.1:8080');
+        for (let i = 0; i < 6; i++) await Promise.resolve();
+        globalThis.window.__fluxState.platform = 'win32';
+        globalThis.window.__fluxState.activeFocus = { type: 'session', sessionId: 's-wire' };
+        globalThis.window.__fluxState.activeSessionId = 's-wire';
+        globalThis.window.__fluxState.activeLiveSessionId = '';
+        globalThis.window.__fluxState.messages = [
+          { id: 'm-refill-u', role: 'user', content: 'refill text', rowId: 1 },
+          { id: 'm-refill-a', role: 'assistant', content: 'reply', rowId: 2 },
+        ];
+        await globalThis.window.__fluxMessageActions?.handleForkMessage(rollbackBtn);
+
+        // 触发流式 tool.start -> toolPatchQueue.patchElement -> revealMobileTraceContainers (index.ts:411)
+        globalThis.requestAnimationFrame = (cb) => {
+          cb();
+          return 1;
+        };
+        const toolSlotStub = { innerHTML: '', closest: () => null };
+        globalThis.document.getElementById = (id) => {
+          if (id === 'flux-app-root') return rootStub;
+          if (typeof id === 'string' && id.startsWith('msg-tools-')) return toolSlotStub;
+          return null;
+        };
+        latestWs?.onmessage?.({
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { event: 'turn.started', type: 'turn.started', session_id: 'lv-wire', turn_id: 't-wire' },
+          }),
+        });
+        latestWs?.onmessage?.({
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { event: 'message.start', type: 'message.start', session_id: 'lv-wire', message_id: 'msg-tp-1', role: 'assistant' },
+          }),
+        });
+        latestWs?.onmessage?.({
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { event: 'tool.start', type: 'tool.start', session_id: 'lv-wire', message_id: 'msg-tp-1', tool_id: 'tc-tp-1', name: 'bash', args: '{"command":"ls"}' },
+          }),
+        });
+        for (let i = 0; i < 4; i++) await Promise.resolve();
+
+        // 触发流式中的会话删除，验证 resetActiveStreamingState -> turnExecutionService.disarmTurnWatchdog() 真实执行不抛错
+        const promptInputStub = {
+          value: 'trigger stream',
+          disabled: false,
+          scrollHeight: 20,
+          dataset: {},
+          style: {},
+          focus() {},
+          setSelectionRange() {},
+          addEventListener() {},
+          removeEventListener() {},
+          closest: () => null,
+        };
+        const sendBtnStub = { onclick: null, disabled: false, dataset: {}, closest: () => null };
+        const confirmOkBtnStub = { onclick: null, dataset: {}, focus() {}, closest: () => null };
+        const deleteSessionBtnStub = { dataset: { id: 's-wire' }, onclick: null, closest: () => null };
+        const prevInnerGetById = globalThis.document.getElementById;
+        globalThis.document.getElementById = (id) => {
+          if (id === 'flux-app-root') return rootStub;
+          if (id === 'dock-prompt-input') return promptInputStub;
+          if (id === 'dock-send-btn') return sendBtnStub;
+          if (id === 'btn-confirm-modal-ok') return confirmOkBtnStub;
+          if (typeof id === 'string' && id.startsWith('msg-tools-')) return toolSlotStub;
+          return null;
+        };
+        globalThis.document.querySelectorAll = (sel) => (sel === '.btn-delete-session' ? [deleteSessionBtnStub] : []);
+        globalThis.window.__fluxState.sessions = [
+          { id: 's-wire', title: 'Wire', botName: 'default' },
+          { id: 's-keep', title: 'Keep', botName: 'default' },
+        ];
+        globalThis.window.__fluxState.activeFocus = { type: 'session', sessionId: 's-wire' };
+        globalThis.window.__fluxState.activeSessionId = 's-wire';
+        globalThis.window.__fluxState.isStreaming = false;
+        globalThis.window.__fluxRender?.();
+        assert.equal(typeof sendBtnStub.onclick, 'function');
+        assert.equal(typeof deleteSessionBtnStub.onclick, 'function');
+        sendBtnStub.onclick();
+        for (let i = 0; i < 4; i++) await Promise.resolve();
+        assert.equal(globalThis.window.__fluxState.isStreaming, true);
+        deleteSessionBtnStub.onclick({ stopPropagation() {} });
+        assert.equal(typeof confirmOkBtnStub.onclick, 'function');
+        confirmOkBtnStub.onclick({ stopPropagation() {} });
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+        assert.equal(globalThis.window.__fluxState.isStreaming, false);
+        globalThis.document.getElementById = prevInnerGetById;
       } finally {
+        if (globalThis.window.__fluxState) {
+          globalThis.window.__fluxState.gatewayUrl = '';
+        }
+        await globalThis.window.__fluxConnect?.();
+        for (const cb of windowListeners.get('offline') || []) {
+          try { cb(); } catch {}
+        }
+        globalThis.WebSocket = prevWs;
+        globalThis.fetch = prevFetch;
+        globalThis.document.querySelectorAll = prevQsa;
         globalThis.window.__fluxState.platform = prevPlat;
+        globalThis.window.__fluxState.activeFocus = prevFocus;
+        globalThis.window.__fluxState.activeSessionId = prevSid;
+        globalThis.window.__fluxState.activeLiveSessionId = prevLiveSid;
+        globalThis.window.__fluxState.messages = prevMsgs;
+        globalThis.window.__fluxState.sessions = prevSessions;
+        globalThis.window.__fluxState.confirmModal = prevConfirmModal;
+        globalThis.window.__fluxState.rollbackArmed = prevRollbackArmed;
       }
     } finally {
+      for (const cb of windowListeners.get('beforeunload') || []) {
+        try { cb(); } catch {}
+      }
       if (globalThis.window.__fluxState) {
         globalThis.window.__fluxState.gatewayConnected = false;
       }

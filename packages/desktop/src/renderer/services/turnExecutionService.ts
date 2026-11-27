@@ -59,18 +59,17 @@ import {
   SlidingActiveWatchdog,
 } from '@hermes-flux/core';
 import { isFocusedGatewaySession } from '../gateway/multiGatewayCoordinator.js';
+import {
+  armSideAgentCapsuleTimers,
+  collectKnownSendProfiles,
+  describeRpcError,
+  executeAskSideAgent,
+  safeUnrefTimer as safeUnref,
+} from './turnSideAgentHelper.js';
+export { describeRpcError };
 import type { I18nKey, MessageViewModel } from '@hermes-flux/ui';
 import type { SessionDraftStore } from '../persistence/sessionDrafts.js';
 import type { BotActivityStore } from '../persistence/botActivityStore.js';
-
-export function describeRpcError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === 'object') {
-    if ('message' in error && typeof error.message === 'string') return error.message;
-    if ('code' in error && typeof error.code === 'number') return `RPC error ${error.code}`;
-  }
-  return String(error);
-}
 
 function padZero(n: number): string {
   return n < 10 ? `0${n}` : String(n);
@@ -146,6 +145,16 @@ export interface TurnExecutionDeps {
   readonly getLiveStreamRegistryForGateway?: (gatewayId?: string) => LiveStreamRegistry | undefined;
   readonly resolveBotNameForSession?: (storedSessionId: string, gatewayId?: string) => string | null;
   readonly onWatchdogTurnStillRunning?: (storedSessionId: string, resumeResult: Record<string, unknown>) => void;
+  readonly hasPendingInteractivePrompt?: (storedSessionId: string, liveSessionId?: string | null) => boolean;
+  readonly onCaptureInteractiveFence?: () => number;
+  readonly onInteractiveResumeReconciled?: (input: {
+    client: HermesGatewayClient;
+    storedSessionId: string;
+    liveSessionId: string | null;
+    profile?: string;
+    resume: Record<string, unknown>;
+    fence: number;
+  }) => void;
   readonly onWatchdogTurnCompleted?: (storedSessionId: string, gatewayId?: string) => Promise<void> | void;
   readonly onQueuedSubmitRace?: (storedSessionId: string, gatewayId?: string) => Promise<void> | void;
   readonly watchdogHardLimitMs?: number;
@@ -179,6 +188,7 @@ export interface TurnExecutionDeps {
   };
   watchdogIdleTimeoutMs?: TurnWatchdogTimeoutMs;
   readonly onBeforeSendEntity?: (kind: 'session' | 'group', id: string, profile?: string) => void;
+  readonly isGroupBlocked?: (roomId: string) => boolean;
 }
 
 export type TurnExecutionWatchdogFeeder = () => void;
@@ -204,12 +214,6 @@ export interface TurnExecutionService {
   handleQueueAction(action: string, admissionId: string): Promise<void>;
   askSideAgent(kind: 'btw' | 'delegation', targetProfile: string, question: string): Promise<void>;
   armCapsuleTimers(taskId: string): void;
-}
-
-function safeUnref(timer: unknown): void {
-  if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
-    (timer as { unref: () => void }).unref();
-  }
 }
 
 export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecutionService {
@@ -390,9 +394,20 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
     let resumeRes: Record<string, unknown> | null = null;
     let probeError = false;
+    const interactiveFence = deps.onCaptureInteractiveFence?.() ?? 0;
     try {
       if (client && state.gatewayConnected !== false) {
         resumeRes = await callSessionResumeForProbe(client, targetStoredId, resolvedProfile);
+        if (resumeRes) {
+          deps.onInteractiveResumeReconciled?.({
+            client,
+            storedSessionId: targetStoredId,
+            liveSessionId: state.activeLiveSessionId || null,
+            profile: resolvedProfile,
+            resume: resumeRes,
+            fence: interactiveFence,
+          });
+        }
       }
     } catch (err) {
       probeError = true;
@@ -410,6 +425,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       probeResult: resumeRes ? { isRunning: inflight.isRunning } : null,
       probeError,
       consecutiveProbeFailures,
+      hasPendingInteractivePrompt: deps.hasPendingInteractivePrompt?.(targetStoredId, state.activeLiveSessionId) ?? false,
     });
 
     if (decision === 'renew' || decision === 'defer-offline') {
@@ -644,6 +660,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       const state = deps.getState();
       return state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId;
     },
+    isBlocked: (roomId) => Boolean(deps.isGroupBlocked?.(roomId)),
     onSyncLogs: (roomId, logs) => {
       syncGroupRoomLogsToState(roomId, logs);
     },
@@ -1310,125 +1327,38 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   }
 
   function armCapsuleTimers(taskId: string): void {
-    const state = deps.getState();
-    const cap = state.sideAgentCapsules.find((c) => c.id === taskId);
-    if (!cap) return;
-    cap.hintTimer = setTimeout(() => {
-      const c = state.sideAgentCapsules.find((x) => x.id === taskId);
-      if (c && c.status === 'pending') {
-        c.notice = deps.t('capsule.slowHint');
-        deps.render();
-      }
-    }, 15000);
-    safeUnref(cap.hintTimer);
-    cap.expireTimer = setTimeout(() => {
-      const c = state.sideAgentCapsules.find((x) => x.id === taskId);
-      if (c && c.status === 'pending') {
-        c.status = 'expired';
-        deps.render();
-      }
-    }, 600000);
-    safeUnref(cap.expireTimer);
+    armSideAgentCapsuleTimers({
+      taskId,
+      getState: deps.getState,
+      render: deps.render,
+      t: deps.t,
+    });
   }
 
   async function askSideAgent(
     kind: 'btw' | 'delegation',
     targetProfile: string,
-    question: string
+    question: string,
   ): Promise<void> {
-    const state = deps.getState();
-    if (state.activeEntityGatewayOffline) {
-      setTimedDockNotice(deps.t('gateway.offlineReadOnlyNotice'));
-      deps.render();
-      return;
-    }
-    const targetGw = state.activeFocus?.gatewayId || state.activeGatewayId;
-    const client = resolveTargetClient(targetGw);
-    if (!client) {
-      setTimedDockNotice(deps.t('chat.gatewayNotConnected'));
-      return;
-    }
-    const liveId = await deps.ensureLiveSessionId();
-    if (!liveId) {
-      setTimedDockNotice(deps.t('chat.forkNoLive'));
-      deps.render();
-      return;
-    }
-
-    const resolved =
-      state.profiles.find(
-        (p) => (!targetGw || !p.gatewayId || p.gatewayId === targetGw) && (p.name === targetProfile || p.displayName === targetProfile),
-      )?.name || targetProfile;
-
-    try {
-      let taskId: string;
-      if (kind === 'btw') {
-        const res = await deps.getHandoffService().sendBtw(liveId, question, resolved, resolveTargetRpcCaller(client));
-        taskId = res.task_id;
-      } else {
-        const res = await client.call<{ task_id?: string }>('prompt.background', {
-          session_id: liveId,
-          text: question,
-          profile: resolved,
-        });
-        if (!res?.task_id) throw new Error('prompt.background missing task_id');
-        taskId = res.task_id;
-      }
-
-      state.sideAgentCapsules = [
-        ...state.sideAgentCapsules,
-        {
-          id: taskId,
-          kind,
-          profile: resolved,
-          question,
-          status: 'pending',
-          startedAt: Date.now(),
-        },
-      ];
-      armCapsuleTimers(taskId);
-      deps.render();
-    } catch (err) {
-      state.sideAgentCapsules = [
-        ...state.sideAgentCapsules,
-        {
-          id: `failed-${Date.now()}`,
-          kind,
-          profile: resolved,
-          question,
-          status: 'failed',
-          startedAt: Date.now(),
-          notice: describeRpcError(err),
-        },
-      ];
-      deps.render();
-    }
+    await executeAskSideAgent({
+      kind,
+      targetProfile,
+      question,
+      getState: deps.getState,
+      resolveTargetClient,
+      resolveTargetRpcCaller,
+      ensureLiveSessionId: deps.ensureLiveSessionId,
+      getHandoffService: deps.getHandoffService,
+      setTimedDockNotice,
+      render: deps.render,
+      t: deps.t,
+    });
   }
 
   async function routeSend(text: string): Promise<void> {
     const state = deps.getState();
     const sessionKind = deriveSessionKind(state.activeFocus);
-    const knownProfiles = state.profiles.map((p) => p.name);
-    for (const p of state.profiles) {
-      if (p.displayName) knownProfiles.push(p.displayName);
-    }
-    // 群聊研讨室：将当前房间入驻成员与广播全员 token ('all') 纳入已知候选，保证 @ 路由精准收敛
-    const focus = state.activeFocus;
-    if (focus.type === 'group' && focus.roomId) {
-      const room = state.groupRooms.find(
-        (r) => r.roomId === focus.roomId && (!focus.gatewayId || !r.gatewayId || r.gatewayId === focus.gatewayId),
-      );
-      if (room && Array.isArray(room.members)) {
-        for (const m of room.members) {
-          if (typeof m === 'string' && m && !knownProfiles.includes(m)) {
-            knownProfiles.push(m);
-          }
-        }
-      }
-      if (!knownProfiles.includes('all')) {
-        knownProfiles.push('all');
-      }
-    }
+    const knownProfiles = collectKnownSendProfiles(state);
     const route = planSendRoute({
       text,
       sessionKind,

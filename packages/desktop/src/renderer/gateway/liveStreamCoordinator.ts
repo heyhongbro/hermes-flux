@@ -129,11 +129,15 @@ export interface LiveStreamCoordinatorDeps {
   readonly getSessionMessagesCache: () => Map<string, MessageViewModel[]>;
   readonly getActiveRunningSessionIds: () => Set<string>;
   readonly getActiveRunningBotNames: () => Set<string>;
+  readonly getActiveStreamingContext?: () => ActiveStreamingContext;
   readonly setActiveStreamingContext: (ctx: Partial<ActiveStreamingContext>) => void;
   readonly setTurnStartedSessionId: (id: string | null) => void;
   readonly toStoredSessionId: (id: string | null | undefined) => string | null;
   readonly setMessageContent: (messageId: string, content: string) => void;
   readonly dropQueuedTokens?: (messageId: string) => void;
+  readonly clearTokenCoalescer?: () => void;
+  readonly clearToolPatchQueue?: () => void;
+  readonly stopRunningToolTimers?: () => void;
   readonly armTurnWatchdog: () => void;
   readonly disarmTurnWatchdog: () => void;
   readonly clearPresenceTerminal: () => void;
@@ -145,6 +149,15 @@ export interface LiveStreamCoordinatorDeps {
   readonly setMessageWindowUserExpanded?: (val: boolean) => void;
   readonly isStreamNearBottom?: () => boolean;
   readonly setPendingScrollToBottom?: (val: boolean) => void;
+  readonly onCaptureInteractiveFence?: () => number;
+  readonly onInteractiveResumeReconciled?: (input: {
+    client: HermesGatewayClient;
+    storedSessionId: string;
+    liveSessionId: string | null;
+    profile?: string;
+    resume: Record<string, unknown>;
+    fence: number;
+  }) => void;
 }
 
 export interface LiveStreamCoordinator {
@@ -174,6 +187,13 @@ export interface LiveStreamCoordinator {
     startInfo?: { turnId?: string; userText?: string },
     gatewayId?: string,
   ): LiveSessionStream | undefined;
+  resumeReconnectStreaming(
+    storedSessionId: string,
+    liveSessionId: string,
+    resumeResult?: Record<string, unknown>,
+    gatewayId?: string,
+  ): void;
+  finishReconnectStreaming(storedSessionId: string, gatewayId?: string): void;
 }
 
 /** 解析会话归属的专职 Bot（Bot Forever Chat 映射或当前 Bot 焦点，兼容多网关复合键）。 */
@@ -465,7 +485,19 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
           (s) => s.id === storedSessionId && (!gatewayId || !s.gatewayId || s.gatewayId === gatewayId),
         ) ?? state.sessions.find((s) => s.id === storedSessionId);
       const resolvedProfile = botName || matchedSession?.botName || state.profileName || 'default';
+      const interactiveFence = deps.onCaptureInteractiveFence?.() ?? 0;
       const resumeRes = await callSessionResumeQuick(client, storedSessionId, resolvedProfile);
+      if (resumeRes) {
+        const handles = readSessionHandles(resumeRes, storedSessionId);
+        deps.onInteractiveResumeReconciled?.({
+          client,
+          storedSessionId: handles?.storedId || storedSessionId,
+          liveSessionId: handles?.liveId ?? null,
+          profile: resolvedProfile,
+          resume: resumeRes,
+          fence: interactiveFence,
+        });
+      }
       if (targetEpoch !== deps.getConnectionEpoch() || resolveClient(gatewayId) !== client) return;
 
       const curStream = streamRegistry.getBySession(storedSessionId);
@@ -815,6 +847,76 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     return stream;
   }
 
+  function resumeReconnectStreaming(
+    storedSessionId: string,
+    liveSessionId: string,
+    resumeResult?: Record<string, unknown>,
+    gatewayId?: string,
+  ): void {
+    const streamRegistry = resolveStreamRegistry(gatewayId);
+    if (streamRegistry) {
+      if (resumeResult) {
+        attachLiveTurnFromResume({
+          storedSessionId,
+          liveSessionId,
+          resumeResult,
+          botName: deps.resolveBotNameForSession?.(storedSessionId, gatewayId) ?? null,
+          gatewayId,
+        });
+      } else if (streamRegistry.hasSession(storedSessionId)) {
+        streamRegistry.updateLiveId(storedSessionId, liveSessionId);
+        syncFocusedStreamingProjection(storedSessionId, gatewayId);
+      }
+      return;
+    }
+    const state = deps.getState();
+    const sameGw = isSameActiveGateway(state, gatewayId);
+    if (sameGw && deps.getActiveStreamingContext?.().activeStreamingStoredSessionId === storedSessionId) {
+      deps.setActiveStreamingContext({ activeStreamingLiveId: liveSessionId });
+      deps.armTurnWatchdog();
+    }
+  }
+
+  function finishReconnectStreaming(storedSessionId: string, gatewayId?: string): void {
+    const state = deps.getState();
+    const streamRegistry = resolveStreamRegistry(gatewayId);
+    const removedStream = streamRegistry?.removeSession(storedSessionId);
+    if (removedStream) {
+      deps.dropQueuedTokens?.(removedStream.messageId);
+    }
+    if (!streamRegistry || streamRegistry.size() === 0) {
+      deps.clearTokenCoalescer?.();
+    }
+    deps.clearToolPatchQueue?.();
+    deps.stopRunningToolTimers?.();
+    if (removedStream?.botName) {
+      deps.getActiveRunningBotNames().delete(
+        resolveScopedBotRuntimeKey(removedStream.botName, gatewayId, state.gatewayCount),
+      );
+    }
+    const sameGw = isSameActiveGateway(state, gatewayId);
+    const focused = isFocusedOnEntity(state, storedSessionId, gatewayId);
+    if (sameGw && deps.getActiveStreamingContext?.().activeStreamingStoredSessionId === storedSessionId) {
+      deps.setActiveStreamingContext({
+        activeStreamingMessageId: null,
+        activeStreamingStoredSessionId: null,
+        activeStreamingLiveId: null,
+        activeStreamingBotName: null,
+      });
+    }
+    if (focused || !streamRegistry || streamRegistry.size() === 0) {
+      state.isStreaming = false;
+      state.turnStartedAt = undefined;
+      deps.setTurnStartedSessionId(null);
+    }
+    if (!streamRegistry || streamRegistry.size() === 0) {
+      deps.disarmTurnWatchdog();
+    }
+    deps.getActiveRunningSessionIds().delete(
+      resolveScopedEntityRuntimeKey(storedSessionId, gatewayId, state.gatewayCount),
+    );
+  }
+
   return {
     clearActiveSessionSyncTimer,
     clearHydrationState,
@@ -825,5 +927,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     attachLiveTurnFromResume,
     reconcileActiveTurnFromResume,
     ensureRemoteObserverStream,
+    resumeReconnectStreaming,
+    finishReconnectStreaming,
   };
 }

@@ -164,6 +164,20 @@ export interface GatewayEventDispatcherDeps {
     action: TurnAction,
     toStoredSessionId: (id?: string | null) => string | null,
   ) => void;
+  readonly onGatewayClientCreated?: (client: HermesGatewayClient) => void;
+  readonly onGatewayDisconnect?: () => void;
+  readonly onInteractiveTurnAction?: (action: TurnAction) => void;
+  readonly onToolOutputRisk?: (action: Extract<TurnAction, { type: 'tool-output-risk' }>) => boolean;
+  readonly onGatewayNotification?: (action: TurnAction) => void;
+  readonly onCaptureInteractiveFence?: () => number;
+  readonly onInteractiveResumeReconciled?: (input: {
+    client: HermesGatewayClient;
+    storedSessionId: string;
+    liveSessionId: string | null;
+    profile?: string;
+    resume: Record<string, unknown>;
+    fence: number;
+  }) => void;
 }
 
 export interface GatewayEventDispatcher {
@@ -227,15 +241,19 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     getLiveStreamRegistry: () => deps.getLiveStreamRegistry?.(),
     getLiveStreamRegistryForGateway: deps.getLiveStreamRegistryForGateway,
     getSessionHandleRegistryForGateway: deps.getSessionHandleRegistryForGateway,
-    resolveBotNameForSession: deps.resolveBotNameForSession,
+    resolveBotNameForSession: (sid, gw) => deps.resolveBotNameForSession?.(sid, gw) ?? null,
     getSessionMessagesCache: () => deps.getSessionMessagesCache(),
     getActiveRunningSessionIds: () => deps.getActiveRunningSessionIds(),
     getActiveRunningBotNames: () => deps.getActiveRunningBotNames(),
+    getActiveStreamingContext: () => deps.getActiveStreamingContext(),
     setActiveStreamingContext: (ctx) => deps.setActiveStreamingContext(ctx),
     setTurnStartedSessionId: (id) => deps.setTurnStartedSessionId(id),
     toStoredSessionId: (id) => deps.toStoredSessionId(id),
     setMessageContent: (mid, content) => deps.setMessageContent(mid, content),
     dropQueuedTokens: (mid) => deps.getTokenCoalescer().dropMessage?.(mid),
+    clearTokenCoalescer: () => deps.getTokenCoalescer().clear(),
+    clearToolPatchQueue: () => deps.clearToolPatchQueue?.(),
+    stopRunningToolTimers: () => deps.stopRunningToolTimers(),
     armTurnWatchdog: () => deps.armTurnWatchdog(),
     disarmTurnWatchdog: () => deps.disarmTurnWatchdog(),
     clearPresenceTerminal: () => deps.clearPresenceTerminal(),
@@ -247,6 +265,8 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     setMessageWindowUserExpanded: deps.setMessageWindowUserExpanded,
     isStreamNearBottom: deps.isStreamNearBottom,
     setPendingScrollToBottom: deps.setPendingScrollToBottom,
+    onCaptureInteractiveFence: deps.onCaptureInteractiveFence,
+    onInteractiveResumeReconciled: deps.onInteractiveResumeReconciled,
   });
 
   function clearColdStartRetryTimer(): void {
@@ -780,12 +800,24 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
         case 'subagent-complete':
         case 'subagent-failed': {
           deps.onStatusTurnAction?.(action, (id) => liveCoord.resolveStoredSessionId(id, sourceGatewayId));
+          if (action.type === 'session-info') {
+            deps.onInteractiveTurnAction?.(action);
+          }
           const rawSid = action.type === 'subagent-spawn' ? action.parentSessionId : action.sessionId;
           const storedSid = liveCoord.resolveStoredSessionId(rawSid, sourceGatewayId);
           if (storedSid) {
             const storedKey = scopedSess(storedSid);
             if (action.type === 'session-info') {
               const infoRec = action.info as Record<string, unknown>;
+              if (
+                storedSid === state.activeSessionId &&
+                (infoRec?.approval_mode === 'manual' ||
+                  infoRec?.approval_mode === 'smart' ||
+                  infoRec?.approval_mode === 'off')
+              ) {
+                state.approvalMode = infoRec.approval_mode;
+                needsRender = true;
+              }
               const infoRunning = Boolean(infoRec?.running || infoRec?.streaming);
               if (infoRunning) {
                 if (
@@ -806,6 +838,25 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
               deps.feedTurnWatchdog?.();
             }
           }
+          break;
+        }
+
+        case 'request-cancel':
+        case 'approval-cancelled':
+        case 'connection-request':
+        case 'connection-update':
+        case 'gateway-ready': {
+          deps.onInteractiveTurnAction?.(action);
+          needsRender = true;
+          break;
+        }
+        case 'tool-output-risk': {
+          if (deps.onToolOutputRisk?.(action)) needsRender = true;
+          break;
+        }
+        case 'notification-show':
+        case 'notification-clear': {
+          deps.onGatewayNotification?.(action);
           break;
         }
       }
@@ -1164,10 +1215,12 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
         }),
         autoConnect: false,
         enableLifecycleWake: false,
+        clientCapabilities: { server_requests: true, desktop_local: false },
         timeoutMs: 25000,
       });
 
       deps.setGatewayClient(client);
+      deps.onGatewayClientCreated?.(client);
 
       if (desktopApi?.httpProxy) {
         client.setRestFallbackHandler(async (path, opts) => {
@@ -1295,6 +1348,7 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     deps.getUnreadGroupRoomIds().clear();
     deps.getSessionHandleRegistry().clear?.();
     deps.clearSessionsRefreshTimer();
+    deps.onGatewayDisconnect?.();
 
     const state = deps.getState();
     state.manualDisconnected = true;
@@ -1368,75 +1422,8 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     dynamicOnResumeAliveSync = hooks.onResumeAliveSync;
   }
 
-  function resumeReconnectStreaming(
-    storedSessionId: string,
-    liveSessionId: string,
-    resumeResult?: Record<string, unknown>,
-    gatewayId?: string,
-  ): void {
-    const streamRegistry = resolveStreamReg(gatewayId);
-    if (streamRegistry) {
-      if (resumeResult) {
-        liveCoord.attachLiveTurnFromResume({
-          storedSessionId,
-          liveSessionId,
-          resumeResult,
-          botName: deps.resolveBotNameForSession?.(storedSessionId, gatewayId) ?? null,
-          gatewayId,
-        });
-      } else if (streamRegistry.hasSession(storedSessionId)) {
-        streamRegistry.updateLiveId(storedSessionId, liveSessionId);
-        liveCoord.syncFocusedStreamingProjection(storedSessionId, gatewayId);
-      }
-      return;
-    }
-    const state = deps.getState();
-    const sameGw = isSameActiveGateway(state, gatewayId);
-    if (sameGw && deps.getActiveStreamingContext().activeStreamingStoredSessionId === storedSessionId) {
-      deps.setActiveStreamingContext({ activeStreamingLiveId: liveSessionId });
-      deps.armTurnWatchdog();
-    }
-  }
-
-  function finishReconnectStreaming(storedSessionId: string, gatewayId?: string): void {
-    const state = deps.getState();
-    const streamRegistry = resolveStreamReg(gatewayId);
-    const removedStream = streamRegistry?.removeSession(storedSessionId);
-    if (removedStream) {
-      deps.getTokenCoalescer().dropMessage?.(removedStream.messageId);
-    }
-    if (!streamRegistry || streamRegistry.size() === 0) {
-      deps.getTokenCoalescer().clear();
-    }
-    deps.clearToolPatchQueue?.();
-    deps.stopRunningToolTimers();
-    if (removedStream?.botName) {
-      deps.getActiveRunningBotNames().delete(
-        resolveScopedBotRuntimeKey(removedStream.botName, gatewayId, state.gatewayCount),
-      );
-    }
-    const sameGw = isSameActiveGateway(state, gatewayId);
-    const focused = isFocusedOnEntity(state, storedSessionId, gatewayId);
-    if (sameGw && deps.getActiveStreamingContext().activeStreamingStoredSessionId === storedSessionId) {
-      deps.setActiveStreamingContext({
-        activeStreamingMessageId: null,
-        activeStreamingStoredSessionId: null,
-        activeStreamingLiveId: null,
-        activeStreamingBotName: null,
-      });
-    }
-    if (focused || !streamRegistry || streamRegistry.size() === 0) {
-      state.isStreaming = false;
-      state.turnStartedAt = undefined;
-      deps.setTurnStartedSessionId(null);
-    }
-    if (!streamRegistry || streamRegistry.size() === 0) {
-      deps.disarmTurnWatchdog();
-    }
-    deps.getActiveRunningSessionIds().delete(
-      resolveScopedEntityRuntimeKey(storedSessionId, gatewayId, state.gatewayCount),
-    );
-  }
+  const resumeReconnectStreaming = liveCoord.resumeReconnectStreaming;
+  const finishReconnectStreaming = liveCoord.finishReconnectStreaming;
 
   async function retryNow(): Promise<void> {
     const state = deps.getState();

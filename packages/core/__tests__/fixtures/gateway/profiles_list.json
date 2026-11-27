@@ -9,15 +9,15 @@
         "path": "<path>",
         "is_default": true,
         "model": "gemini-3.8-flash",
-        "provider": "cpa",
+        "provider": "example-provider",
         "description": "",
         "display_name": "",
         "skill_count": 93,
         "previous_names": [],
         "last_session": {
           "id": "20261101_013727_ebdb0f",
-          "title": "验证 Hermes profile 路径与会话",
-          "preview": "### 1. 官方 REST 接口视角 (`/api/profiles/sessions`) 调用端点并经过 Cookie/Token 认证后的实测数据： ``...",
+          "title": "Workspace Profile & Session Sync Check",
+          "preview": "Checked REST session list endpoint and verified normalized session timestamps.",
           "started_at": 1793497058.6175015,
           "last_active": 1793497485.7070017,
           "message_count": 114,
@@ -29,7 +29,7 @@
           "resolved_id": "20261011_145658_fd12d2",
           "root_title": "Bot Chat",
           "title": "Bot Chat",
-          "preview": "**已经彻底破案并修复！现在所有插件都正常显示【Install】（安装）了！** --- ### 一、 为什么之前全显示“即将上线”？（定位到真实根因） 这背后...",
+          "preview": "Extension registry status synced across connected workspace clients.",
           "started_at": 1791730618.3887253,
           "last_active": 1793459472.27047,
           "message_count": 833,
@@ -42,9 +42,9 @@
         "ui_meta": {
           "hermes-bots": {
             "groups": [
-              "Hermes, Aura"
+              "Hermes, Designer"
             ],
-            "group": "Hermes, Aura"
+            "group": "Hermes, Designer"
           },
           "hermes-bots-groups": {
             "version": 3,
@@ -64,19 +64,19 @@
         "has_avatar": true
       },
       {
-        "name": "aura",
+        "name": "designer",
         "path": "<path>",
         "is_default": false,
         "model": "gemini-3.8-flash",
-        "provider": "cpa",
-        "description": "负责 UI、UE 美学设计 具有高级审美。自身移动端、客户端和 PC 端的设计总监",
+        "provider": "example-provider",
+        "description": "UI and interaction layout specialist agent",
         "display_name": "",
         "skill_count": 17,
         "previous_names": [],
         "last_session": {
           "id": "20261031_155456_4192aa",
-          "title": "DeepSeek Superagent prototype repository bookmark",
-          "preview": "### 结论与宏观定性 `deepseek-ai/dsh-superagent-prototype` 是 DeepSeek 官方团队于 **2026 年 10 ...",
+          "title": "Sample Architecture Review",
+          "preview": "Reviewed component boundaries and cross-platform token mappings for the client shell.",
           "started_at": 1793462096.8852346,
           "last_active": 1793462346.8533363,
           "message_count": 62,
@@ -88,7 +88,7 @@
           "resolved_id": "20261030_161541_b23bd3",
           "root_title": "Bot Chat",
           "title": "Bot Chat",
-          "preview": "**我已经完全切入并定位到 `/opt/data/projects/hermes-flux` 目录了！** 别小看“BOT”——我是手握全套 Shell、Git...",
+          "preview": "Connected to workspace /workspace/demo-project and prepared component layout verification.",
           "started_at": 1793376941.5212388,
           "last_active": 1793443711.2299037,
           "message_count": 22,
@@ -100,9 +100,9 @@
         "ui_meta": {
           "hermes-bots": {
             "groups": [
-              "Hermes, Aura"
+              "Hermes, Designer"
             ],
-            "group": "Hermes, Aura"
+            "group": "Hermes, Designer"
           }
         },
         "has_avatar": true
@@ -112,7 +112,7 @@
         "path": "<path>",
         "is_default": false,
         "model": "gemini-3.8-flash",
-        "provider": "cpa",
+        "provider": "example-provider",
         "description": "Hermes Flux 契约探针专用 Bot",
         "display_name": "",
         "skill_count": 1,
@@ -136,6 +136,6 @@
       "<more:1>"
     ],
     "bot_mode_protocol": true,
-    "install_id": "df6c6e090573444e8e14b74c1aa39cca"
+    "install_id": "00000000000040008000000000000001"
   }
 }

@@ -1,7 +1,6 @@
 {
   "version": "1.0.0",
   "name": "Hermes Flux — Bauhaus Origami Swift",
-  "referenceImage": "docs/design-system/brand/bauhaus-swift-reference.jpg",
   "viewBox": "0 0 1000 1000",
   "squircleRx": 225,
   "background": {

@@ -45,6 +45,11 @@ export interface MessageViewModel {
     delegationId?: string;
     imagePath?: string;
     inlineDiff?: string;
+    riskInfo?: {
+      risk: string;
+      findings: string[];
+      redacted: boolean;
+    };
   }[];
   timestamp: string;
   rawTimestamp?: number;
@@ -302,6 +307,9 @@ export function renderMiddlePod(props: MiddlePodProps): string {
       <!-- 连接与同步状态胶囊 Host（React 岛，重连期顶替顶部在场槽位） -->
       <div id="react-conv-connection-host" data-flux-island="true"></div>
 
+      <!-- 后台会话等待操作顶部提醒胶囊 Host（React 岛，非模态点击直达） -->
+      <div id="react-interactive-top-pill-host" data-flux-island="true"></div>
+
       <!-- Prompt Navigator Rail Host (React 岛，常驻，绝不进滚动流) -->
       <div id="react-prompt-navigator-host"></div>
 
@@ -310,6 +318,9 @@ export function renderMiddlePod(props: MiddlePodProps): string {
 
       <!-- Dock Scrim Fade (Bottom gradient to prevent card collision) -->
       <div class="dock-scrim-fade conv-dock-scrim" data-conv-layer="scrim"></div>
+
+      <!-- 贴合输入舱上方交互停靠卡 Host（React 岛，常驻 pod 层，绝不弹窗） -->
+      <div id="react-interactive-prompt-host" data-flux-island="true"></div>
 
       <!-- Centered Input Dock mounted strictly inside the conversation pod -->
       ${props.dockHtml || ''}

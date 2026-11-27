@@ -27,6 +27,7 @@ import { LoadBoundary } from './LoadBoundary.js';
 import { ProvidersAdminPanel } from './ProvidersAdminPanel.js';
 import { BotManagerView } from './BotManagerView.js';
 import { McpAddDialog } from './McpAddDialog.js';
+import { McpOAuthInlinePanel, startMcpOauthFlow, triggerMcpReload, type McpOauthInlineState } from './McpOAuthInlinePanel.js';
 import { McpRemoveConfirmDialog } from './McpRemoveConfirmDialog.js';
 import { SkillDetailDialog } from './SkillDetailDialog.js';
 import { SkillInstallDialog } from './SkillInstallDialog.js';
@@ -753,6 +754,7 @@ function ExtensionsPanel({
   const [testingMcp, setTestingMcp] = React.useState<string | null>(null);
   const [confirmRemoveMcp, setConfirmRemoveMcp] = React.useState<string | null>(null);
   const [removingMcp, setRemovingMcp] = React.useState(false);
+  const [mcpInline, setMcpInline] = React.useState<McpOauthInlineState>({ busy: false, reloadConfirm: null, oauth: null });
 
   const installedMcp = React.useMemo(
     () => new Set(snapshot.mcp.status === 'ready' ? snapshot.mcp.data.map((row) => row.name) : []),
@@ -816,6 +818,7 @@ function ExtensionsPanel({
                   {t('bot.mcpAddBtn')}
                 </Button>
               ) : null}
+              {actions.onReloadMcp ? <Button variant="outline" size="sm" type="button" disabled={snapshot.busy || mcpInline.busy} data-testid="settings-mcp-reload-btn" onClick={() => { void triggerMcpReload({ actions, setState: setMcpInline }); }}>{t('interactive.mcp.reloadBtn')}</Button> : null}
               <Button variant="outline" size="sm" type="button" disabled={snapshot.busy} onClick={actions.onRefreshExtensions}>
                 <RefreshCw aria-hidden="true" size={12} />
                 {t('settings.refresh')}
@@ -841,6 +844,7 @@ function ExtensionsPanel({
                     <span className="font-code text-caption text-muted-foreground">
                       {t('settings.mcpToolCount', { count: row.toolCount })}
                     </span>
+                    {actions.onStartMcpOAuth ? <Tooltip content={t('interactive.mcp.oauthBtn')} placement="top"><span className="inline-flex"><Button type="button" variant="ghost" size="icon-xs" disabled={snapshot.busy || mcpInline.busy} aria-label={t('interactive.mcp.oauthBtn')} onClick={() => { void startMcpOauthFlow({ profile: targetProfile, name: row.name, actions, setState: setMcpInline }); }}><KeyRound aria-hidden="true" className="size-3" /></Button></span></Tooltip> : null}
                     {actions.onTestMcpServer ? (
                       <Tooltip content={t('bot.mcpTestBtn')} placement="top">
                         <span className="inline-flex">
@@ -881,6 +885,7 @@ function ExtensionsPanel({
             </Surface>
           )}
         </LoadBoundary>
+        <McpOAuthInlinePanel profile={targetProfile} actions={actions} state={mcpInline} setState={setMcpInline} />
       </SettingSection>
 
       <SettingSection anchorId="ext-skills">

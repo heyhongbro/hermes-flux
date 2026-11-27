@@ -518,6 +518,7 @@ test('M1.3 liveStreamCoordinator, GatewayEventDispatcher & conversationStreamCon
     getReaderScrolledSessionId: () => '',
     setReaderScrolledSessionId: () => {},
     setSettledLayoutSignature: () => {},
+    onRefillMobileComposer: () => true,
     STICK_TO_BOTTOM_THRESHOLD_PX: 80,
     MESSAGE_WINDOW_CAPACITY: 100,
   });

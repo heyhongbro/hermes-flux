@@ -48,6 +48,7 @@ import {
   type AgentProfile,
   type ActivityState,
 } from '@hermes-flux/core';
+import type { WaitingPromptReason } from '@hermes-flux/core';
 
 export interface RailDecorCacheEntry<T> {
   stamp: string;
@@ -122,6 +123,11 @@ export interface LeftRailSnapshotHost {
   readonly getUnreadGroupRoomIds: () => ReadonlySet<string>;
   readonly getActiveRunningBotNames: () => ReadonlySet<string>;
   readonly getUnreadBotNames: () => ReadonlySet<string>;
+  readonly getWaitingEntityMaps?: () => {
+    sessionWaitingReasons: Map<string, WaitingPromptReason>;
+    groupWaitingReasons: Map<string, WaitingPromptReason>;
+  };
+  readonly getBotForeverSessionMap?: () => ReadonlyMap<string, string>;
   readonly resolveAgentAvatar: (name?: string) => string;
   readonly resolveTransition: (
     scope: 'session' | 'bot' | 'group',
@@ -217,10 +223,13 @@ export class LeftRailSnapshotManager {
     const unreadIds = this.host.getUnreadSessionIds();
     const streamingId = this.host.getActiveStreamingStoredSessionId();
     const gatewayCount = this.host.getGatewayCount?.() ?? 1;
+    const sessionWaitingReasons = this.host.getWaitingEntityMaps?.().sessionWaitingReasons;
 
     const next = mergedRaw.map((s) => {
       const scopedSessionKey = resolveScopedEntityRuntimeKey(s.id, s.gatewayId, gatewayCount);
+      const waitingReason = sessionWaitingReasons?.get(scopedSessionKey) ?? sessionWaitingReasons?.get(s.id);
       const activityState = resolveActivityState(scopedSessionKey, {
+        waitingIds: waitingReason ? new Set([scopedSessionKey]) : undefined,
         runningIds,
         unreadIds,
         streamingId: gatewayCount >= 2 && s.gatewayId ? null : streamingId,
@@ -246,6 +255,7 @@ export class LeftRailSnapshotManager {
         cached.value.gatewayLabel === s.gatewayLabel &&
         cached.value.gatewayOffline === s.gatewayOffline &&
         cached.value.activityState === activityState &&
+        cached.value.waitingReason === waitingReason &&
         cached.value.activityTransition === activityTransition &&
         cached.value.activityTransitionToken === activityTransitionToken
       ) {
@@ -255,6 +265,7 @@ export class LeftRailSnapshotManager {
         ...s,
         isPinned: s.pinned,
         activityState,
+        ...(waitingReason ? { waitingReason } : {}),
         activityTransition,
         activityTransitionToken,
       };
@@ -271,10 +282,13 @@ export class LeftRailSnapshotManager {
     const runningIds = this.host.getActiveRunningGroupRoomIds();
     const unreadIds = this.host.getUnreadGroupRoomIds();
     const gatewayCount = this.host.getGatewayCount?.() ?? 1;
+    const groupWaitingReasons = this.host.getWaitingEntityMaps?.().groupWaitingReasons;
 
     const next = rawGroups.map((g) => {
       const scopedRoomKey = resolveScopedEntityRuntimeKey(g.roomId, g.gatewayId, gatewayCount);
+      const waitingReason = groupWaitingReasons?.get(scopedRoomKey) ?? groupWaitingReasons?.get(g.roomId);
       const activityState = resolveActivityState(scopedRoomKey, {
+        waitingIds: waitingReason ? new Set([scopedRoomKey]) : undefined,
         runningIds,
         unreadIds,
       });
@@ -292,6 +306,7 @@ export class LeftRailSnapshotManager {
         g.gatewayOffline ? 1 : 0,
         g.crossGateway ? 1 : 0,
         activityState,
+        waitingReason ?? '',
         activityTransition,
         activityTransitionToken ?? '',
       ].join('\u0001');
@@ -302,6 +317,7 @@ export class LeftRailSnapshotManager {
       const value: LeftRailGroupRoom = {
         ...g,
         activityState,
+        ...(waitingReason ? { waitingReason } : {}),
         activityTransition,
         activityTransitionToken,
       };
@@ -318,6 +334,31 @@ export class LeftRailSnapshotManager {
     const runningIds = this.host.getActiveRunningBotNames();
     const unreadIds = this.host.getUnreadBotNames();
     const gatewayCount = this.host.getGatewayCount?.() ?? 1;
+    const sessionWaitingReasons = this.host.getWaitingEntityMaps?.().sessionWaitingReasons;
+    const foreverMap = this.host.getBotForeverSessionMap?.();
+    const botWaitingReasons = new Map<string, WaitingPromptReason>();
+    const botForeverSidByName = new Map<string, string>();
+    if (foreverMap) {
+      for (const [sid, botName] of foreverMap.entries()) {
+        botForeverSidByName.set(botName, sid);
+        const reason = sessionWaitingReasons?.get(sid);
+        if (reason && !botWaitingReasons.has(botName)) {
+          botWaitingReasons.set(botName, reason);
+        }
+      }
+    }
+    const childWaitingBots = new Set<string>();
+    if (sessionWaitingReasons && sessionWaitingReasons.size > 0) {
+      for (const s of this.host.getSessions()) {
+        if (!s?.id || !s.botName) continue;
+        const scopedSid = resolveScopedEntityRuntimeKey(s.id, s.gatewayId, gatewayCount);
+        if (!sessionWaitingReasons.has(scopedSid) && !sessionWaitingReasons.has(s.id)) continue;
+        const foreverSid = botForeverSidByName.get(s.botName);
+        if (s.id !== foreverSid) {
+          childWaitingBots.add(s.botName);
+        }
+      }
+    }
 
     const next = rawProfiles.map((p) => {
       const avatar =
@@ -326,7 +367,10 @@ export class LeftRailSnapshotManager {
         (p.displayName ? this.host.resolveAgentAvatar(p.displayName) : '') ||
         '';
       const scopedProfileKey = resolveScopedBotRuntimeKey(p.name, p.gatewayId, gatewayCount);
+      const waitingReason = botWaitingReasons.get(scopedProfileKey) ?? botWaitingReasons.get(p.name);
+      const hasChildWaitingPrompt = childWaitingBots.has(scopedProfileKey) || childWaitingBots.has(p.name);
       const activityState = resolveActivityState(scopedProfileKey, {
+        waitingIds: waitingReason ? new Set([scopedProfileKey]) : undefined,
         runningIds,
         unreadIds,
       });
@@ -347,6 +391,8 @@ export class LeftRailSnapshotManager {
         p.gatewayOffline ? 1 : 0,
         p.gatewayRouteLabel ?? '',
         activityState,
+        waitingReason ?? '',
+        hasChildWaitingPrompt ? 1 : 0,
         activityTransition,
         activityTransitionToken ?? '',
       ].join('\u0001');
@@ -358,6 +404,8 @@ export class LeftRailSnapshotManager {
         ...p,
         avatar,
         activityState,
+        ...(waitingReason ? { waitingReason } : {}),
+        ...(hasChildWaitingPrompt ? { hasChildWaitingPrompt: true } : {}),
         activityTransition,
         activityTransitionToken,
       };

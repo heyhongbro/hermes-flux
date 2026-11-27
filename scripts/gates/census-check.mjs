@@ -307,6 +307,7 @@ const POSITIVE_INT_RE = /^[1-9]\d*$/;
 export function parseCensusArgs(
   argv = process.argv.slice(2),
   cpuCount = os.availableParallelism?.() ?? os.cpus().length,
+  env = process.env,
 ) {
   let serial = false;
   let parallel = false;
@@ -362,13 +363,24 @@ export function parseCensusArgs(
     ? (explicitSuites.includes('all') ? Object.keys(SUITES) : explicitSuites)
     : ['unit'];
 
+  let envConcurrency = null;
+  if (!serial && !parallel && explicitConcurrency === null) {
+    const rawEnv = env?.CENSUS_CONCURRENCY !== undefined ? String(env.CENSUS_CONCURRENCY).trim() : '';
+    if (rawEnv) {
+      if (!POSITIVE_INT_RE.test(rawEnv)) {
+        return { ok: false, error: `非法 CENSUS_CONCURRENCY 值 "${rawEnv}"，必须为正整数（如 2、4、6、8）` };
+      }
+      envConcurrency = Number(rawEnv);
+    }
+  }
+
   const cpus = Number.isFinite(cpuCount) && cpuCount > 0 ? cpuCount : 2;
-  const defaultConcurrency = Math.max(2, Math.min(4, Math.floor(cpus / 2)));
+  const defaultConcurrency = Math.max(2, Math.min(8, Math.floor(cpus * 0.75)));
   const concurrency = serial
     ? 1
     : parallel
       ? undefined
-      : (explicitConcurrency ?? defaultConcurrency);
+      : (explicitConcurrency ?? envConcurrency ?? defaultConcurrency);
 
   return { ok: true, targets, concurrency };
 }

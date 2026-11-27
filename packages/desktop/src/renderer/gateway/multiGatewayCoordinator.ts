@@ -490,6 +490,15 @@ export async function resolveActiveLiveSessionId(deps: {
   readonly getGeneration: () => number;
   readonly logSession?: Pick<FluxLogger, 'debug'> | GuardedRunLogger;
   readonly describeRpcError: (error: unknown) => string;
+  readonly onCaptureInteractiveFence?: () => number;
+  readonly onInteractiveResumeReconciled?: (input: {
+    client: HermesGatewayClient;
+    storedSessionId: string;
+    liveSessionId: string | null;
+    profile?: string;
+    resume: Record<string, unknown>;
+    fence: number;
+  }) => void;
 }): Promise<string> {
   const state = deps.getState();
   if (state.activeFocus.type === 'group') return '';
@@ -518,6 +527,7 @@ export async function resolveActiveLiveSessionId(deps: {
       state.profileName ||
       'default';
     let res: Record<string, unknown> | null = null;
+    const interactiveFence = deps.onCaptureInteractiveFence?.() ?? 0;
     try {
       res = await client.call<Record<string, unknown>>('session.resume', {
         session_id: guard.sessionId,
@@ -533,6 +543,16 @@ export async function resolveActiveLiveSessionId(deps: {
       }
     }
     const parsed = readSessionHandles(res);
+    if (res) {
+      deps.onInteractiveResumeReconciled?.({
+        client,
+        storedSessionId: guard.sessionId,
+        liveSessionId: parsed?.liveId ?? null,
+        profile: prof,
+        resume: res,
+        fence: interactiveFence,
+      });
+    }
     if (parsed) {
       const handles = { liveId: parsed.liveId, storedId: guard.sessionId };
       targetHandleRegistry.register(handles);

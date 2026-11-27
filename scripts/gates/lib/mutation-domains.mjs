@@ -91,11 +91,14 @@ export const MUTATION_DOMAINS = {
     // 分段必须覆盖本次逻辑的全部输入与输出契约：
     // 190-215 上限常量、455-540 淘汰与采样去重、570-760 变量写入/中性补偿/锚点采集
     mutate: [
-      'packages/desktop/src/renderer/viewport/streamViewportManager.ts:190-215',
-      'packages/desktop/src/renderer/viewport/streamViewportManager.ts:455-540',
-      'packages/desktop/src/renderer/viewport/streamViewportManager.ts:570-760',
+      'packages/desktop/src/renderer/viewport/streamViewportManager.ts:190-217',
+      'packages/desktop/src/renderer/viewport/streamViewportManager.ts:483-571',
+      'packages/desktop/src/renderer/viewport/streamViewportManager.ts:601-791',
     ],
-    testFiles: ['packages/desktop/__tests__/unit/stream-viewport-manager.test.mjs'],
+    testFiles: [
+      'packages/desktop/__tests__/unit/stream-viewport-manager.test.mjs',
+      'packages/desktop/__tests__/unit/stream-viewport-interactive.test.mjs',
+    ],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/viewport/streamViewportManager.ts',
     // 实测 249 mutant / 217 killed / 25 survived / 7 noCov = 87.15%（2026-11-18，含 FIFO 淘汰与补偿输入契约）
@@ -104,10 +107,10 @@ export const MUTATION_DOMAINS = {
   renderCoordinatorPin: {
     title: '渲染协调提交后单在途贴底锚定 (Render Coordinator Pin)',
     mutate: [
-      'packages/desktop/src/renderer/renderCoordinator.ts:245-308',
-      'packages/desktop/src/renderer/renderCoordinator.ts:702-720',
-      'packages/desktop/src/renderer/renderCoordinator.ts:805-820',
-      'packages/desktop/src/renderer/renderCoordinator.ts:1005-1062',
+      'packages/desktop/src/renderer/renderCoordinator.ts:247-310',
+      'packages/desktop/src/renderer/renderCoordinator.ts:706-724',
+      'packages/desktop/src/renderer/renderCoordinator.ts:809-824',
+      'packages/desktop/src/renderer/renderCoordinator.ts:1018-1075',
     ],
     testFiles: ['packages/desktop/__tests__/unit/render-coordinator.test.mjs'],
     buildCommand:
@@ -117,7 +120,7 @@ export const MUTATION_DOMAINS = {
   },
   turnSettlement: {
     title: '流式回合收口与状态收敛 (Turn Settlement)',
-    mutate: ['packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:543-769'],
+    mutate: ['packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:559-785'],
     testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.settlement.test.mjs'],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/gateway/gatewayEventDispatcher.ts',
@@ -126,7 +129,7 @@ export const MUTATION_DOMAINS = {
   },
   turnExecutionWatchdog: {
     title: '回合看门狗探活续期与离线收敛 (Turn Execution Watchdog)',
-    mutate: ['packages/desktop/src/renderer/services/turnExecutionService.ts:232-486'],
+    mutate: ['packages/desktop/src/renderer/services/turnExecutionService.ts:243-509'],
     testFiles: ['packages/desktop/__tests__/unit/turnExecutionService.watchdog.test.mjs'],
     buildCommand:
       'node scripts/gates/build-desktop-unit.mjs src/renderer/services/turnExecutionService.ts',
@@ -136,9 +139,9 @@ export const MUTATION_DOMAINS = {
   turnExecutionSubmit: {
     title: '回合并发提交、打断与流式绑定 (Turn Execution Submit & Interrupt)',
     mutate: [
-      'packages/desktop/src/renderer/services/turnExecutionService.ts:774-780',
-      'packages/desktop/src/renderer/services/turnExecutionService.ts:942-1016',
-      'packages/desktop/src/renderer/services/turnExecutionService.ts:1095-1166',
+      'packages/desktop/src/renderer/services/turnExecutionService.ts:798-804',
+      'packages/desktop/src/renderer/services/turnExecutionService.ts:966-1040',
+      'packages/desktop/src/renderer/services/turnExecutionService.ts:1119-1190',
     ],
     testFiles: [
       'packages/desktop/__tests__/unit/turnExecutionService.submit.test.mjs',
@@ -152,11 +155,11 @@ export const MUTATION_DOMAINS = {
   sessionSelectToolPatch: {
     title: '会话切回流式工具补刷与删除清理 (Session Select & Delete Cleanup)',
     mutate: [
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:414-420',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:451-457',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:747-756',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:784-802',
-      'packages/desktop/src/renderer/services/sessionOperationService.ts:830-843',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:421-427',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:458-464',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:754-763',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:791-809',
+      'packages/desktop/src/renderer/services/sessionOperationService.ts:837-850',
     ],
     testFiles: ['packages/desktop/__tests__/unit/sessionOperationService.test.mjs'],
     buildCommand:
@@ -166,7 +169,7 @@ export const MUTATION_DOMAINS = {
   },
   toolSection: {
     title: '工具区块流式/收口原子交接 (ToolSection Key Swap)',
-    mutate: ['packages/ui/src/components-react/conversation/ToolCapsule.tsx:373-382'],
+    mutate: ['packages/ui/src/components-react/conversation/ToolCapsule.tsx:378-387'],
     testFiles: ['packages/ui/__tests__/streaming-anchor-contract.test.mjs'],
     buildCommand: 'npm run build:ui',
     // 实测 7 mutant / 6 killed / 0 survived / 1 noCov = 85.71%（覆盖分 100%）（2026-11-18）
@@ -256,10 +259,34 @@ export const MUTATION_DOMAINS = {
     minScore: 80,
   },
   androidSigning: {
-    // 实测 (androidSigning): 116 mutant / 103 killed / 13 survived / 0 noCov = 88.79%
+    // 实测 (androidSigning): 326 mutant / 284 killed / 1 timeout / 41 survived / 0 noCov = 87.42%
     title: 'Android Release 签名配置解析与密钥隔离守卫 (Android Release Signing)',
     mutate: ['packages/mobile/scripts/android-signing-config.mjs'],
     testFiles: ['packages/mobile/__tests__/unit/android-signing-config.test.mjs'],
+    buildCommand: 'node -e ""',
+    minScore: 80,
+  },
+  iosSigning: {
+    // 实测 (iosSigning): 620 mutant / 569 killed / 51 survived / 0 noCov = 91.77%
+    title: 'iOS Release 签名配置解析与 ExportOptions 生成 (iOS Release Signing)',
+    mutate: ['packages/mobile/scripts/ios-signing-config.mjs'],
+    testFiles: ['packages/mobile/__tests__/unit/ios-signing-config.test.mjs'],
+    buildCommand: 'node -e ""',
+    minScore: 80,
+  },
+  desktopSigning: {
+    // 实测 (desktopSigning): 850 mutant / 780 killed / 69 survived / 1 noCov = 91.76%
+    title: 'Desktop Win/macOS 签名公证配置与安全参数构造 (Desktop Release Signing)',
+    mutate: ['packages/desktop/scripts/desktop-signing-config.mjs'],
+    testFiles: ['packages/desktop/__tests__/unit/desktop-signing-config.test.mjs'],
+    buildCommand: 'node -e ""',
+    minScore: 80,
+  },
+  releaseSigningCheck: {
+    // 实测 (releaseSigningCheck): 203 mutant / 179 killed / 7 survived / 17 noCov = 88.18%
+    title: '全平台发行签名诊断聚合器 (Cross-Platform Signing Doctor)',
+    mutate: ['scripts/signing/check-signing.mjs'],
+    testFiles: ['scripts/__tests__/release-signing-check.test.mjs'],
     buildCommand: 'node -e ""',
     minScore: 80,
   },
@@ -288,8 +315,8 @@ export const MUTATION_DOMAINS = {
   eventReducerStreaming: {
     title: '网关流式事件归约扩展 (Event Reducer Streaming Extension)',
     mutate: [
-      'packages/core/src/session/eventReducer.ts:401-415',
-      'packages/core/src/session/eventReducer.ts:574-706',
+      'packages/core/src/session/eventReducer.ts:461-475',
+      'packages/core/src/session/eventReducer.ts:722-854',
     ],
     testFiles: ['packages/core/__tests__/session/eventReducer.test.mjs'],
     buildCommand: 'npm run build:core',
@@ -298,7 +325,7 @@ export const MUTATION_DOMAINS = {
   },
   liveStreamCoordHydration: {
     title: '实时流解析、同步与远端补全协调器 (Live Stream Hydration)',
-    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:90-390'],
+    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:99-411'],
     testFiles: [
       'packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs',
       'packages/desktop/__tests__/unit/liveStreamCoordinator.boundaries.test.mjs',
@@ -310,7 +337,7 @@ export const MUTATION_DOMAINS = {
   },
   liveStreamCoordAttach: {
     title: '实时流恢复挂载与观察者投影协调器 (Live Stream Attach & Observer)',
-    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:390-635'],
+    mutate: ['packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:411-656'],
     testFiles: [
       'packages/desktop/__tests__/unit/liveStreamCoordinator.test.mjs',
       'packages/desktop/__tests__/unit/liveStreamCoordinator.boundaries.test.mjs',
@@ -323,12 +350,12 @@ export const MUTATION_DOMAINS = {
   messageLoadingStreaming: {
     title: '会话加载权威对账与恢复状态机 (Message Loading Streaming)',
     mutate: [
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:169-194',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:221-274',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:352-415',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:465-533',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:636-670',
-      'packages/desktop/src/renderer/services/messageLoadingService.ts:758-783',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:178-203',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:230-283',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:361-424',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:474-553',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:656-691',
+      'packages/desktop/src/renderer/services/messageLoadingService.ts:789-814',
     ],
     testFiles: ['packages/desktop/__tests__/unit/messageLoadingService.test.mjs'],
     buildCommand:
@@ -339,8 +366,8 @@ export const MUTATION_DOMAINS = {
   multideviceHooks: {
     title: '多端协同状态与桌面/移动端钩子 (Multidevice Hooks)',
     mutate: [
-      'packages/desktop/src/renderer/events/presenceController.ts:92-148',
-      'packages/desktop/src/renderer/mobile/mobileShellCoordinator.ts:487-500',
+      'packages/desktop/src/renderer/events/presenceController.ts:94-150',
+      'packages/desktop/src/renderer/mobile/mobileShellCoordinator.ts:559-576',
     ],
     testFiles: [
       'packages/desktop/__tests__/unit/presenceController.test.mjs',
@@ -354,9 +381,9 @@ export const MUTATION_DOMAINS = {
   gatewayStreamingDispatch: {
     title: '网关流式事件动作分发 (Gateway Streaming Dispatch)',
     mutate: [
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:193-220',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:277-385',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:412-536',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:207-236',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:293-401',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:428-552',
     ],
     testFiles: [
       'packages/desktop/__tests__/unit/gatewayEventDispatcher.dispatch.test.mjs',
@@ -370,10 +397,10 @@ export const MUTATION_DOMAINS = {
   gatewayFrameAndReconnect: {
     title: '网关帧解析与重连续流 (Gateway Frame & Reconnect)',
     mutate: [
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:181-191',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:795-927',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1248-1250',
-      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1351-1409',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:195-205',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:811-974',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1297-1299',
+      'packages/desktop/src/renderer/gateway/gatewayEventDispatcher.ts:1401-1459',
     ],
     testFiles: ['packages/desktop/__tests__/unit/gatewayEventDispatcher.reconnect.test.mjs'],
     buildCommand:

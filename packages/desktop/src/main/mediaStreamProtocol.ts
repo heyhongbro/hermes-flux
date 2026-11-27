@@ -127,14 +127,14 @@ export function parseByteRangeHeader(
   return { start, end: Math.min(rawEnd, totalSize - 1) };
 }
 
-async function cancelBodySafely(res: Response): Promise<void> {
+export async function cancelBodySafely(res: Response): Promise<void> {
   const body = (res as { body?: { cancel?: () => Promise<unknown> } | null }).body;
   if (body && typeof body.cancel === 'function') {
     await body.cancel().catch(() => {});
   }
 }
 
-function toWebReadableStream(nodeStream: Readable): ReadableStream<Uint8Array> {
+export function toWebReadableStream(nodeStream: Readable): ReadableStream<Uint8Array> {
   let settled = false;
   return new ReadableStream<Uint8Array>({
     start(controller) {

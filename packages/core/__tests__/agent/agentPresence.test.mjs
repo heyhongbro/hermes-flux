@@ -60,15 +60,28 @@ test('deriveAgentPresence - 优先级短路顺序', async (t) => {
     assert.deepEqual(presence, { kind: 'failed', message: '工具超时 60s' });
   });
 
-  await t.test('中断压过委派与工具', () => {
+  await t.test('中断压过等待、委派与工具', () => {
     const presence = deriveAgentPresence(
       input({
         interrupted: true,
+        waitingReason: 'approval',
         activeSubagents: 1,
         message: { toolCalls: [{ name: 'read', status: 'running', args: 'a.ts' }] },
       })
     );
     assert.deepEqual(presence, { kind: 'interrupted' });
+  });
+
+  await t.test('waitingReason 压过委派与工具', () => {
+    const presence = deriveAgentPresence(
+      input({
+        waitingReason: 'clarify',
+        activeSubagents: 1,
+        turnStartedAt: NOW - 5_000,
+        message: { toolCalls: [{ name: 'read', status: 'running', args: 'a.ts' }] },
+      })
+    );
+    assert.deepEqual(presence, { kind: 'waiting', reason: 'clarify', sinceMs: 5_000 });
   });
 
   await t.test('委派压过工具（活是派出去干的）', () => {

@@ -22,10 +22,13 @@
 
 import {
   createDirectoryPathVerifier,
+  detectPreviewAssetMime,
+  encodeUtf8ToBase64,
   extractSessionDeliverables,
   extractUnverifiedCandidatePaths,
   normalizeDeliverableKey,
   resolveFileContent,
+  resolvePreviewAsset,
   type DeliverableItem,
   type DeliverableMessageInput,
   type HermesGatewayClient,
@@ -51,8 +54,8 @@ export interface MediaResolver {
 }
 
 const MAX_CACHE_ENTRIES = 64;
-const DIRECT_RENDERABLE_RE = /^(?:data:image\/|data:video\/|blob:|hermes-media:\/\/)/i;
-const SAFE_RESULT_RE = /^(?:data:image\/|data:video\/|https?:\/\/|blob:|hermes-media:\/\/)/i;
+const DIRECT_RENDERABLE_RE = /^(?:data:image\/|data:video\/|data:audio\/|blob:|hermes-(?:media|preview):\/\/)/i;
+const SAFE_RESULT_RE = /^(?:data:image\/|data:video\/|data:audio\/|https?:\/\/|blob:|hermes-(?:media|preview):\/\/)/i;
 
 /**
  * 构建带并发去重与有界 LRU 缓存的跨端媒体解析器。
@@ -96,20 +99,38 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
 
     const task = (async (): Promise<string | null> => {
       try {
-        const resolved = await resolveFileContent(clean, {
-          platformBridge: deps.getDesktopApi() ?? null,
-          gatewayClient: deps.getClientForGateway
-            ? deps.getClientForGateway(targetGatewayId)
-            : deps.getGatewayClient(),
-          gatewayUrl: targetGatewayUrl,
-          profile: state.profileName || undefined,
-          sessionId: state.activeSessionId || undefined,
-          messages: state.messages,
-        });
-        if (resolved.isBinary || resolved.isTooLarge || resolved.isDirectory) {
-          return null;
+        const cleanNoQuery = clean.split(/[?#]/)[0].toLowerCase();
+        const detectedMime = detectPreviewAssetMime(cleanNoQuery);
+        let out = '';
+        if (detectedMime && detectedMime.startsWith('audio/')) {
+          const audioRes = await resolvePreviewAsset(clean, {
+            platformBridge: deps.getDesktopApi() ?? null,
+            gatewayUrl: targetGatewayUrl,
+            profile: state.profileName || undefined,
+            sessionId: state.activeSessionId || undefined,
+            workspaceRoot: resolveActiveWorkspaceCwd(state) || undefined,
+            messages: state.messages,
+          });
+          out = (audioRes.dataUrl || '').trim();
+        } else {
+          const resolved = await resolveFileContent(clean, {
+            platformBridge: deps.getDesktopApi() ?? null,
+            gatewayClient: deps.getClientForGateway
+              ? deps.getClientForGateway(targetGatewayId)
+              : deps.getGatewayClient(),
+            gatewayUrl: targetGatewayUrl,
+            profile: state.profileName || undefined,
+            sessionId: state.activeSessionId || undefined,
+            messages: state.messages,
+          });
+          if (resolved.isBinary || resolved.isTooLarge || resolved.isDirectory) {
+            return null;
+          }
+          out = resolved.content.trim();
+          if (cleanNoQuery.endsWith('.svg') && out && !out.startsWith('data:') && out.includes('<svg')) {
+            out = `data:image/svg+xml;base64,${encodeUtf8ToBase64(out)}`;
+          }
         }
-        const out = (resolved.content || '').trim();
         if (!SAFE_RESULT_RE.test(out)) return null;
         if (cache.size >= MAX_CACHE_ENTRIES) {
           const oldest = cache.keys().next().value;

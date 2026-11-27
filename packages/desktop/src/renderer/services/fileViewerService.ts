@@ -22,12 +22,14 @@ import {
   InteractiveService,
   buildGatewayDownloadUrl,
   collectAncestorDirectoryPaths,
+  detectPreviewAssetMime,
   isVideoExtension,
   mergeDirectoryChildren,
   normalizeWorkspacePath,
   normalizeDeliverableKey,
   reduceRightPodMode,
   resolveFileContent,
+  resolvePreviewAsset,
   resolveWorkspaceDirectory,
   type DeliverableItem,
   type FileTreeNode,
@@ -37,7 +39,6 @@ import {
 } from '@hermes-flux/core';
 import {
   collectTouchedFiles,
-  handleCodeBlockCopyClick,
   resolveDeliverableDisplayName,
   type InspectorTab,
   type I18nKey,
@@ -49,12 +50,14 @@ import {
   type AppState,
 } from '../state/appState.js';
 import type { HermesDesktopBridge } from '../../preload/index.js';
+import { createPreviewAssetCoordinator, resolveEffectiveScopeRoot } from './previewAssetCoordinator.js';
 
 export interface FileViewerServiceDeps {
   getState: () => AppState;
   render: () => void;
   getDesktopApi: () => HermesDesktopBridge | undefined;
   getGatewayClient: () => HermesGatewayClient | null;
+  resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   safeCopyText: (text: string) => Promise<boolean>;
   t: (key: I18nKey) => string;
   onBackFromFiles?: () => void;
@@ -113,6 +116,16 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
   let treeLoadGeneration = 0;
   let loadedTreeScopeKey = '';
   const fileOpenGenerations = new Map<string, number>();
+
+  const previewCoordinator = createPreviewAssetCoordinator({
+    getState,
+    render,
+    getDesktopApi,
+    getGatewayClient,
+    resolveMediaUrl: deps.resolveMediaUrl,
+    onOpenFilePreview: (nextPath) => handleOpenFilePreview(nextPath),
+    onOpenMediaLightbox: deps.onOpenMediaLightbox,
+  });
 
   const readEffectiveProfile = (s: AppState): string | undefined =>
     s.activeFocus?.type === 'group' ? undefined : s.profileName || undefined;
@@ -475,18 +488,61 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     render();
 
     // 2. 统一调用底层通用文件解析服务组件 (resolveFileContent，带二进制、超大文件与视频流式地址守卫)
+    const targetAudioMime = detectPreviewAssetMime(target);
+    const isPlayableAudio = Boolean(targetAudioMime && targetAudioMime.startsWith('audio/'));
     let resolved: Awaited<ReturnType<typeof resolveFileContent>>;
     try {
-      resolved = await resolveFileContent(target, {
-        platformBridge: desktopApi,
-        gatewayClient,
-        gatewayUrl: state.gatewayUrl,
-        profile: readEffectiveProfile(state),
-        sessionId: state.activeSessionId || undefined,
-        knownSize: knownNode?.size,
-        messages: state.messages,
-        fallbackNotice: `// ${target}\n\n${t('inspector.remoteNotice')}`,
-      });
+      if (isPlayableAudio) {
+        if (/^https?:\/\//i.test(target.trim())) {
+          resolved = {
+            content: target.trim(),
+            isImage: false,
+            isVideo: false,
+            isHtml: false,
+            isBinary: false,
+            isTooLarge: false,
+            fromCache: true,
+            source: 'remote_http',
+          };
+        } else {
+          const treeRoot = state.fileTreeState?.status === 'ready' ? state.fileTreeState.rootPath : '';
+          const scopeRoot = resolveEffectiveScopeRoot(target, resolveActiveWorkspaceCwd(state) || treeRoot || '');
+          const audioAsset = await resolvePreviewAsset(target, {
+            workspaceRoot: scopeRoot || undefined,
+            enforceWorkspaceScope: true,
+            platformBridge: desktopApi,
+            gatewayUrl: state.gatewayUrl || undefined,
+            profile: readEffectiveProfile(state),
+            sessionId: state.activeSessionId || undefined,
+            sourceHint: existingOpenFile?.source,
+            messages: state.messages,
+          });
+          resolved = {
+            content: audioAsset.ok && audioAsset.dataUrl ? audioAsset.dataUrl : '',
+            isImage: false,
+            isVideo: false,
+            isHtml: false,
+            isBinary: false,
+            isTooLarge: false,
+            ...(audioAsset.byteSize || knownNode?.size
+              ? { byteSize: audioAsset.byteSize || knownNode?.size }
+              : {}),
+            fromCache: false,
+            source: audioAsset.source === 'error' ? 'fallback' : audioAsset.source,
+          };
+        }
+      } else {
+        resolved = await resolveFileContent(target, {
+          platformBridge: desktopApi,
+          gatewayClient,
+          gatewayUrl: state.gatewayUrl,
+          profile: readEffectiveProfile(state),
+          sessionId: state.activeSessionId || undefined,
+          knownSize: knownNode?.size,
+          messages: state.messages,
+          fallbackNotice: `// ${target}\n\n${t('inspector.remoteNotice')}`,
+        });
+      }
     } catch {
       if (fileOpenGenerations.get(target) !== nextOpenGen) return;
       const targetEntry = state.openFiles.find((f) => f.path === target);
@@ -527,6 +583,14 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
 
     // 3. 挂载到 state.openFiles（就地回填加载占位，不追加重复 Tab）
     existingOpenFile = state.openFiles.find((f) => f.path === target);
+    const contentChanged =
+      !existingOpenFile ||
+      existingOpenFile.content !== resolved.content ||
+      existingOpenFile.source !== effectiveSource;
+    if (contentChanged && existingOpenFile?.preview) {
+      previewCoordinator.revokeOpenFilePreview(target);
+      existingOpenFile.preview = undefined;
+    }
     if (!existingOpenFile) {
       existingOpenFile = {
         id: `file-${Date.now()}`,
@@ -571,6 +635,10 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     }
 
     render();
+
+    if (!resolved.isBinary && !resolved.isTooLarge && !resolved.isVideo && effectiveSource !== 'fallback') {
+      void previewCoordinator.prepareOpenFilePreview(target);
+    }
   }
 
   function switchFileTab(targetPath: string): void {
@@ -585,6 +653,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     const state = getState();
     if (!targetPath) return;
     fileOpenGenerations.set(targetPath, (fileOpenGenerations.get(targetPath) ?? 0) + 1);
+    previewCoordinator.revokeOpenFilePreview(targetPath);
 
     const idx = state.openFiles.findIndex((f) => f.path === targetPath);
     if (idx !== -1) {
@@ -1090,9 +1159,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     }
 
     document.querySelectorAll<HTMLElement>('.inspector-rendered-markdown').forEach((mdEl) => {
-      mdEl.onclick = (e) => {
-        void handleCodeBlockCopyClick(e.target);
-      };
+      previewCoordinator.bindMarkdownContainer(mdEl);
     });
 
     document.querySelectorAll<HTMLVideoElement>('[data-video-player="true"]').forEach((videoEl) => {

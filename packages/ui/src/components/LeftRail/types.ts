@@ -6,7 +6,9 @@
  * 约束与规则 (Rules)：本模块只放类型；任何渲染或派生逻辑请放 leftRailModel.ts 或 React 组件。
  */
 
-export type ActivityState = 'running' | 'unread' | 'read';
+import type { ActivityState, WaitingPromptReason } from '@hermes-flux/core';
+
+export type { ActivityState, WaitingPromptReason };
 
 /** 完成瞬态跃迁标记：用于列表行或状态点在刚完成时播放一次收敛动画 */
 export type ActivityTransition = 'none' | 'just-completed';
@@ -36,6 +38,8 @@ export interface LeftRailSession {
   gatewayLabel?: string;
   gatewayOffline?: boolean;
   activityState?: ActivityState;
+  waitingReason?: WaitingPromptReason;
+  pendingPromptCount?: number;
   activityTransition?: ActivityTransition;
   activityTransitionToken?: number;
 }
@@ -53,6 +57,8 @@ export interface LeftRailGroupRoom {
   gatewayOffline?: boolean;
   crossGateway?: boolean;
   activityState?: ActivityState;
+  waitingReason?: WaitingPromptReason;
+  pendingPromptCount?: number;
   activityTransition?: ActivityTransition;
   activityTransitionToken?: number;
 }
@@ -91,6 +97,9 @@ export interface LeftRailProfile {
   gatewayRouteLabel?: string;
   gatewayOffline?: boolean;
   activityState?: ActivityState;
+  waitingReason?: WaitingPromptReason;
+  pendingPromptCount?: number;
+  hasChildWaitingPrompt?: boolean;
   activityTransition?: ActivityTransition;
   activityTransitionToken?: number;
 }

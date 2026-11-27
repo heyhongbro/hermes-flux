@@ -19,6 +19,7 @@
  *   - 保持视口物理稳定性与 120 FPS 响应。
  */
 
+import { isProtectedIslandFocus, syncInteractiveTopPillOffset } from './interactiveWiring.js';
 import { isCorruptedSystemErrorDraft } from './persistence/sessionDrafts.js';
 import {
   mountTitlebar,
@@ -173,6 +174,7 @@ export interface RenderCoordinatorDeps {
   // 在场指示器与连接胶囊
   syncAgentPresenceHost: () => void;
   syncAgentPresence: () => void;
+  syncInteractiveHosts?: () => void;
   mountConnectionPill?: typeof mountConnectionStatusPill;
   onRetryConnect?: () => Promise<void> | void;
 
@@ -330,6 +332,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     if (presenceHost && presenceHost.dataset.mobileSlot !== 'true') {
       presenceHost.setAttribute('data-replaced', connectionPillMounted ? 'true' : 'false');
     }
+    syncInteractiveTopPillOffset();
   }
 
   function syncConnectionStatusPill(): void {
@@ -556,7 +559,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
         const displayKind = m.displayKind ?? 'user';
         const toolsSignature =
           m.toolCalls
-            ?.map((tc) => `${tc.id}:${tc.status}:${tc.output?.length ?? 0}:${tc.args?.length ?? 0}:${tc.subagentId ?? ''}:${tc.imagePath ?? ''}:${tc.inlineDiff?.length ?? 0}`)
+            ?.map((tc) => `${tc.id}:${tc.status}:${tc.output?.length ?? 0}:${tc.args?.length ?? 0}:${tc.subagentId ?? ''}:${tc.imagePath ?? ''}:${tc.inlineDiff?.length ?? 0}:${tc.riskInfo ? `${tc.riskInfo.risk}:${tc.riskInfo.redacted ? 1 : 0}:${tc.riskInfo.findings.length}` : ''}`)
             .join('|') ?? '';
         if (!isLast) {
           const cached = conversationVmCache.get(m);
@@ -594,6 +597,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
             delegationId: tc.delegationId,
             imagePath: tc.imagePath,
             inlineDiff: tc.inlineDiff,
+            ...(tc.riskInfo ? { riskInfo: tc.riskInfo } : {}),
           })),
         };
         if (!isLast) {
@@ -840,6 +844,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     syncReactNewChat();
     syncReactMessageList();
     deps.syncAgentPresenceHost();
+    deps.syncInteractiveHosts?.();
     syncConnectionStatusPill();
 
     const navHost = document.getElementById('react-prompt-navigator-host');
@@ -893,13 +898,21 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     const caretEnd = existingInput?.selectionEnd ?? draftText.length;
 
     const activeEl = document.activeElement as HTMLElement | null;
+    const protectIsland = isProtectedIslandFocus(activeEl);
     const activeInputId =
-      activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA') ? activeEl.id : null;
-    const activeInputVal = activeEl && 'value' in activeEl ? (activeEl as HTMLInputElement).value : '';
+      !protectIsland && activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')
+        ? activeEl.id
+        : null;
+    const activeInputVal =
+      !protectIsland && activeEl && 'value' in activeEl ? (activeEl as HTMLInputElement).value : '';
     const activeCaretStart =
-      activeEl && 'selectionStart' in activeEl ? (activeEl as HTMLInputElement).selectionStart : null;
+      !protectIsland && activeEl && 'selectionStart' in activeEl
+        ? (activeEl as HTMLInputElement).selectionStart
+        : null;
     const activeCaretEnd =
-      activeEl && 'selectionEnd' in activeEl ? (activeEl as HTMLInputElement).selectionEnd : null;
+      !protectIsland && activeEl && 'selectionEnd' in activeEl
+        ? (activeEl as HTMLInputElement).selectionEnd
+        : null;
 
     const suppressPinOnce = suppressPinBottomOnce;
     suppressPinBottomOnce = false;
@@ -1248,6 +1261,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     applyInputDockUpdate();
     syncAgentPresenceHost();
     syncAgentPresence();
+    deps.syncInteractiveHosts?.();
     syncConnectionStatusPill();
 
       deps.modalInteractionController.updateModals(root);

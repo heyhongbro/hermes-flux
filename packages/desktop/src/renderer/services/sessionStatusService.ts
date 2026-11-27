@@ -29,6 +29,7 @@ import {
   type DelegationScanMessageInput,
   type HermesGatewayClient,
   type ISubagentRpcBridge,
+  type NormalizedGroupPendingAction,
   type RightPodAction,
   type ScopedSessionStatus,
   type SessionHandleRegistry,
@@ -66,8 +67,15 @@ export interface SessionStatusServiceDeps {
   readonly onOpenConstellation?: (profileName: string) => void;
   readonly writeClipboardText?: (text: string) => Promise<void>;
   readonly setTimedDockNotice?: (msg: string, durationMs?: number) => void;
+  readonly onGroupPendingActions?: (roomId: string, actions: readonly NormalizedGroupPendingAction[]) => void;
   readonly render: () => void;
   readonly t?: (key: I18nKey, params?: Record<string, string | number>) => string;
+}
+
+function safeUnrefTimer(timer: unknown): void {
+  if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
+    (timer as { unref: () => void }).unref();
+  }
 }
 
 export interface SessionStatusService {
@@ -89,6 +97,7 @@ export interface SessionStatusService {
     profile?: string
   ): void;
   onGroupActivated(roomId: string): void;
+  refreshGroupStateNow(roomId: string): Promise<void>;
   onSessionDeleted(storedSessionId: string): void;
   onGatewayTurnAction(action: TurnAction, toStoredSessionId: (id?: string | null) => string | null): void;
   openSubagent(subagentId: string): void;
@@ -306,6 +315,7 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
       }
       void loadSelectedSubagentTranscript(state.rightPodMode.subagentId);
     }, SUBAGENT_DETAIL_POLL_MS);
+    safeUnrefTimer(detailPollTimer);
   };
 
   const refreshGroupState = async (roomId: string, expectedGen: number): Promise<void> => {
@@ -318,6 +328,8 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
       if (expectedGen !== statusGeneration) return;
       if (state.activeFocus.type !== 'group' || state.activeFocus.roomId !== roomId) return;
       statusStore.applyGroupState(roomId, res);
+      const pendingActions = statusStore.getScope(buildGroupScopeKey(roomId))?.groupState?.pendingActions ?? [];
+      deps.onGroupPendingActions?.(roomId, pendingActions);
       deps.syncRightPod();
     } catch (err) {
       if (expectedGen !== statusGeneration) return;
@@ -333,12 +345,14 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
     groupPollTimer = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       const state = deps.getState();
-      if (state.activeFocus.type !== 'group' || state.activeFocus.roomId !== roomId || state.rightPodMode.kind === 'closed') {
+      // 右侧检查舱收起时仍必须持续感知群聊 blocked / pending_actions，停靠卡方可不依赖打开右栏而自动浮现
+      if (state.activeFocus.type !== 'group' || state.activeFocus.roomId !== roomId) {
         stopGroupPolling();
         return;
       }
       void refreshGroupState(roomId, gen);
     }, GROUP_STATE_POLL_MS);
+    safeUnrefTimer(groupPollTimer);
   };
 
   const syncPollingForCurrentMode = (): void => {
@@ -351,7 +365,7 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
     }
     stopDetailPolling();
     subagentStore.setActiveTailTarget(null);
-    if (state.activeFocus.type === 'group' && state.rightPodMode.kind === 'status') {
+    if (state.activeFocus.type === 'group' && state.activeFocus.roomId) {
       ensureGroupPolling(state.activeFocus.roomId);
     } else {
       stopGroupPolling();
@@ -637,7 +651,7 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
       conversationMode: 'group_room',
     });
     state.inspectorCollapsed = state.rightPodMode.kind === 'closed';
-    if (state.rightPodMode.kind === 'status' && roomId) {
+    if (roomId) {
       ensureGroupPolling(roomId);
     }
     deps.syncRightPod();
@@ -1062,6 +1076,7 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
     onSessionMessagesLoaded,
     onLiveSessionReady,
     onGroupActivated,
+    refreshGroupStateNow: (roomId: string) => refreshGroupState(roomId, statusGeneration),
     onSessionDeleted,
     onGatewayTurnAction,
     openSubagent,

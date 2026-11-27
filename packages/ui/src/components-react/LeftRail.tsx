@@ -130,7 +130,8 @@ const AgentStationItem = React.memo(function AgentStationItem({
         组件不再传死像素，否则窄/宽视口下头像与卡片内边距会漂移。 */}
     <Avatar profile={agent} size="var(--geo-station-avatar, 36px)" />
     <ActivityIndicator
-      state={agent.activityState}
+      state={agent.activityState === 'waiting' || agent.hasChildWaitingPrompt ? 'waiting' : agent.activityState}
+      waitingReason={agent.waitingReason}
       transition={agent.activityTransition}
       transitionToken={agent.activityTransitionToken}
       placement="corner"
@@ -198,6 +199,7 @@ const SessionRow = React.memo(function SessionRow({
     timestamp={session.timestamp}
     timeFallback={session.time}
     activityState={session.activityState}
+    waitingReason={session.waitingReason}
     activityTransition={session.activityTransition}
     activityTransitionToken={session.activityTransitionToken}
     entityKind="session"
@@ -267,6 +269,7 @@ const GroupRow = React.memo(function GroupRow({
     gatewayBadge={buildEntityGatewayBadge(isMultiGateway, group.gatewayLabel, group.gatewayOffline, group.crossGateway)}
     timestamp={group.updatedAt || group.createdAt}
     activityState={group.activityState}
+    waitingReason={group.waitingReason}
     activityTransition={group.activityTransition}
     activityTransitionToken={group.activityTransitionToken}
     entityKind="group"
@@ -431,6 +434,7 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
             timestamp={profile.timestamp}
             timeFallback={profile.lastTime}
             activityState={profile.activityState}
+            waitingReason={profile.waitingReason}
             activityTransition={profile.activityTransition}
             activityTransitionToken={profile.activityTransitionToken}
             entityKind="bot"

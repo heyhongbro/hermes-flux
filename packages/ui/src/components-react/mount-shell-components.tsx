@@ -7,16 +7,24 @@ import { NewChatDialog } from './NewChatDialog.js';
 import type { NewChatDialogActions, NewChatDialogSnapshot } from './newChatModel.js';
 import { RightPodRoot } from './status/RightPodRoot.js';
 import type { RightPodActions, RightPodSnapshot } from './status/types.js';
+import { InteractivePromptHost, type InteractivePromptHostProps } from './interactive/InteractivePromptHost.js';
+import { BackgroundPromptTopPill, type BackgroundPromptTopPillProps } from './interactive/BackgroundPromptTopPill.js';
 
 export type { RightPodActions, RightPodSnapshot };
+export type InteractivePromptHostSnapshot = InteractivePromptHostProps;
+export type InteractiveTopPillSnapshot = BackgroundPromptTopPillProps;
 export type StatusBarSnapshot = Omit<StatusBarProps, 'onClickStatus'>;
 export type TitlebarSnapshot = Omit<TitlebarProps, 'onMinimize' | 'onMaximize' | 'onClose' | 'onToggleLeftRail' | 'onToggleInspector' | 'onOpenSettings' | 'onReconnectGateway' | 'onDisconnectGateway' | 'onManageGateways'>;
 export type ShellActions = Pick<TitlebarProps, 'onMinimize' | 'onMaximize' | 'onClose' | 'onToggleLeftRail' | 'onToggleInspector' | 'onOpenSettings' | 'onReconnectGateway' | 'onDisconnectGateway' | 'onManageGateways'>;
 export type LeftRailSnapshot = Omit<LeftRailProps, 'onSelectSession' | 'onSelectBot' | 'onSelectGroup' | 'onOpenSessionMenu' | 'onOpenBotMenu' | 'onOpenGroupMenu' | 'onSearchChange' | 'onNewChat' | 'onToggleBots' | 'onToggleSessions' | 'onToggleGroups' | 'onStartGroupRename' | 'onConfirmGroupRename' | 'onCancelGroupRename' | 'onResizeStart' | 'onToggleContainer' | 'onToggleDoneSection' | 'onRetryDoneSection' | 'onRequestMarkDone' | 'onRestoreDone' | 'onOpenFolderMenu' | 'onOpenRailMenu' | 'onNewChatInContainer'>;
 export type LeftRailActions = Pick<LeftRailProps, 'onSelectSession' | 'onSelectBot' | 'onSelectGroup' | 'onOpenSessionMenu' | 'onOpenBotMenu' | 'onOpenGroupMenu' | 'onSearchChange' | 'onNewChat' | 'onToggleBots' | 'onToggleSessions' | 'onToggleGroups' | 'onStartGroupRename' | 'onConfirmGroupRename' | 'onCancelGroupRename' | 'onResizeStart' | 'onToggleContainer' | 'onToggleDoneSection' | 'onRetryDoneSection' | 'onRequestMarkDone' | 'onRestoreDone' | 'onOpenFolderMenu' | 'onOpenRailMenu' | 'onNewChatInContainer'>;
 
-function createUpdater<T>(host: HTMLElement, initial: React.ReactElement): (element: React.ReactElement) => void {
-  return createShellMountUpdater(host, initial, (element) => createRoot(element));
+function createUpdater(
+  host: HTMLElement,
+  initial: React.ReactElement,
+  createRootForHost: (element: HTMLElement) => { render(value: React.ReactElement): void } = createRoot,
+): (element: React.ReactElement) => void {
+  return createShellMountUpdater(host, initial, createRootForHost);
 }
 
 export function getTitlebarSnapshot(snapshot: TitlebarSnapshot): TitlebarSnapshot {
@@ -82,5 +90,27 @@ export function mountNewChatDialog(
 ): () => void {
   const render = (): React.ReactElement => <NewChatDialog snapshot={getSnapshot()} actions={actions} />;
   const update = createUpdater(host, render());
+  return () => update(render());
+}
+
+/** 输入舱上方可折叠交互停靠卡宿主挂载桥（仅挂载 #react-interactive-prompt-host）。 */
+export function mountInteractivePromptHost(
+  host: HTMLElement,
+  getSnapshot: () => InteractivePromptHostSnapshot,
+  createRootForHost: (element: HTMLElement) => { render(value: React.ReactElement): void } = createRoot,
+): () => void {
+  const render = (): React.ReactElement => <InteractivePromptHost {...getSnapshot()} />;
+  const update = createUpdater(host, render(), createRootForHost);
+  return () => update(render());
+}
+
+/** 后台会话等待处理顶部提醒胶囊挂载桥（仅挂载 #react-interactive-top-pill-host）。 */
+export function mountInteractiveTopPill(
+  host: HTMLElement,
+  getSnapshot: () => InteractiveTopPillSnapshot,
+  createRootForHost: (element: HTMLElement) => { render(value: React.ReactElement): void } = createRoot,
+): () => void {
+  const render = (): React.ReactElement => <BackgroundPromptTopPill {...getSnapshot()} />;
+  const update = createUpdater(host, render(), createRootForHost);
   return () => update(render());
 }
