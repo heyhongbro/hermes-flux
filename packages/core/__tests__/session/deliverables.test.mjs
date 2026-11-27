@@ -9,6 +9,9 @@ import {
   classifyDeliverableKind,
   normalizeDeliverableKey,
   stripMediaTags,
+  isExcludedSystemOrPlaceholderPath,
+  collectReadOnlyToolPaths,
+  extractCandidateMentionPaths,
   extractMessageDeliverables,
   extractTurnDeliverables,
   extractSessionDeliverables,
@@ -486,3 +489,273 @@ test('extractTurnDeliverables / findInlineReferencedDeliverableKeys: Tier A inli
   assert.equal(commaKeys.has('/out/first.html'), true, '唯一 basename 反引号引用必须命中去重键');
   assert.equal(commaKeys.has('/out/second.md'), true, '无空格英文逗号分隔的裸路径必须拆开识别');
 });
+
+test('classifyDeliverableKind & stripMediaTags: 补充大小写 MIME、文档扩展名与 CRLF/尖括号边界', () => {
+  assert.equal(classifyDeliverableKind('unknown', 'IMAGE/PNG'), 'image');
+  assert.equal(classifyDeliverableKind('unknown', 'VIDEO/WEBM'), 'video');
+  assert.equal(classifyDeliverableKind('unknown', 'TEXT/HTML'), 'html');
+  assert.equal(classifyDeliverableKind('unknown', 'TEXT/MARKDOWN'), 'markdown');
+
+  for (const docPath of [
+    '/out/data.csv',
+    '/out/table.tsv',
+    '/out/notes.txt',
+    '/out/config.json',
+    '/out/feed.xml',
+    '/out/spec.docx',
+    '/out/sheet.xlsx',
+    '/out/slides.pptx',
+    '/out/memo.rtf',
+  ]) {
+    assert.equal(classifyDeliverableKind(docPath), 'document', `${docPath} must be document`);
+  }
+  assert.equal(classifyDeliverableKind('/out/guide.markdown'), 'markdown');
+  assert.equal(classifyDeliverableKind('/out/notes.md'), 'markdown');
+
+  const crlfRes = stripMediaTags('MEDIA:/out/crlf-1.png\r\n正文段落\r\nMEDIA:</out/angled.png>\r\nMEDIA:/out/crlf-2.png');
+  assert.deepEqual(crlfRes.mediaPaths, ['/out/crlf-1.png', '/out/crlf-2.png']);
+  assert.equal(crlfRes.cleanText.includes('MEDIA:</out/angled.png>'), true);
+  assert.equal(crlfRes.cleanText.includes('正文段落'), true);
+});
+
+test('isExcludedSystemOrPlaceholderPath: 系统目录、UNC、占位符与合法工作区路径边界', () => {
+  assert.equal(isExcludedSystemOrPlaceholderPath(''), true);
+  assert.equal(isExcludedSystemOrPlaceholderPath('   '), true);
+  assert.equal(isExcludedSystemOrPlaceholderPath('//fileserver/share/report.png'), true);
+
+  const systemPrefixes = [
+    '/etc',
+    '/proc',
+    '/sys',
+    '/dev',
+    '/usr',
+    '/bin',
+    '/sbin',
+    '/lib',
+    '/lib64',
+    '/boot',
+    '/var/log',
+    '/path/to',
+    '/your',
+    'c:/windows',
+    'c:/program files',
+    'c:/program files (x86)',
+  ];
+  for (const prefix of systemPrefixes) {
+    assert.equal(isExcludedSystemOrPlaceholderPath(prefix), true, `exact ${prefix}`);
+    assert.equal(isExcludedSystemOrPlaceholderPath(`${prefix}/entry.txt`), true, `subpath ${prefix}/entry.txt`);
+  }
+
+  assert.equal(isExcludedSystemOrPlaceholderPath('C:\\Windows\\System32\\cmd.exe'), true);
+  assert.equal(isExcludedSystemOrPlaceholderPath('C:\\Program Files (x86)\\App\\run.exe'), true);
+  assert.equal(isExcludedSystemOrPlaceholderPath('/workspace/path/to/demo.png'), true);
+
+  for (const allowed of [
+    '/workspace/report.md',
+    '/etc-custom/a.md',
+    '/bin2/run.sh',
+    '/var/logs/a.txt',
+    'C:/work/chart.png',
+    '/my/your-notes.md',
+  ]) {
+    assert.equal(isExcludedSystemOrPlaceholderPath(allowed), false, `allowed ${allowed}`);
+  }
+});
+
+test('collectReadOnlyToolPaths: 只读工具参数/输出、Shell 命令解析与写命令隔离', () => {
+  const nonAssistantOnly = collectReadOnlyToolPaths([
+    null,
+    { id: 'u1', role: 'user', toolCalls: [{ name: 'read_file', args: '{"path":"/user/skip.ts"}' }] },
+    { id: 's1', role: 'system', toolCalls: [{ name: 'read_file', args: '{"path":"/sys/skip.ts"}' }] },
+  ]);
+  assert.equal(nonAssistantOnly.size, 0);
+
+  const collected = collectReadOnlyToolPaths([
+    {
+      id: 'a-ro',
+      role: 'assistant',
+      toolCalls: [
+        null,
+        {
+          name: 'read_file',
+          rawArgs: { path: '/ro/raw-path.ts', file_path: '/ro/raw-file-path.md', files: ['/ro/raw-arr.json'] },
+        },
+        { name: 'view', args: JSON.stringify({ filePath: '/ro/json-args.tsx' }) },
+        {
+          name: 'grep',
+          args: 'grep needle /ro/plain-arg.ts',
+          output: JSON.stringify({ resolved_path: '/ro/out-resolved.py', output_path: '/ro/out-path.yaml' }),
+        },
+        { name: 'read_file', args: 123 },
+        { name: 'terminal', rawArgs: { command: 'cat /ro/sh-command.ts' } },
+        { name: 'bash', rawArgs: { cmd: 'head /ro/sh-cmd.md' } },
+        { name: 'sh', rawArgs: { script: 'tail /ro/sh-script.json' } },
+        { name: 'powershell', rawArgs: { code: 'less /ro/sh-code.py' } },
+        { name: 'zsh', rawArgs: ['arr'], args: 'stat /ro/sh-fallback-args.ts' },
+        { name: 'pwsh', rawArgs: 'wc /ro/sh-raw-str.md' },
+        { name: 'cmd', rawArgs: 42 },
+        { name: 'run_command', args: '   ' },
+        {
+          name: 'execute_code',
+          args: JSON.stringify({
+            command: 'cat /ro/c1.ts && head /ro/c2.md || tail /ro/c3.json; grep pat /ro/c4.txt | wc /ro/c5.py\nstat /ro/c6.yaml',
+          }),
+        },
+        // 写类暗示或混合未知命令不可记为只读
+        { name: 'terminal', args: JSON.stringify({ command: 'cat /wr/in.txt > /wr/redir.txt' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'echo ok >>/wr/append.txt' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'tee /wr/tee.txt' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'cp /wr/cp1.txt /wr/cp2.txt' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'mv /wr/mv1.txt /wr/mv2.txt' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'rm /wr/rm.txt' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'touch /wr/touch.txt' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'mkdir /wr/dir/sub.txt' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'python3 /wr/script.py' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'node /wr/run.mjs' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'sed -i s/a/b/ /wr/sed.txt' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'curl -o /wr/dl.zip https://cdn.example.com/a.zip' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'wget /wr/wg.zip' }) },
+        { name: 'terminal', args: JSON.stringify({ command: 'cat /wr/mix1.ts && custom_gen /wr/mix2.ts' }) },
+        { name: 'write_file', args: JSON.stringify({ path: '/wr/write-tool.ts' }) },
+      ],
+    },
+  ]);
+
+  for (const expected of [
+    '/ro/raw-path.ts',
+    '/ro/raw-file-path.md',
+    '/ro/raw-arr.json',
+    '/ro/json-args.tsx',
+    '/ro/plain-arg.ts',
+    '/ro/out-resolved.py',
+    '/ro/out-path.yaml',
+    '/ro/sh-command.ts',
+    '/ro/sh-cmd.md',
+    '/ro/sh-script.json',
+    '/ro/sh-code.py',
+    '/ro/sh-fallback-args.ts',
+    '/ro/sh-raw-str.md',
+    '/ro/c1.ts',
+    '/ro/c2.md',
+    '/ro/c3.json',
+    '/ro/c4.txt',
+    '/ro/c5.py',
+    '/ro/c6.yaml',
+  ]) {
+    assert.equal(collected.has(expected), true, `expected read-only key ${expected}`);
+  }
+
+  for (const excluded of [
+    '/wr/in.txt',
+    '/wr/redir.txt',
+    '/wr/append.txt',
+    '/wr/tee.txt',
+    '/wr/cp1.txt',
+    '/wr/cp2.txt',
+    '/wr/mv1.txt',
+    '/wr/mv2.txt',
+    '/wr/rm.txt',
+    '/wr/touch.txt',
+    '/wr/dir/sub.txt',
+    '/wr/script.py',
+    '/wr/run.mjs',
+    '/wr/sed.txt',
+    '/wr/dl.zip',
+    '/wr/wg.zip',
+    '/wr/mix1.ts',
+    '/wr/mix2.ts',
+    '/wr/write-tool.ts',
+  ]) {
+    assert.equal(collected.has(excluded), false, `must not collect write/non-ro key ${excluded}`);
+  }
+});
+
+test('extractCandidateMentionPaths: MEDIA/Markdown/URL 剥离、空格隔离、反引号与裸路径边界', () => {
+  assert.deepEqual(
+    extractCandidateMentionPaths([
+      null,
+      { id: 'u1', role: 'user', content: '/user/only.md' },
+      { id: 's1', role: 'system', content: '/sys/only.md' },
+      { id: 'a-empty', role: 'assistant', content: '' },
+      {
+        id: 'a-fence',
+        role: 'assistant',
+        content: '```md\n/fake/in-backtick-fence.md\n```\n~~~txt\n/fake/in-tilde-fence.md\n~~~',
+      },
+    ]),
+    [],
+  );
+
+  assert.deepEqual(
+    extractCandidateMentionPaths([
+      {
+        id: 'a-media-adj',
+        role: 'assistant',
+        content: [
+          'MEDIA:/out/m1.png',
+          'see MEDIA:/out/m2.png /out/after-media.png',
+          'foo[doc](/out/ml.pdf)/out/after-link.md',
+          'foo![img](/out/mi.png)/out/after-img.md',
+          'foo`/out/in-bt.ts`/out/after-bt.md',
+        ].join('\n'),
+      },
+    ]),
+    ['/out/in-bt.ts', '/out/after-media.png', '/out/after-link.md', '/out/after-img.md', '/out/after-bt.md'],
+  );
+
+  assert.deepEqual(
+    extractCandidateMentionPaths([
+      {
+        id: 'a-schemes',
+        role: 'assistant',
+        content: [
+          'http://cdn.example.com/a.png https://cdn.example.com/b.png',
+          'HTTP:sub/http-colon.md HTTPS:sub/https-colon.md ftp:sub/ftp.md blob:sub/blob.md',
+          'mailto:sub/mail.md tel:sub/tel.md javascript:sub/js.md vbscript:sub/vb.md',
+          'DATA:sub/data-upper.png data:image/png;base64,AAAA',
+          '`https://cdn.example.com/in-bt.png` `http://cdn.example.com/in-bt.png` `ftp://x/a.md`',
+          '`mailto:sub/bt-mail.md` `tel:sub/bt-tel.md` `javascript:alert.js` `vbscript:sub/x.vbs`',
+          '`blob:https://app/b1` `data:image/png;base64,AAA` `#anchor/sub.md` `/out/dir/` `plain.md` `/etc/hosts` `/out/bad.unknownext`',
+          '/out/valid-after-schemes.md',
+        ].join(' '),
+      },
+    ]),
+    ['/out/valid-after-schemes.md'],
+  );
+
+  const candidates = extractCandidateMentionPaths([
+    {
+      id: 'a-delims',
+      role: 'assistant',
+      content: [
+        '/out/bol.md',
+        '`/out/bt.ts:12:4` `C:\\win\\report.pdf?v=1#top` `./rel/chart.png` `src/app.tsx`',
+        '(/out/paren.md) [/out/brack.md] {/out/brace.md} "/out/dq.md" \'/out/sq.md\'',
+        '说明：/out/zhcolon.md。图1、/out/dunhao.png；',
+        '/out/c1.md,/out/c2.md D:\\out\\win.png ../up/file.py',
+        '`C:\\out\\dup.png:10` and C:/out/dup.png',
+      ].join('\n'),
+    },
+  ]);
+
+  assert.deepEqual(candidates, [
+    '/out/bt.ts',
+    'C:\\win\\report.pdf?v=1#top',
+    './rel/chart.png',
+    'src/app.tsx',
+    'C:\\out\\dup.png',
+    '/out/bol.md',
+    '/out/paren.md',
+    '/out/brack.md',
+    '/out/brace.md',
+    '/out/dq.md',
+    '/out/sq.md',
+    '/out/zhcolon.md',
+    '/out/dunhao.png',
+    '/out/c1.md',
+    '/out/c2.md',
+    'D:\\out\\win.png',
+    '../up/file.py',
+  ]);
+});
+
