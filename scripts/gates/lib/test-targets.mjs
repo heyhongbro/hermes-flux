@@ -48,9 +48,9 @@ export const SUITES = {
     ],
     pattern: /\.test\.mjs$/,
     excludeDirs: ['formal'],
-    // 实测 286 个（core + ui + desktop/unit + mobile/unit + scripts；移除 .agents 及 verify-config.test.mjs 后减 1）。
+    // 实测 287 个（core + ui + desktop/unit + mobile/unit + scripts；新增 pre-commit-plan.test.mjs 后加 1）。
     // 下限只允许调高：删测试或目录改名会让枚举变少，本层随即失败。
-    minFiles: 286,
+    minFiles: 287,
   },
   formal: {
     label: '形式化不变量',
