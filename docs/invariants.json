@@ -1,747 +1,747 @@
 {
   "$schema": "./invariants.schema.json",
-  "note": "不变量映射表的单一真值源。Markdown 视图由 scripts/verify/invariant-map.mjs --render 生成，禁止手改 docs/invariants.md。",
+  "note": "Single source of truth for the formal invariants map. Generated Markdown view is produced via scripts/verify/invariant-map.mjs --render; never edit docs/invariants.md by hand.",
   "principles": [
-    "每条不变量必须有唯一 id（禁区间、禁'同上'），否则无法做差集。",
-    "每条必须给出被测源码锚点（source 路径），否则『新增逻辑减去已登记项』在数学上不可计算。",
-    "test 必须是单一文件路径，且文件内必须含 fc.assert。"
+    "Every invariant must have a unique id (no ranges, no 'ditto') so set differences remain computable.",
+    "Every entry must anchor to a real source file path so 'new logic minus registered invariants' is mathematically well-defined.",
+    "test must be a single file path containing at least one fc.assert property test."
   ],
   "invariants": [
     {
       "id": "INV-CACHE-01",
-      "topic": "围栏不误删",
+      "topic": "Fence prevents accidental deletion of in-flight writes",
       "source": "packages/core/src/cache/cacheMerge.ts",
       "symbol": "mergeRemoteWindow#fence",
       "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
-      "failure": "拉取在途写入被远端快照误删，用户刚发的消息消失"
+      "failure": "In-flight writes during fetch get overwritten by a stale remote snapshot and newly sent messages disappear"
     },
     {
       "id": "INV-CACHE-02",
-      "topic": "上限不越界",
+      "topic": "Cache eviction keeps row count bounded by messageCap",
       "source": "packages/core/src/cache/cacheMerge.ts",
       "symbol": "evictToCap",
       "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
-      "failure": "通道行数超过 messageCap，内存无界增长"
+      "failure": "Cached channel rows exceed messageCap and grow memory unboundedly"
     },
     {
       "id": "INV-CACHE-03",
-      "topic": "截断有界",
+      "topic": "Bounded truncation leaves no trailing rows above target",
       "source": "packages/core/src/cache/cacheMerge.ts",
       "symbol": "applyTruncation",
       "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
-      "failure": "截断后残留 orderKey > target 的幽灵行"
+      "failure": "Ghost rows with orderKey > target survive truncation"
     },
     {
       "id": "INV-CACHE-04",
-      "topic": "窗口合并幂等",
+      "topic": "Remote window merge is idempotent",
       "source": "packages/core/src/cache/cacheMerge.ts",
       "symbol": "mergeRemoteWindow#idempotent",
       "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
-      "failure": "重复应用同一远端快照产生重复行"
+      "failure": "Re-applying the same remote snapshot produces duplicate rows"
     },
     {
       "id": "INV-CACHE-05",
-      "topic": "pending 不可删",
+      "topic": "Pending messages survive window merge",
       "source": "packages/core/src/cache/cacheMerge.ts",
       "symbol": "mergeRemoteWindow#pending-survives",
       "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
-      "failure": "未确认的消息在窗口合并中被清掉"
+      "failure": "Unconfirmed pending messages are dropped during window merge"
     },
     {
       "id": "INV-CACHE-06",
-      "topic": "在途展示序不撞号且强保序",
+      "topic": "In-flight displaySeq allocation never collides and stays monotonic",
       "source": "packages/core/src/cache/cacheMerge.ts",
       "symbol": "mergeRemoteWindow#displaySeq",
       "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
-      "failure": "拉取在途期间生成的 displaySeq 与远端冲突，界面错序"
+      "failure": "displaySeq assigned during fetch collides with remote rows and scrambles message order"
     },
     {
       "id": "INV-CACHE-07",
-      "topic": "appendRows 同键展示序不漂移",
+      "topic": "appendRows preserves stable displaySeq for existing keys",
       "source": "packages/core/src/cache/cacheMerge.ts",
       "symbol": "appendRows",
       "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
-      "failure": "重复追加同一批消息时 displaySeq 重新计算，行跳动"
+      "failure": "Re-appending the same batch recomputes displaySeq and causes rows to jump"
     },
     {
       "id": "INV-CACHE-08",
-      "topic": "更早分片展示序精确切片",
+      "topic": "Older batch slicing maintains contiguous displaySeq order",
       "source": "packages/core/src/cache/cacheMerge.ts",
       "symbol": "sortByDisplayAsc",
       "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
-      "failure": "按 orderKey 翻页取 displaySeq 不连续，历史消息顺序错乱"
+      "failure": "Paginating by orderKey yields non-monotonic displaySeq and scrambles historical messages"
     },
     {
       "id": "INV-SESSION-01",
-      "topic": "会话/代际变更必须丢弃写入",
+      "topic": "Stale writes across session or generation changes are discarded",
       "source": "packages/core/src/session/guardedRun.ts",
       "symbol": "runGuarded",
       "test": "packages/core/__tests__/formal/run-guard-formal.test.mjs",
-      "failure": "切换会话后旧写入污染新会话内容"
+      "failure": "Slow writes from a previous session contaminate the newly active session"
     },
     {
       "id": "INV-SESSION-02",
-      "topic": "反复删除收敛且失败保留已成功剪枝",
+      "topic": "Repeated deletions converge and partial failures keep succeeded prunes",
       "source": "packages/core/src/session/SessionLifecycleService.ts",
       "symbol": "deleteSessions",
       "test": "packages/core/__tests__/formal/session-lifecycle-formal.test.mjs",
-      "failure": "重复删除产生不同结果；部分失败时已成功的清理被回滚"
+      "failure": "Repeated deletes diverge or partial failures roll back already-deleted items"
     },
     {
       "id": "INV-SESSION-03",
-      "topic": "陈旧全量快照不得复活已删会话",
+      "topic": "Stale full snapshots never resurrect deleted sessions",
       "source": "packages/core/src/session/SessionLifecycleService.ts",
       "symbol": "deleteSessions#tombstone",
       "test": "packages/core/__tests__/formal/session-lifecycle-formal.test.mjs",
-      "failure": "慢响应返回的旧快照把已删会话挂回界面（防复活墓碑失效）"
+      "failure": "A delayed snapshot restores a deleted session back into the UI (tombstone bypass)"
     },
     {
       "id": "INV-SESSION-04",
-      "topic": "跨 Profile 去重强幂等",
+      "topic": "Cross-profile session deduplication is idempotent",
       "source": "packages/core/src/session/sessionMerge.ts",
       "symbol": "dedupeSessions#idempotent",
       "test": "packages/core/__tests__/formal/session-merge-formal.test.mjs",
-      "failure": "合并产生重复消息"
+      "failure": "Merging produces duplicate session entries"
     },
     {
       "id": "INV-SESSION-05",
-      "topic": "失败不可致空（Failure Is Not Empty）",
+      "topic": "Network failures never wipe cached lists (Failure Is Not Empty)",
       "source": "packages/core/src/session/sessionMerge.ts",
       "symbol": "mergeSessions",
       "test": "packages/core/__tests__/formal/session-merge-formal.test.mjs",
-      "failure": "网络失败时清空界面，用户看到空列表而不是旧数据"
+      "failure": "A transient network error clears the UI list instead of retaining cached entries"
     },
     {
       "id": "INV-SESSION-06",
-      "topic": "去重结果时间全序降序单调",
+      "topic": "Deduplicated session list maintains strict descending timestamp order",
       "source": "packages/core/src/session/sessionMerge.ts",
       "symbol": "dedupeSessions#ordering",
       "test": "packages/core/__tests__/formal/session-merge-formal.test.mjs",
-      "failure": "会话列表时间倒序错乱"
+      "failure": "Session list chronological ordering breaks"
     },
     {
       "id": "INV-RAIL-01",
-      "topic": "三权分立互斥（Bot/Group/Session 正交隔离）",
+      "topic": "Left-rail entities remain strictly partitioned (Bot / Group / Session)",
       "source": "packages/ui/src/components-react/leftRailModel.ts",
       "symbol": "buildLeftRailModel#orthogonal",
       "test": "packages/core/__tests__/formal/unified-session-list-formal.test.mjs",
-      "failure": "左轨同时出现同一会话的两种身份"
+      "failure": "The same conversation appears under multiple entity roles simultaneously in the left rail"
     },
     {
       "id": "INV-RAIL-02",
-      "topic": "普通会话时间全序降序单调",
+      "topic": "Regular sessions sort in strictly non-increasing time order",
       "source": "packages/ui/src/components-react/leftRailModel.ts",
       "symbol": "buildLeftRailModel#ordering",
       "test": "packages/core/__tests__/formal/unified-session-list-formal.test.mjs",
-      "failure": "左轨时间倒序错乱"
+      "failure": "Left-rail session timestamps sort out of order"
     },
     {
       "id": "INV-RAIL-03",
-      "topic": "墓碑强制驱逐不可侵犯",
+      "topic": "Tombstones unconditionally evict deleted or archived items",
       "source": "packages/ui/src/components-react/leftRailModel.ts",
       "symbol": "buildLeftRailModel#tombstone",
       "test": "packages/core/__tests__/formal/unified-session-list-formal.test.mjs",
-      "failure": "已归档项复活"
+      "failure": "Deleted or archived items reappear in the rail"
     },
     {
       "id": "INV-RAIL-04",
-      "topic": "多源编排强幂等",
+      "topic": "Multi-source left-rail projection is idempotent",
       "source": "packages/ui/src/components-react/leftRailModel.ts",
       "symbol": "buildLeftRailModel#idempotent",
       "test": "packages/core/__tests__/formal/unified-session-list-formal.test.mjs",
-      "failure": "二次编排输出不恒等，界面每次刷新都变化"
+      "failure": "Re-running rail projection changes output across refreshes"
     },
     {
       "id": "INV-RAIL-05",
-      "topic": "全失败防御不可致空",
+      "topic": "Total fetch failure preserves local sessions without emptying rail",
       "source": "packages/ui/src/components-react/leftRailModel.ts",
       "symbol": "buildLeftRailModel#failure-not-empty",
       "test": "packages/core/__tests__/formal/unified-session-list-formal.test.mjs",
-      "failure": "网络失败时本地已有会话被抹除"
+      "failure": "Transient network failures wipe locally cached sessions from the rail"
     },
     {
       "id": "INV-STAGE-01",
-      "topic": "回滚乐观截断往返恒等",
+      "topic": "Optimistic rollback truncation round-trips cleanly",
       "source": "packages/desktop/src/renderer/rollbackTransaction.ts",
       "symbol": "applyOptimisticCut",
       "test": "packages/core/__tests__/formal/interactive-stage-formal.test.mjs",
-      "failure": "截断后内容错乱，回滚无法还原原状"
+      "failure": "Rollback failure leaves truncated content corrupted instead of restoring the original transcript"
     },
     {
       "id": "INV-STAGE-02",
-      "topic": "截断锚点排他性与临时 id 零逃逸",
+      "topic": "Truncation anchors are mutually exclusive and never leak client temp IDs",
       "source": "packages/desktop/src/renderer/rollbackTransaction.ts",
       "symbol": "resolveRollbackTarget",
       "test": "packages/core/__tests__/formal/interactive-stage-formal.test.mjs",
-      "failure": "回滚锚点错位；客户端临时 id 泄漏到服务端触发 4018"
+      "failure": "Rollback anchor drifts or client temporary IDs leak to the server causing error 4018"
     },
     {
       "id": "INV-STAGE-03",
-      "topic": "流式工具状态机收敛",
+      "topic": "Streaming tool state machine converges cleanly",
       "source": "packages/core/src/session/eventReducer.ts",
       "symbol": "reduceEvent",
       "test": "packages/core/__tests__/formal/interactive-stage-formal.test.mjs",
-      "failure": "工具卡状态不收敛，幽灵工具残留"
+      "failure": "Tool cards fail to settle and leave phantom running tools"
     },
     {
       "id": "INV-STAGE-04",
-      "topic": "@ 路由排他性与 cleanText 不残留 token",
+      "topic": "@-mention routing is mutually exclusive and cleanText strips tokens",
       "source": "packages/desktop/src/renderer/mentionToken.ts",
       "symbol": "parseMentionToken",
       "test": "packages/core/__tests__/formal/interactive-stage-formal.test.mjs",
-      "failure": "通道类型错配；正文里残留 @token 原文"
+      "failure": "Channel routing mismatches or raw @token markers remain in cleanText"
     },
     {
       "id": "INV-PAGE-01",
-      "topic": "分页游标单调不减且不越界",
+      "topic": "Pagination cursor advances monotonically within valid bounds",
       "source": "packages/core/src/session/olderBatchMerge.ts",
       "symbol": "planOlderPagination",
       "test": "packages/core/__tests__/formal/older-pagination-formal.test.mjs",
-      "failure": "翻页重复加载或跳过消息"
+      "failure": "Loading older pages skips messages or duplicates ranges"
     },
     {
       "id": "INV-PAGE-02",
-      "topic": "父段不丢失且二次合并强幂等",
+      "topic": "Parent lineage rows stay intact and duplicate prepends are idempotent",
       "source": "packages/core/src/session/olderBatchMerge.ts",
       "symbol": "planOlderBatchPrependMergeDetailed",
       "test": "packages/core/__tests__/formal/older-pagination-formal.test.mjs",
-      "failure": "向上翻页后父会话血缘行丢失；重复合并产生重复键"
+      "failure": "Upward pagination drops parent-session lineage rows or creates duplicate keys"
     },
     {
       "id": "INV-TIME-01",
-      "topic": "时间格式化确定性",
+      "topic": "Relative timestamp formatting is deterministic",
       "source": "packages/ui/src/components-react/leftRailModel.ts",
       "symbol": "formatLeftRailTime#deterministic",
       "test": "packages/core/__tests__/formal/rail-time-format-formal.test.mjs",
-      "failure": "同一时间戳重复渲染出不同文案，界面抖动"
+      "failure": "Rendering the same timestamp yields fluctuating labels across frames"
     },
     {
       "id": "INV-TIME-02",
-      "topic": "时间分桶单调且非法输入安全降级",
+      "topic": "Time buckets are monotonic and invalid inputs degrade safely",
       "source": "packages/ui/src/components-react/leftRailModel.ts",
       "symbol": "formatLeftRailTime#buckets",
       "test": "packages/core/__tests__/formal/rail-time-format-formal.test.mjs",
-      "failure": "未来时刻落入昨前桶；非法时间戳抛错或复活旧值"
+      "failure": "Future timestamps fall into past buckets or invalid timestamps throw or revive stale values"
     },
     {
       "id": "INV-BOT-01",
-      "topic": "领域绝对隔离（普通会话不得污染 Bot 卡片）",
+      "topic": "Domain isolation: regular sessions never overwrite dedicated bot station cards",
       "source": "packages/core/src/agent/agentPresence.ts",
       "symbol": "syncActiveSessionToBot",
       "test": "packages/core/__tests__/formal/bot-activity-formal.test.mjs",
-      "failure": "普通会话的活动覆盖专职 Bot 主工位卡片"
+      "failure": "Regular scratchpad activity overwrites a dedicated bot's primary card state"
     },
     {
       "id": "INV-BOT-02",
-      "topic": "时间戳归一化完备性",
+      "topic": "Timestamp normalization handles seconds, milliseconds, and ISO strings uniformly",
       "source": "packages/core/src/agent/agentPresence.ts",
       "symbol": "normalizeTimestamp",
       "test": "packages/core/__tests__/formal/bot-activity-formal.test.mjs",
-      "failure": "秒级/毫秒级/ISO 混用导致排序错乱"
+      "failure": "Mixed second/millisecond/ISO timestamps scramble sorting"
     },
     {
       "id": "INV-BOT-03",
-      "topic": "时间全序非递增单调性",
+      "topic": "Bot activity ordering remains monotonically non-increasing",
       "source": "packages/core/src/agent/agentPresence.ts",
       "symbol": "applyBotActivity",
       "test": "packages/core/__tests__/formal/bot-activity-formal.test.mjs",
-      "failure": "Bot 列表顺序抖动"
+      "failure": "Bot list order flickers unexpectedly"
     },
     {
       "id": "INV-ATTACH-01",
-      "topic": "迟滞响应不串台（令牌不匹配的 settle 不改变字段）",
+      "topic": "Stale attach settlements with mismatched tokens never mutate fields",
       "source": "packages/core/src/models/providerAttachFlow.ts",
       "symbol": "reduceAttachFlow#settle",
       "test": "packages/core/__tests__/formal/provider-attach-flow-formal.test.mjs",
-      "failure": "旧的开启结果写到新目标行上"
+      "failure": "A slow settle response mutates a newly selected provider row"
     },
     {
       "id": "INV-ATTACH-02",
-      "topic": "提交中不可重入（重复 submit 不得覆盖在途令牌与草稿）",
+      "topic": "Submit flow is non-reentrant while an in-flight token is pending",
       "source": "packages/core/src/models/providerAttachFlow.ts",
       "symbol": "reduceAttachFlow#submit",
       "test": "packages/core/__tests__/formal/provider-attach-flow-formal.test.mjs",
-      "failure": "连续点击覆盖在途令牌或草稿，导致旧响应串台或重发写坏配置"
+      "failure": "Double-clicking overwrites the in-flight token or draft and corrupts provider config"
     },
     {
       "id": "INV-ATTACH-03",
-      "topic": "失败不丢用户输入",
+      "topic": "Failed key submission preserves user draft input",
       "source": "packages/core/src/models/providerAttachFlow.ts",
       "symbol": "reduceAttachFlow#needs-key-failure",
       "test": "packages/core/__tests__/formal/provider-attach-flow-formal.test.mjs",
-      "failure": "失败后密钥草稿被清空，用户要重新输入"
+      "failure": "Submitting an invalid key wipes the input field and forces re-typing"
     },
     {
       "id": "INV-ATTACH-04",
-      "topic": "取消恒生效且 busy 只由 submitting 决定",
+      "topic": "Cancel always succeeds and busy state depends solely on submitting",
       "source": "packages/core/src/models/providerAttachFlow.ts",
       "symbol": "reduceAttachFlow#cancel",
       "test": "packages/core/__tests__/formal/provider-attach-flow-formal.test.mjs",
-      "failure": "取消失效；或不该忙的时候锁死界面"
+      "failure": "Cancel stops working or the UI remains locked when idle"
     },
     {
       "id": "INV-ATTACH-05",
-      "topic": "目录收敛只挂仍为 absent 的同一格子",
+      "topic": "Catalog reconciliation keeps the active absent row attached",
       "source": "packages/core/src/models/providerAttachFlow.ts",
       "symbol": "reconcileAttachFlow",
       "test": "packages/core/__tests__/formal/provider-attach-flow-formal.test.mjs",
-      "failure": "用户刚打开的补密钥条瞬间消失"
+      "failure": "An open key-entry bar vanishes abruptly during catalog refresh"
     },
     {
       "id": "INV-SWITCH-01",
-      "topic": "替补默认模型候选排除目标与不可用提供商",
+      "topic": "Replacement model candidates exclude disabled or empty providers",
       "source": "packages/core/src/models/providerViews.ts",
       "symbol": "collectReplacementModels",
       "test": "packages/core/__tests__/formal/provider-attach-flow-formal.test.mjs",
-      "failure": "把正在关闭的提供商或未开启/空模型提供商塞进替补列表，导致切换后 BOT 无模型可用"
+      "failure": "Disabling a provider suggests another unavailable provider as replacement, leaving bots with no usable model"
     },
     {
       "id": "INV-VIEW-01",
-      "topic": "跨会话恢复决策忠实于快照（贴底 / 锚点 / 标量）",
+      "topic": "Session viewport restoration honors saved pin/anchor/scroll snapshot",
       "source": "packages/core/src/viewport/sessionScrollMemory.ts",
       "symbol": "planSessionEnter",
       "test": "packages/core/__tests__/formal/session-scroll-memory-formal.test.mjs",
-      "failure": "切回会话时贴底态被旧像素位置覆盖，或回溯位置丢失，表现为白屏或跳到别处"
+      "failure": "Switching back overwrites pinned-to-bottom state with stale offsets or loses scroll position"
     },
     {
       "id": "INV-VIEW-02",
-      "topic": "会话记忆容量有界且最新会话必留",
+      "topic": "Scroll memory capacity is bounded while keeping the newest session",
       "source": "packages/core/src/viewport/sessionScrollMemory.ts",
       "symbol": "recordSnapshot#lru",
       "test": "packages/core/__tests__/formal/session-scroll-memory-formal.test.mjs",
-      "failure": "记忆无限增长吃内存；或刚离开的会话被淘汰，切回即丢位置"
+      "failure": "Scroll memory grows unboundedly or evicts the just-left session"
     },
     {
       "id": "INV-VIEW-03",
-      "topic": "基准行高中位数恒被夹在有效区间内",
+      "topic": "Adaptive median row height stays clamped within valid bounds",
       "source": "packages/core/src/viewport/adaptiveMedianEstimator.ts",
       "symbol": "addSample#median-clamp",
       "test": "packages/core/__tests__/formal/viewport-estimator-formal.test.mjs",
-      "failure": "离屏占位高度或超大代码块把基准行高拉偏，长会话滚动条滑块剧烈缩放"
+      "failure": "Oversized code blocks skew the baseline row height and distort scrollbar sizing"
     },
     {
       "id": "INV-VIEW-04",
-      "topic": "渲染期视口裁决忠实于进入计划与常规两条语义",
+      "topic": "Render-phase viewport decision separates session entry from steady state",
       "source": "packages/core/src/viewport/renderScrollDecision.ts",
       "symbol": "decideViewportPin",
       "test": "packages/core/__tests__/formal/render-scroll-decision-formal.test.mjs",
-      "failure": "进入期误捕获旧 DOM 把上一会话位置写进新会话记忆；或回溯态被误判贴底，切回即跳到最新消息"
+      "failure": "Entry reads stale DOM from the prior session or misclassifies scrolled-up history as pinned to bottom"
     },
     {
       "id": "INV-VIEW-05",
-      "topic": "回到底部按钮显隐只由离底距离与门控决定",
+      "topic": "Scroll-to-bottom button visibility depends solely on distance and gating",
       "source": "packages/core/src/viewport/scrollEndMachine.ts",
       "symbol": "decideScrollEndVisibility",
       "test": "packages/core/__tests__/formal/scroll-end-machine-formal.test.mjs",
-      "failure": "平滑末段按钮闪烁；或已到底仍显示按钮"
+      "failure": "Button flickers at the end of smooth scroll or remains visible while already at bottom"
     },
     {
       "id": "INV-VIEW-06",
-      "topic": "切会话/断连取消平滑会话且不写 instant",
+      "topic": "Session switch or disconnect cancels smooth scroll without instant write",
       "source": "packages/core/src/viewport/scrollEndMachine.ts",
       "symbol": "reduceSmoothScrollSession",
       "test": "packages/core/__tests__/formal/scroll-end-machine-formal.test.mjs",
-      "failure": "切回会话位置飞到半路；旧流残留滚动事件污染新会话进入计划"
+      "failure": "Leftover smooth-scroll events corrupt scroll restoration after switching sessions"
     },
     {
       "id": "INV-TURN-01",
-      "topic": "看门狗时序参数恒满足夹取与单调（含空时钟回落）",
+      "topic": "Watchdog timing parameters remain clamped and monotonic including null clock fallback",
       "source": "packages/core/src/turn/slidingWatchdog.ts",
       "symbol": "constructor#clamp",
       "test": "packages/core/__tests__/formal/sliding-watchdog-formal.test.mjs",
-      "failure": "时钟注入为 null 时回合一开始就崩在熔断器；或上下限倒挂把 30 分钟保险丝缩成几秒"
+      "failure": "Null clock trips circuit breaker immediately or inverted bounds shrink the 30-minute limit to seconds"
     },
     {
       "id": "INV-STREAM-01",
-      "topic": "流式直写锚点存在性：流式末条助手行恒有 #msg-content-*，非流式全空行恒不占位",
+      "topic": "Streaming assistant tail row always mounts #msg-content-* while idle empty rows do not",
       "source": "packages/ui/src/components-react/conversation/MessageRow.tsx",
       "symbol": "MessageRow#streamingAnchor",
       "test": "packages/ui/__tests__/streaming-anchor-formal.test.mjs",
-      "failure": "流式正文一次性铺满：空助手行被判空抹掉锚点，tokenStreamWriter 直写全程空转"
+      "failure": "Empty streaming assistant row skips anchor rendering, breaking direct tokenStreamWriter DOM updates"
     },
     {
       "id": "INV-FS-01",
-      "topic": "文件树目录优先与码点确定性全序幂等",
+      "topic": "File tree sorts directories first using locale-independent code-point order",
       "source": "packages/core/src/fs/fileTreeService.ts",
       "symbol": "sortFileTreeNodes",
       "test": "packages/core/__tests__/formal/file-tree-formal.test.mjs",
-      "failure": "文件树受系统 locale 影响乱序或目录/文件混排，每次刷新条目上下跳动"
+      "failure": "File tree order drifts across OS locales or mixes files and directories"
     },
     {
       "id": "INV-FS-02",
-      "topic": "扁平路径建树守恒、去重收敛与同构幂等",
+      "topic": "Flat-path tree builder preserves items, deduplicates, and stays idempotent",
       "source": "packages/core/src/fs/fileTreeService.ts",
       "symbol": "buildTreeFromFlatPaths",
       "test": "packages/core/__tests__/formal/file-tree-formal.test.mjs",
-      "failure": "补全结果或会话文件树出现重复目录节点或斜杠分裂"
+      "failure": "File completion or tree building creates duplicate folder nodes or splits on mixed slashes"
     },
     {
       "id": "INV-FS-03",
-      "topic": "子目录懒加载合并保持非目标子树完整与幂等",
+      "topic": "Lazy subdirectory merge preserves sibling expanded subtrees",
       "source": "packages/core/src/fs/fileTreeService.ts",
       "symbol": "mergeDirectoryChildren",
       "test": "packages/core/__tests__/formal/file-tree-formal.test.mjs",
-      "failure": "展开一个子目录把用户已展开的其他目录重置或清空"
+      "failure": "Expanding one directory collapses or wipes unrelated expanded folders"
     },
     {
       "id": "INV-FS-04",
-      "topic": "文件树过滤完备性（无空祖先残留且命中叶/祖先路径可回溯）",
+      "topic": "File tree filter leaves no empty ancestors and preserves ancestor paths for matches",
       "source": "packages/core/src/fs/fileTreeService.ts",
       "symbol": "filterFileTree",
       "test": "packages/core/__tests__/formal/file-tree-formal.test.mjs",
-      "failure": "过滤关键字后留下大量空文件夹或漏掉深层匹配文件"
+      "failure": "Filtering leaves empty directories behind or drops deeply nested matching leaves"
     },
     {
       "id": "INV-FS-05",
-      "topic": "二进制文件与超大文件预览阻断单调性（二进制恒优先于体积上限拦截且绝不误杀图片）",
+      "topic": "Binary and oversized file preview guards block binaries before size checks without blocking images",
       "source": "packages/core/src/fs/fileService.ts",
       "symbol": "evaluateFilePreviewGuard",
       "test": "packages/core/__tests__/formal/file-tree-formal.test.mjs",
-      "failure": ".exe 等二进制文件被当作文本渲染成乱码，或超大文件直接撑爆前端 DOM 表格"
+      "failure": "Binary executables render as garbled text or huge files freeze the DOM viewer"
     },
     {
       "id": "INV-FS-06",
-      "topic": "项目目录 picker 单段命名清洗、POSIX shell 安全引用与锁定根目录不可重命名守卫",
+      "topic": "Directory picker sanitizes single segment names, POSIX-quotes safely, and protects locked roots",
       "source": "packages/core/src/fs/directoryPickerService.ts",
       "symbol": "validateDirectoryName",
       "test": "packages/core/__tests__/formal/file-tree-formal.test.mjs",
-      "failure": "目录创建或重命名遭 `..`/控制字符/`.env` 注入越界，或误改 `/`/locked_root 破坏工作区"
+      "failure": "Traversal/control chars/`.env` bypass validation or locked workspace roots get renamed"
     },
     {
       "id": "INV-FS-07",
-      "topic": "文档相对资源路径解析安全域与越界阻断不变量（绝对不逃逸 workspaceRoot，绝对放行外部 http(s) 且拦截 .env*/敏感盘/空字节）",
+      "topic": "Relative resource path resolution stays scoped to workspace/docDir, passes external http(s) URLs through, and blocks .env/sensitive/null-byte paths",
       "source": "packages/core/src/fs/previewResourceResolver.ts",
       "symbol": "resolvePreviewResourceRef",
       "test": "packages/core/__tests__/formal/preview-resources-formal.test.mjs",
-      "failure": "Markdown/HTML/SVG 相对路径解析中的 ../ 或 /root 允许越权读取 .env 凭据与系统敏感文件，或错误改写外部 CDN 链接"
+      "failure": "Relative ../ or /root refs in Markdown/HTML/SVG leak .env secrets or system files, or external CDN URLs get mistakenly rewritten"
     },
     {
       "id": "INV-FS-08",
-      "topic": "HTML/CSS/SVG 预览内联变换非破坏性与规模有界不变量（不改原文件、总内联资产与递归深度严格封顶）",
+      "topic": "HTML/CSS/SVG preview bundling is non-destructive and strictly bounded in asset count, total bytes, and recursion depth",
       "source": "packages/core/src/fs/htmlPreviewBundler.ts",
       "symbol": "buildInlinedHtmlPreview",
       "test": "packages/core/__tests__/formal/preview-resources-formal.test.mjs",
-      "failure": "环形 CSS @import 死循环挂死桌面进程，超大图资产包撑爆渲染进程内存，或错误覆盖原始源码内容"
+      "failure": "Cyclic CSS @import hangs desktop, oversized asset bundles exhaust renderer memory, or source files get overwritten"
     },
     {
       "id": "INV-MSG-01",
-      "topic": "用户消息附件清单与多模态分片往返解析无损收敛且去重",
+      "topic": "User message attachment parsing round-trips multimodal parts without loss or duplication",
       "source": "packages/core/src/session/messageAttachments.ts",
       "symbol": "extractMessageAttachments",
       "test": "packages/core/__tests__/formal/message-attachments-formal.test.mjs",
-      "failure": "发送图片或文件后用户气泡不显示附件缩略图与文件名，或仅发附件无正文时被静默丢弃"
+      "failure": "Sent images/files disappear from user bubbles or attachment-only messages get dropped"
     },
     {
       "id": "INV-LEARN-01",
-      "topic": "学习星图去重清洗、注释剥离与中心辐射视窗几何有界完备",
+      "topic": "Learning graph deduplication, HTML comment stripping, and bounded radial geometry",
       "source": "packages/core/src/learning/learningConstellation.ts",
       "symbol": "buildConstellationGraph",
       "test": "packages/core/__tests__/formal/learning-constellation-formal.test.mjs",
-      "failure": "记忆节点标题残存半截 HTML 注释或全连通边爆表造成移动端星图堆叠不可点"
+      "failure": "Truncated HTML comments leak into node labels or dense edges cause overlapping mobile layouts"
     },
     {
       "id": "INV-LEARN-02",
-      "topic": "全量认知星图确定性无重叠布局（全节点无分页落图、绝对碰撞分离与技能关联统计有界一致）",
+      "topic": "Deterministic overlap-free full star-map layout and consistent skill counts",
       "source": "packages/core/src/learning/constellationLayout.ts",
       "symbol": "layoutFullConstellationGraph",
       "test": "packages/core/__tests__/formal/learning-constellation-formal.test.mjs",
-      "failure": "星图节点相互遮挡不可点、跨 Bot 刷新顺序偏移抖动、或技能列表计数与星图不一致"
+      "failure": "Graph nodes overlap, jump across refreshes, or disagree with skill list counts"
     },
     {
       "id": "INV-SUBAGENT-01",
-      "topic": "跨会话子代理列表代际围栏防串台（sessionGeneration 检查阻塞慢响应回写）",
+      "topic": "Session generation fence prevents stale subagent.list responses from crossing sessions",
       "source": "packages/core/src/subagent/subagentStore.ts",
       "symbol": "syncSessionSubagents",
       "test": "packages/core/__tests__/formal/subagentStatusInvariants.test.mjs",
-      "failure": "A 会话慢速返回的 subagent.list 覆盖用户已切换到的 B 会话状态，导致状态栏显示错误会话的子 Agent"
+      "failure": "A slow subagent.list response from session A overwrites subagent state in newly opened session B"
     },
     {
       "id": "INV-SUBAGENT-02",
-      "topic": "子代理状态机单调格与终态不可逆吸收律（completed/failed/error/timeout/interrupted 永不退回 queued/running）",
+      "topic": "Subagent status lattice absorbs terminal states monotonically",
       "source": "packages/core/src/subagent/subagentStore.ts",
       "symbol": "mergeSubagentRecord",
       "test": "packages/core/__tests__/formal/subagentStatusInvariants.test.mjs",
-      "failure": "晚到的 subagent.progress/tool 帧或陈旧列表快照把已结束子 Agent 重新激活为运行中，导致中断按钮错开与幽灵计时"
+      "failure": "Late progress frames or stale snapshots revert a completed/failed subagent back to running"
     },
     {
       "id": "INV-SUBAGENT-03",
-      "topic": "多源合并 1:1 无歧义别名解析与并发同源不误并保证",
+      "topic": "Multi-source subagent reconciliation resolves aliases 1:1 without merging distinct tasks",
       "source": "packages/core/src/subagent/subagentStore.ts",
       "symbol": "reconcileSubagentRecords",
       "test": "packages/core/__tests__/formal/subagentStatusInvariants.test.mjs",
-      "failure": "并发同 delegation_id 下多子任务缺 task_index 时被错误合并成同一行，丢失执行进度与日志"
+      "failure": "Concurrent tasks under the same delegation_id without task_index collapse into one row"
     },
     {
       "id": "INV-SUBAGENT-04",
-      "topic": "上下文用量与明细 Fail-Safe 保持不变量（transient RPC 报错绝不清零上一次有效用量）",
+      "topic": "Context usage errors retain last valid metrics (fail-safe)",
       "source": "packages/core/src/session/sessionStatusStore.ts",
       "symbol": "applyUsageError",
       "test": "packages/core/__tests__/formal/subagentStatusInvariants.test.mjs",
-      "failure": "网络抖动或 RPC 临时失败把状态栏已渲染的上下文进度条与 token 读数清零归白"
+      "failure": "Transient RPC errors wipe valid context progress bars and token counts from the status bar"
     },
     {
       "id": "INV-SUBAGENT-05",
-      "topic": "右侧停靠区四态互斥与切会话退避幽灵下钻不变量（closed/status/subagent/files 互斥且切会话必退出 subagent）",
+      "topic": "Right pod modes are mutually exclusive and session switches exit subagent drill-down",
       "source": "packages/core/src/session/sessionStatusStore.ts",
       "symbol": "reduceRightPodMode",
       "test": "packages/core/__tests__/formal/subagentStatusInvariants.test.mjs",
-      "failure": "状态栏与文件树同时抢占右侧栏，或切换会话后右侧仍展示旧会话子 Agent 详情页并向错误会话发送 steer"
+      "failure": "Multiple right-side panels collide or steering a subagent targets a stale session after switching"
     },
     {
       "id": "INV-SUBAGENT-06",
-      "topic": "RingBuffer 有界日志环形缓冲守恒（条数严格 <= maxLogCapacity 且保留最新尾部）",
+      "topic": "RingBuffer retains the newest logs strictly within maxLogCapacity",
       "source": "packages/core/src/subagent/ringBuffer.ts",
       "symbol": "RingBuffer#push",
       "test": "packages/core/__tests__/formal/subagentStatusInvariants.test.mjs",
-      "failure": "长耗时子 Agent 持续输出实时日志导致前端内存无界膨胀"
+      "failure": "Long-running subagent logs grow frontend memory unboundedly"
     },
     {
       "id": "INV-SUBAGENT-07",
-      "topic": "subagent.list 同步失败 Fail-Safe 守恒（列表拉取异常不清空已有内存与扫描子任务并显式记录 syncError）",
+      "topic": "subagent.list fetch errors keep existing records and record syncError",
       "source": "packages/core/src/subagent/subagentStore.ts",
       "symbol": "applyListSyncError",
       "test": "packages/core/__tests__/formal/subagentStatusInvariants.test.mjs",
-      "failure": "subagent.list 单次超时或报错后把状态栏已有的运行中/历史子 Agent 列表整页抹白"
+      "failure": "A single subagent.list timeout blanks out active and completed subagents"
     },
     {
       "id": "INV-ORG-01",
-      "topic": "Bot 终身主工位（Forever Chat）物理免疫（hidden/isForeverChat 永不归档、永不移入容器）",
+      "topic": "Dedicated bot forever-chat stays immune to archiving or container reassignment",
       "source": "packages/core/src/organization/reducer.ts",
       "symbol": "resolveEntityContainer#forever-chat-immunity",
       "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
-      "failure": "Bot 终身主工位被错误标记完成或拖入项目/自定义文件夹，破坏主工位物理隔离"
+      "failure": "A bot's primary station gets marked done or dragged into a folder, breaking isolation"
     },
     {
       "id": "INV-ORG-02",
-      "topic": "单归属容器优先级裁决收敛（__none__ 哨兵阻断 cwd 自动匹配，显式归属优先于路径匹配）",
+      "topic": "Container assignment precedence respects explicit placement and __none__ sentinel",
       "source": "packages/core/src/organization/reducer.ts",
       "symbol": "resolveEntityContainer#precedence",
       "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
-      "failure": "用户显式移回未分类后刷新又被 cwd 重新吸回项目，或跨自定义文件夹发生多归属分裂"
+      "failure": "Explicitly ungrouped sessions snap back to cwd-matched projects on refresh or split across folders"
     },
     {
       "id": "INV-ORG-03",
-      "topic": "项目路径最长前缀匹配与严格目录边界防溢出（排除已归档项目）",
+      "topic": "Project cwd matching uses longest directory-boundary prefix excluding archived projects",
       "source": "packages/core/src/organization/pathMatch.ts",
       "symbol": "matchProjectByCwd#longest-prefix",
       "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
-      "failure": "/work/app-v2 误匹配 /work/app、父项目抢占子项目或已归档项目继续吸纳新会话"
+      "failure": "/work/app-v2 falsely matches /work/app or archived projects absorb new sessions"
     },
     {
       "id": "INV-ORG-04",
-      "topic": "删除自定义文件夹非破坏性守恒（仅清除目标文件夹映射，100% 保留实体与他目录归属）",
+      "topic": "Deleting a custom folder preserves all member entities and other folder mappings",
       "source": "packages/core/src/organization/reducer.ts",
       "symbol": "deleteFolderInMeta#non-destructive",
       "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
-      "failure": "删除自定义文件夹导致内部普通会话或群聊被误删，或残留悬空指向"
+      "failure": "Deleting a folder deletes contained sessions/rooms or leaves dangling references"
     },
     {
       "id": "INV-ORG-05",
-      "topic": "群聊完成态往返收敛与强幂等",
+      "topic": "Group room completion state round-trips idempotently",
       "source": "packages/core/src/organization/reducer.ts",
       "symbol": "setRoomDoneInMeta#round-trip",
       "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
-      "failure": "标记群聊已完成再恢复进行中后误清他群状态，或重复点击写入不一致"
+      "failure": "Toggling room completion disturbs other rooms or produces inconsistent repeated writes"
     },
     {
       "id": "INV-ORG-06",
-      "topic": "ui_meta 三路 CAS 合并双端并发保序且零悬空引用",
+      "topic": "Three-way CAS merge on ui_meta preserves concurrent edits without dangling folder refs",
       "source": "packages/core/src/organization/reducer.ts",
       "symbol": "mergeFoldersMetaForCas#disjoint-preserve",
       "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
-      "failure": "多端并发新建文件夹或移动会话时 CAS 重试互相覆盖，或产生指向已删目录的幽灵键"
+      "failure": "Concurrent multi-client folder edits overwrite each other or leave orphaned keys"
     },
     {
       "id": "INV-ORG-07",
-      "topic": "僵尸归属键清理完备性与二次清理强幂等",
+      "topic": "Stale assignment pruning removes dead keys completely and idempotently",
       "source": "packages/core/src/organization/reducer.ts",
       "symbol": "pruneStaleOrgKeys#idempotent",
       "test": "packages/core/__tests__/formal/conversation-org-formal.test.mjs",
-      "failure": "已删会话或已解散群聊长期残留幽灵映射，或垃圾回收误删有效/未加载项"
+      "failure": "Deleted sessions leak stale keys indefinitely or pruning deletes valid unloaded entries"
     },
     {
       "id": "INV-CONN-01",
-      "topic": "认证失效与手动断连在连接相位归约中的绝对支配律（unconfigured > manual/auth-offline > transient reconnect）",
+      "topic": "Auth failure and manual disconnect strictly dominate transient reconnect states",
       "source": "packages/core/src/rpc/connectionPhase.ts",
       "symbol": "resolveConnectionPhase#auth-dominance",
       "test": "packages/core/__tests__/formal/connection-phase-formal.test.mjs",
-      "failure": "401 密码失效或用户主动断开后界面仍虚假显示重连胶囊并死循环撞墙重试"
+      "failure": "After 401 auth failure or manual disconnect, UI loops on reconnect banners"
     },
     {
       "id": "INV-CONN-02",
-      "topic": "7态连接相位全序覆盖与 sync 优先级单调律",
+      "topic": "Seven-state connection phase projection keeps sync precedence monotonic",
       "source": "packages/core/src/rpc/connectionPhase.ts",
       "symbol": "resolveConnectionPhase",
       "test": "packages/core/__tests__/formal/connection-phase-formal.test.mjs",
-      "failure": "HANDSHAKING 或 RECONNECTING 被错误归约为已连接或完全断网，导致标题栏与输入舱状态撕裂"
+      "failure": "HANDSHAKING or RECONNECTING collapses to connected or offline, desyncing titlebar and dock"
     },
     {
       "id": "INV-CONN-03",
-      "topic": "冷启动退避重试时延有界且单调非降",
+      "topic": "Cold-start retry backoff remains bounded and non-decreasing",
       "source": "packages/core/src/rpc/connectionPhase.ts",
       "symbol": "computeColdStartRetryDelayMs",
       "test": "packages/core/__tests__/formal/connection-phase-formal.test.mjs",
-      "failure": "冷启动网络未就绪时退避越界卡死或零延迟风暴重试打爆电池与网关"
+      "failure": "Cold-start retries stall indefinitely or tight-loop without delay"
     },
     {
       "id": "INV-DELIV-01",
-      "topic": "成果物提取去重幂等与非助手消息物理隔离",
+      "topic": "Deliverable extraction deduplicates idempotently and excludes non-assistant turns",
       "source": "packages/core/src/session/deliverables.ts",
       "symbol": "extractTurnDeliverables",
       "test": "packages/core/__tests__/formal/deliverables-formal.test.mjs",
-      "failure": "重复提取产生重复图片/卡片，或用户消息附件误混入 Agent 成果物画廊"
+      "failure": "Duplicate cards render or user message attachments leak into agent deliverables"
     },
     {
       "id": "INV-DELIV-02",
-      "topic": "MEDIA 标记剥离收敛且严格豁免围栏代码块",
+      "topic": "MEDIA tag stripping leaves fenced code blocks untouched",
       "source": "packages/core/src/session/deliverables.ts",
       "symbol": "stripMediaTags",
       "test": "packages/core/__tests__/formal/deliverables-formal.test.mjs",
-      "failure": "对话正文残留 MEDIA:/path 原文，或代码示例中的 MEDIA 语法被误删"
+      "failure": "Raw MEDIA:/path directives stay visible or fenced code examples are stripped"
     },
     {
       "id": "INV-DELIV-03",
-      "topic": "只读工具与危险 URI 拦截守恒（cat/grep/javascript: 绝不渗入成果物）",
+      "topic": "Read-only tools and dangerous URIs are blocked from deliverables",
       "source": "packages/core/src/session/deliverables.ts",
       "symbol": "extractSessionDeliverables",
       "test": "packages/core/__tests__/formal/deliverables-formal.test.mjs",
-      "failure": "cat /etc/hosts 等命令或 javascript:/data:text/html 注入进入可点击成果物列表"
+      "failure": "Read-only paths like /etc/hosts or javascript:/data:text/html URIs enter deliverables"
     },
     {
       "id": "INV-DELIV-04",
-      "topic": "读写分离与非循环存在性双锁守恒（只读排除、同回合Shell互证、父目录批探禁session_cache及正文原地去重）",
+      "topic": "Read/write separation and non-circular dual-lock path existence verification",
       "source": "packages/core/src/fs/pathVerifier.ts",
       "symbol": "createDirectoryPathVerifier",
       "test": "packages/core/__tests__/formal/deliverables-formal.test.mjs",
-      "failure": "未写先读的路径混入成果物、纯缓存自证循环复活幽灵文件，或正文小卡片与回合末卡片双份重复"
+      "failure": "Unread/phantom paths enter deliverables or inline cards duplicate turn-end deliverable cards"
     },
     {
       "id": "INV-TURN-02",
-      "topic": "看门狗权威续期不得复活 idle/disarmed，且绝对受 hardLimitMs 封顶",
+      "topic": "Watchdog idle renewal never revives disarmed turns and obeys hardLimitMs cap",
       "source": "packages/core/src/turn/slidingWatchdog.ts",
       "symbol": "SlidingActiveWatchdog.renewIdle",
       "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
-      "failure": "已撤防或已完成看门狗被幽灵续期，或重置 turnStartedAt 导致硬上限失效无限挂死"
+      "failure": "Disarmed watchdog gets revived or turnStartedAt resets defeat the hard timeout cap"
     },
     {
       "id": "INV-STREAM-02",
-      "topic": "多会话流注册表严格保持 storedSessionId <-> messageId 1:1 双射",
+      "topic": "LiveStreamRegistry maintains strict 1:1 bijection between storedSessionId and messageId",
       "source": "packages/core/src/session/liveStreamSync.ts",
       "symbol": "LiveStreamRegistry",
       "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
-      "failure": "多端或并发会话流覆盖/迁移后出现双绑与跨会话 token 串台污染"
+      "failure": "Cross-session stream overwrites leave double bindings and mix tokens across sessions"
     },
     {
       "id": "INV-STREAM-03",
-      "topic": "LiveStreamRegistry.acceptDelta 按 (turnId, segment, offset) 去重与幂等",
+      "topic": "LiveStreamRegistry.acceptDelta deduplicates by (turnId, segment, offset)",
       "source": "packages/core/src/session/liveStreamSync.ts",
       "symbol": "LiveStreamRegistry.acceptDelta",
       "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
-      "failure": "重连/对账或双端并行帧重复送达导致流式文本重复拼接"
+      "failure": "Reconnection replay or multi-device overlap duplicates streamed text"
     },
     {
       "id": "INV-STREAM-04",
-      "topic": "reconcileInflightText 仅向前对账，绝不回退已领先的本地流",
+      "topic": "reconcileInflightText advances monotonically without regressing ahead-of-snapshot text",
       "source": "packages/core/src/session/liveStreamSync.ts",
       "symbol": "LiveStreamRegistry.reconcileInflightText",
       "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
-      "failure": "较慢的 inflight.assistant 快照覆盖已超前的流式正文，引发界面文字倒流"
+      "failure": "An older inflight.assistant snapshot overwrites newer streamed deltas"
     },
     {
       "id": "INV-STREAM-05",
-      "topic": "远端用户气泡插入规划幂等且精准定位在流式助手行前",
+      "topic": "Remote user prompt insertion is idempotent and places prompts before streaming assistant rows",
       "source": "packages/core/src/session/liveStreamSync.ts",
       "symbol": "planRemoteUserPromptInsert",
       "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
-      "failure": "多端同步用户提问时在观察端重复生成多条相同用户气泡"
+      "failure": "Cross-device sync creates duplicate user prompt bubbles"
     },
     {
       "id": "INV-STREAM-06",
-      "topic": "看门狗超时裁决遵循先探活后收口，hard-limit 无条件止损",
+      "topic": "Watchdog timeout probes before settling and respects hard-limit stop-loss",
       "source": "packages/core/src/session/liveStreamSync.ts",
       "symbol": "decideWatchdogProbeAction",
       "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
-      "failure": "长耗时工具或深思考期间无 delta 静默超过 60s 即被前端看门狗误杀为离线闲置"
+      "failure": "Silent >60s tool execution or deep thinking gets prematurely killed as idle"
     },
     {
       "id": "INV-STREAM-07",
-      "topic": "等待交互阻塞期间看门狗 inactivty 续期且 hard-limit 仍止损",
+      "topic": "Watchdog renews inactivity while awaiting interactive user input up to hard-limit",
       "source": "packages/core/src/session/liveStreamSync.ts",
       "symbol": "decideWatchdogProbeAction#interactive",
       "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
-      "failure": "Agent 等待 clarify/approval/secret 超过 60s 无流式 delta 时被看门狗误杀为闲置超时"
+      "failure": "Waiting >60s on clarify/approval/secret kills an active turn prematurely"
     },
     {
       "id": "INV-INTERACT-01",
-      "topic": "session.resume 围栏对账不得抹杀在途实时反向请求",
+      "topic": "session.resume reconciliation never wipes newer in-flight WS server requests",
       "source": "packages/core/src/interactive/interactiveCoordinator.ts",
       "symbol": "InteractiveRequestCoordinator.reconcileFromResume",
       "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
-      "failure": "慢 session.resume 返回空列表抹杀刚通过 WS 抵达的实时审批卡"
+      "failure": "An empty slow session.resume response erases a live approval card arrived via WS"
     },
     {
       "id": "INV-INTERACT-02",
-      "topic": "bindSessionHandle 原位重键并无损合并先到实时请求与恢复快照",
+      "topic": "bindSessionHandle rekeys in place without losing early live requests",
       "source": "packages/core/src/interactive/interactiveCoordinator.ts",
       "symbol": "InteractiveRequestCoordinator.bindSessionHandle",
       "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
-      "failure": "live_ws 请求先于 session.create/resume 返回时绑定 storedSessionId 丢失或重复出卡"
+      "failure": "Requests arriving before session.create/resume resolves get dropped or duplicated"
     },
     {
       "id": "INV-INTERACT-03",
-      "topic": "Cancel-Dominates-Rollback 终态吸收与双端抢答收敛",
+      "topic": "Cancel-Dominates-Rollback absorbs terminal states across competing clients",
       "source": "packages/core/src/interactive/interactiveCoordinator.ts",
       "symbol": "InteractiveRequestCoordinator.rollbackSubmit",
       "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
-      "failure": "已取消/已完结的交互请求在在途提交失败后被错误回滚重新弹出"
+      "failure": "A resolved or cancelled prompt pops back up when a racing submit fails"
     },
     {
       "id": "INV-INTERACT-04",
-      "topic": "JSON-RPC 服务端反向请求优先按 method 分类严防同号 ID 串台",
+      "topic": "JSON-RPC server request router dispatches by method before id matching",
       "source": "packages/core/src/rpc/serverRequestRouter.ts",
       "symbol": "classifyJsonRpcFrame",
       "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
-      "failure": "服务端反向请求同号 id 与本地 pendingRequests 撞号被误判为 RPC 响应并提前 settle"
+      "failure": "Server request id colliding with local pendingRequests resolves the wrong RPC call"
     },
     {
       "id": "INV-INTERACT-05",
-      "topic": "socketGeneration 守卫与 Classic/Canonical 参数契约严格隔离",
+      "topic": "Reply router enforces socketGeneration fence and Classic/Canonical parameter isolation",
       "source": "packages/core/src/interactive/replyRouter.ts",
       "symbol": "resolveReplyRoute",
       "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
-      "failure": "socket 切代仍写旧 WS 帧，或 Classic/Canonical 参数与 profile 混传触发 4000"
+      "failure": "Writes hit a stale socket or mix Classic/Canonical/profile fields triggering 4000"
     },
     {
       "id": "INV-INTERACT-06",
-      "topic": "群聊 pending_actions 正交隔离且 Canonical groups.approve 限 once|deny",
+      "topic": "Group pending_actions stay isolated and canonical groups.approve restricts to once|deny",
       "source": "packages/core/src/interactive/interactiveCoordinator.ts",
       "symbol": "InteractiveRequestCoordinator.reconcileGroupPendingActions",
       "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
-      "failure": "群聊阻塞动作误染单聊/Bot 主工位，或 canonical 群聊传入 session/always 触发 4000"
+      "failure": "Group approvals leak into 1:1 chats or pass disallowed session/always choices causing 4000"
     },
     {
       "id": "INV-INTERACT-07",
-      "topic": "connection op 按 seq 单调递增防乱序回退且 settled:false 保留卡片",
+      "topic": "Connection op updates enforce monotonic seq and keep card open while settled is false",
       "source": "packages/core/src/interactive/interactiveCoordinator.ts",
       "symbol": "InteractiveRequestCoordinator.applyConnectionUpdate",
       "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
-      "failure": "connection.update 乱序 seq 倒流复活已完结授权卡或部分提交时提前关卡"
+      "failure": "Out-of-order seq revives finished auth cards or closes multi-step cards prematurely"
     },
     {
       "id": "INV-INTERACT-08",
-      "topic": "交互密钥与凭据载荷无条件脱敏不得泄漏明文",
+      "topic": "Interactive secret and credential payloads are unconditionally redacted",
       "source": "packages/core/src/log/redact.ts",
       "symbol": "redactInteractivePayload",
       "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
-      "failure": "secret/sudo/vault/connection env 中的用户凭据明文写入日志或遥测"
+      "failure": "Secret/sudo/vault/connection env credentials leak in plaintext into logs or telemetry"
     },
     {
       "id": "INV-INTERACT-09",
-      "topic": "群聊阻塞期暂停轮询轮次与停滞消耗防误判超时失败",
+      "topic": "Blocked group rooms pause polling rounds and stagnant counters to avoid false timeouts",
       "source": "packages/core/src/group/groupLogPollerManager.ts",
       "symbol": "GroupLogPollerManager.executeRound",
       "test": "packages/core/__tests__/formal/interactive-prompts-formal.test.mjs",
-      "failure": "群聊等待人工审批或重试时被 GroupLogPollerManager 消耗完 maxStagnantRounds/maxRounds 误判为失败"
+      "failure": "Waiting on human approval exhausts maxStagnantRounds/maxRounds and falsely fails the room"
     }
   ]
 }

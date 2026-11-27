@@ -48,7 +48,7 @@ export const SUITES = {
     ],
     pattern: /\.test\.mjs$/,
     excludeDirs: ['formal'],
-    // 实测 292 个（core + ui + desktop/unit + mobile/unit + scripts），用例 3119+。
+    // 实测 292 个（core + ui + desktop/unit + mobile/unit + scripts）。
     // 下限只允许调高：删测试或目录改名会让枚举变少，本层随即失败。
     minFiles: 292,
   },

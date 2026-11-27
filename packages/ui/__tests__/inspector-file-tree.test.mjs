@@ -378,16 +378,16 @@ test('InspectionPod 右侧常驻竖栏与悬浮文件树分栏全状态渲染', 
       {
         id: 'd1',
         kind: 'html',
-        path: '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-telemetry.html',
-        name: '2026-11-23-t3code-telemetry.html',
+        path: '/workspace/demo-project/drafts/release-report.html',
+        name: 'release-report.html',
         messageId: 'm1',
         source: 'tool_write',
       },
       {
         id: 'd2',
         kind: 'image',
-        path: '/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png',
-        name: 't3-timeline.png',
+        path: '/workspace/demo-project/drafts/img/release-timeline.png',
+        name: 'release-timeline.png',
         messageId: 'm1',
         source: 'turn_corroborated',
       },
@@ -404,10 +404,10 @@ test('InspectionPod 右侧常驻竖栏与悬浮文件树分栏全状态渲染', 
     assert.ok(artHtml.includes('data-tab="artifacts"'), '竖栏必须提供 data-tab="artifacts" 成果物入口');
     assert.ok(artHtml.includes('data-testid="desktop-artifacts-badge"') && artHtml.includes('>2<'), '竖栏成果物按钮必须渲染数量角标');
     assert.ok(artHtml.includes('data-testid="desktop-artifacts-pane"'), '选中 artifacts 时左侧应渲染成果物列表分栏');
-    assert.ok(artHtml.includes('<span class="inspector-tree-label">2026-11-23-t3code-telemetry.html</span>'));
-    assert.ok(artHtml.includes('<span class="inspector-tree-label">t3-timeline.png</span>'));
-    assert.equal(artHtml.includes('<span class="inspector-tree-label">/opt/data/'), false, '桌面端成果物侧边栏仅展示纯文件名');
-    assert.ok(artHtml.includes('title="/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png"'));
+    assert.ok(artHtml.includes('<span class="inspector-tree-label">release-report.html</span>'));
+    assert.ok(artHtml.includes('<span class="inspector-tree-label">release-timeline.png</span>'));
+    assert.equal(artHtml.includes('<span class="inspector-tree-label">/workspace/'), false, '桌面端成果物侧边栏仅展示纯文件名');
+    assert.ok(artHtml.includes('title="/workspace/demo-project/drafts/img/release-timeline.png"'));
     assert.ok(artHtml.includes('<span class="inspector-artifact-ext">PNG</span>'));
     assert.equal(/border:\s*1px\s+solid\s+var\(--border/.test(artHtml), false, '成果物面板不得残留内联 1px 边框样式');
 
@@ -418,6 +418,6 @@ test('InspectionPod 右侧常驻竖栏与悬浮文件树分栏全状态渲染', 
       deliverables: items,
       artifactsFilterQuery: 'timeline',
     });
-    assert.ok(filteredHtml.includes('t3-timeline.png') && !filteredHtml.includes('2026-11-23-t3code-telemetry.html'));
+    assert.ok(filteredHtml.includes('release-timeline.png') && !filteredHtml.includes('release-report.html'));
   });
 });

@@ -155,16 +155,43 @@ test('census · 文件路径一律 POSIX 相对路径，跨平台一致', () => 
   }
 });
 
-test('census · parseCensusArgs 受控默认并发、标志兼容性与冲突/非法参数拒绝', () => {
-  // 默认按 CPU 核数计算受控并发 [2..4]
-  assert.deepEqual(parseCensusArgs([], 8), { ok: true, targets: ['unit'], concurrency: 4 });
-  assert.deepEqual(parseCensusArgs(['formal'], 4), { ok: true, targets: ['formal'], concurrency: 2 });
-  assert.deepEqual(parseCensusArgs(['all'], 2), { ok: true, targets: ['unit', 'formal'], concurrency: 2 });
+test('census · parseCensusArgs 受控默认并发、环境变量覆盖、标志兼容性与冲突/非法参数拒绝', () => {
+  // 默认按 CPU 核数计算受控并发 [2..8] (floor(cpus * 0.75))
+  assert.deepEqual(parseCensusArgs([], 8, {}), { ok: true, targets: ['unit'], concurrency: 6 });
+  assert.deepEqual(parseCensusArgs(['formal'], 4, {}), { ok: true, targets: ['formal'], concurrency: 3 });
+  assert.deepEqual(parseCensusArgs(['all'], 2, {}), { ok: true, targets: ['unit', 'formal'], concurrency: 2 });
+  assert.deepEqual(parseCensusArgs([], 16, {}), { ok: true, targets: ['unit'], concurrency: 8 });
+
+  // CENSUS_CONCURRENCY 环境变量支持与合法 CLI 标志优先权
+  assert.deepEqual(parseCensusArgs([], 8, { CENSUS_CONCURRENCY: '5' }), {
+    ok: true,
+    targets: ['unit'],
+    concurrency: 5,
+  });
+  assert.deepEqual(parseCensusArgs(['--serial'], 8, { CENSUS_CONCURRENCY: '6' }), {
+    ok: true,
+    targets: ['unit'],
+    concurrency: 1,
+  });
+  assert.deepEqual(parseCensusArgs(['--parallel'], 8, { CENSUS_CONCURRENCY: '6' }), {
+    ok: true,
+    targets: ['unit'],
+    concurrency: undefined,
+  });
+  assert.deepEqual(parseCensusArgs(['--concurrency=3'], 8, { CENSUS_CONCURRENCY: '6' }), {
+    ok: true,
+    targets: ['unit'],
+    concurrency: 3,
+  });
+  for (const badEnv of ['0', '-1', 'abc']) {
+    const res = parseCensusArgs([], 8, { CENSUS_CONCURRENCY: badEnv });
+    assert.equal(res.ok, false, `必须拒绝非法 CENSUS_CONCURRENCY: ${badEnv}`);
+  }
 
   // 合法标志
-  assert.deepEqual(parseCensusArgs(['--serial'], 8), { ok: true, targets: ['unit'], concurrency: 1 });
-  assert.deepEqual(parseCensusArgs(['--parallel'], 8), { ok: true, targets: ['unit'], concurrency: undefined });
-  assert.deepEqual(parseCensusArgs(['--concurrency=3', 'formal'], 8), {
+  assert.deepEqual(parseCensusArgs(['--serial'], 8, {}), { ok: true, targets: ['unit'], concurrency: 1 });
+  assert.deepEqual(parseCensusArgs(['--parallel'], 8, {}), { ok: true, targets: ['unit'], concurrency: undefined });
+  assert.deepEqual(parseCensusArgs(['--concurrency=3', 'formal'], 8, {}), {
     ok: true,
     targets: ['formal'],
     concurrency: 3,
@@ -183,7 +210,7 @@ test('census · parseCensusArgs 受控默认并发、标志兼容性与冲突/�
     ['--unknown-flag'],
     ['nonexistent-suite'],
   ]) {
-    const res = parseCensusArgs(bad, 8);
+    const res = parseCensusArgs(bad, 8, {});
     assert.equal(res.ok, false, `必须拒绝参数组合: ${JSON.stringify(bad)}`);
   }
 });

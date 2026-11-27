@@ -1,8 +1,8 @@
 /**
- * Hermes Flux 全局极客美学 Tooltip 控制器与微组件测试套件
+ * Hermes Flux 全局自定义 Tooltip 控制器与微组件测试套件
  *
  * 【设计意图 (Why)】
- * 验证自定义极客 Tooltip 控制器（物理阻断 Chromium 原生黑块墨渍、视口边界夹取碰撞避让、
+ * 验证自定义 Tooltip 控制器（物理阻断 Chromium 原生黑块墨渍、视口边界夹取碰撞避让、
  * 延迟与快速连击调度）以及 React `<Tooltip>` 声明式微组件的属性契约，
  * 保证零假冒交付与变异杀伤力。
  */

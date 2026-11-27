@@ -2369,9 +2369,9 @@ blockquote {
   background: var(--primary);
 }
 
-/* ═══ 全局极客美学 Tooltip (Global Geek Aesthetic Tooltip) ═══
+/* ═══ 全局自定义 Tooltip (Global Custom Tooltip) ═══
    彻底阻断 Chromium 原生黑底矩形墨渍，以 4px 基础网格、6px 控件圆角、
-   1px 精密发丝描边与高对比悬浮微表面对齐 Hermes Flux 现代工作台视觉。 */
+   1px 精密发丝描边与高对比悬浮微表面对齐 Hermes Flux 工作台视觉。 */
 .flux-global-tooltip {
   position: fixed !important;
   z-index: 99999 !important;

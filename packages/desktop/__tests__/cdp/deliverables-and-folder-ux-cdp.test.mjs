@@ -264,9 +264,9 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
   const desktopAssistantContent = [
     '文件',
     '',
-    '- 公众号：`/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-telemetry.html`',
-    '- 小红书：/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-xiaohongshu.md',
-    '- 信息图：`/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png`',
+    '- 报告：`/workspace/demo-project/drafts/release-report.html`',
+    '- 摘要：/workspace/demo-project/drafts/summary-post.md',
+    '- 信息图：`/workspace/demo-project/drafts/img/release-timeline.png`',
     '',
     `MEDIA:${SVG_DATA_URLS[0]}`,
     `MEDIA:${SVG_DATA_URLS[1]}`,
@@ -299,7 +299,7 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
       {
         id: 'd-u1',
         role: 'user',
-        content: '请输出公众号 HTML、小红书 Markdown、Python 生成的信息图，外加三张高清图与演示视频。',
+        content: '请输出报告 HTML、摘要 Markdown、Python 生成的信息图，外加三张高清图与演示视频。',
         timestamp: 1730000001000,
       },
       {
@@ -325,20 +325,20 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
             id: 'tc-html-1',
             name: 'write_file',
             status: 'done',
-            args: ${JSON.stringify(JSON.stringify({ path: '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-telemetry.html', content: HTML_ARTIFACT }))},
+            args: ${JSON.stringify(JSON.stringify({ path: '/workspace/demo-project/drafts/release-report.html', content: HTML_ARTIFACT }))},
           },
           {
             id: 'tc-md-1',
             name: 'write_file',
             status: 'done',
-            args: ${JSON.stringify(JSON.stringify({ path: '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-xiaohongshu.md', content: MD_ARTIFACT }))},
+            args: ${JSON.stringify(JSON.stringify({ path: '/workspace/demo-project/drafts/summary-post.md', content: MD_ARTIFACT }))},
           },
           {
             id: 'tc-py-img',
             name: 'execute_code',
             status: 'done',
             args: ${JSON.stringify(JSON.stringify({ command: 'python3 render_timeline.py' }))},
-            output: 'Saved timeline to /opt/data/projects/mp-langchao/drafts/img/t3-timeline.png',
+            output: 'Saved timeline to /workspace/demo-project/drafts/img/release-timeline.png',
           },
         ],
       },
@@ -390,12 +390,12 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
   assert.equal(desktopDom.hasFldIcon, false, 'Desktop 文件夹标题旁不得保留后置文件夹图标');
   assert.deepEqual(
     desktopDom.inlineSummary.map((c) => c.name),
-    ['2026-11-23-t3code-telemetry.html', '2026-11-23-t3code-xiaohongshu.md', 't3-timeline.png'],
+    ['release-report.html', 'summary-post.md', 'release-timeline.png'],
     '正文内反引号与裸路径均须原地替换为仅显示文件名的小卡片',
   );
   for (const card of desktopDom.inlineSummary) {
     assert.ok(card.height > 0 && card.height <= 36, `桌面端原地小卡片须为紧凑高度 (<=36px)，实测 ${card.height}`);
-    assert.ok(card.title.includes('/opt/data/'), '完整路径必须收进 tooltip title');
+    assert.ok(card.title.includes('/workspace/'), '完整路径必须收进 tooltip title');
   }
   assert.equal(desktopDom.countAttr, 'multi');
   assert.equal(desktopDom.imageCount, 3, '仅未在正文出现的 3 张 MEDIA 图渲染于页脚上方');
@@ -520,13 +520,13 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
   );
   assert.ok(desktopArtifactsSidebar && desktopArtifactsSidebar.length === 7, '桌面成果物侧边栏必须列出全部 7 项成果物');
   assert.equal(
-    desktopArtifactsSidebar.some((r) => r.label.includes('/opt/data/')),
+    desktopArtifactsSidebar.some((r) => r.label.includes('/workspace/')),
     false,
     '桌面成果物侧边栏仅展示文件名，绝不显示完整目录前缀',
   );
   assert.ok(
-    desktopArtifactsSidebar.some((r) => r.label === 't3-timeline.png' && r.ext === 'PNG'),
-    '桌面成果物侧边栏必须收录脚本生成的 t3-timeline.png 并标出 PNG 短徽标',
+    desktopArtifactsSidebar.some((r) => r.label === 'release-timeline.png' && r.ext === 'PNG'),
+    '桌面成果物侧边栏必须收录脚本生成的 release-timeline.png 并标出 PNG 短徽标',
   );
   assert.equal(
     desktopArtifactsSidebar.some((r) => r.path.includes('/etc/hosts') || r.path.includes('secret.json')),
@@ -551,7 +551,7 @@ test('CDP L6: Desktop 与 Mobile 文件夹对齐、回合交付物画廊、灯�
     5000,
     60,
   );
-  assert.equal(filteredArtifactsCount, 't3-timeline.png', '成果物侧边栏筛选框必须实时过滤并收敛到 t3-timeline.png');
+  assert.equal(filteredArtifactsCount, 'release-timeline.png', '成果物侧边栏筛选框必须实时过滤并收敛到 release-timeline.png');
 
   // ════════════════════════════════════════════════════════════════════════
   // Part 2: Mobile (390×844, DPR=3) 首页行高亮清理 + 灯箱边界 + HTML 亮底 + MD 切换

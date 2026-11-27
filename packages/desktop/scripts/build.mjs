@@ -65,8 +65,55 @@ async function runBoundedPool(tasks, workerCount) {
   );
 }
 
+function copyIfChanged(src, dst, force = false) {
+  if (!force && fs.existsSync(dst)) {
+    const srcStat = fs.statSync(src);
+    const dstStat = fs.statSync(dst);
+    if (srcStat.size === dstStat.size && srcStat.mtimeMs <= dstStat.mtimeMs) {
+      return false;
+    }
+  }
+  fs.copyFileSync(src, dst);
+  return true;
+}
+
+function getNewestMtime(dir, extRe) {
+  let newest = 0;
+  if (!fs.existsSync(dir)) return newest;
+  const walk = (cur) => {
+    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
+      const abs = path.join(cur, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs);
+        continue;
+      }
+      if (!extRe.test(entry.name)) continue;
+      const mtime = fs.statSync(abs).mtimeMs;
+      if (mtime > newest) newest = mtime;
+    }
+  };
+  walk(dir);
+  return newest;
+}
+
+function isTailwindUpToDate(repoDir, outCssPath, force = false) {
+  if (force || !fs.existsSync(outCssPath)) return false;
+  const outStat = fs.statSync(outCssPath);
+  if (outStat.size <= 0) return false;
+
+  const entryFile = path.join(repoDir, 'packages/ui/src/tailwind-entry.css');
+  let newestInput = fs.existsSync(entryFile) ? fs.statSync(entryFile).mtimeMs : 0;
+  newestInput = Math.max(
+    newestInput,
+    getNewestMtime(path.join(repoDir, 'packages/ui/src'), /\.(ts|tsx|css)$/),
+    getNewestMtime(path.join(repoDir, 'packages/desktop/src/renderer'), /\.(ts|tsx|html|css)$/),
+  );
+  return newestInput <= outStat.mtimeMs;
+}
+
 async function buildAll() {
-  console.log('[Hermes Flux Build] Starting esbuild compilation...');
+  const forceFullBuild = process.env.FORCE_FULL_BUILD === '1';
+  console.log(`[Hermes Flux Build] Starting esbuild compilation${forceFullBuild ? ' (FORCE_FULL_BUILD=1)' : ''}...`);
   const startTime = Date.now();
 
   assertWorkspaceDistFresh('core');
@@ -79,23 +126,28 @@ async function buildAll() {
   // 设计意图(Why)：跨包管理器稳健的调用方式是直接 spawn CLI 的 JS 入口，不依赖 .bin shim 的平台后缀。
   // 防范的历史坑(Pitfall)：初版写死根 node_modules/.bin/tailwindcss.cmd，该路径在本仓库布局下根本不存在，build 必炸。
   const repoDir = path.resolve(rootDir, '..', '..');
-  const tailwindCliCandidates = [
-    path.join(repoDir, 'packages', 'ui', 'node_modules', '@tailwindcss', 'cli', 'dist', 'index.mjs'),
-    path.join(repoDir, 'node_modules', '@tailwindcss', 'cli', 'dist', 'index.mjs'),
-  ];
-  const tailwindCli = tailwindCliCandidates.find((p) => fs.existsSync(p));
-  if (!tailwindCli) throw new Error('未找到 @tailwindcss/cli 入口，请先在仓库根执行 npm ci');
-  const tailwind = spawnSync(process.execPath, [
-    tailwindCli,
-    '-i', path.join(repoDir, 'packages/ui/src/tailwind-entry.css'),
-    '-o', path.join(rootDir, 'dist/renderer/tailwind.css'),
-    '--minify',
-  ], { cwd: repoDir, encoding: 'utf8' });
-  if (tailwind.error || tailwind.signal || tailwind.status !== 0) {
-    const detail = tailwind.error?.message || tailwind.signal || tailwind.stderr || `exit ${tailwind.status}`;
-    throw new Error(`Tailwind CSS build failed: ${detail}`);
+  const tailwindOutCss = path.join(rootDir, 'dist/renderer/tailwind.css');
+  if (isTailwindUpToDate(repoDir, tailwindOutCss, forceFullBuild)) {
+    console.log('  ✔ Tailwind design tokens up-to-date (skipped)');
+  } else {
+    const tailwindCliCandidates = [
+      path.join(repoDir, 'packages', 'ui', 'node_modules', '@tailwindcss', 'cli', 'dist', 'index.mjs'),
+      path.join(repoDir, 'node_modules', '@tailwindcss', 'cli', 'dist', 'index.mjs'),
+    ];
+    const tailwindCli = tailwindCliCandidates.find((p) => fs.existsSync(p));
+    if (!tailwindCli) throw new Error('未找到 @tailwindcss/cli 入口，请先在仓库根执行 npm ci');
+    const tailwind = spawnSync(process.execPath, [
+      tailwindCli,
+      '-i', path.join(repoDir, 'packages/ui/src/tailwind-entry.css'),
+      '-o', tailwindOutCss,
+      '--minify',
+    ], { cwd: repoDir, encoding: 'utf8' });
+    if (tailwind.error || tailwind.signal || tailwind.status !== 0) {
+      const detail = tailwind.error?.message || tailwind.signal || tailwind.stderr || `exit ${tailwind.status}`;
+      throw new Error(`Tailwind CSS build failed: ${detail}`);
+    }
+    console.log('  ✔ Tailwind design tokens compiled');
   }
-  console.log('  ✔ Tailwind design tokens compiled');
 
   /**
    * 独立产物共享的运行时外部依赖。
@@ -354,28 +406,33 @@ async function buildAll() {
   await runBoundedPool(esbuildTasks, concurrency);
   console.log(`  ✔ ${esbuildTasks.length} esbuild bundles compiled (concurrency=${concurrency})`);
 
-  // 4. Copy static assets
-  fs.copyFileSync(
+  // 4. Copy static assets incrementally
+  copyIfChanged(
     path.join(rootDir, 'src/renderer/index.html'),
-    path.join(rootDir, 'dist/renderer/index.html')
+    path.join(rootDir, 'dist/renderer/index.html'),
+    forceFullBuild,
   );
-  fs.copyFileSync(
+  copyIfChanged(
     path.join(rootDir, 'src/renderer/styles.css'),
-    path.join(rootDir, 'dist/renderer/styles.css')
+    path.join(rootDir, 'dist/renderer/styles.css'),
+    forceFullBuild,
   );
 
   // 对话区、右侧状态栏与移动端壳样式资产来自 UI 包，供 desktop 与 web/mobile 共用。
-  fs.copyFileSync(
+  copyIfChanged(
     path.join(repoDir, 'packages', 'ui', 'src', 'styles', 'conversation.css'),
-    path.join(rootDir, 'dist/renderer', 'conversation.css')
+    path.join(rootDir, 'dist/renderer', 'conversation.css'),
+    forceFullBuild,
   );
-  fs.copyFileSync(
+  copyIfChanged(
     path.join(repoDir, 'packages', 'ui', 'src', 'styles', 'status-pod.css'),
-    path.join(rootDir, 'dist/renderer', 'status-pod.css')
+    path.join(rootDir, 'dist/renderer', 'status-pod.css'),
+    forceFullBuild,
   );
-  fs.copyFileSync(
+  copyIfChanged(
     path.join(repoDir, 'packages', 'ui', 'src', 'styles', 'mobile-shell.css'),
-    path.join(rootDir, 'dist/renderer', 'mobile-shell.css')
+    path.join(rootDir, 'dist/renderer', 'mobile-shell.css'),
+    forceFullBuild,
   );
 
   // 模型厂商图标资产同样来自 UI 包：组件以 `icons/lobe/<slug>.svg` 相对 index.html 引用，
@@ -384,29 +441,37 @@ async function buildAll() {
   const vendorIconTargetDir = path.join(rootDir, 'dist', 'renderer', 'icons', 'lobe');
   fs.mkdirSync(vendorIconTargetDir, { recursive: true });
   let copiedVendorIcons = 0;
+  let skippedVendorIcons = 0;
   for (const name of fs.readdirSync(vendorIconSourceDir)) {
     if (!name.endsWith('.svg')) continue;
-    fs.copyFileSync(path.join(vendorIconSourceDir, name), path.join(vendorIconTargetDir, name));
-    copiedVendorIcons += 1;
+    if (copyIfChanged(path.join(vendorIconSourceDir, name), path.join(vendorIconTargetDir, name), forceFullBuild)) {
+      copiedVendorIcons += 1;
+    } else {
+      skippedVendorIcons += 1;
+    }
   }
   // 【规则】MIT 要求所有副本随附许可声明：图标资产进了分发产物，LICENSE 必须同行，
   // 否则安装包里只有一堆无出处的品牌矢量图。
   const vendorIconLicense = path.join(vendorIconSourceDir, 'LICENSE');
   if (!fs.existsSync(vendorIconLicense)) throw new Error('缺少 lobe 图标 LICENSE，禁止在无许可声明的情况下分发品牌资产');
-  fs.copyFileSync(vendorIconLicense, path.join(vendorIconTargetDir, 'LICENSE'));
-  console.log(`  ✔ Model vendor icons copied (${copiedVendorIcons} svg + LICENSE)`);
+  copyIfChanged(vendorIconLicense, path.join(vendorIconTargetDir, 'LICENSE'), forceFullBuild);
+  console.log(`  ✔ Model vendor icons ready (${copiedVendorIcons} copied, ${skippedVendorIcons} cached; +LICENSE)`);
 
   // 品牌折纸雨燕矢量资产与 favicon 拷贝到渲染产物根目录 icons/brand/（desktop 与 mobile 共用）。
   const brandIconSourceDir = path.join(repoDir, 'packages', 'ui', 'src', 'icons', 'brand');
   const brandIconTargetDir = path.join(rootDir, 'dist', 'renderer', 'icons', 'brand');
   fs.mkdirSync(brandIconTargetDir, { recursive: true });
   let copiedBrandIcons = 0;
+  let skippedBrandIcons = 0;
   for (const name of fs.readdirSync(brandIconSourceDir)) {
     if (!name.endsWith('.svg') && !name.endsWith('.png')) continue;
-    fs.copyFileSync(path.join(brandIconSourceDir, name), path.join(brandIconTargetDir, name));
-    copiedBrandIcons += 1;
+    if (copyIfChanged(path.join(brandIconSourceDir, name), path.join(brandIconTargetDir, name), forceFullBuild)) {
+      copiedBrandIcons += 1;
+    } else {
+      skippedBrandIcons += 1;
+    }
   }
-  console.log(`  ✔ Brand identity assets copied (${copiedBrandIcons} files)`);
+  console.log(`  ✔ Brand identity assets ready (${copiedBrandIcons} copied, ${skippedBrandIcons} cached)`);
 
   // 字体清单由 scripts/font-manifest.json 提供（与 tokens/fonts.ts 的 source 字段一一对应）。
   // 只拷贝 latin 子集；中文继续走系统字体，避免引入 MB 级 CJK 字重。
@@ -416,6 +481,7 @@ async function buildAll() {
     fs.readFileSync(path.join(rootDir, 'scripts', 'font-manifest.json'), 'utf8')
   );
   let copiedFonts = 0;
+  let skippedFonts = 0;
   let missingFonts = 0;
   const workspaceRoot = path.resolve(rootDir, '..', '..');
   for (const { packageName, filePrefix, weights } of fontManifest.sources) {
@@ -429,11 +495,14 @@ async function buildAll() {
         missingFonts += 1;
         continue;
       }
-      fs.copyFileSync(source, path.join(fontTargetDir, name));
-      copiedFonts += 1;
+      if (copyIfChanged(source, path.join(fontTargetDir, name), forceFullBuild)) {
+        copiedFonts += 1;
+      } else {
+        skippedFonts += 1;
+      }
     }
   }
-  console.log(`  ✔ Web fonts copied (${copiedFonts} woff2, ${missingFonts} missing)`);
+  console.log(`  ✔ Web fonts ready (${copiedFonts} copied, ${skippedFonts} cached, ${missingFonts} missing)`);
 
   // 5. Ship the brand icons next to the compiled main process
   const iconDir = path.join(rootDir, 'build');
@@ -442,10 +511,10 @@ async function buildAll() {
   if (shippedIcons.length > 0) {
     fs.mkdirSync(path.join(rootDir, 'dist/build'), { recursive: true });
     for (const name of shippedIcons) {
-      fs.copyFileSync(path.join(iconDir, name), path.join(rootDir, 'dist/build', name));
+      copyIfChanged(path.join(iconDir, name), path.join(rootDir, 'dist/build', name), forceFullBuild);
     }
   }
-  console.log(`  ✔ Static renderer assets copied (icons: ${shippedIcons.join(', ') || 'none'})`);
+  console.log(`  ✔ Static renderer assets ready (icons: ${shippedIcons.join(', ') || 'none'})`);
 
   const elapsed = Date.now() - startTime;
   console.log(`[Hermes Flux Build] Compilation complete in ${elapsed}ms`);

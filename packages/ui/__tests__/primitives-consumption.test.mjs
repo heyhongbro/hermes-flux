@@ -82,7 +82,7 @@ const CONSUMPTION = {
    */
   Skeleton: { state: 'consumed', consumers: ['components-react/LeftRail.tsx', 'components-react/RailEntityRow.tsx', 'components-react/GroupedLeftRail.tsx', 'components-react/conversation/ConversationSkeleton.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/SkillDetailDialog.tsx'] },
   /**
-   * 极客美学 Tooltip 微组件。
+   * Tooltip 微组件。
    *
    * 设计意图 (Why)：阻断浏览器原生 title 黑块墨渍，为控件注入 data-tooltip 属性，
    *   生产消费者为 LeftRail / GroupedLeftRail 等。
@@ -138,7 +138,7 @@ test('primitives 消费守卫：登记表结构完整且状态合法', async (t)
     // 冻结当前消费集合：删除任何一项都必须先解释清楚，不能悄悄发生
     // 2026-11-13：BOT 能力矩阵接入逐项开关，Switch 由 pending 转正为 consumed。
     // 2026-11-19：设置中心三处弹窗收编 primitives/Dialog（焦点陷阱 + Esc 分层），Dialog 由 pending 转正。
-    // 2026-11-20：极客美学 Tooltip 入库并由 LeftRail 新建按钮消费，Tooltip 登记为 consumed。
+    // 2026-11-20：Tooltip 微组件入库并由 LeftRail 新建按钮消费，Tooltip 登记为 consumed。
     assert.deepEqual(consumed, ['ActivityIndicator', 'Badge', 'Button', 'Dialog', 'Input', 'ListRow', 'Menu', 'Select', 'Skeleton', 'Stat', 'Surface', 'Switch', 'Textarea', 'Toolbar', 'Tooltip'], '已消费集合只增不减；若确有迁移请同步更新本断言并在 PR 里说明');
   });
 });

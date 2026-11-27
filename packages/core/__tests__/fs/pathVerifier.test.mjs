@@ -40,13 +40,13 @@ test('createDirectoryPathVerifier: 同父目录批量仅发起 1 次探针、LRU
         await new Promise((r) => setTimeout(r, 10));
         if (dirPath === '/opt/data/drafts') {
           return [
-            { name: '2026-11-23-t3code-telemetry.html', path: `${dirPath}/2026-11-23-t3code-telemetry.html`, isDirectory: false },
-            { name: '2026-11-23-t3code-xiaohongshu.md', path: `${dirPath}/2026-11-23-t3code-xiaohongshu.md`, isDirectory: false },
+            { name: 'release-report.html', path: `${dirPath}/release-report.html`, isDirectory: false },
+            { name: 'summary-post.md', path: `${dirPath}/summary-post.md`, isDirectory: false },
             { name: 'subdir.png', path: `${dirPath}/subdir.png`, isDirectory: true },
           ];
         }
         if (dirPath === '/opt/data/drafts/img') {
-          return [{ name: 't3-timeline.png', path: `${dirPath}/t3-timeline.png`, isDirectory: false }];
+          return [{ name: 'release-timeline.png', path: `${dirPath}/release-timeline.png`, isDirectory: false }];
         }
         if (dirPath === '/opt/ws/rel') {
           return [{ name: 'chart.png', path: `${dirPath}/chart.png`, isDirectory: false }];
@@ -63,36 +63,36 @@ test('createDirectoryPathVerifier: 同父目录批量仅发起 1 次探针、LRU
   const [res1, res2] = await Promise.all([
     verifier.verifyPathsExist(
       [
-        '/opt/data/drafts/2026-11-23-t3code-telemetry.html',
-        '/opt/data/drafts/2026-11-23-t3code-xiaohongshu.md',
+        '/opt/data/drafts/release-report.html',
+        '/opt/data/drafts/summary-post.md',
         '/opt/data/drafts/subdir.png',
         '/opt/data/drafts/missing.md',
-        '/opt/data/drafts/img/t3-timeline.png',
+        '/opt/data/drafts/img/release-timeline.png',
         'rel/chart.png',
       ],
       { cwd: '/opt/ws' },
     ),
-    verifier.verifyPathsExist(['/opt/data/drafts/2026-11-23-t3code-telemetry.html'], { cwd: '/opt/ws' }),
+    verifier.verifyPathsExist(['/opt/data/drafts/release-report.html'], { cwd: '/opt/ws' }),
   ]);
 
   assert.deepEqual(res1, [
-    '/opt/data/drafts/2026-11-23-t3code-telemetry.html',
-    '/opt/data/drafts/2026-11-23-t3code-xiaohongshu.md',
-    '/opt/data/drafts/img/t3-timeline.png',
+    '/opt/data/drafts/release-report.html',
+    '/opt/data/drafts/summary-post.md',
+    '/opt/data/drafts/img/release-timeline.png',
     'rel/chart.png',
   ]);
-  assert.deepEqual(res2, ['/opt/data/drafts/2026-11-23-t3code-telemetry.html']);
+  assert.deepEqual(res2, ['/opt/data/drafts/release-report.html']);
   assert.equal(listCalls.filter((d) => d === '/opt/data/drafts').length, 1, '同父目录多候选与并发探测只能触发 1 次 listDirectory');
 
   // 再次验证命中 LRU 缓存，不新增 listDirectory 调用
   const beforeCount = listCalls.length;
-  const cachedRes = await verifier.verifyPathsExist(['/opt/data/drafts/img/t3-timeline.png'], { cwd: '/opt/ws' });
-  assert.deepEqual(cachedRes, ['/opt/data/drafts/img/t3-timeline.png']);
+  const cachedRes = await verifier.verifyPathsExist(['/opt/data/drafts/img/release-timeline.png'], { cwd: '/opt/ws' });
+  assert.deepEqual(cachedRes, ['/opt/data/drafts/img/release-timeline.png']);
   assert.equal(listCalls.length, beforeCount);
 
   // clear() 后重新触发物理列举
   verifier.clear();
-  await verifier.verifyPathsExist(['/opt/data/drafts/img/t3-timeline.png'], { cwd: '/opt/ws' });
+  await verifier.verifyPathsExist(['/opt/data/drafts/img/release-timeline.png'], { cwd: '/opt/ws' });
   assert.equal(listCalls.length, beforeCount + 1);
 });
 
@@ -104,7 +104,7 @@ test('createDirectoryPathVerifier: 远端 gateway_api 实证放行，缺失桥�
         if (opts.path.startsWith('/api/files')) {
           return {
             entries: [
-              { name: 't3-timeline.png', type: 'file' },
+              { name: 'release-timeline.png', type: 'file' },
               { name: 'folder', type: 'directory' },
             ],
           };
@@ -114,10 +114,10 @@ test('createDirectoryPathVerifier: 远端 gateway_api 实证放行，缺失桥�
     }),
   });
   const remoteOut = await remoteVerifier.verifyPathsExist(
-    ['/opt/out/t3-timeline.png', '/opt/out/folder'],
+    ['/opt/out/release-timeline.png', '/opt/out/folder'],
     { gatewayUrl: 'https://gw.example.com', profile: 'default' },
   );
-  assert.deepEqual(remoteOut, ['/opt/out/t3-timeline.png']);
+  assert.deepEqual(remoteOut, ['/opt/out/release-timeline.png']);
 
   // 2. 超过 128 个目录时正确淘汰最久未用 LRU 键并保持边界稳定
   const lruCalls = [];

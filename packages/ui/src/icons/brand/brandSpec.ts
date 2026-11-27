@@ -56,7 +56,7 @@ export interface BrandVariantTransform {
 export interface BrandSpec {
   readonly version: string;
   readonly name: string;
-  readonly referenceImage: string;
+  readonly referenceImage?: string;
   readonly viewBox: string;
   readonly squircleRx: number;
   readonly background: {
@@ -87,7 +87,6 @@ export interface BrandSpec {
 export const BRAND_SPEC: BrandSpec = {
   "version": "1.0.0",
   "name": "Hermes Flux — Bauhaus Origami Swift",
-  "referenceImage": "docs/design-system/brand/bauhaus-swift-reference.jpg",
   "viewBox": "0 0 1000 1000",
   "squircleRx": 225,
   "background": {

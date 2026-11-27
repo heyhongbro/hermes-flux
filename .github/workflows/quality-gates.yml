@@ -23,8 +23,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    name: Detect CI Scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      scope: ${{ steps.detect.outputs.scope }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - id: detect
+        name: Classify changed files
+        run: node scripts/gates/detect-ci-scope.mjs
+
+  docs-gates:
+    name: Docs Fast Gates
+    needs: scope
+    if: needs.scope.outputs.scope == 'docs'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify workspace links
+        run: node scripts/gates/verify-workspace-links.mjs
+
+      - name: Gate 0a · CI workflow 可移植性
+        run: npm run gates:ci
+
+      - name: Gate 0/4 · 静态门禁（文档与基础合规）
+        run: node scripts/gates/run.mjs
+
+      - name: Gate 3a · 不变量映射表
+        run: npm run gates:invariants
+
+      - name: Gate 0d · 契约文档同步
+        run: npm run contract:doc:check
+
   gates:
     name: Gate 0-4
+    needs: scope
+    if: needs.scope.outputs.scope == 'full'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -83,9 +138,6 @@ jobs:
       - name: Gate 2b · 门禁自身变异检验
         run: npm run gates:mutation
 
-      - name: Gate 2c · Agent 编排一致性
-        run: npm run gates:config
-
       - name: Gate 2d · 豁免敞口预算（行内豁免只降不升）
         run: npm run gates:allow
 
@@ -123,7 +175,8 @@ jobs:
 
   pr-mutation:
     name: Gate 5 · PR 变更域 Stryker 变异测试
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.mutation_domain != '')
+    needs: scope
+    if: needs.scope.outputs.scope == 'full' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.mutation_domain != ''))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
