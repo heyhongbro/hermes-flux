@@ -57,8 +57,8 @@ test('WebSocket 握手、重连续期与 Cookie 提取行为测试', async (t) =
       'wss://gw.example.com:9119/api/ws?ticket=a%2Bb%2Fc%3D'
     );
     assert.equal(
-      buildGatewayWsUrl('http://192.168.50.106:9119', 't1', (u) => `ws://127.0.0.1:9120/__gw/ws?target=${encodeURIComponent(u)}`),
-      'ws://127.0.0.1:9120/__gw/ws?target=ws%3A%2F%2F192.168.50.106%3A9119%2Fapi%2Fws%3Fticket%3Dt1'
+      buildGatewayWsUrl('http://192.0.2.10:9119', 't1', (u) => `ws://127.0.0.1:9120/__gw/ws?target=${encodeURIComponent(u)}`),
+      'ws://127.0.0.1:9120/__gw/ws?target=ws%3A%2F%2F192.0.2.10%3A9119%2Fapi%2Fws%3Fticket%3Dt1'
     );
   });
 
@@ -76,20 +76,20 @@ test('WebSocket 握手、重连续期与 Cookie 提取行为测试', async (t) =
         latency: 42,
         ticket: `fresh-${++ticketSeq}`,
       }),
-      buildUrl: (ticket) => buildGatewayWsUrl('http://192.168.50.106:9119', ticket),
+      buildUrl: (ticket) => buildGatewayWsUrl('http://192.0.2.10:9119', ticket),
       onRefreshed: (r) => refreshedLog.push(r),
       fallbackErrorMessage: 'fallback',
     });
 
     const nextUrl = await resolver();
-    assert.equal(nextUrl, 'ws://192.168.50.106:9119/api/ws?ticket=fresh-1');
+    assert.equal(nextUrl, 'ws://192.0.2.10:9119/api/ws?ticket=fresh-1');
     assert.equal(refreshedLog.at(-1).ticket, 'fresh-1');
 
     const failResolver = createGatewayReconnectResolver({
       epoch: 1,
       getCurrentEpoch: () => activeEpoch,
       authenticate: async () => ({ ok: false, message: 'HTTP 401', latency: 10 }),
-      buildUrl: (ticket) => buildGatewayWsUrl('http://192.168.50.106:9119', ticket),
+      buildUrl: (ticket) => buildGatewayWsUrl('http://192.0.2.10:9119', ticket),
       onRefreshed: (r) => refreshedLog.push(r),
       fallbackErrorMessage: 'fallback',
     });
@@ -101,7 +101,7 @@ test('WebSocket 握手、重连续期与 Cookie 提取行为测试', async (t) =
       epoch: 1,
       getCurrentEpoch: () => activeEpoch,
       authenticate: () => new Promise((r) => { releasePending = () => r({ ok: true, message: 'ok', latency: 5, ticket: 'stale' }); }),
-      buildUrl: (ticket) => buildGatewayWsUrl('http://192.168.50.106:9119', ticket),
+      buildUrl: (ticket) => buildGatewayWsUrl('http://192.0.2.10:9119', ticket),
       onRefreshed: () => { staleNotified = true; },
       fallbackErrorMessage: 'fallback',
     });

@@ -1,7 +1,7 @@
 /**
  * Real Live-Gateway Multi-Device & Long-Running Streaming E2E (Desktop + Mobile CDP)
  *
- * Verifies against the live Hermes Gateway (via `--env-file=D:/workspace/hermes-aura/.env`):
+ * Verifies against the live Hermes Gateway (via `--env-file=.env`):
  *   1. Desktop (1280x800) -> Mobile (390x844 ?shell=mobile) live turn & user-prompt synchronization;
  *   2. Mobile -> Desktop follow-up live turn & user-prompt synchronization;
  *   3. Long-running (>65s silent tool) streaming continuity across the 60s watchdog boundary

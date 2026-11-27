@@ -1,48 +1,45 @@
-# 模型厂商图标资产 (Vendor Icon Assets)
+# Vendor Icon Assets
 
-本目录是 [`@lobehub/icons-static-svg`](https://github.com/lobehub/lobe-icons) 的原样拷贝，用于按厂商自动渲染品牌图标。
+This directory is a verbatim copy of [`@lobehub/icons-static-svg`](https://github.com/lobehub/lobe-icons) used to render provider and model brand icons automatically.
 
-| 项 | 值 |
+| Item | Value |
 |---|---|
-| 上游 | `@lobehub/icons-static-svg` 1.102.0 |
-| 许可 | MIT（见同目录 `LICENSE`） |
-| 文件数 | 994 个 SVG（全量保留，含 `-text` 字标与 `-brand` 底图变体） |
-| 生成器 | `scripts/gen-vendor-icons.mjs` |
+| Upstream | `@lobehub/icons-static-svg` 1.102.0 |
+| License | MIT (see `LICENSE` in this directory) |
+| File count | 994 SVGs (full upstream set, including `-text` and `-brand` variants) |
+| Generator | `scripts/gen-vendor-icons.mjs` |
 
-## 变体命名
+## Variant Naming
 
-- `<slug>.svg` — mono 版，`fill="currentColor"`，随文字色与皮肤变色；
-- `<slug>-color.svg` — 品牌原色版；
-- `<slug>-text.svg` / `<slug>-text-cn.svg` — 图形 + 品牌文字的横向组合标；
-- `<slug>-brand.svg` / `<slug>-brand-color.svg` — 带背景容器的版本。
+- `<slug>.svg` — monochrome version (`fill="currentColor"`), adapts to text color and active theme;
+- `<slug>-color.svg` — full-color brand variant;
+- `<slug>-text.svg` / `<slug>-text-cn.svg` — horizontal icon + wordmark lockup;
+- `<slug>-brand.svg` / `<slug>-brand-color.svg` — container-backed variant.
 
-列表行只用前两种，其余保留备用。
+List rows use only the first two variants; the rest are kept for completeness.
 
-## 为什么需要双轨（暗/浅两侧判定）
+## Dual-Track Contrast Classification (Dark / Light)
 
-彩色版是画死的十六进制，两个方向会各自翻车：OpenAI / Anthropic / xAI 的标识本身是黑色，
-深色底上不可见；OpenRouter 的荧光绿 `#C8FF00` 对白底仅 1.18:1，浅色底上同样不可见。
-因此清单对每个彩色资产同时记录 `colorDarkSafe` 与 `colorLightSafe`，
-渲染层据此在「永远彩色 / 深色出 mono / 浅色出 mono / 永远 mono」之间选择。
+Color SVGs hardcode hex values that can become invisible on one theme polarity: e.g. OpenAI, Anthropic, and xAI marks are black (invisible on dark backgrounds), while OpenRouter's `#C8FF00` yields only 1.18:1 contrast on white (invisible on light backgrounds).
+The manifest therefore records both `colorDarkSafe` and `colorLightSafe` for every color asset so the renderer chooses between always-color, dark-only-color, light-only-color, and always-mono.
 
-判定采用「达标色值数 >= 总数一半」：多色 logo 的轮廓由多段色块共同支撑
-（Google 四色里只有黄色对白底不足），单色低对比（OpenRouter / NVIDIA）则必然被判不安全。
+Safety is evaluated by majority rule (`safe colors >= total / 2`): multi-color marks such as Google's four-color logo pass when most segments remain legible, whereas low-contrast monochrome color marks (e.g. OpenRouter / NVIDIA) fall back to monochrome.
 
-当前分布（共 357 个基础族）：
+Current distribution (357 base vendors):
 
-| 组合 | 数量 | 渲染形态 |
+| Classification | Count | Rendering Mode |
 |---|---|---|
-| 两侧都安全 | 135 | 永远彩色 |
-| 仅深色安全 | 69 | 深色出彩色、浅色出 mono |
-| 仅浅色安全 | 32 | 浅色出彩色、深色出 mono |
-| 两侧都不安全 | 0 | 永远 mono |
-| 只有 mono 变体 | 121 | 永远 mono |
+| Safe on both | 135 | Always color |
+| Dark-safe only | 69 | Color on dark, mono on light |
+| Light-safe only | 32 | Color on light, mono on dark |
+| Safe on neither | 0 | Always mono |
+| Mono-only variant | 121 | Always mono |
 
-## 更新方式
+## Updating Assets
 
 ```bash
 node scripts/gen-vendor-icons.mjs
 ```
 
-脚本会下载对应版本 tarball、清空并覆盖本目录、重新生成 `../vendorIconAssets.ts`。
-升级版本时修改脚本顶部的 `PACKAGE_VERSION`。
+The script downloads the configured package tarball, refreshes this directory, and regenerates `../vendorIconAssets.ts`.
+Update `PACKAGE_VERSION` at the top of the generator script to bump upstream versions.

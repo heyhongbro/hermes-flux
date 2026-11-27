@@ -2,8 +2,7 @@
  * Hermes Flux 跨端品牌资产契约与二进制像素校验测试
  *
  * 【测试什么】
- *   1. 原始设计母本 (`bauhaus-swift-reference.jpg`) 与 `brand-spec.json` 真实落盘、共线脊线成立，
- *      且与生成镜像 `brandSpec.ts` (`BRAND_SPEC`) 深度全等；
+ *   1. `brand-spec.json` 真实落盘、共线脊线成立，且与生成镜像 `brandSpec.ts` (`BRAND_SPEC`) 深度全等；
  *   2. 三份静态 SVG (`hermes-flux-{icon,badge,mark}.svg`) 与桌面冷启动 `index.html` 内联 SVG
  *      精确复用 `brand-spec.json` 的 `squircleRx`、变换矩阵、9 面顶点与渐变停靠色，零漂移；
  *   3. Desktop (`icon.png` 1024x1024 RGBA / `icon.ico` 7 尺寸)、iOS (`AppIcon` 1024x1024 纯 RGB 无透明、
@@ -109,19 +108,9 @@ function assertSvgMatchesSpecGeometry(svgMarkup, spec, variantKey, label) {
   }
 }
 
-test('品牌母本：参考原图、brand-spec.json 与生成镜像 BRAND_SPEC 完全一致且脊线共线', () => {
-  const refPath = path.join(REPO_ROOT, 'docs/design-system/brand/bauhaus-swift-reference.jpg');
-  const specDocPath = path.join(REPO_ROOT, 'docs/design-system/brand-identity-spec.md');
+test('品牌规格真值：brand-spec.json 与生成镜像 BRAND_SPEC 完全一致且脊线共线', () => {
   const specJsonPath = path.join(REPO_ROOT, 'packages/ui/src/icons/brand/brand-spec.json');
-
-  assert.ok(fs.existsSync(refPath), '必须保留原始参考图 bauhaus-swift-reference.jpg');
-  const jpgHeader = fs.readFileSync(refPath).subarray(0, 3);
-  assert.deepEqual([...jpgHeader], [0xff, 0xd8, 0xff], '参考图必须是有效 JPEG 二进制');
-
-  const docText = fs.readFileSync(specDocPath, 'utf8');
-  assert.ok(docText.includes('bauhaus-swift-reference.jpg'), '设计规范必须引用原始参考图');
-  assert.ok(docText.includes('brand-spec.json'), '设计规范必须引用 brand-spec.json');
-  assert.ok(docText.includes('fluxSwiftWingUpper') && docText.includes('fluxSwiftWingLower'), '规范必须与实际拆分关键帧命名一致');
+  assert.ok(fs.existsSync(specJsonPath), '必须保留 brand-spec.json');
 
   const spec = JSON.parse(fs.readFileSync(specJsonPath, 'utf8'));
   assert.deepEqual(BRAND_SPEC, spec, 'brandSpec.ts 的 BRAND_SPEC 必须与 brand-spec.json 严格深相等，禁止手改漂移');

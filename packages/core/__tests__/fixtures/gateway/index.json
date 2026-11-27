@@ -117,7 +117,7 @@
           "ok": true,
           "params": {
             "name": "flux-probe-bot",
-            "description": "Hermes Flux 契约探针专用 Bot"
+            "description": "Hermes Flux contract probe bot"
           },
           "resultKeys": [
             "ok",
@@ -333,7 +333,7 @@
             "room_id": "rmvx6mlf7-552bw",
             "event_id": "evt-mvx6mnnn-izjw7rwj",
             "payload": {
-              "text": "契约探针：验证 groups.send 的 payload 形状",
+              "text": "Contract probe: verify groups.send payload shape",
               "thread_id": "tmvx6mnnn-zag4x"
             }
           },
@@ -444,7 +444,7 @@
           "ok": true,
           "params": {
             "id": "p_99c43ce7",
-            "description": "契约探针已更新描述"
+            "description": "Contract probe updated description"
           },
           "resultKeys": [
             "project"
@@ -620,7 +620,7 @@
           "params": {
             "session_id": "8227bd0b",
             "profile": "default",
-            "text": "契约探针：请只回复 ok"
+            "text": "Contract probe: reply ok only"
           },
           "resultKeys": [
             "status",
@@ -634,7 +634,7 @@
           "params": {
             "session_id": "8227bd0b",
             "profile": "default",
-            "text": "契约探针：旁路问题，请只回复 ok"
+            "text": "Contract probe: side question, reply ok only"
           },
           "resultKeys": [
             "task_id"
@@ -645,14 +645,14 @@
           "method": "prompt.cancel",
           "ok": false,
           "skipped": true,
-          "reason": "未做真实网关验证：取消需要真实排队中的准入（仅在有在途回合时存在），离线探针造不出该状态，误传真实 admission_id 又会撤掉用户自己的排队消息；目前仅由本地参数构造单测与契约表守护"
+          "reason": "Not verified against a live gateway: cancellation requires a queued admission (which exists only while a turn is in flight); offline probes cannot synthesize that state, and passing a real admission_id would cancel the user's queued message. Guarded by local parameter-construction unit tests and the contract table."
         },
         {
           "module": "prompt",
           "method": "prompt.steer_queued",
           "ok": false,
           "skipped": true,
-          "reason": "未做真实网关验证：立即执行需要真实排队中的准入与在途回合，离线探针造不出该状态；目前仅由本地参数构造单测与契约表守护"
+          "reason": "Not verified against a live gateway: steer_queued requires a real queued admission and an in-flight turn, which offline probes cannot synthesize. Guarded by local parameter-construction unit tests and the contract table."
         }
       ]
     },
@@ -700,49 +700,49 @@
           "method": "mcp.catalog",
           "ok": false,
           "skipped": true,
-          "reason": "新增 MCP 目录查询 RPC 在无 .env 离线探针下显式跳过，由契约白名单与核心/桌面端单测守护；连真实网关跑 probe:gateway 可补录"
+          "reason": "MCP catalog lookup RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus core/desktop unit tests; run probe:gateway against a live gateway to record."
         },
         {
           "module": "extensions",
           "method": "mcp.servers.add",
           "ok": false,
           "skipped": true,
-          "reason": "新增 MCP 服务器写操作在无 .env 离线探针下显式跳过，由契约白名单与参数构造单测守护；连真实网关跑 probe:gateway 可补录"
+          "reason": "MCP server creation write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus parameter-construction unit tests; run probe:gateway against a live gateway to record."
         },
         {
           "module": "extensions",
           "method": "mcp.servers.remove",
           "ok": false,
           "skipped": true,
-          "reason": "移除 MCP 服务器写操作在无 .env 离线探针下显式跳过，由契约白名单与控制器单测守护；连真实网关跑 probe:gateway 可补录"
+          "reason": "MCP server removal write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus controller unit tests; run probe:gateway against a live gateway to record."
         },
         {
           "module": "extensions",
           "method": "mcp.servers.test",
           "ok": false,
           "skipped": true,
-          "reason": "MCP 服务器探活 RPC 在无 .env 离线探针下显式跳过，由契约白名单与结果归一化单测守护；连真实网关跑 probe:gateway 可补录"
+          "reason": "MCP server health-check RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus result-normalization unit tests; run probe:gateway against a live gateway to record."
         },
         {
           "module": "extensions",
           "method": "model.save_key",
           "ok": false,
           "skipped": true,
-          "reason": "写操作会覆盖用户真实 API Key 且无法还原，仅由 CDP 场景在无凭据沙箱手工验证"
+          "reason": "Write operation overwrites the user's real API key irreversibly; verified only via CDP scenarios in a credential-free sandbox."
         },
         {
           "module": "extensions",
           "method": "model.disconnect",
           "ok": false,
           "skipped": true,
-          "reason": "断开提供商会破坏用户已配置的凭据，禁止在真实网关上执行"
+          "reason": "Disconnecting a provider destroys configured user credentials; forbidden on live gateways."
         },
         {
           "module": "extensions",
           "method": "reload.env",
           "ok": false,
           "skipped": true,
-          "reason": "环境热重载会改变运行中的凭据状态，须与 model.save_key 成对执行，禁止单独探针"
+          "reason": "Environment hot-reload mutates live credential state and must run paired with model.save_key; standalone probing is forbidden."
         }
       ]
     }
@@ -853,7 +853,7 @@
       "ok": true,
       "params": {
         "name": "flux-probe-bot",
-        "description": "Hermes Flux 契约探针专用 Bot"
+        "description": "Hermes Flux contract probe bot"
       },
       "resultKeys": [
         "ok",
@@ -1059,7 +1059,7 @@
         "room_id": "rmvx6mlf7-552bw",
         "event_id": "evt-mvx6mnnn-izjw7rwj",
         "payload": {
-          "text": "契约探针：验证 groups.send 的 payload 形状",
+          "text": "Contract probe: verify groups.send payload shape",
           "thread_id": "tmvx6mnnn-zag4x"
         }
       },
@@ -1165,7 +1165,7 @@
       "ok": true,
       "params": {
         "id": "p_99c43ce7",
-        "description": "契约探针已更新描述"
+        "description": "Contract probe updated description"
       },
       "resultKeys": [
         "project"
@@ -1326,7 +1326,7 @@
       "params": {
         "session_id": "8227bd0b",
         "profile": "default",
-        "text": "契约探针：请只回复 ok"
+        "text": "Contract probe: reply ok only"
       },
       "resultKeys": [
         "status",
@@ -1340,7 +1340,7 @@
       "params": {
         "session_id": "8227bd0b",
         "profile": "default",
-        "text": "契约探针：旁路问题，请只回复 ok"
+        "text": "Contract probe: side question, reply ok only"
       },
       "resultKeys": [
         "task_id"
@@ -1349,7 +1349,7 @@
     {
       "module": "negative",
       "method": "profiles.get_asset",
-      "name": "profiles.get_asset 多传 key 必须被拒",
+      "name": "profiles.get_asset must reject extra key field",
       "kind": "negative",
       "ok": true,
       "code": 4000,
@@ -1358,7 +1358,7 @@
     {
       "module": "negative",
       "method": "groups.send",
-      "name": "groups.send 平铺 text 必须被拒",
+      "name": "groups.send must reject top-level text",
       "kind": "negative",
       "ok": true,
       "code": 4000,
@@ -1367,7 +1367,7 @@
     {
       "module": "negative",
       "method": "groups.send",
-      "name": "groups.send payload 缺少 thread_id 必须被拒",
+      "name": "groups.send must reject payload missing thread_id",
       "kind": "negative",
       "ok": true,
       "code": 5112,
@@ -1376,7 +1376,7 @@
     {
       "module": "negative",
       "method": "session.delete",
-      "name": "session.delete 用不存在的会话必须被拒",
+      "name": "session.delete must reject nonexistent session",
       "kind": "negative",
       "ok": true,
       "code": 4007,
@@ -1386,67 +1386,67 @@
       "module": "session",
       "method": "session.branch",
       "skipped": true,
-      "reason": "会话分支派生需依赖包含历史消息的活跃会话，在离线离境探针下显式跳过，由自动化单测与契约表严格守护"
+      "reason": "Session branching requires an active session with message history; explicitly skipped in offline probes and guarded by automated unit tests and the contract table."
     },
     {
       "module": "session",
       "method": "session.undo",
       "skipped": true,
-      "reason": "单步撤销需依赖刚刚产生交互的活跃回合，在离线探针下显式跳过，由领域单测严格守护"
+      "reason": "Single-step undo requires an active turn that just produced an exchange; explicitly skipped in offline probes and guarded by domain unit tests."
     },
     {
       "module": "session",
       "method": "session.steer",
       "skipped": true,
-      "reason": "运行时轻量纠偏仅在 Agent 处于执行在途态有效，在离线探针下显式跳过，由单测与契约表严格守护"
+      "reason": "Runtime steer applies only while the agent has a turn in flight; explicitly skipped in offline probes and guarded by unit tests and the contract table."
     },
     {
       "module": "session",
       "method": "session.usage",
       "skipped": true,
-      "reason": "上下文用量统计依赖正在运行的模型上下文数据，离线探针显式跳过，由契约表严格守护"
+      "reason": "Context usage stats require live model context data; explicitly skipped in offline probes and guarded by the contract table."
     },
     {
       "module": "system",
       "method": "commands.catalog",
       "skipped": true,
-      "reason": "动态命令目录由在线网关运行时按 profile 动态生成，离线探针显式跳过，由契约表严格守护"
+      "reason": "Dynamic command catalog is generated per profile by an online gateway at runtime; explicitly skipped in offline probes and guarded by the contract table."
     },
     {
       "module": "prompt",
       "method": "image.attach_bytes",
       "skipped": true,
-      "reason": "图片二进制字节附加通道需依赖在线活跃通道与图文模型，在离线探针下显式跳过，由契约表与 CDP 物理测试严格守护"
+      "reason": "Binary image attachment channel requires an active session channel and vision-capable model; explicitly skipped in offline probes and guarded by the contract table and CDP tests."
     },
     {
       "module": "prompt",
       "method": "complete.slash",
       "skipped": true,
-      "reason": "斜杠实时补全需绑定活跃会话的 profile 与项目技能上下文，离线探针无会话可绑，显式跳过，由契约表与 CDP 场景守护"
+      "reason": "Live slash completion requires binding to an active session's profile and project skills context; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios."
     },
     {
       "module": "prompt",
       "method": "complete.path",
       "skipped": true,
-      "reason": "文件路径补全依赖活跃会话的 cwd 与工作区文件系统实时遍历，离线探针无有效 cwd，显式跳过，由契约表与 CDP 场景守护"
+      "reason": "File path completion requires an active session cwd and live workspace filesystem traversal; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios."
     },
     {
       "module": "prompt",
       "method": "slash.exec",
       "skipped": true,
-      "reason": "斜杠指令执行需活跃会话与在线命令分发器（exec/alias/send/prefill/skill），离线探针显式跳过，由契约表与领域单测守护"
+      "reason": "Slash command execution requires an active session and live command dispatcher (exec/alias/send/prefill/skill); explicitly skipped in offline probes and guarded by the contract table and domain unit tests."
     },
     {
       "module": "prompt",
       "method": "command.dispatch",
       "skipped": true,
-      "reason": "指令分派需活跃会话与在线命令分发器（exec/send/skill/prefill），离线探针显式跳过，由契约表与领域单测守护"
+      "reason": "Command dispatch requires an active session and live command dispatcher (exec/send/skill/prefill); explicitly skipped in offline probes and guarded by the contract table and domain unit tests."
     },
     {
       "module": "prompt",
       "method": "prompt.background",
       "skipped": true,
-      "reason": "后台子代理旁路呼叫需活跃会话与跨 profile 计算宿主，应答经事件流异步到达，离线探针显式跳过，由契约表与路由单测守护"
+      "reason": "Background subagent side-call requires an active session and cross-profile compute host with async event responses; explicitly skipped in offline probes and guarded by the contract table and routing unit tests."
     },
     {
       "module": "extensions",
@@ -1461,7 +1461,7 @@
       ],
       "gatewayVersion": "0.21.6",
       "recordedAt": "2026-11-08T13:18:53.038Z",
-      "note": "本机回环网关实测录制；主基线其余条目录制自 0.22.5"
+      "note": "Recorded against local loopback gateway; remaining main baseline entries recorded against 0.22.5."
     },
     {
       "module": "extensions",
@@ -1476,7 +1476,7 @@
       ],
       "gatewayVersion": "0.21.6",
       "recordedAt": "2026-11-08T13:18:53.038Z",
-      "note": "本机回环网关实测录制；主基线其余条目录制自 0.22.5"
+      "note": "Recorded against local loopback gateway; remaining main baseline entries recorded against 0.22.5."
     },
     {
       "module": "extensions",
@@ -1491,77 +1491,77 @@
       ],
       "gatewayVersion": "0.21.6",
       "recordedAt": "2026-11-08T13:18:53.038Z",
-      "note": "本机回环网关实测录制；主基线其余条目录制自 0.22.5"
+      "note": "Recorded against local loopback gateway; remaining main baseline entries recorded against 0.22.5."
     },
     {
       "module": "extensions",
       "method": "mcp.catalog",
       "ok": false,
       "skipped": true,
-      "reason": "新增 MCP 目录查询 RPC 在无 .env 离线探针下显式跳过，由契约白名单与核心/桌面端单测守护；连真实网关跑 probe:gateway 可补录"
+      "reason": "MCP catalog lookup RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus core/desktop unit tests; run probe:gateway against a live gateway to record."
     },
     {
       "module": "extensions",
       "method": "mcp.servers.add",
       "ok": false,
       "skipped": true,
-      "reason": "新增 MCP 服务器写操作在无 .env 离线探针下显式跳过，由契约白名单与参数构造单测守护；连真实网关跑 probe:gateway 可补录"
+      "reason": "MCP server creation write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus parameter-construction unit tests; run probe:gateway against a live gateway to record."
     },
     {
       "module": "extensions",
       "method": "mcp.servers.remove",
       "ok": false,
       "skipped": true,
-      "reason": "移除 MCP 服务器写操作在无 .env 离线探针下显式跳过，由契约白名单与控制器单测守护；连真实网关跑 probe:gateway 可补录"
+      "reason": "MCP server removal write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus controller unit tests; run probe:gateway against a live gateway to record."
     },
     {
       "module": "extensions",
       "method": "mcp.servers.test",
       "ok": false,
       "skipped": true,
-      "reason": "MCP 服务器探活 RPC 在无 .env 离线探针下显式跳过，由契约白名单与结果归一化单测守护；连真实网关跑 probe:gateway 可补录"
+      "reason": "MCP server health-check RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus result-normalization unit tests; run probe:gateway against a live gateway to record."
     },
     {
       "module": "extensions",
       "method": "model.save_key",
       "ok": false,
       "skipped": true,
-      "reason": "写操作会覆盖用户真实 API Key 且无法还原，仅由 CDP 场景在无凭据沙箱手工验证"
+      "reason": "Write operation overwrites the user's real API key irreversibly; verified only via CDP scenarios in a credential-free sandbox."
     },
     {
       "module": "extensions",
       "method": "model.disconnect",
       "ok": false,
       "skipped": true,
-      "reason": "断开提供商会破坏用户已配置的凭据，禁止在真实网关上执行"
+      "reason": "Disconnecting a provider destroys configured user credentials; forbidden on live gateways."
     },
     {
       "module": "extensions",
       "method": "reload.env",
       "ok": false,
       "skipped": true,
-      "reason": "环境热重载会改变运行中的凭据状态，须与 model.save_key 成对执行，禁止单独探针"
+      "reason": "Environment hot-reload mutates live credential state and must run paired with model.save_key; standalone probing is forbidden."
     },
     {
       "module": "prompt",
       "method": "prompt.cancel",
       "ok": false,
       "skipped": true,
-      "reason": "未做真实网关验证：取消需要真实排队中的准入（仅在有在途回合时存在），离线探针造不出该状态，误传真实 admission_id 又会撤掉用户自己的排队消息；目前仅由本地参数构造单测与契约表守护"
+      "reason": "Not verified against a live gateway: cancellation requires a queued admission (which exists only while a turn is in flight); offline probes cannot synthesize that state, and passing a real admission_id would cancel the user's queued message. Guarded by local parameter-construction unit tests and the contract table."
     },
     {
       "module": "prompt",
       "method": "prompt.steer_queued",
       "ok": false,
       "skipped": true,
-      "reason": "未做真实网关验证：立即执行需要真实排队中的准入与在途回合，离线探针造不出该状态；目前仅由本地参数构造单测与契约表守护"
+      "reason": "Not verified against a live gateway: steer_queued requires a real queued admission and an in-flight turn, which offline probes cannot synthesize. Guarded by local parameter-construction unit tests and the contract table."
     },
     {
       "module": "prompt",
       "method": "file.attach",
       "ok": false,
       "skipped": true,
-      "reason": "文件附件上传通道需依赖活跃会话暂存区与在线模型上下文，在离线探针下显式跳过，由契约表与发送单测守护"
+      "reason": "File attachment upload channel requires an active session staging area and live model context; explicitly skipped in offline probes and guarded by the contract table and send unit tests."
     },
     {
       "module": "learning",
@@ -1604,141 +1604,141 @@
       "method": "learning.edit",
       "ok": false,
       "skipped": true,
-      "reason": "修改学习记忆内容属于写操作，禁止在真实网关覆盖用户既有记忆，由学习服务单测与契约白名单守护"
+      "reason": "Editing learning memory is a write operation that must not overwrite user memories on a live gateway; guarded by learning service unit tests and the contract allowlist."
     },
     {
       "module": "learning",
       "method": "learning.delete",
       "ok": false,
       "skipped": true,
-      "reason": "删除学习记忆或技能属于破坏性写操作，禁止在真实网关执行，由学习服务单测与契约白名单守护"
+      "reason": "Deleting learning memories or skills is a destructive write operation forbidden on live gateways; guarded by learning service unit tests and the contract allowlist."
     },
     {
       "module": "system",
       "method": "config.get",
       "ok": false,
       "skipped": true,
-      "reason": "离线基线未连真实网关录制 config.get，由契约白名单与会话状态栏 Threshold 单测守护；连真实网关跑 probe:gateway 可补录"
+      "reason": "config.get was not recorded against a live gateway in the offline baseline; guarded by the contract allowlist and status-bar threshold unit tests; run probe:gateway against a live gateway to record."
     },
     {
       "module": "sessions",
       "method": "session.context_breakdown",
       "ok": false,
       "skipped": true,
-      "reason": "上下文构成拆解依赖带活跃模型的会话状态，离线探针显式跳过，由契约白名单、Core 解析与状态栏组件单测守护"
+      "reason": "Context breakdown requires session state with an active model; explicitly skipped in offline probes and guarded by the contract allowlist, Core parser, and status-bar component unit tests."
     },
     {
       "module": "sessions",
       "method": "session.compress",
       "ok": false,
       "skipped": true,
-      "reason": "上下文压缩会持久化改写会话历史与压缩节点，离线探针显式跳过，由空闲态守卫单测与契约白名单守护"
+      "reason": "Context compression persistently rewrites session history and compaction nodes; explicitly skipped in offline probes and guarded by idle-guard unit tests and the contract allowlist."
     },
     {
       "module": "subagent",
       "method": "session.transcript",
       "ok": false,
       "skipped": true,
-      "reason": "实测网关 0.23.2 返回 -32601，客户端自动降级走 REST fetchSessionMessages 与 subagent.tail，离线探针显式跳过并由降级不变量单测守护"
+      "reason": "Tested gateway 0.23.2 returns -32601; client falls back to REST fetchSessionMessages and subagent.tail; explicitly skipped in offline probes and guarded by fallback invariant unit tests."
     },
     {
       "module": "subagent",
       "method": "spawn_tree.list",
       "ok": false,
       "skipped": true,
-      "reason": "历史衍生树索引依赖持久化磁盘记录，离线探针显式跳过，由非活跃会话 4001 隔离单测与不变量证明守护"
+      "reason": "Historical spawn-tree index relies on persisted disk records; explicitly skipped in offline probes and guarded by inactive-session 4001 isolation unit tests and invariant proofs."
     },
     {
       "module": "subagent",
       "method": "spawn_tree.load",
       "ok": false,
       "skipped": true,
-      "reason": "历史衍生树按路径读取依赖磁盘树文件，离线探针显式跳过，由标准化合并单测与形式化不变量守护"
+      "reason": "Loading historical spawn trees by path relies on disk tree files; explicitly skipped in offline probes and guarded by normalized merge unit tests and formal invariants."
     },
     {
       "module": "interactive",
       "method": "client.capabilities",
       "ok": false,
       "skipped": true,
-      "reason": "握手能力协商仅对支持 hermes-gateway-v1 的真实 WS 会话生效；离线探针显式跳过，由 negotiateClientCapabilities 单测（含 4000 自动降级）与契约白名单守护"
+      "reason": "Handshake capability negotiation applies only to live WS sessions supporting hermes-gateway-v1; explicitly skipped in offline probes and guarded by negotiateClientCapabilities unit tests (including 4000 fallback) and the contract allowlist."
     },
     {
       "module": "interactive",
       "method": "approval.pending",
       "ok": false,
       "skipped": true,
-      "reason": "待审批队列探测仅在活跃会话处于挂起审批状态时返回非空条目；离线探针显式跳过，由 InteractiveRequestCoordinator 与服务单测守护"
+      "reason": "Pending approval probing returns entries only while an active session has pending approvals; explicitly skipped in offline probes and guarded by InteractiveRequestCoordinator and service unit tests."
     },
     {
       "module": "interactive",
       "method": "approval.received",
       "ok": false,
       "skipped": true,
-      "reason": "审批送达回执依赖在途阻塞的审批 request_id，离线无状态探针无法造出该态，由契约白名单守护"
+      "reason": "Approval delivery acknowledgement requires an in-flight blocked approval request_id that stateless offline probes cannot synthesize; guarded by the contract allowlist."
     },
     {
       "module": "interactive",
       "method": "approval.respond",
       "ok": false,
       "skipped": true,
-      "reason": "审批答复需真实挂起中的审批请求（once/session/always/deny），离线探针显式跳过，由 replyRouter Formal 定理（Classic vs Canonical 隔离）与单测守护"
+      "reason": "Approval responses require a live pending approval request (once/session/always/deny); explicitly skipped in offline probes and guarded by replyRouter formal theorems (Classic vs Canonical isolation) and unit tests."
     },
     {
       "module": "interactive",
       "method": "clarify.lock",
       "ok": false,
       "skipped": true,
-      "reason": "多题提问单题锁定依赖活跃中的 clarify 请求 id，离线探针显式跳过，由契约白名单与 InteractivePromptService 单测守护"
+      "reason": "Single-question locking requires an active clarify request id; explicitly skipped in offline probes and guarded by the contract allowlist and InteractivePromptService unit tests."
     },
     {
       "module": "interactive",
       "method": "clarify.respond",
       "ok": false,
       "skipped": true,
-      "reason": "Canonical clarify 应答需真实挂起 prompt_id 与 execution_generation，离线探针显式跳过，由 replyRouter 契约参数单测守护（含严禁传 profile 约束）"
+      "reason": "Canonical clarify response requires a live pending prompt_id and execution_generation; explicitly skipped in offline probes and guarded by replyRouter contract parameter unit tests (including the forbidden profile constraint)."
     },
     {
       "module": "interactive",
       "method": "request.answer",
       "ok": false,
       "skipped": true,
-      "reason": "断线重连补答 WS 反向请求（secret/sudo/vault/clarify）依赖服务端在途挂起请求，离线探针显式跳过，由 replyRouter 与形式化不变量守护"
+      "reason": "Reconnect replay for WS server requests (secret/sudo/vault/clarify) requires an in-flight server pending request; explicitly skipped in offline probes and guarded by replyRouter and formal invariants."
     },
     {
       "module": "interactive",
       "method": "connectors.operation.wake",
       "ok": false,
       "skipped": true,
-      "reason": "连接操作唤醒依赖真实的 OAuth/Install 进行中 op_id，离线探针显式跳过，由契约白名单与连接停靠卡单测守护"
+      "reason": "Connector operation wake requires a live in-progress OAuth/Install op_id; explicitly skipped in offline probes and guarded by the contract allowlist and connector card unit tests."
     },
     {
       "module": "interactive",
       "method": "reload.mcp",
       "ok": false,
       "skipped": true,
-      "reason": "MCP 热重载会影响在线网关活跃会话工具表，离线探针显式跳过，由 mcpOAuthService 契约单测（含禁传 profile 与 confirm_required 重试）守护"
+      "reason": "MCP hot-reload mutates active-session tool tables on a live gateway; explicitly skipped in offline probes and guarded by mcpOAuthService contract unit tests (including forbidden profile and confirm_required retry)."
     },
     {
       "module": "interactive",
       "method": "mcp.servers.oauth.start",
       "ok": false,
       "skipped": true,
-      "reason": "MCP OAuth 授权发起需真实 OAuth 服务端配置且禁传 client_redirect_uri，离线探针显式跳过，由 mcpOAuthService 与内联面板单测守护"
+      "reason": "MCP OAuth authorization start requires live OAuth server configuration and forbids client_redirect_uri; explicitly skipped in offline probes and guarded by mcpOAuthService and inline panel unit tests."
     },
     {
       "module": "interactive",
       "method": "mcp.servers.oauth.poll",
       "ok": false,
       "skipped": true,
-      "reason": "MCP OAuth 轮询依赖在途授权 session_id，离线探针显式跳过，由服务与轮询清理单测守护"
+      "reason": "MCP OAuth polling requires an in-flight authorization session_id; explicitly skipped in offline probes and guarded by service and poll-cleanup unit tests."
     },
     {
       "module": "interactive",
       "method": "mcp.servers.oauth.cancel",
       "ok": false,
       "skipped": true,
-      "reason": "MCP OAuth 取消依赖在途授权 session_id，离线探针显式跳过，由服务与内联面板单测守护"
+      "reason": "MCP OAuth cancellation requires an in-flight authorization session_id; explicitly skipped in offline probes and guarded by service and inline panel unit tests."
     }
   ],
-  "note": "主基线录制自 0.22.5；extensions 模块（mcp.servers.status / skills.manage / skills.reload）录制自 0.21.6 @ 2026-11-08T13:22:20.724Z，逐条带 gatewayVersion 标注。"
+  "note": "Main baseline recorded from 0.22.5; extensions module (mcp.servers.status / skills.manage / skills.reload) recorded from 0.21.6 @ 2026-11-08T13:22:20.724Z, annotated per entry with gatewayVersion."
 }

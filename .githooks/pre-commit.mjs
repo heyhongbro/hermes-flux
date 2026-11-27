@@ -83,7 +83,6 @@ function main() {
     ['Gate 2b · 形式化安全不变量检验', NPM, ['run', 'verify:formal']],
     ['Gate 2c · 不变量映射表（Markdown 与 JSON 一致）', NPM, ['run', 'gates:invariants']],
     ['Gate 2d · 豁免敞口预算', NPM, ['run', 'gates:allow']],
-    ['Gate 2e · 通用 Agent 规范与只读审查契约', NPM, ['run', 'gates:config']],
     ['Gate 2g · 增量覆盖率拦截自证（行与分支覆盖杀伤力）', NPM, ['run', 'gates:coverage-proof']],
   ];
 

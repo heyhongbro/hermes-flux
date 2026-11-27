@@ -44,7 +44,7 @@ if (!MAC_HOST) {
   console.error('  请在项目根目录的 .env 文件中配置：');
   console.error('    MAC_RUNNER_SSH=username@ip');
   console.error('    MAC_RUNNER_WORKSPACE=~/workspace/hermes-flux');
-  console.error('  详情参考 .env.example 及 docs/testing/mac-and-ios-automation-workflow.md\n');
+  console.error('  详情请参考 .env.example\n');
   process.exit(1);
 }
 

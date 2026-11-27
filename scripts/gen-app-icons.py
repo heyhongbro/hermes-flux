@@ -545,7 +545,7 @@ export interface BrandVariantTransform {{
 export interface BrandSpec {{
   readonly version: string;
   readonly name: string;
-  readonly referenceImage: string;
+  readonly referenceImage?: string;
   readonly viewBox: string;
   readonly squircleRx: number;
   readonly background: {{
