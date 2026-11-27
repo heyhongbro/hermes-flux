@@ -82,6 +82,48 @@ const MEDIA_EXT_MIME: Readonly<Record<string, string>> = {
   ogv: 'video/ogg',
 };
 
+export const PREVIEW_BINARY_EXT_MIME: Readonly<Record<string, string>> = {
+  ...MEDIA_EXT_MIME,
+  avif: 'image/avif',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  woff2: 'font/woff2',
+  woff: 'font/woff',
+  ttf: 'font/ttf',
+  otf: 'font/otf',
+  eot: 'application/vnd.ms-fontobject',
+  wasm: 'application/wasm',
+};
+
+function detectExtMimeFromRequestPath(
+  requestPath: string,
+  mimeMap: Readonly<Record<string, string>>,
+): string | null {
+  if (!requestPath || typeof requestPath !== 'string') return null;
+  const extractExt = (candidate: string): string => {
+    const clean = candidate.split(/[?#]/)[0];
+    const dotIdx = clean.lastIndexOf('.');
+    if (dotIdx < 0) return '';
+    return clean.slice(dotIdx + 1).toLowerCase();
+  };
+  try {
+    const parsed = new URL(requestPath, 'https://localhost');
+    const queryTarget = parsed.searchParams.get('path');
+    if (queryTarget) {
+      const qMime = mimeMap[extractExt(queryTarget)];
+      if (qMime) return qMime;
+    }
+    return mimeMap[extractExt(parsed.pathname)] ?? null;
+  // gate-degrade: 非标准相对路径解析失败时按原始后缀兜底
+  } catch {
+    return mimeMap[extractExt(requestPath)] ?? null;
+  }
+}
+
 /**
  * 校验目标路径是否为图片格式扩展名
  */
@@ -89,7 +131,7 @@ export function isImageExtension(filePath: string): boolean {
   if (!filePath || typeof filePath !== 'string') return false;
   const clean = filePath.split(/[?#]/)[0];
   const ext = (clean.split('.').pop() || '').toLowerCase();
-  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'].includes(ext);
+  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif'].includes(ext);
 }
 
 /**
@@ -116,25 +158,14 @@ export function isDirectVideoStreamUrl(url: string): boolean {
  * 从 HTTP 代理请求路径（含 `?path=...&profile=...` 查询参数或纯 pathname）提取媒体 MIME 类型。
  */
 export function detectMediaMimeFromRequestPath(requestPath: string): string | null {
-  if (!requestPath || typeof requestPath !== 'string') return null;
-  const extractExt = (candidate: string): string => {
-    const clean = candidate.split(/[?#]/)[0];
-    const dotIdx = clean.lastIndexOf('.');
-    if (dotIdx < 0) return '';
-    return clean.slice(dotIdx + 1).toLowerCase();
-  };
-  try {
-    const parsed = new URL(requestPath, 'https://localhost');
-    const queryTarget = parsed.searchParams.get('path');
-    if (queryTarget) {
-      const qMime = MEDIA_EXT_MIME[extractExt(queryTarget)];
-      if (qMime) return qMime;
-    }
-    return MEDIA_EXT_MIME[extractExt(parsed.pathname)] ?? null;
-  // gate-degrade: 非标准相对路径解析失败时按原始后缀兜底
-  } catch {
-    return MEDIA_EXT_MIME[extractExt(requestPath)] ?? null;
-  }
+  return detectExtMimeFromRequestPath(requestPath, MEDIA_EXT_MIME);
+}
+
+/**
+ * 从 HTTP 代理请求路径提取所有可预览二进制子资源（图片/视频/音频/字体/WASM）的 MIME 类型。
+ */
+export function detectPreviewBinaryMimeFromRequestPath(requestPath: string): string | null {
+  return detectExtMimeFromRequestPath(requestPath, PREVIEW_BINARY_EXT_MIME);
 }
 
 /**

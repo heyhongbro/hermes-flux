@@ -34,7 +34,10 @@ import { Keyboard } from '@capacitor/keyboard';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { Haptics } from '@capacitor/haptics';
 import { Network } from '@capacitor/network';
-import { detectMediaMimeFromRequestPath } from '@hermes-flux/core';
+import {
+  detectMediaMimeFromRequestPath,
+  detectPreviewBinaryMimeFromRequestPath,
+} from '@hermes-flux/core';
 
 export type PlatformType = 'windows' | 'macos' | 'linux' | 'ios' | 'android' | 'web';
 
@@ -564,10 +567,17 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         return (await res.json()) as unknown;
       }
 
-      // 图像与可播放视频二进制安全转 Base64 Data URL（上限 50MB，排除 HTML SPA fallback）
+      // 图像与可内联音视频/字体/WASM 二进制安全转 Base64 Data URL（上限 50MB，排除 HTML SPA fallback）
       const rawMime = contentType.split(';')[0].trim();
-      const isMediaType = rawMime.startsWith('image/') || rawMime.startsWith('video/');
-      const detectedExtMime = detectMediaMimeFromRequestPath(options.path);
+      const isMediaType =
+        rawMime.startsWith('image/') ||
+        rawMime.startsWith('video/') ||
+        rawMime.startsWith('audio/') ||
+        rawMime.startsWith('font/') ||
+        rawMime.startsWith('application/font-') ||
+        rawMime === 'application/vnd.ms-fontobject' ||
+        rawMime === 'application/wasm';
+      const detectedExtMime = detectPreviewBinaryMimeFromRequestPath(options.path);
       if (isMediaType || (detectedExtMime !== null && !rawMime.includes('text/html'))) {
         const blob = await res.blob();
         if (blob.size > 50 * 1024 * 1024) {
@@ -576,7 +586,11 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         const resolvedMime = isMediaType ? rawMime : detectedExtMime!;
         const blobType = (blob.type || '').toLowerCase();
         const typedBlob =
-          blobType.startsWith('image/') || blobType.startsWith('video/')
+          blobType.startsWith('image/') ||
+          blobType.startsWith('video/') ||
+          blobType.startsWith('audio/') ||
+          blobType.startsWith('font/') ||
+          blobType.startsWith('application/font-')
             ? blob
             : blob.slice(0, blob.size, resolvedMime);
         // Why: >2MB 的视频若转 Base64 Data URL 会膨胀 ~33% 并长时间阻塞 JS 主线程，优先创建零拷贝 blob: URL 供 <video> 流式播放。

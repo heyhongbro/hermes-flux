@@ -408,6 +408,22 @@
       "failure": "目录创建或重命名遭 `..`/控制字符/`.env` 注入越界，或误改 `/`/locked_root 破坏工作区"
     },
     {
+      "id": "INV-FS-07",
+      "topic": "文档相对资源路径解析安全域与越界阻断不变量（绝对不逃逸 workspaceRoot，绝对放行外部 http(s) 且拦截 .env*/敏感盘/空字节）",
+      "source": "packages/core/src/fs/previewResourceResolver.ts",
+      "symbol": "resolvePreviewResourceRef",
+      "test": "packages/core/__tests__/formal/preview-resources-formal.test.mjs",
+      "failure": "Markdown/HTML/SVG 相对路径解析中的 ../ 或 /root 允许越权读取 .env 凭据与系统敏感文件，或错误改写外部 CDN 链接"
+    },
+    {
+      "id": "INV-FS-08",
+      "topic": "HTML/CSS/SVG 预览内联变换非破坏性与规模有界不变量（不改原文件、总内联资产与递归深度严格封顶）",
+      "source": "packages/core/src/fs/htmlPreviewBundler.ts",
+      "symbol": "buildInlinedHtmlPreview",
+      "test": "packages/core/__tests__/formal/preview-resources-formal.test.mjs",
+      "failure": "环形 CSS @import 死循环挂死桌面进程，超大图资产包撑爆渲染进程内存，或错误覆盖原始源码内容"
+    },
+    {
       "id": "INV-MSG-01",
       "topic": "用户消息附件清单与多模态分片往返解析无损收敛且去重",
       "source": "packages/core/src/session/messageAttachments.ts",

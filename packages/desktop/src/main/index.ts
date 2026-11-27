@@ -10,6 +10,7 @@ import { createMainWindow } from './window';
 import { applyMacDockIcon } from './windowControl';
 import { registerIpcHandlers } from './ipc';
 import { HERMES_MEDIA_SCHEME } from './mediaStreamProtocol';
+import { HERMES_PREVIEW_SCHEME } from './previewProtocol';
 import { registerPowerEvents } from './powerEvents';
 import { HermesFluxTray } from './tray';
 import { initFileLogging } from './logFile';
@@ -21,6 +22,17 @@ protocol.registerSchemesAsPrivileged([
       standard: true,
       secure: true,
       supportFetchAPI: true,
+      stream: true,
+      bypassCSP: true,
+    },
+  },
+  {
+    scheme: HERMES_PREVIEW_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
       stream: true,
       bypassCSP: true,
     },

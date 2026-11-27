@@ -226,13 +226,21 @@ async function httpProxy(cookie, { baseUrl, path: p = '', method = 'GET', params
   if (contentType.includes('application/json')) {
     return await res.json();
   }
-  if (
-    contentType.startsWith('image/') ||
-    (/\.(png|jpe?g|gif|webp|svg|ico|bmp)$/i.test(safePath) && !contentType.includes('text/html'))
-  ) {
+  const { detectPreviewBinaryMimeFromRequestPath } = await getCoreModule();
+  const rawMime = contentType.split(';')[0].trim();
+  const isMediaType =
+    rawMime.startsWith('image/') ||
+    rawMime.startsWith('video/') ||
+    rawMime.startsWith('audio/') ||
+    rawMime.startsWith('font/') ||
+    rawMime.startsWith('application/font-') ||
+    rawMime === 'application/vnd.ms-fontobject' ||
+    rawMime === 'application/wasm';
+  const detectedExtMime = detectPreviewBinaryMimeFromRequestPath(safePath);
+  if (isMediaType || (detectedExtMime !== null && !rawMime.includes('text/html'))) {
     const arrayBuffer = await res.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString('base64');
-    const mime = (contentType.startsWith('image/') && contentType.split(';')[0]) || 'image/png';
+    const mime = isMediaType ? rawMime : detectedExtMime;
     return `data:${mime};base64,${base64}`;
   }
   return await res.text();
@@ -317,15 +325,21 @@ function resolveInsideRoot(rawPath, options = {}) {
   return resolved;
 }
 
-const IMAGE_MIME = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-};
+let cachedCoreMod = null;
+async function getCoreModule() {
+  if (!cachedCoreMod) {
+    cachedCoreMod = await import('@hermes-flux/core');
+  }
+  return cachedCoreMod;
+}
+
+let cachedPreviewProtocolMod = null;
+async function getPreviewProtocolModule() {
+  if (!cachedPreviewProtocolMod) {
+    cachedPreviewProtocolMod = await import('../packages/desktop/dist/main/previewProtocol.mjs');
+  }
+  return cachedPreviewProtocolMod;
+}
 
 let cachedWorkspaceFsMod = null;
 async function getWorkspaceFsModule() {
@@ -382,6 +396,20 @@ async function start() {
    */
   const localFingerprint = collectArtifactFingerprint(ROOT);
   const branch = readGitBranch(ROOT);
+  let previewController = null;
+  async function ensurePreviewController() {
+    if (!previewController) {
+      const { createPreviewProtocolController } = await getPreviewProtocolModule();
+      previewController = createPreviewProtocolController({
+        getGatewayAuth: () => ({ cookies: sessionCookie, origin: authenticatedOrigin }),
+        getFallbackCwd: () => ROOT,
+        fetchImpl: fetch,
+        resolveLocalFile: (rawPath) =>
+          !rawPath || isEnvSecretPath(rawPath) ? null : resolveInsideRoot(rawPath),
+      });
+    }
+    return previewController;
+  }
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
@@ -521,16 +549,72 @@ async function start() {
         if (!fs.existsSync(resolved)) return sendJson({ content: null });
         const st = fs.statSync(resolved);
         if (!st.isFile() || st.size > 5 * 1024 * 1024) return sendJson({ content: null });
-        const ext = path.extname(resolved).toLowerCase();
-        if (IMAGE_MIME[ext]) {
+        const { detectPreviewBinaryMimeFromRequestPath } = await getCoreModule();
+        const binaryMime = detectPreviewBinaryMimeFromRequestPath(resolved);
+        if (binaryMime) {
           const b64 = fs.readFileSync(resolved).toString('base64');
-          return sendJson({ content: `data:${IMAGE_MIME[ext]};base64,${b64}` });
+          return sendJson({ content: `data:${binaryMime};base64,${b64}` });
         }
         return sendJson({ content: fs.readFileSync(resolved, 'utf8') });
       } catch (err) {
         console.warn('[Browser Live FS] read-file failed:', err);
         return sendJson({ content: null });
       }
+    }
+
+    // 2c-1. 浏览器直跑富文档预览会话注册/注销与受控资源网关 (/ __preview/*)
+    if (url.pathname === '/__preview/register') {
+      if (!isLoopbackOrigin(req)) return sendJson({ error: 'Forbidden origin' }, 403);
+      if (req.method !== 'POST') return sendJson({ error: 'Method not allowed' }, 405);
+      const body = await readBody(req);
+      const controller = await ensurePreviewController();
+      const reg = controller.registerSession(body || {});
+      if (!reg) return sendJson({ error: 'Invalid preview registration' }, 400);
+      const entryUrlObj = new URL(reg.entryUrl);
+      return sendJson({
+        token: reg.token,
+        entryUrl: `/__preview/${reg.token}${entryUrlObj.pathname}`,
+      });
+    }
+
+    if (url.pathname === '/__preview/revoke') {
+      if (!isLoopbackOrigin(req)) return sendJson({ error: 'Forbidden origin' }, 403);
+      if (req.method !== 'POST') return sendJson({ error: 'Method not allowed' }, 405);
+      const body = await readBody(req);
+      const controller = await ensurePreviewController();
+      controller.revokeSession(typeof body?.token === 'string' ? body.token : '');
+      return sendJson({ ok: true });
+    }
+
+    if (url.pathname.startsWith('/__preview/')) {
+      const rawOrigin = req.headers.origin;
+      if (rawOrigin && rawOrigin !== 'null' && !isLoopbackOrigin(req)) {
+        return sendJson({ error: 'Forbidden origin' }, 403);
+      }
+      const match = url.pathname.match(/^\/__preview\/([a-f0-9]+)(\/.*)$/);
+      if (!match) return sendJson({ error: 'Not found' }, 404);
+      const [, token, subPath] = match;
+      const controller = await ensurePreviewController();
+      const protoHeaders = new Headers();
+      if (req.headers.range) protoHeaders.set('range', String(req.headers.range));
+      if (req.headers.accept) protoHeaders.set('accept', String(req.headers.accept));
+      const synthReq = new Request(`hermes-preview://${token}.preview${subPath}${url.search}`, {
+        method: req.method,
+        headers: protoHeaders,
+      });
+      const protoRes = await controller.handleProtocolRequest(synthReq);
+      const outHeaders = Object.fromEntries(protoRes.headers.entries());
+      outHeaders['Vary'] = 'Origin';
+      res.writeHead(protoRes.status, outHeaders);
+      if (req.method === 'HEAD' || !protoRes.body) {
+        return res.end();
+      }
+      const nodeStream = Readable.fromWeb(protoRes.body);
+      nodeStream.on('error', () => {
+        if (!res.writableEnded) res.end();
+      });
+      nodeStream.pipe(res);
+      return;
     }
 
     // 2d. 本地工作区大文件 / 二进制文件流式下载（支持 HEAD 探测与 GET 附件下载，严格锁定在 ROOT 内且屏蔽 .env*）
@@ -719,6 +803,24 @@ async function start() {
             if (!r.ok) return null;
             const data = await r.json();
             return data && typeof data.content === 'string' ? data.content : null;
+          },
+          registerPreviewSession: async (options) => {
+            const r = await fetch('/__preview/register', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(options || {}),
+            });
+            if (!r.ok) return null;
+            const data = await r.json();
+            return data && typeof data.entryUrl === 'string' ? data : null;
+          },
+          revokePreviewSession: async (token) => {
+            if (!token) return;
+            await fetch('/__preview/revoke', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token }),
+            }).catch(() => {});
           },
           saveFile: async ({ fileName, content, isBase64, sourcePath, remoteUrl } = {}) => {
             const triggerHrefDownload = (href, name) => {

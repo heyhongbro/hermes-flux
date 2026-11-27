@@ -49,7 +49,7 @@ import {
   loadConversationOrgPrefs,
   loadOrgContainerCollapseState,
 } from '@hermes-flux/ui';
-import type { ConversationWidthMode, LeftRailLayoutMode } from '@hermes-flux/ui';
+import type { ConversationWidthMode, LeftRailLayoutMode, OpenFilePreviewProjection } from '@hermes-flux/ui';
 
 import {
   normalizeWorkspacePath,
@@ -203,6 +203,7 @@ export interface AppState {
     isLoading?: boolean;
     byteSize?: number;
     source?: 'session_tool' | 'local_fs' | 'remote_http' | 'gateway_api' | 'fallback';
+    preview?: OpenFilePreviewProjection;
   }>;
   activeFilePath: string;
   fileViewMode: 'rendered' | 'raw';

@@ -25,7 +25,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `source` 为真实源码路径 | 违者 FAIL |
 | `source`+`symbol` 组合唯一 | 违者 FAIL |
 
-## 总览（90 条，覆盖 20 个领域）
+## 总览（92 条，覆盖 20 个领域）
 
 ### ATTACH（5 条）
 
@@ -75,7 +75,7 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-DELIV-03` | 只读工具与危险 URI 拦截守恒（cat/grep/javascript: 绝不渗入成果物） | `packages/core/src/session/deliverables.ts` → `extractSessionDeliverables` | `deliverables-formal.test.mjs` | cat /etc/hosts 等命令或 javascript:/data:text/html 注入进入可点击成果物列表 |
 | `INV-DELIV-04` | 读写分离与非循环存在性双锁守恒（只读排除、同回合Shell互证、父目录批探禁session_cache及正文原地去重） | `packages/core/src/fs/pathVerifier.ts` → `createDirectoryPathVerifier` | `deliverables-formal.test.mjs` | 未写先读的路径混入成果物、纯缓存自证循环复活幽灵文件，或正文小卡片与回合末卡片双份重复 |
 
-### FS（6 条）
+### FS（8 条）
 
 | 编号 | 主题 | 源码锚点 | 守护测试 | 失效模式 |
 |---|---|---|---|---|
@@ -85,6 +85,8 @@ JSON 版本强制每条给出唯一 `id`、被测源码 `source`、`symbol` 与�
 | `INV-FS-04` | 文件树过滤完备性（无空祖先残留且命中叶/祖先路径可回溯） | `packages/core/src/fs/fileTreeService.ts` → `filterFileTree` | `file-tree-formal.test.mjs` | 过滤关键字后留下大量空文件夹或漏掉深层匹配文件 |
 | `INV-FS-05` | 二进制文件与超大文件预览阻断单调性（二进制恒优先于体积上限拦截且绝不误杀图片） | `packages/core/src/fs/fileService.ts` → `evaluateFilePreviewGuard` | `file-tree-formal.test.mjs` | .exe 等二进制文件被当作文本渲染成乱码，或超大文件直接撑爆前端 DOM 表格 |
 | `INV-FS-06` | 项目目录 picker 单段命名清洗、POSIX shell 安全引用与锁定根目录不可重命名守卫 | `packages/core/src/fs/directoryPickerService.ts` → `validateDirectoryName` | `file-tree-formal.test.mjs` | 目录创建或重命名遭 `..`/控制字符/`.env` 注入越界，或误改 `/`/locked_root 破坏工作区 |
+| `INV-FS-07` | 文档相对资源路径解析安全域与越界阻断不变量（绝对不逃逸 workspaceRoot，绝对放行外部 http(s) 且拦截 .env*/敏感盘/空字节） | `packages/core/src/fs/previewResourceResolver.ts` → `resolvePreviewResourceRef` | `preview-resources-formal.test.mjs` | Markdown/HTML/SVG 相对路径解析中的 ../ 或 /root 允许越权读取 .env 凭据与系统敏感文件，或错误改写外部 CDN 链接 |
+| `INV-FS-08` | HTML/CSS/SVG 预览内联变换非破坏性与规模有界不变量（不改原文件、总内联资产与递归深度严格封顶） | `packages/core/src/fs/htmlPreviewBundler.ts` → `buildInlinedHtmlPreview` | `preview-resources-formal.test.mjs` | 环形 CSS @import 死循环挂死桌面进程，超大图资产包撑爆渲染进程内存，或错误覆盖原始源码内容 |
 
 ### INTERACT（9 条）
 

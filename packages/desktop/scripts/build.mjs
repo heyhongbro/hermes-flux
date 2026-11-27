@@ -212,6 +212,7 @@ async function buildAll() {
     nodeModuleTask('src/main/cookieHeader.ts', 'dist/main/cookieHeader.mjs', null),
     nodeModuleTask('src/main/workspaceFs.ts', 'dist/main/workspaceFs.mjs', null),
     nodeModuleTask('src/main/mediaStreamProtocol.ts', 'dist/main/mediaStreamProtocol.mjs', ['@hermes-flux/core']),
+    nodeModuleTask('src/main/previewProtocol.ts', 'dist/main/previewProtocol.mjs', ['@hermes-flux/core']),
     nodeModuleTask('src/main/powerEvents.ts', 'dist/main/powerEvents.mjs', null),
     nodeModuleTask('src/main/windowControl.ts', 'dist/main/windowControl.mjs', null),
     {
@@ -293,6 +294,7 @@ async function buildAll() {
     nodeModuleTask('src/renderer/messageWindowManager.ts', 'dist/renderer/messageWindowManager.mjs'),
     nodeModuleTask('src/renderer/services/foregroundSyncCoordinator.ts', 'dist/renderer/services/foregroundSyncCoordinator.mjs'),
     nodeModuleTask('src/renderer/renderCoordinator.ts', 'dist/renderer/renderCoordinator.mjs'),
+    nodeModuleTask('src/renderer/inspectorDomHelper.ts', 'dist/renderer/inspectorDomHelper.mjs'),
 
     // 移动端表现壳薄协调适配器与 Capacitor 原生桥独立产物
     nodeModuleTask('src/renderer/mobile/mobileShellCoordinator.ts', 'dist/renderer/mobile/mobileShellCoordinator.mjs'),
@@ -330,6 +332,7 @@ async function buildAll() {
     // Batch 7 服务与控制器
     nodeModuleTask('src/renderer/interactiveWiring.ts', 'dist/renderer/interactiveWiring.mjs'),
     nodeModuleTask('src/renderer/services/fileViewerService.ts', 'dist/renderer/services/fileViewerService.mjs'),
+    nodeModuleTask('src/renderer/services/previewAssetCoordinator.ts', 'dist/renderer/services/previewAssetCoordinator.mjs'),
     nodeModuleTask('src/renderer/services/mediaResolver.ts', 'dist/renderer/services/mediaResolver.mjs'),
     nodeModuleTask('src/renderer/titlebarController.ts', 'dist/renderer/titlebarController.mjs'),
     nodeModuleTask('src/renderer/bootstrap/appBootstrap.ts', 'dist/renderer/bootstrap/appBootstrap.mjs'),

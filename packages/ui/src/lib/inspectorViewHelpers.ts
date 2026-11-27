@@ -13,8 +13,11 @@
  */
 
 import {
+  detectPreviewAssetMime,
+  encodeUtf8ToBase64,
   filterFileTree,
   formatFileSize,
+  isImageExtension,
   isVideoExtension,
   normalizeWorkspacePath,
   splitSkillMarkdownFrontmatter,
@@ -29,6 +32,23 @@ import { t } from '../i18n/index.js';
 export type InspectorTab = 'artifacts' | 'browser' | 'git' | 'memory' | 'preview';
 export type FileViewMode = 'rendered' | 'raw';
 
+export interface OpenFilePreviewProjection {
+  /** HTML 特权协议会话 URL（Tier 1 优先挂载 `iframe[src]`） */
+  frameUrl?: string;
+  /** 特权预览会话令牌（关闭页签时清理） */
+  previewToken?: string;
+  /** 非破坏性内联派生 HTML（Tier 2 无协议宿主回退为 `iframe[srcdoc]`） */
+  inlinedHtml?: string;
+  /** SVG 相对 `<image>` 内联后的派生 data URL */
+  inlinedImageUrl?: string;
+  /** Markdown 已异步水合的子资源映射（resolvedPath -> URL） */
+  resolvedAssets?: Record<string, string>;
+  /** 用于相对引用边界校验的工作区根目录 */
+  workspaceRoot?: string;
+  /** 异步水合代次戳，避免切文件后竞态覆盖 */
+  revision?: number;
+}
+
 export interface OpenFileItem {
   id?: string;
   path: string;
@@ -41,6 +61,7 @@ export interface OpenFileItem {
   isLoading?: boolean;
   byteSize?: number;
   source?: 'session_tool' | 'local_fs' | 'remote_http' | 'gateway_api' | 'fallback';
+  preview?: OpenFilePreviewProjection;
 }
 
 export function escapeInspectorHtml(str: string): string {
@@ -131,12 +152,22 @@ function renderInspectorStatusCard(opts: {
 
 export function renderInspectorFileContent(
   file: OpenFileItem,
-  opts: { viewMode: FileViewMode; showLineNumbers: boolean; wordWrap: boolean; searchQuery: string },
+  opts: {
+    viewMode: FileViewMode;
+    showLineNumbers: boolean;
+    wordWrap: boolean;
+    searchQuery: string;
+    workspaceRoot?: string;
+  },
 ): string {
-  const ext = (file.path.split('.').pop() || '').toLowerCase();
+  const cleanPath = file.path.split(/[?#]/)[0];
+  const ext = (cleanPath.split('.').pop() || '').toLowerCase();
   const isMarkdown = ext === 'md' || ext === 'markdown';
-  const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext);
-  const isVideo = Boolean(file.isVideo) || isVideoExtension(file.path);
+  const detectedMime = detectPreviewAssetMime(cleanPath);
+  const isAudio = Boolean(detectedMime && detectedMime.startsWith('audio/'));
+  const isImage = isImageExtension(cleanPath) || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'ico', 'bmp'].includes(ext);
+  const isVideo = Boolean(file.isVideo) || isVideoExtension(cleanPath);
+  const effectiveWorkspaceRoot = file.preview?.workspaceRoot ?? opts.workspaceRoot;
 
   if (file.isLoading) {
     return renderInspectorStatusCard({
@@ -164,7 +195,8 @@ export function renderInspectorFileContent(
       trimmedContent.startsWith('http://') ||
       trimmedContent.startsWith('https://') ||
       trimmedContent.startsWith('blob:') ||
-      trimmedContent.startsWith('hermes-media://');
+      trimmedContent.startsWith('hermes-media://') ||
+      trimmedContent.startsWith('hermes-preview://');
     if (!isReadyVideo) {
       return renderInspectorStatusCard({
         file,
@@ -182,12 +214,50 @@ export function renderInspectorFileContent(
     `;
   }
 
-  if (isImage) {
+  if (isAudio) {
+    const trimmedAudio = file.content.trim();
+    const isReadyAudio =
+      trimmedAudio.startsWith('data:audio/') ||
+      trimmedAudio.startsWith('http://') ||
+      trimmedAudio.startsWith('https://') ||
+      trimmedAudio.startsWith('blob:') ||
+      trimmedAudio.startsWith('hermes-media://') ||
+      trimmedAudio.startsWith('hermes-preview://');
+    if (!isReadyAudio) {
+      return renderInspectorStatusCard({
+        file,
+        kindBadge: t('inspector.binaryBadge'),
+        title: t('inspector.audioLoadError'),
+        sub: t('inspector.audioLoadErrorSub'),
+        testId: 'inspector-audio-error',
+      });
+    }
+    return `
+      <div class="inspector-video-stage">
+        <audio controls preload="metadata" data-audio-player="true" src="${escapeInspectorHtml(trimmedAudio)}" class="inspector-audio-player"></audio>
+        <div class="inspector-video-caption">${escapeInspectorHtml(file.path)}</div>
+      </div>
+    `;
+  }
+
+  const showRawSvgSource =
+    ext === 'svg' &&
+    opts.viewMode === 'raw' &&
+    !file.content.trimStart().toLowerCase().startsWith('data:');
+
+  if (isImage && !showRawSvgSource) {
+    const trimmedImg = file.content.trim();
     const isReadyData =
-      file.content.startsWith('data:') ||
-      file.content.startsWith('http://') ||
-      file.content.startsWith('https://');
-    const imageSrc = isReadyData ? file.content : '';
+      trimmedImg.startsWith('data:') ||
+      trimmedImg.startsWith('http://') ||
+      trimmedImg.startsWith('https://') ||
+      trimmedImg.startsWith('blob:') ||
+      trimmedImg.startsWith('hermes-preview://');
+    const svgTextUrl =
+      ext === 'svg' && !isReadyData && trimmedImg.includes('<svg')
+        ? `data:image/svg+xml;base64,${encodeUtf8ToBase64(file.content)}`
+        : '';
+    const imageSrc = file.preview?.inlinedImageUrl || (isReadyData ? trimmedImg : svgTextUrl);
 
     if (!imageSrc) {
       return `
@@ -221,21 +291,32 @@ export function renderInspectorFileContent(
             )
             .join('')}</dl>`
         : '';
+    const renderedMdHtml = renderMarkdown(body, {
+      documentBasePath: file.path,
+      workspaceRoot: effectiveWorkspaceRoot,
+      resolvedAssetUrls: file.preview?.resolvedAssets,
+    });
+    const rootAttr = effectiveWorkspaceRoot
+      ? ` data-workspace-root="${escapeInspectorHtml(effectiveWorkspaceRoot)}"`
+      : '';
     return `
-      <div class="inspector-rendered-markdown">
+      <div class="inspector-rendered-markdown" data-doc-path="${escapeInspectorHtml(file.path)}"${rootAttr}>
         <div class="flux-doc-markdown__inner conv-markdown flux-doc-markdown">
-          ${frontmatterHtml}${renderMarkdown(body)}
+          ${frontmatterHtml}${renderedMdHtml}
         </div>
       </div>
     `;
   }
 
   if (opts.viewMode === 'rendered' && (ext === 'html' || ext === 'htm')) {
+    const frameSourceAttr = file.preview?.frameUrl
+      ? `src="${escapeInspectorHtml(file.preview.frameUrl)}"`
+      : `srcdoc="${escapeInspectorHtml(file.preview?.inlinedHtml ?? file.content)}"`;
     return `
       <div style="flex: 1; display: flex; flex-direction: column; background: var(--card); border-radius: var(--radius-panel); overflow: hidden;">
         <!-- iframe 内是待预览的用户 HTML 文档，其文档根必须为不透明白纸底 -->
         <!-- gate-theme-allow: 白色属于被预览的用户文档底色，不属于应用主题面 -->
-        <iframe srcdoc="${escapeInspectorHtml(file.content)}" sandbox="allow-scripts" style="flex: 1; border: none; width: 100%; height: 100%; background: #ffffff;"></iframe>
+        <iframe ${frameSourceAttr} sandbox="allow-scripts" style="flex: 1; border: none; width: 100%; height: 100%; background: #ffffff;"></iframe>
       </div>
     `;
   }

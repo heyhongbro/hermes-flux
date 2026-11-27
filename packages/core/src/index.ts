@@ -32,6 +32,8 @@ export * from './fs/fileService.js';
 export * from './fs/fileTreeService.js';
 export * from './fs/directoryPickerService.js';
 export * from './fs/pathVerifier.js';
+export * from './fs/previewResourceResolver.js';
+export * from './fs/htmlPreviewBundler.js';
 export * from './log/logger.js';
 export * from './log/redact.js';
 export * from './log/fileLogPolicy.js';

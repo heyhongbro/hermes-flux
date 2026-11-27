@@ -13,7 +13,13 @@
 import { marked, type Tokens } from 'marked';
 import remend from 'remend';
 import DOMPurify from 'dompurify';
-import { classifyDeliverableKind, stripMediaTags } from '@hermes-flux/core';
+import {
+  classifyDeliverableKind,
+  isVideoExtension,
+  resolvePreviewResourceRef,
+  splitSrcsetCandidates,
+  stripMediaTags,
+} from '@hermes-flux/core';
 import { t } from '../i18n/index.js';
 import { escapeHtml, isLikelyFilePath, isLikelyHttpUrl } from './text.js';
 import { renderFileTypeIcon } from './fileTypeIcons.js';
@@ -22,13 +28,16 @@ import { formatDeliverableExtLabel, resolveDeliverableDisplayName } from './deli
 import { highlightCode, isHighlightReady } from './highlight.js';
 
 /**
- * 当前渲染批次内「会话真实读写过的文件」与「本回合确认的成果物文件」。
+ * 当前渲染批次内「会话真实读写过的文件」「本回合确认的成果物文件」及「文档预览上下文」。
  * 【设计意图 (Why)】marked 的 renderer 在模块初始化时绑定，拿不到每次调用的参数；
  *   解析是同步的，用一次性的活动上下文传递上下文比给每个 renderer 再造一套实例更轻。
  * 【约束与规则 (Rules)】只在 renderMarkdownCore 内同步设置，finally 必须恢复原值。
  */
 let activeKnownFiles: readonly string[] = [];
 let activeDeliverableFiles: readonly string[] = [];
+let activeDocumentBasePath = '';
+let activeWorkspaceRoot = '';
+let activeResolvedAssetUrls: Readonly<Record<string, string>> | undefined;
 
 function fileRefLinked(ref: string): boolean {
   return isTouchedFileRef(ref, activeKnownFiles);
@@ -55,6 +64,49 @@ function matchDeliverableTarget(ref: string): string | null {
   }
 
   return basenameMatches.length === 1 ? basenameMatches[0] : null;
+}
+
+function isUnsafeMarkdownUri(raw: string, allowSafeDataUri: boolean): boolean {
+  const compactLower = raw.replace(/[\u0000-\u0020]+/g, '').toLowerCase();
+  if (
+    compactLower.startsWith('javascript:') ||
+    compactLower.startsWith('vbscript:') ||
+    compactLower.startsWith('file:')
+  ) {
+    return true;
+  }
+  if (!compactLower.startsWith('data:')) return false;
+  if (!allowSafeDataUri) return true;
+  return /^data:(?:text\/html|application\/xhtml\+xml|text\/javascript|application\/javascript|application\/ecmascript|text\/ecmascript|application\/x-javascript)(?:[;,]|$)/.test(
+    compactLower,
+  );
+}
+
+function addClassToAttrs(attrs: string, className: string): string {
+  const classRe = /(\sclass\s*=\s*)(?:"([^"]*)"|'([^']*)')/i;
+  const m = classRe.exec(attrs);
+  if (!m) {
+    return `${attrs} class="${className}"`;
+  }
+  const existing = (m[2] ?? m[3]) || '';
+  const tokens = existing.split(/\s+/).filter(Boolean);
+  if (tokens.includes(className)) return attrs;
+  return attrs.replace(classRe, () => `${m[1]}"${existing ? `${existing} ` : ''}${className}"`);
+}
+
+function stripAuthorInternalDataAttrs(htmlChunk: string): string {
+  if (!/data-(?:preview-|deliverable-|media-src)/i.test(htmlChunk)) return htmlChunk;
+  // Pitfall: SANITIZE_CONFIG 允许内部渲染器生成的 data-preview-* / data-deliverable-*，必须在 raw HTML 阶段先剥离作者手写注入属性
+  return htmlChunk.replace(
+    /<([A-Za-z][A-Za-z0-9:-]*)(\s+(?:"[^"]*"|'[^']*'|[^>"'])*)(\/?)>/g,
+    (_fullTag, tagName: string, rawAttrs: string, selfClose: string) => {
+      const cleaned = rawAttrs.replace(
+        /\s+(?:data-preview-[a-z0-9-]+|data-deliverable-[a-z0-9-]+|data-media-src)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi,
+        '',
+      );
+      return `<${tagName}${cleaned}${selfClose}>`;
+    },
+  );
 }
 
 /**
@@ -214,13 +266,15 @@ const parser = marked.use({
       const target = href ?? '';
       const label = this.parser.parseInline(tokens);
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
-      const lowerHref = target.trim().toLowerCase();
-      if (
-        lowerHref.startsWith('javascript:') ||
-        lowerHref.startsWith('vbscript:') ||
-        lowerHref.startsWith('data:')
-      ) {
+      const trimmed = target.trim();
+      if (isUnsafeMarkdownUri(trimmed, false)) {
         return label;
+      }
+
+      if (trimmed.startsWith('#') && activeDocumentBasePath) {
+        return `<a class="md-link md-link--anchor" href="${escapeHtml(trimmed)}" data-preview-anchor="${escapeHtml(
+          trimmed.slice(1)
+        )}"${titleAttr}>${label}</a>`;
       }
 
       if (isLikelyHttpUrl(target)) {
@@ -228,6 +282,24 @@ const parser = marked.use({
           target
         )}" href="${escapeHtml(target)}" target="_blank" rel="noopener noreferrer"${titleAttr}>${label}</a>`;
       }
+
+      if (activeDocumentBasePath) {
+        const ref = resolvePreviewResourceRef(target, {
+          documentPath: activeDocumentBasePath,
+          workspaceRoot: activeWorkspaceRoot || undefined,
+        });
+        if (ref.blocked) {
+          return `<span class="md-link md-asset-blocked"${titleAttr}>${label}</span>`;
+        }
+        if ((ref.kind === 'relative' || ref.kind === 'root_relative') && ref.resolvedPath) {
+          return `<a class="md-link md-link--file md-file-ref md-file-ref--linked tool-file-link content-interactive-link" data-preview-file="${escapeHtml(
+            ref.resolvedPath
+          )}" data-file-ref="${escapeHtml(target)}" href="${escapeHtml(target)}" target="_blank" rel="noopener noreferrer"${titleAttr}>${renderFileTypeIcon(
+            ref.resolvedPath
+          )}<span class="md-link__label">${label}</span></a>`;
+        }
+      }
+
       if (isLikelyFilePath(target)) {
         const deliverableTarget = matchDeliverableTarget(target);
         if (deliverableTarget) {
@@ -247,7 +319,7 @@ const parser = marked.use({
     image({ href, title, text }: Tokens.Image) {
       const target = (href ?? '').trim();
       const lower = target.toLowerCase();
-      if (!target || lower.startsWith('javascript:') || lower.startsWith('vbscript:') || lower.startsWith('data:text/html')) {
+      if (!target || isUnsafeMarkdownUri(target, true)) {
         return escapeHtml(text || '');
       }
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
@@ -255,7 +327,9 @@ const parser = marked.use({
         lower.startsWith('https://') ||
         lower.startsWith('http://') ||
         lower.startsWith('data:image/') ||
-        lower.startsWith('blob:');
+        lower.startsWith('blob:') ||
+        lower.startsWith('hermes-media://') ||
+        lower.startsWith('hermes-preview://');
       if (isDirectMedia) {
         return `<img class="md-inline-image" src="${escapeHtml(target)}" alt="${escapeHtml(
           text || ''
@@ -263,6 +337,45 @@ const parser = marked.use({
           text || ''
         )}"${titleAttr} />`;
       }
+
+      if (activeDocumentBasePath) {
+        const ref = resolvePreviewResourceRef(target, {
+          documentPath: activeDocumentBasePath,
+          workspaceRoot: activeWorkspaceRoot || undefined,
+        });
+        if (ref.blocked) {
+          return `<span class="md-asset-blocked" title="${escapeHtml(text || target)}">${escapeHtml(text || target)}</span>`;
+        }
+        if (ref.externalUrl) {
+          return `<img class="md-inline-image" src="${escapeHtml(ref.externalUrl)}" alt="${escapeHtml(
+            text || ''
+          )}" loading="lazy" data-media-src="${escapeHtml(ref.externalUrl)}" data-media-name="${escapeHtml(
+            text || ''
+          )}"${titleAttr} />`;
+        }
+        if (ref.resolvedPath) {
+          const preResolved = activeResolvedAssetUrls?.[ref.resolvedPath];
+          if (isVideoExtension(ref.resolvedPath)) {
+            return `<video class="md-inline-video" controls playsinline preload="metadata" data-preview-asset-path="${escapeHtml(
+              ref.resolvedPath
+            )}" data-preview-asset-raw="${escapeHtml(target)}"${
+              preResolved ? ` src="${escapeHtml(preResolved)}"` : ''
+            }></video>`;
+          }
+          const srcAttr = preResolved
+            ? ` src="${escapeHtml(preResolved)}" data-media-src="${escapeHtml(preResolved)}"`
+            : '';
+          const pendingClass = preResolved ? '' : ' md-inline-image--pending';
+          return `<img class="md-inline-image${pendingClass}"${srcAttr} alt="${escapeHtml(
+            text || ''
+          )}" loading="lazy" data-preview-asset-path="${escapeHtml(
+            ref.resolvedPath
+          )}" data-preview-asset-raw="${escapeHtml(target)}" data-media-name="${escapeHtml(
+            text || ''
+          )}"${titleAttr} />`;
+        }
+      }
+
       if (isLikelyFilePath(target)) {
         const deliverableTarget = matchDeliverableTarget(target);
         if (deliverableTarget) {
@@ -280,6 +393,9 @@ const parser = marked.use({
         )}<span class="md-link__label">${escapeHtml(text || target)}</span></a>`;
       }
       return escapeHtml(text || '');
+    },
+    html({ text }: Tokens.HTML | Tokens.Tag) {
+      return stripAuthorInternalDataAttrs(text);
     },
   },
 });
@@ -356,12 +472,26 @@ function healStreamingMarkdown(md: string): string {
 
 const SANITIZE_CONFIG = {
   USE_PROFILES: { html: true, svg: true, svgFilters: true },
-  ADD_TAGS: ['use'],
+  ADD_TAGS: ['use', 'video', 'audio', 'source', 'picture', 'track'],
   ADD_ATTR: [
     'href',
     'xlink:href',
     'target',
     'src',
+    'srcset',
+    'sizes',
+    'poster',
+    'controls',
+    'autoplay',
+    'loop',
+    'muted',
+    'playsinline',
+    'preload',
+    'width',
+    'height',
+    'kind',
+    'srclang',
+    'default',
     'alt',
     'loading',
     'type',
@@ -369,6 +499,12 @@ const SANITIZE_CONFIG = {
     'aria-label',
     'data-preview-file',
     'data-preview-url',
+    'data-preview-anchor',
+    'data-preview-asset-path',
+    'data-preview-asset-raw',
+    'data-preview-poster-path',
+    'data-preview-srcset-paths',
+    'data-preview-blocked',
     'data-file-ref',
     'data-icon',
     'data-media-src',
@@ -379,6 +515,8 @@ const SANITIZE_CONFIG = {
     'data-deliverable-name',
     'data-deliverable-thumb',
   ],
+  ALLOWED_URI_REGEXP:
+    /^(?:(?:https?|mailto|tel|blob):|data:(?:image\/(?:png|jpe?g|gif|webp|avif|svg\+xml|x-icon|bmp)|video\/|audio\/|font\/|application\/(?:font-|vnd\.ms-fontobject|octet-stream))|hermes-(?:media|preview):\/\/|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
   FORBID_TAGS: ['script', 'style'],
   FORBID_CONTENTS: ['script'],
 };
@@ -466,6 +604,141 @@ export interface RenderMarkdownOptions {
   knownFiles?: readonly string[];
   /** 当前回合已证实的成果物文件；命中引用原地替换为紧凑小卡片 */
   deliverableFiles?: readonly string[];
+  /** 文档预览基准路径（开启后启用 Markdown 相对路径图片/媒体/文档链接解析） */
+  documentBasePath?: string;
+  /** 工作区根目录（用于阻断越权 `../` 穿越，并解析 `/assets/...` 根相对引用） */
+  workspaceRoot?: string;
+  /** 同步预解析的媒体资产 URL 映射（resolvedPath → dataUrl / 协议 URL） */
+  resolvedAssetUrls?: Readonly<Record<string, string>>;
+}
+
+function rewriteMarkdownHtmlMedia(
+  html: string,
+  documentBasePath: string,
+  workspaceRoot: string,
+  resolvedUrls?: Readonly<Record<string, string>>,
+): string {
+  const withMedia = html.replace(
+    /<(img|video|audio|source|track)\b([^>]*?)(\/?)>/gi,
+    (_full, tagName: string, attrs: string, selfClose: string) => {
+      let nextAttrs = attrs;
+      const isImg = tagName.toLowerCase() === 'img';
+
+      const rewriteSingleAttr = (attrName: 'src' | 'poster', attrStoreName: string): void => {
+        const attrRe = new RegExp(`(\\s${attrName}\\s*=\\s*)(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+        const m = attrRe.exec(nextAttrs);
+        if (!m) return;
+        const rawVal = (m[2] ?? m[3] ?? m[4]).trim();
+        const resolved = resolvePreviewResourceRef(rawVal, {
+          documentPath: documentBasePath,
+          workspaceRoot: workspaceRoot || undefined,
+        });
+        if (resolved.blocked) {
+          nextAttrs = nextAttrs.replace(attrRe, () => ' data-preview-blocked="true"');
+          nextAttrs = addClassToAttrs(nextAttrs, 'md-asset-blocked');
+          return;
+        }
+        if (resolved.externalUrl) {
+          const replacement = `${m[1]}"${escapeHtml(resolved.externalUrl)}"`;
+          nextAttrs = nextAttrs.replace(attrRe, () => replacement);
+          if (isImg && attrName === 'src' && !/\sdata-media-src=/i.test(nextAttrs)) {
+            nextAttrs += ` data-media-src="${escapeHtml(resolved.externalUrl)}"`;
+          }
+          return;
+        }
+        if ((resolved.kind === 'relative' || resolved.kind === 'root_relative') && resolved.resolvedPath) {
+          const pre = resolvedUrls?.[resolved.resolvedPath];
+          if (pre) {
+            const replacement = `${m[1]}"${escapeHtml(pre)}" ${attrStoreName}="${escapeHtml(resolved.resolvedPath)}"`;
+            nextAttrs = nextAttrs.replace(attrRe, () => replacement);
+            if (isImg && attrName === 'src' && !/\sdata-media-src=/i.test(nextAttrs)) {
+              nextAttrs += ` data-media-src="${escapeHtml(pre)}"`;
+            }
+          } else {
+            const replacement = ` ${attrStoreName}="${escapeHtml(resolved.resolvedPath)}" data-preview-asset-raw="${escapeHtml(rawVal)}"`;
+            nextAttrs = nextAttrs.replace(attrRe, () => replacement);
+          }
+        }
+      };
+
+      rewriteSingleAttr('src', 'data-preview-asset-path');
+      rewriteSingleAttr('poster', 'data-preview-poster-path');
+
+      const srcsetRe = /(\ssrcset\s*=\s*)(?:"([^"]*)"|'([^']*)')/i;
+      const sm = srcsetRe.exec(nextAttrs);
+      if (sm) {
+        const rawSet = sm[2] ?? sm[3];
+        const candidates = splitSrcsetCandidates(rawSet);
+        const readyParts: string[] = [];
+        const pendingPairs: string[] = [];
+        let allReady = candidates.length > 0;
+        for (const candidate of candidates) {
+          const [urlPart, ...descParts] = candidate.split(/\s+/);
+          const descriptor = descParts.join(' ');
+          const resolved = resolvePreviewResourceRef(urlPart, {
+            documentPath: documentBasePath,
+            workspaceRoot: workspaceRoot || undefined,
+          });
+          if (resolved.blocked) continue;
+          if (resolved.externalUrl || resolved.kind === 'inline_data') {
+            const finalUrl = resolved.externalUrl || urlPart;
+            readyParts.push(descriptor ? `${finalUrl} ${descriptor}` : finalUrl);
+            pendingPairs.push(`literal:${finalUrl}|${descriptor}`);
+          } else if (resolved.resolvedPath) {
+            const pre = resolvedUrls?.[resolved.resolvedPath];
+            if (pre) {
+              readyParts.push(descriptor ? `${pre} ${descriptor}` : pre);
+            } else {
+              allReady = false;
+            }
+            pendingPairs.push(`${resolved.resolvedPath}|${descriptor}`);
+          }
+        }
+        if (allReady && readyParts.length > 0) {
+          const replacement = `${sm[1]}"${escapeHtml(readyParts.join(', '))}"`;
+          nextAttrs = nextAttrs.replace(srcsetRe, () => replacement);
+        } else if (pendingPairs.length > 0) {
+          const replacement = ` data-preview-srcset-paths="${escapeHtml(pendingPairs.join(','))}"`;
+          nextAttrs = nextAttrs.replace(srcsetRe, () => replacement);
+        } else {
+          nextAttrs = nextAttrs.replace(srcsetRe, () => ' data-preview-blocked="true"');
+          nextAttrs = addClassToAttrs(nextAttrs, 'md-asset-blocked');
+        }
+      }
+
+      return `<${tagName}${nextAttrs}${selfClose}>`;
+    },
+  );
+
+  return withMedia.replace(/<a\b([^>]*?)>/gi, (full, attrs: string) => {
+    const hrefRe = /(\shref\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
+    const hm = hrefRe.exec(attrs);
+    if (!hm) return full;
+    const rawHref = (hm[2] ?? hm[3] ?? hm[4]).trim();
+    const resolved = resolvePreviewResourceRef(rawHref, {
+      documentPath: documentBasePath,
+      workspaceRoot: workspaceRoot || undefined,
+    });
+    if (resolved.blocked || isUnsafeMarkdownUri(rawHref, false)) {
+      const cleaned = addClassToAttrs(
+        attrs
+          .replace(hrefRe, () => '')
+          .replace(/\starget\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, ''),
+        'md-asset-blocked',
+      );
+      return `<a${cleaned} data-preview-blocked="true">`;
+    }
+    if (resolved.kind === 'anchor') {
+      const cleaned = attrs.replace(/\starget\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+      const hasAnchor = /\sdata-preview-anchor=/i.test(cleaned);
+      return `<a${cleaned}${hasAnchor ? '' : ` data-preview-anchor="${escapeHtml(rawHref.slice(1))}"`}>`;
+    }
+    if ((resolved.kind === 'relative' || resolved.kind === 'root_relative') && resolved.resolvedPath) {
+      if (/\sdata-preview-file=/i.test(attrs)) return full;
+      return `<a${attrs} data-preview-file="${escapeHtml(resolved.resolvedPath)}">`;
+    }
+    return full;
+  });
 }
 
 export function renderMarkdownCore(md: string, options?: RenderMarkdownOptions): string {
@@ -473,10 +746,22 @@ export function renderMarkdownCore(md: string, options?: RenderMarkdownOptions):
 
   const knownFiles = options?.knownFiles ?? [];
   const deliverableFiles = options?.deliverableFiles ?? [];
-  // 同一段正文在不同会话或不同成果物集合下渲染形态不同，缓存键必须同时带上两者
+  const docBasePath = options?.documentBasePath ?? '';
+  const workspaceRoot = options?.workspaceRoot ?? '';
+  const resolvedAssetUrls = options?.resolvedAssetUrls;
+  // 同一段正文在不同会话、不同成果物集合或不同预览文档基准下渲染形态不同，缓存键必须全部纳入
   const knownKey = knownFiles.length ? [...knownFiles].sort().join('\u0001') : '';
   const delivKey = deliverableFiles.length ? [...deliverableFiles].sort().join('\u0001') : '';
-  const cacheKey = knownKey || delivKey ? `${md}\u0000${knownKey}\u0002${delivKey}` : md;
+  const assetEntries = resolvedAssetUrls
+    ? Object.entries(resolvedAssetUrls).sort(([a], [b]) => a.localeCompare(b))
+    : [];
+  const assetKey = assetEntries.length
+    ? assetEntries.map(([k, v]) => `${k}=${v}`).join('\u0001')
+    : '';
+  const cacheKey =
+    knownKey || delivKey || docBasePath || workspaceRoot || assetKey
+      ? `${md}\u0000${knownKey}\u0002${delivKey}\u0003${docBasePath}\u0004${workspaceRoot}\u0005${assetKey}`
+      : md;
   const cached = markdownRenderCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
@@ -486,16 +771,28 @@ export function renderMarkdownCore(md: string, options?: RenderMarkdownOptions):
   const normalized = convertTsvTables(healStreamingMarkdown(prelinkedMd));
   const previousKnownFiles = activeKnownFiles;
   const previousDeliverableFiles = activeDeliverableFiles;
+  const previousDocBase = activeDocumentBasePath;
+  const previousWorkspaceRoot = activeWorkspaceRoot;
+  const previousResolvedAssets = activeResolvedAssetUrls;
   activeKnownFiles = knownFiles;
   activeDeliverableFiles = deliverableFiles;
+  activeDocumentBasePath = docBasePath;
+  activeWorkspaceRoot = workspaceRoot;
+  activeResolvedAssetUrls = resolvedAssetUrls;
   let parsed: string;
   try {
     parsed = parser.parse(normalized) as string;
   } finally {
     activeKnownFiles = previousKnownFiles;
     activeDeliverableFiles = previousDeliverableFiles;
+    activeDocumentBasePath = previousDocBase;
+    activeWorkspaceRoot = previousWorkspaceRoot;
+    activeResolvedAssetUrls = previousResolvedAssets;
   }
-  const withClasses = parsed
+  const rewrittenMedia = docBasePath
+    ? rewriteMarkdownHtmlMedia(parsed, docBasePath, workspaceRoot, resolvedAssetUrls)
+    : parsed;
+  const withClasses = rewrittenMedia
     .replace(/<table>/g, '<div class="md-table-wrap"><table class="md-table">')
     .replace(/<\/table>/g, '</table></div>')
     .replace(/<blockquote>/g, '<blockquote class="md-quote">')
