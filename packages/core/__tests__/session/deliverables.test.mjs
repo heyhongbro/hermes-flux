@@ -369,18 +369,18 @@ test('extractMessageDeliverables: 工具产物（含嵌套数组与深度限制�
 });
 
 test('extractTurnDeliverables / findInlineReferencedDeliverableKeys: Tier A inlineDiff + 子代理写入 + Tier B 双锁与读写隔离', () => {
-  const htmlPath = '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-telemetry.html';
-  const mdPath = '/opt/data/projects/mp-langchao/drafts/2026-11-23-t3code-xiaohongshu.md';
-  const pngPath = '/opt/data/projects/mp-langchao/drafts/img/t3-timeline.png';
-  const silentImg = '/opt/data/projects/mp-langchao/drafts/img/silent.png';
+  const htmlPath = '/workspace/demo-project/drafts/release-report.html';
+  const mdPath = '/workspace/demo-project/drafts/summary-post.md';
+  const pngPath = '/workspace/demo-project/drafts/img/release-timeline.png';
+  const silentImg = '/workspace/demo-project/drafts/img/silent.png';
 
   const turnMessages = [
     {
       id: 'm-1',
       role: 'assistant',
       content: [
-        `- 公众号：\`${htmlPath}\``,
-        `- 小红书：${mdPath}`,
+        `- 报告：\`${htmlPath}\``,
+        `- 摘要：${mdPath}`,
         `- 信息图：\`${pngPath}\``,
         '```sh',
         'cat /etc/hosts',

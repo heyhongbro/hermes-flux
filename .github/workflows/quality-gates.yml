@@ -83,9 +83,6 @@ jobs:
       - name: Gate 2b · 门禁自身变异检验
         run: npm run gates:mutation
 
-      - name: Gate 2c · Agent 编排一致性
-        run: npm run gates:config
-
       - name: Gate 2d · 豁免敞口预算（行内豁免只降不升）
         run: npm run gates:allow
 

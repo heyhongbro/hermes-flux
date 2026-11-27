@@ -2,75 +2,115 @@
   <img src="packages/ui/src/icons/brand/hermes-flux-badge.svg" alt="Hermes Flux" width="120" />
 </p>
 
-# Hermes Flux
+<h1 align="center">Hermes Flux</h1>
 
-> **Cross-Platform Workspace for Hermes Agent**  
-> 面向 Hermes Agent 的全平台极客美学工作台（Desktop · iOS · Android）
+<p align="center">
+  Cross-platform desktop and mobile workspace for Hermes Agent
+</p>
 
----
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/Platforms-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platforms" />
+  <img src="https://img.shields.io/badge/Node.js-%3E%3D22.18.0-339933.svg" alt="Node.js >= 22.18.0" />
+</p>
 
-## 核心特性
+<p align="center">
+  <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-- **三态会话正交隔离**：普通会话（Scratchpad）、专职数字员工终身主工位（Bot Forever Chat）与多 Agent 群聊研讨室（Group Room）各自独立存储与协议分流，互不污染上下文。
-- **左双轨 + 三舱工作台**：56px 紧凑微轨 + 自适应抽屉导航、通栏对话流与 740px 黄金输入舱、右侧 410px 多模态检查舱。
-- **单一真值设计系统与多端皮肤**：基于 43 语义槽契约（`packages/ui/src/tokens/skins.ts`），支持 `obsidian-gold`、`ayu-dark`、`ayu-light` 等多套高质感皮肤与中英文双语切换。
-- **高可靠通信与启动快照缓存**：JSON-RPC 2.0 双向通信、5 态 WebSocket 连接状态机、120FPS 流式 Token 合流与离线可读启动快照缓存。
-- **可证明的工程门禁体系**：静态架构/换肤/i18n/性能门禁、`fast-check` 形式化不变量证明、网关契约校验与变异自证。
-
----
-
-## Monorepo 结构
-
-```text
-hermes-flux/
-├── packages/
-│   ├── core/       # 纯 TypeScript 无界核心层（JSON-RPC、WS FSM、Token 合流、缓存与领域模型）
-│   ├── ui/         # 跨端共享 React 19 UI 组件、Design Tokens、样式与双语字典
-│   ├── desktop/    # Electron 34 桌面端宿主（Windows / macOS / Linux）
-│   └── mobile/     # Capacitor 8 移动端宿主（iOS / Android）
-├── scripts/        # 自动化门禁（gates）、网关契约校验（contract）与渲染验证工具
-├── docs/           # 现行架构规范、设计系统规范与自动生成的网关接口文档
-└── .agents/        # 通用 Agent 角色规范、工作流命令与验证技能
-```
+<!-- Preview screenshots will be embedded here once media assets are ready -->
 
 ---
 
-## 快速开始
+## Features
 
-### 环境要求
+- **Cross-Platform Desktop & Mobile**: Native desktop (Electron 34: Windows, macOS, Linux) and mobile (Capacitor 8: iOS, Android) shells sharing the same TypeScript core (`@hermes-flux/core`) and React 19 UI (`@hermes-flux/ui`), connecting to local or remote Hermes Gateways.
+- **Workspace File Tree, Multi-Format Preview & Download**: Live workspace file tree (filter, refresh, collapse) and session deliverables/artifacts list; multi-tab preview with Raw/Rendered Markdown toggle, in-file search (`Ctrl+F`), line numbers, fullscreen view, image lightbox, and streaming video playback; one-click save/download locally, open in default app, copy path/content, plus binary and >1 MB safe-download guards (including remote gateway workspaces).
+- **Flexible Conversations & Organization**: Standalone sessions and multi-agent group rooms; message rollback and session forking from any turn; prompt queueing while a turn is running and instant turn interruption; isolated `/btw` side consultations (no main-context pollution, one-click quote to composer); prompt navigator timeline, session search, pin/rename/archive/done states, project & folder grouping, and Markdown export.
+- **Subagent Monitoring & Live Steering**: Real-time subagent spawn tree, execution stream and terminal output inspection, live mid-flight steering instructions to active subagents, manual interruption, and one-click quoting of subagent summaries back into the main conversation.
+- **Interactive Approvals & Memory-Only Credentials**: Native cards for command and file-edit approvals (with diff preview and `Once / Session / Workspace / Always / Deny` scopes) plus `Manual / Smart / Off` approval modes; multi-question clarification forms; memory-only secret, `sudo`, and 2FA/vault prompts (never written to disk or logs); external OAuth/connector authorization with security scan status; and background waiting banners that jump straight to blocked conversations.
+- **Cognitive Memory & Skill Constellation**: Interactive constellation map on both desktop and mobile to browse, inspect, edit, and clean up long-term agent memories and learned skills.
+- **Context Telemetry & Composer Ergonomics**: Real-time token usage (input, output, reasoning, cache hits), generation throughput (TPS), context window gauge with injected-file breakdown, manual and threshold-based context compaction; model picker with favorites/recents, reasoning effort controls (`Off / Low / High / Max`), `@` mentions, `/` slash-command and file-path autocomplete, plus drag-and-drop and clipboard image/file attachments.
+- **Model Providers, Custom Endpoints, MCP & Skills**: In-app configuration for model providers and OpenAI-compatible custom endpoints (reachability probe and automatic model discovery), MCP server management (add, test, remove, inline OAuth, hot-reload), and Skills installation/reload.
+- **Offline Snapshot Cache, Themes & Bilingual UI**: Startup snapshot cache for instant launch and offline reading, resilient WebSocket reconnection with foreground sync, system tray and sleep/wake awareness, 5 built-in dark/light themes (`obsidian-gold`, `ayu-dark`, `ayu-light`, `warm-paper`, `jade-white`), customizable fonts/reading width/activity indicators, and instant English / Simplified Chinese switching.
 
-- **Node.js** `>= 22.18.0`
-- **npm**（仓库使用 `package-lock.json` 作为唯一权威锁文件）
+---
 
-### 安装与构建
+## Platform Support
+
+| Platform | Runtime | Package Targets | Command |
+| --- | --- | --- | --- |
+| Windows (`x64`) | Electron 34 | NSIS setup, portable, zip | `npm run package:desktop:win` |
+| macOS (`arm64` / `x64`) | Electron 34 | `.dmg`, `.zip` (Hardened Runtime) | `npm run package:desktop:mac` |
+| Linux (`x64`) | Electron 34 | `AppImage`, `tar.gz` | `npm --workspace=@hermes-flux/desktop run package:linux` |
+| Android | Capacitor 8 | APK / AAB | `npm run package:mobile:android` |
+| iOS | Capacitor 8 | Xcode archive / IPA | `npm run package:mobile:ios` |
+
+Run `npm run signing:check` for cross-platform release signing preflight checks. See the [Cross-Platform Release Signing Guide](docs/testing/cross-platform-release-signing.md) for signing configuration and strict release flags.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- A running Hermes Agent Gateway.
+- Prebuilt binaries will be published on [GitHub Releases](https://github.com/heyhongbro/hermes-flux/releases).
+- For building from source: **Node.js** `>= 22.18.0` and **npm** (`package-lock.json` is the single authoritative lockfile).
+
+### Install, Build & Run Desktop
 
 ```bash
 npm ci
 npm run build
-```
-
-### 启动桌面端
-
-```bash
 npm --workspace=@hermes-flux/desktop run start
 ```
 
-如需接入真实 Hermes Gateway，请将根目录 [`.env.example`](.env.example) 复制为 `.env` 并填写网关地址与凭据（`.env` 已被 `.gitignore` 忽略，严禁提交到版本库）。
+### Connect to a Gateway
 
-### 运行全套质量门禁与测试
+Enter your Hermes Gateway URL and credentials in **Settings -> Connection**, or copy [`.env.example`](.env.example) to `.env` for local development and live gateway testing (`.env` is gitignored and must never be committed).
+
+---
+
+## Monorepo Structure
+
+```text
+hermes-flux/
+├── packages/
+│   ├── core/       # Pure TypeScript headless core (JSON-RPC, WS FSM, token coalescer, cache, domain models)
+│   ├── ui/         # Shared React 19 UI components, design tokens, styles, and bilingual dictionaries
+│   ├── desktop/    # Electron 34 desktop host (Windows / macOS / Linux)
+│   └── mobile/     # Capacitor 8 mobile host (iOS / Android)
+├── scripts/        # Automated quality gates, gateway contract verification, and visual checks
+└── docs/           # Quality gates guide, formal invariants map, release signing guide, and gateway contract docs
+```
+
+---
+
+## Verification & Documentation
+
+Run the full quality gates, invariant checks, gateway contract verification, typecheck, test suite, formal checks, and performance benchmark with:
 
 ```bash
 npm run verify
 ```
 
+Engineering documentation under `docs/`:
+
+- [Quality Gates Reference](docs/quality-gates.md)
+- [Testing Strategy & Gate Architecture](docs/testing-strategy.md)
+- [Formal Invariants Map](docs/invariants.md)
+- [Gateway RPC Contract Index](docs/gateway/README.md)
+- [Cross-Platform Release Signing Guide](docs/testing/cross-platform-release-signing.md)
+
 ---
 
-## 文档索引
+## Contributing
 
-- [架构总览 (Architecture Overview)](docs/architecture/overview.md)
-- [三态对话模型规范](docs/architecture/three-conversation-modes-spec.md)
-- [官方网关协议映射矩阵](docs/architecture/gateway-api-and-features-matrix.md)
-- [单一真值皮肤系统规范](docs/architecture/theme-engine-spec.md)
-- [极客美学设计系统总纲](docs/design-system/README.md)
-- [项目研发路线图](docs/roadmap.md)
-- [工程纪律与质量门禁](ENGINEERING_DISCIPLINE.md)
+Issues and pull requests are welcome. Please ensure `npm run verify` passes before opening a pull request.
+
+---
+
+## License
+
+Licensed under the [MIT License](LICENSE).
