@@ -24,8 +24,31 @@ import { buildModelCatalogView, type ModelCatalogEntry } from '../models/modelCa
 import { createLogger } from '../log/logger.js';
 import { redactSensitive } from '../log/redact.js';
 import { CONTRACT_METHODS } from './contracts/contractTable.generated.js';
+import type { ClientCapabilitiesParams, ClientCapabilitiesResult } from './contracts/gateway-contract.generated.js';
 import { EXTRA_METHODS } from './contracts/extraMethods.js';
 import { normalizeAgentProfile } from './profileNormalize.js';
+import {
+  RPC_SOCKET_READY_STATE,
+  createBrowserRpcSocket,
+  type IRpcSocket,
+  type RpcSocketFactory,
+  type RpcSocketMessageEvent,
+} from './socket.js';
+import {
+  DEFAULT_GATEWAY_READY_STATE,
+  buildServerRequestErrorFrame,
+  buildServerRequestSuccessFrame,
+  buildSessionEventsSinceParams,
+  executeServerRequestFrame,
+  extractInstallId,
+  normalizeSessionEventsSinceResult,
+  parseGatewayReadyParams,
+  type DefaultServerRequestHandler,
+  type GatewayReadyState,
+  type ServerRequestHandler,
+  type SessionEventsSinceNormalizedResult,
+  type SessionEventsSinceQuery,
+} from './gatewayProtocol.js';
 
 const log = createLogger('rpc');
 
@@ -90,6 +113,8 @@ export class ContractViolationError extends Error {
 
 export interface RpcClientOptions {
   url: string;
+  /** 可选传输工厂；省略时默认走浏览器/宿主原生 WebSocket（阶段二可注入 E2EE 环回传输） */
+  socketFactory?: RpcSocketFactory;
   /**
    * 每次断线重连或唤醒重连前调用，用于刷新一次性凭证（如 ws-ticket）并生成最新 WS URL。
    * 首次 connect() 直接使用 url；自第二次连接（重连）起优先调用本回调。
@@ -173,6 +198,7 @@ function describeError(error: unknown): string {
 
 export class HermesGatewayClient {
   private url: string;
+  private socketFactory?: RpcSocketFactory;
   private resolveUrl?: () => Promise<string | null>;
   private initialUrlConsumed = false;
   private isResolvingUrl = false;
@@ -180,7 +206,7 @@ export class HermesGatewayClient {
   private candidateUrls: string[] = [];
   private currentCandidateIndex = 0;
   private timeoutMs: number;
-  private ws: WebSocket | null = null;
+  private ws: IRpcSocket | null = null;
   private nextId = 1;
   private restFallbackHandler: RestFallbackHandler | null = null;
   private pendingRequests = new Map<
@@ -192,6 +218,10 @@ export class HermesGatewayClient {
     }
   >();
   private notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
+  private serverRequestHandlers = new Map<string, ServerRequestHandler>();
+  private defaultServerRequestHandler: DefaultServerRequestHandler | null = null;
+  private gatewayReadyState: GatewayReadyState = { ...DEFAULT_GATEWAY_READY_STATE };
+  private gatewayInstallId: string | undefined = undefined;
   private fsm: WebSocketFsm;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
@@ -212,6 +242,7 @@ export class HermesGatewayClient {
 
   constructor(options: RpcClientOptions) {
     this.url = options.url;
+    this.socketFactory = options.socketFactory;
     this.resolveUrl = options.resolveUrl;
     this.candidateUrls = options.candidateUrls && options.candidateUrls.length > 0
       ? [...options.candidateUrls]
@@ -238,8 +269,33 @@ export class HermesGatewayClient {
     this.restFallbackHandler = handler;
   }
 
-  public getRawWebSocket(): WebSocket | null {
+  public getSocket(): IRpcSocket | null {
     return this.ws;
+  }
+
+  public getRawWebSocket(): IRpcSocket | null {
+    return this.ws;
+  }
+
+  public getGatewayReadyState(): GatewayReadyState {
+    return { ...this.gatewayReadyState };
+  }
+
+  public isSessionAuthority(): boolean {
+    return this.gatewayReadyState.sessionAuthority;
+  }
+
+  public getReplayEpoch(): string | null {
+    return this.gatewayReadyState.replayEpoch;
+  }
+
+  public getInstallId(): string | undefined {
+    return this.gatewayInstallId;
+  }
+
+  public setInstallId(installId: string | undefined): void {
+    const trimmed = typeof installId === 'string' ? installId.trim() : '';
+    this.gatewayInstallId = trimmed || undefined;
   }
 
   public getFsm(): WebSocketFsm {
@@ -402,7 +458,7 @@ export class HermesGatewayClient {
       if (this.activeProbePromise) {
         return this.activeProbePromise;
       }
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== RPC_SOCKET_READY_STATE.OPEN) {
         this.teardownDeadSocket(`Socket not open on probe (${reason})`);
         this.fsm.transitionTo('RECONNECTING');
         this.wakeImmediately(reason);
@@ -479,7 +535,7 @@ export class HermesGatewayClient {
     if (!this.enableHeartbeat) return;
 
     this.heartbeatTimer = setInterval(() => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.fsm.getState() !== 'CONNECTED') {
+      if (!this.ws || this.ws.readyState !== RPC_SOCKET_READY_STATE.OPEN || this.fsm.getState() !== 'CONNECTED') {
         return;
       }
 
@@ -551,12 +607,16 @@ export class HermesGatewayClient {
    *   - 任何时候调用 `disconnect()` 均递增 `connectEpoch`，彻底废止在途异步回调。
    */
   public connect(): void {
-    if (typeof WebSocket === 'undefined') {
+    if (!this.socketFactory && typeof WebSocket === 'undefined') {
       console.warn('[HermesGatewayClient] WebSocket runtime is unavailable');
       return;
     }
 
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+    if (
+      this.ws &&
+      (this.ws.readyState === RPC_SOCKET_READY_STATE.OPEN ||
+        this.ws.readyState === RPC_SOCKET_READY_STATE.CONNECTING)
+    ) {
       return;
     }
 
@@ -605,7 +665,9 @@ export class HermesGatewayClient {
   private openWebSocket(targetUrl: string): void {
     this.connectStartedAt = Date.now();
     try {
-      const socket = new WebSocket(targetUrl);
+      const socket = this.socketFactory
+        ? this.socketFactory(targetUrl)
+        : createBrowserRpcSocket(targetUrl);
       this.ws = socket;
 
       socket.onopen = () => {
@@ -645,7 +707,7 @@ export class HermesGatewayClient {
           });
       };
 
-      socket.onmessage = (event: MessageEvent) => {
+      socket.onmessage = (event: RpcSocketMessageEvent) => {
         if (this.intentionalClose || this.ws !== socket) return;
         this.handleMessage(event.data);
       };
@@ -697,6 +759,7 @@ export class HermesGatewayClient {
       this.ws.close();
       this.ws = null;
     }
+    this.gatewayReadyState = { ...DEFAULT_GATEWAY_READY_STATE };
     this.fsm.transitionTo('DISCONNECTED');
   }
 
@@ -810,7 +873,7 @@ export class HermesGatewayClient {
     const effectiveTimeout = timeoutMs ?? HermesGatewayClient.LONG_RUNNING_METHOD_TIMEOUT_MS[method] ?? this.timeoutMs;
 
     return new Promise<T>((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== RPC_SOCKET_READY_STATE.OPEN) {
         log.warn('rpc call rejected: socket not open', { method, state: this.fsm.getState() });
         return reject(new Error(`WebSocket is not connected (current state: ${this.fsm.getState()})`));
       }
@@ -856,6 +919,65 @@ export class HermesGatewayClient {
     };
   }
 
+  /** 注册服务端反向请求的单播处理器；返回注销闭包。 */
+  public onServerRequest<TParams = unknown, TResult = unknown>(
+    method: string,
+    handler: ServerRequestHandler<TParams, TResult>,
+  ): () => void {
+    const typedHandler = handler as ServerRequestHandler;
+    this.serverRequestHandlers.set(method, typedHandler);
+    return () => {
+      if (this.serverRequestHandlers.get(method) === typedHandler) {
+        this.serverRequestHandlers.delete(method);
+      }
+    };
+  }
+
+  /** 注册或替换兜底服务端反向请求处理器；返回注销闭包。 */
+  public setDefaultServerRequestHandler(handler: DefaultServerRequestHandler | null): () => void {
+    this.defaultServerRequestHandler = handler;
+    return () => {
+      if (this.defaultServerRequestHandler === handler) {
+        this.defaultServerRequestHandler = null;
+      }
+    };
+  }
+
+  /** 向网关声明客户端能力（如支持双向反向请求），返回网关协商结果。 */
+  public negotiateCapabilities(params: ClientCapabilitiesParams): Promise<ClientCapabilitiesResult> {
+    return this.call<ClientCapabilitiesResult>('client.capabilities', params);
+  }
+
+  /** 按 `session_authority` 语义拉取断线期间遗漏的会话增量事件并归一化结果。 */
+  public async fetchSessionEventsSince(
+    query: Omit<SessionEventsSinceQuery, 'sessionAuthority'> & { sessionAuthority?: boolean },
+  ): Promise<SessionEventsSinceNormalizedResult> {
+    const params = buildSessionEventsSinceParams({
+      sessionId: query.sessionId,
+      profile: query.profile,
+      cursor: query.cursor,
+      replayEpoch:
+        query.replayEpoch !== undefined
+          ? query.replayEpoch
+          : (this.gatewayReadyState.replayEpoch ?? undefined),
+      sessionAuthority: query.sessionAuthority ?? this.gatewayReadyState.sessionAuthority,
+    });
+    const raw = await this.call<unknown>('session.events.since', params);
+    return normalizeSessionEventsSinceResult(raw);
+  }
+
+  private dispatchServerRequest(id: string | number, method: string, params: unknown): void {
+    const specificHandler = this.serverRequestHandlers.get(method);
+    const defaultHandler = this.defaultServerRequestHandler;
+    void executeServerRequestFrame({ id, method, params }, specificHandler, defaultHandler).then(
+      (frame) => {
+        if (this.ws && this.ws.readyState === RPC_SOCKET_READY_STATE.OPEN) {
+          this.ws.send(frame);
+        }
+      },
+    );
+  }
+
   /**
    * Resilient dual-channel session listing that keeps the failure reason.
    *
@@ -898,7 +1020,7 @@ export class HermesGatewayClient {
       }
     }
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === RPC_SOCKET_READY_STATE.OPEN) {
       try {
         const wsResult = await this.call<unknown>('session.list', { profile, limit: safeLimit });
         const sessions = normalizeSessionsResult(wsResult);
@@ -1138,7 +1260,7 @@ export class HermesGatewayClient {
   public async getModelCatalog(profile = 'default', fallbackModels: string[] = []): Promise<ModelCatalog> {
     let lastError: string | undefined;
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === RPC_SOCKET_READY_STATE.OPEN) {
       try {
         const res = await this.call<Record<string, unknown>>('model.options', { profile, explicit_only: true });
         const view = buildModelCatalogView(res);
@@ -1211,6 +1333,10 @@ export class HermesGatewayClient {
   public async listProfiles(): Promise<AgentProfile[]> {
     try {
       const res = await this.call<Record<string, unknown> | unknown[]>('profiles.list', {});
+      const installId = extractInstallId(res);
+      if (installId) {
+        this.gatewayInstallId = installId;
+      }
       const list = Array.isArray(res)
         ? res
         : Array.isArray((res as Record<string, unknown>)?.profiles)
@@ -1251,7 +1377,7 @@ export class HermesGatewayClient {
       }
     }
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === RPC_SOCKET_READY_STATE.OPEN) {
       const wsRes = await this.call<Record<string, unknown>>('config.get', {
         key: 'full',
         ...(profile ? { profile } : {}),
@@ -1331,7 +1457,9 @@ export class HermesGatewayClient {
     if (typeof raw !== 'string') return;
     try {
       const data = JSON.parse(raw);
-      if (typeof data.id !== 'undefined' && this.pendingRequests.has(data.id)) {
+      if (typeof data.method === 'string' && typeof data.id !== 'undefined') {
+        this.dispatchServerRequest(data.id, data.method, data.params);
+      } else if (typeof data.id !== 'undefined' && this.pendingRequests.has(data.id)) {
         // RPC Response
         const pending = this.pendingRequests.get(data.id)!;
         this.pendingRequests.delete(data.id);
@@ -1343,6 +1471,9 @@ export class HermesGatewayClient {
           pending.resolve(data.result);
         }
       } else if (data.method) {
+        if (data.method === 'gateway.ready') {
+          this.gatewayReadyState = parseGatewayReadyParams(data.params);
+        }
         // RPC Notification or Server Event
         const handlers = this.notificationHandlers.get(data.method);
         if (handlers) {

@@ -2,13 +2,20 @@
  * Hermes Flux Desktop IPC Handler Registration
  */
 
-import { ipcMain, BrowserWindow, shell, dialog, app, clipboard, protocol } from 'electron';
+import { ipcMain, BrowserWindow, shell, dialog, app, clipboard, protocol, safeStorage } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { appendExternalLogRecord, getLogDir } from './logFile';
 import { resolveTitlebarMaximized, resolveWindowToggle } from './windowControl';
 import { extractCookieHeader } from './cookieHeader';
+import {
+  assertNoProxyRedirect,
+  GatewayCookiePool,
+  normalizeGatewayBaseUrl,
+  validateGatewayProxyTarget,
+} from './gatewayCookiePool';
+import { createSecretStore } from './secretStore';
 import {
   createWorkspaceDirectory,
   listWorkspaceDirectory,
@@ -71,14 +78,6 @@ export async function fetchWithTimeout(
   }
 }
 
-function getGatewayOrigin(rawUrl: string): string {
-  try {
-    return new URL(rawUrl).origin.toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
 async function cancelResponseBody(res: Response): Promise<void> {
   const body = (res as { body?: { cancel?: () => Promise<unknown> } | null }).body;
   if (body && typeof body.cancel === 'function') {
@@ -93,11 +92,36 @@ interface MediaControllerSlot {
 let activeMediaSlot: MediaControllerSlot | undefined;
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
-  let activeGatewayCookies = '';
-  let activeGatewayOrigin = '';
+  const cookiePool = new GatewayCookiePool();
+
+  let lazySecretStore: ReturnType<typeof createSecretStore> | null = null;
+  const getSecretStore = () => {
+    if (!lazySecretStore) {
+      lazySecretStore = createSecretStore({
+        filePath: path.join(app.getPath('userData'), 'gateway-secrets.json'),
+        isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+        encryptString: (plainText) => safeStorage.encryptString(plainText),
+        decryptString: (encrypted) => safeStorage.decryptString(encrypted),
+      });
+    }
+    return lazySecretStore;
+  };
+
+  ipcMain.removeHandler('secret:set');
+  ipcMain.handle('secret:set', (_event, key: string, value: string) =>
+    getSecretStore().setSecret(key, value),
+  );
+  ipcMain.removeHandler('secret:get');
+  ipcMain.handle('secret:get', (_event, key: string) =>
+    getSecretStore().getSecret(key),
+  );
+  ipcMain.removeHandler('secret:delete');
+  ipcMain.handle('secret:delete', (_event, key: string) =>
+    getSecretStore().deleteSecret(key),
+  );
 
   const mediaStreamController = createMediaStreamController({
-    getGatewayAuth: () => ({ cookies: activeGatewayCookies, origin: activeGatewayOrigin }),
+    getGatewayAuth: (targetOrigin?: string) => cookiePool.getSnapshot(targetOrigin),
     getFallbackCwd: () => process.cwd(),
   });
   if (activeMediaSlot) {
@@ -121,11 +145,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   }) => {
     return mediaStreamController.buildStreamUrl(options);
   });
-
-  const shouldAttachGatewayCookies = (targetUrl: string): boolean => {
-    if (!activeGatewayCookies || !activeGatewayOrigin) return false;
-    return getGatewayOrigin(targetUrl) === activeGatewayOrigin;
-  };
 
   /**
    * 渲染进程日志转发。
@@ -252,14 +271,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle(
     'gateway:authenticate',
     async (_event, options: { url: string; username?: string; password?: string }) => {
-      let baseUrl = (options.url || '').trim();
+      const baseUrl = normalizeGatewayBaseUrl(options.url);
       if (!baseUrl) {
         return { ok: false, message: '请先填写网关地址', latency: 0 };
       }
-      if (baseUrl.startsWith('ws://')) baseUrl = baseUrl.replace('ws://', 'http://');
-      if (baseUrl.startsWith('wss://')) baseUrl = baseUrl.replace('wss://', 'https://');
-      if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) baseUrl = `https://${baseUrl}`;
-      baseUrl = baseUrl.replace(/\/+$/, '');
 
       const start = Date.now();
       try {
@@ -281,15 +296,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         const statusData = asRecord(await statusRes.json().catch(() => ({})));
         const authRequired = Boolean(statusData.auth_required);
         const gatewayVersion = typeof statusData.version === 'string' ? statusData.version : undefined;
+        const installId =
+          typeof statusData.install_id === 'string' && statusData.install_id.trim()
+            ? statusData.install_id.trim()
+            : undefined;
 
         if (!authRequired) {
-          activeGatewayCookies = '';
-          activeGatewayOrigin = '';
+          cookiePool.clear(baseUrl);
           return {
             ok: true,
             message: `网关直连就绪 (无需认证) · 延迟 ${latency}ms`,
             latency,
             version: gatewayVersion,
+            installId,
           };
         }
 
@@ -322,22 +341,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
         if (loginRes.status === 401) {
           await cancelResponseBody(loginRes);
-          activeGatewayCookies = '';
-          activeGatewayOrigin = '';
+          cookiePool.clear(baseUrl);
           return { ok: false, message: '认证失败: 用户名或密码错误 (HTTP 401)', latency };
         }
         if (!loginRes.ok) {
           await cancelResponseBody(loginRes);
-          activeGatewayCookies = '';
-          activeGatewayOrigin = '';
+          cookiePool.clear(baseUrl);
           return { ok: false, message: `登录接口异常 HTTP ${loginRes.status}`, latency };
         }
 
         // 仅保留 name=value 段，避免把 Path/HttpOnly/SameSite 属性带入后续 Cookie 请求头
         const cookies = extractCookieHeader(loginRes.headers);
         await cancelResponseBody(loginRes);
-        activeGatewayCookies = cookies;
-        activeGatewayOrigin = cookies ? getGatewayOrigin(baseUrl) : '';
+        cookiePool.set(baseUrl, cookies);
 
         // Mint WS Ticket
         const ticketRes = await fetchWithTimeout(
@@ -371,6 +387,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
           message: `认证成功 · 延迟 ${latency}ms · Gateway v${gatewayVersion || '0.22.5'}`,
           latency,
           version: gatewayVersion,
+          installId,
         };
       } catch (err: unknown) {
         const errMessage = err instanceof Error ? err.message : String(err);
@@ -398,29 +415,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     body?: unknown;
     params?: unknown;
   }) => {
-    let base = (options.baseUrl || '').trim();
-    if (!base) throw new Error('未配置网关地址');
-    if (base.startsWith('ws://')) base = base.replace('ws://', 'http://');
-    if (base.startsWith('wss://')) base = base.replace('wss://', 'https://');
-    if (!base.startsWith('http://') && !base.startsWith('https://')) base = `https://${base}`;
-    base = base.replace(/\/+$/, '');
-
-    let fullUrl = `${base}${options.path.startsWith('/') ? '' : '/'}${options.path}`;
-    if (options.params && typeof options.params === 'object') {
-      const q = new URLSearchParams();
-      for (const [k, v] of Object.entries(options.params)) {
-        if (typeof v !== 'undefined' && v !== null) q.append(k, String(v));
-      }
-      const qs = q.toString();
-      if (qs) fullUrl += (fullUrl.includes('?') ? '&' : '?') + qs;
-    }
+    const { baseUrl: base, fullUrl } = validateGatewayProxyTarget({
+      baseUrl: options.baseUrl,
+      path: options.path,
+      params: options.params,
+    });
 
     const headers: Record<string, string> = {
       Accept: 'application/json',
       Origin: base,
     };
-    if (shouldAttachGatewayCookies(fullUrl)) {
-      headers['Cookie'] = activeGatewayCookies;
+    const scopedCookies = cookiePool.getForUrl(fullUrl);
+    if (scopedCookies) {
+      headers['Cookie'] = scopedCookies;
     }
     if (options.token) {
       headers['Authorization'] = `Bearer ${options.token}`;
@@ -432,6 +439,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const fetchOptions: RequestInit = {
       method: options.method || 'GET',
       headers,
+      redirect: 'manual',
       // 【规则】必须带超时：REST 代理无超时会让调用方的在途锁（如提供商绑定合流）永久占用，
       //   界面从此点不动，只能重启。超时统一按一次网关往返的上限处理。
       signal: AbortSignal.timeout(30_000),
@@ -442,6 +450,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
 
     const res = await fetch(fullUrl, fetchOptions);
+    if (res.status >= 300 && res.status < 400) {
+      await cancelResponseBody(res);
+      assertNoProxyRedirect(fullUrl, res);
+    }
     if (!res.ok) {
       // 网关的错误语义全在 JSON 的 detail 里（"base_url must include scheme and host"、
       // "The endpoint rejected the API key."）。只抛状态码会让用户看到 400 却不知道为什么。
@@ -783,21 +795,28 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
           const fetchHeaders: Record<string, string> = {
             Origin: parsedRemote.origin,
           };
-          if (shouldAttachGatewayCookies(remoteTarget)) {
-            fetchHeaders['Cookie'] = activeGatewayCookies;
+          const scopedSaveCookies = cookiePool.getForUrl(remoteTarget);
+          if (scopedSaveCookies) {
+            fetchHeaders['Cookie'] = scopedSaveCookies;
           }
-          let dlRes = await fetch(remoteTarget, {
-            headers: fetchHeaders,
-            signal: AbortSignal.timeout(60_000),
-          });
+          const fetchSaveTarget = async (url: string): Promise<Response> => {
+            const resp = await fetch(url, {
+              headers: fetchHeaders,
+              redirect: 'manual',
+              signal: AbortSignal.timeout(60_000),
+            });
+            if (resp.status >= 300 && resp.status < 400) {
+              await cancelResponseBody(resp);
+              assertNoProxyRedirect(url, resp);
+            }
+            return resp;
+          };
+          let dlRes = await fetchSaveTarget(remoteTarget);
           if (dlRes.status === 404 && parsedRemote.pathname.endsWith('/api/fs/download')) {
             await cancelResponseBody(dlRes);
             const pathParam = parsedRemote.searchParams.get('path') || '';
             const fallbackUrl = `${parsedRemote.origin}/api/files/download?path=${encodeURIComponent(pathParam)}`;
-            dlRes = await fetch(fallbackUrl, {
-              headers: fetchHeaders,
-              signal: AbortSignal.timeout(60_000),
-            });
+            dlRes = await fetchSaveTarget(fallbackUrl);
           }
           if (!dlRes.ok) {
             await cancelResponseBody(dlRes);

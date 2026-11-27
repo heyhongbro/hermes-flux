@@ -26,7 +26,7 @@
  *   3. 零文本写死：通知、错误与占位提示优先经由 `deps.t` 国际化字典输出。
  */
 
-import type { AppState } from '../state/appState.js';
+import { resolveScopedEntityRuntimeKey, type AppState } from '../state/appState.js';
 import type { HermesDesktopBridge } from '../../preload/index.js';
 import {
   type HermesGatewayClient,
@@ -72,6 +72,18 @@ export function isExtraInputsError(error: unknown): boolean {
   return msg.includes('Extra inputs');
 }
 
+function matchesSessionTarget(
+  session: NormalizedSession,
+  id: string,
+  gatewayId?: string,
+  normalizedProfile?: string | null,
+): boolean {
+  if (session.id !== id) return false;
+  if (normalizedProfile && normalizeOrgProfileName(session.botName) !== normalizedProfile) return false;
+  if (gatewayId && session.gatewayId && session.gatewayId !== gatewayId) return false;
+  return true;
+}
+
 function sessionCompositeKey(session: { id: string; botName?: string }): string {
   return `${normalizeOrgProfileName(session.botName)}::${session.id}`;
 }
@@ -79,9 +91,14 @@ function sessionCompositeKey(session: { id: string; botName?: string }): string 
 function upsertSessionByCompositeKey(
   list: NormalizedSession[],
   session: NormalizedSession,
+  gatewayId?: string,
 ): NormalizedSession[] {
   const key = sessionCompositeKey(session);
-  const index = list.findIndex((item) => sessionCompositeKey(item) === key);
+  const index = list.findIndex(
+    (item) =>
+      sessionCompositeKey(item) === key &&
+      (!gatewayId || !item.gatewayId || item.gatewayId === gatewayId),
+  );
   if (index === -1) return [session, ...list];
   const next = list.slice();
   next[index] = { ...next[index], ...session };
@@ -95,6 +112,9 @@ export type SessionEnterBeginHook = (sessionId: string, options?: { forcePinToBo
 export interface SessionOperationDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
+  readonly getGatewayUrlForGateway?: (gatewayId?: string) => string;
+  readonly onActiveFocusChanged?: () => void;
   readonly getDesktopApi?: () => HermesDesktopBridge | undefined;
   readonly getCurrentTicket: () => string | null;
   readonly getEffectiveUrl: (url?: string) => string;
@@ -111,15 +131,19 @@ export interface SessionOperationDeps {
   readonly activeRunningSessionIds: Set<string>;
   readonly activityTransitionTracker: { clear: (type: 'session' | 'group' | 'bot', id: string) => void };
   readonly sessionHandleRegistry: SessionHandleRegistry;
+  readonly getSessionHandleRegistryForGateway?: (gatewayId?: string) => SessionHandleRegistry;
   readonly cacheService: CacheService;
   readonly persistSessionsToCache: (sessions: NormalizedSession[]) => void;
-  readonly forgetOlderCursorState: (sessionId: string) => void;
+  readonly forgetOlderCursorState: (sessionId: string, gatewayId?: string) => void;
+  readonly onMultiGatewayRefresh?: () => Promise<boolean>;
+  readonly getConnectedGatewayClients?: () => Array<{ gatewayId: string; client: HermesGatewayClient }>;
   readonly sessionListGeneration: { invalidateForDelete: () => void };
 
   // 流式管理相关
   readonly getActiveStreamingStoredSessionId: () => string | null;
   readonly getActiveStreamingMessageId?: () => string | null;
   readonly getLiveStreamRegistry?: () => LiveStreamRegistry;
+  readonly getLiveStreamRegistryForGateway?: (gatewayId?: string) => LiveStreamRegistry | undefined;
   readonly scheduleToolPatch?: (messageId: string) => void;
   readonly resetActiveStreamingState: () => void;
   readonly onReenterSameSession?: (sessionId: string) => void;
@@ -134,14 +158,14 @@ export interface SessionOperationDeps {
   readonly cancelSmoothScrollOnLeave?: () => void;
 
   // 跨服务联动
-  readonly loadMessages: (sessionId: string, targetBotName?: string) => Promise<void>;
-  readonly openBotChat: (botName: string) => Promise<void>;
+  readonly loadMessages: (sessionId: string, targetBotName?: string, gatewayId?: string) => Promise<void>;
+  readonly openBotChat: (botName: string, gatewayId?: string) => Promise<void>;
   readonly ensureLiveSessionId: () => Promise<string>;
   readonly fetchSessions?: () => Promise<void>;
   readonly incrementActiveLoadMessagesGeneration?: () => number;
   readonly sessionPreviewCache?: Map<string, { lastActive: number; text: string; botName?: string }>;
   readonly formatSessionTime?: (ts: number) => string;
-  readonly resolveAgentAvatar?: (name?: string) => string;
+  readonly resolveAgentAvatar?: (name?: string, gatewayId?: string) => string;
   readonly syncProfileLastMessages?: () => void;
   readonly logSessionWarn?: (msg: string, meta?: Record<string, unknown>) => void;
   readonly logSessionDebug?: (msg: string, meta?: Record<string, unknown>) => void;
@@ -176,6 +200,16 @@ export class SessionOperationService {
 
   constructor(private readonly deps: SessionOperationDeps) {}
 
+  private resolveTargetClient(gatewayId?: string): HermesGatewayClient | null {
+    return this.deps.getClientForGateway
+      ? this.deps.getClientForGateway(gatewayId)
+      : this.deps.getGatewayClient();
+  }
+
+  private resolveStreamRegistry(gatewayId?: string): LiveStreamRegistry | undefined {
+    return this.deps.getLiveStreamRegistryForGateway?.(gatewayId) ?? this.deps.getLiveStreamRegistry?.();
+  }
+
   /** 离开当前会话前解除挂起回滚：把被乐观裁撤的历史恢复到该会话缓存，防止横幅跨会话泄漏与快照污染 */
   disarmRollbackOnLeave(outgoingSessionId?: string): void {
     const state = this.deps.getState();
@@ -184,7 +218,9 @@ export class SessionOperationService {
     const plan = planRollbackLeaveRestore(armed, outgoingSessionId ?? state.activeSessionId);
     state.rollbackArmed = null;
     if (plan) {
-      this.deps.sessionMessagesCache.set(plan.restoreSessionId, plan.restore);
+      const targetGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+      const cacheKey = resolveScopedEntityRuntimeKey(plan.restoreSessionId, targetGw, state.gatewayCount);
+      this.deps.sessionMessagesCache.set(cacheKey, plan.restore);
     }
   }
 
@@ -209,8 +245,9 @@ export class SessionOperationService {
     containerId?: string;
     title?: string;
   }): Promise<string | null> {
-    const gatewayClient = this.deps.getGatewayClient();
     const state = this.deps.getState();
+    const targetGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const gatewayClient = this.resolveTargetClient(targetGw);
 
     if (!gatewayClient) {
       this.deps.setTimedDockNotice('Gateway not connected, cannot create session');
@@ -232,7 +269,9 @@ export class SessionOperationService {
     // Preserve draft for current session before creating new
     const currentInputVal = this.getInputValue();
     if (state.activeSessionId && currentInputVal !== undefined) {
-      this.deps.sessionDrafts.set(state.activeSessionId, currentInputVal);
+      const outgoingGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+      const draftKey = resolveScopedEntityRuntimeKey(state.activeSessionId, outgoingGw, state.gatewayCount);
+      this.deps.sessionDrafts.set(draftKey, currentInputVal);
     }
 
     try {
@@ -279,18 +318,23 @@ export class SessionOperationService {
         this.deps.render();
         return null;
       }
-      this.deps.sessionHandleRegistry.register(handles);
+      (this.deps.getSessionHandleRegistryForGateway?.(targetGw) ?? this.deps.sessionHandleRegistry).register(handles);
 
       // 切到新会话前解除旧会话挂起回滚（P0-2 防横幅泄漏与快照丢失），必须在改写 activeSessionId 之前
       this.disarmRollbackOnLeave(state.activeSessionId);
       state.profileName = targetProfile;
       state.activeSessionId = handles.storedId;
+      state.activeGatewayId = targetGw;
       state.activeLiveSessionId = handles.liveId;
       // 新建会话必须强制贴底：它没有历史记忆，且首条消息到达后要自动跟到最新。
       this.deps.beginSessionEnter?.(handles.storedId, { forcePinToBottom: true });
-      state.activeFocus = { type: 'session', sessionId: handles.storedId };
+      state.activeFocus = targetGw
+        ? { type: 'session', sessionId: handles.storedId, gatewayId: targetGw }
+        : { type: 'session', sessionId: handles.storedId };
+      this.deps.onActiveFocusChanged?.();
       state.messages = [];
-      this.deps.sessionMessagesCache.set(handles.storedId, []);
+      const createdCacheKey = resolveScopedEntityRuntimeKey(handles.storedId, targetGw, state.gatewayCount);
+      this.deps.sessionMessagesCache.set(createdCacheKey, []);
       state.dockNotice = '';
       state.modelMenuOpen = false;
 
@@ -304,7 +348,7 @@ export class SessionOperationService {
       const matchingProfile = state.profiles.find((p) => p.name === targetProfile);
       const normTargetCwd = targetCwd ? normalizeWorkspacePath(targetCwd) : '';
       if (normTargetCwd) {
-        state.sessionCwds = { ...(state.sessionCwds ?? {}), [handles.storedId]: normTargetCwd };
+        state.sessionCwds = { ...(state.sessionCwds ?? {}), [createdCacheKey]: normTargetCwd };
       }
       const newSessionEntry: NormalizedSession = {
         ...toPendingSession(handles, targetTitle),
@@ -313,6 +357,7 @@ export class SessionOperationService {
         botAvatar: matchingProfile?.avatar || '',
         projectId: targetProjectId,
         cwd: normTargetCwd || targetCwd,
+        ...(targetGw ? { gatewayId: targetGw } : {}),
       };
       state.sessions = upsertSession(state.sessions, newSessionEntry);
       const rawInfo: Record<string, unknown> | null =
@@ -346,17 +391,92 @@ export class SessionOperationService {
     }
   }
 
-  /** 删除会话 */
-  async deleteSession(id: string): Promise<void> {
-    const gatewayClient = this.deps.getGatewayClient();
+  private async finalizeDeletedSession(
+    id: string,
+    targetGw: string | undefined,
+    targetSession: NormalizedSession | undefined,
+    pruneIds: readonly string[],
+    options: { dropPersistentCache: boolean },
+  ): Promise<void> {
     const state = this.deps.getState();
+    const shouldPrune = (s: NormalizedSession): boolean =>
+      pruneIds.includes(s.id) && (!targetGw || !s.gatewayId || s.gatewayId === targetGw);
+    state.sessions = state.sessions.filter((s) => !shouldPrune(s));
+    state.archivedSessions = (state.archivedSessions || []).filter((s) => !shouldPrune(s));
+    state.pendingSessionIds = state.pendingSessionIds.filter((pid) => pid !== id);
+
+    const scopedKey = resolveScopedEntityRuntimeKey(id, targetGw, state.gatewayCount);
+    this.deps.sessionMessagesCache.delete(scopedKey);
+    this.deps.forgetOlderCursorState(id, targetGw);
+    this.deps.sessionDrafts.delete(scopedKey);
+    this.deps.unreadSessionIds.delete(scopedKey);
+    this.deps.activeRunningSessionIds.delete(scopedKey);
+    this.deps.activityTransitionTracker.clear('session', scopedKey);
+    (this.deps.getSessionHandleRegistryForGateway?.(targetGw) ?? this.deps.sessionHandleRegistry).unregister(id);
+    this.deps.onSessionDeleted?.(id, targetSession?.botName);
+
+    if (options.dropPersistentCache) {
+      const deleteCacheRef: CacheChannelRef = {
+        ...(targetGw ? { gatewayId: targetGw } : {}),
+        profile: targetSession?.botName || state.profileName || 'default',
+        channel: 'session',
+        channelId: id,
+      };
+      void this.deps.cacheService.dropChannel(deleteCacheRef).catch(() => undefined);
+      this.deps.persistSessionsToCache(state.sessions);
+    }
+
+    // 如果被删除的会话正在流式运行，安全重置流式看门狗与标志，彻底杜绝输入框被全局 isStreaming 锁死
+    (this.deps.getLiveStreamRegistryForGateway?.(targetGw) ?? this.deps.getLiveStreamRegistry?.())?.removeSession(id);
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const matchesActiveStreamGw =
+      (state.gatewayCount ?? 1) < 2 || !targetGw || !activeGw || targetGw === activeGw;
+    if (matchesActiveStreamGw && this.deps.getActiveStreamingStoredSessionId() === id) {
+      this.deps.resetActiveStreamingState();
+    }
+
+    const isFocusedDeleted =
+      state.activeSessionId === id &&
+      (!targetGw || !state.activeGatewayId || state.activeGatewayId === targetGw);
+    if (isFocusedDeleted) {
+      this.handleArmedOnDelete(id);
+      const nextSession = targetGw
+        ? state.sessions.find((s) => !s.gatewayId || s.gatewayId === targetGw) || state.sessions[0]
+        : state.sessions[0];
+      state.activeSessionId = nextSession?.id || '';
+      state.activeLiveSessionId = '';
+      if (state.activeSessionId) {
+        await this.selectSession(
+          state.activeSessionId,
+          nextSession?.gatewayId ? { gatewayId: nextSession.gatewayId } : undefined,
+        );
+      } else {
+        // 当删除最后一条会话导致会话池为空时，干净平滑回退至默认智能体工位，拉取并激活 Forever Chat 终身会话通道
+        const targetBot = state.profileName || 'default';
+        await this.deps.openBotChat(targetBot, targetGw);
+      }
+    } else {
+      this.deps.render();
+    }
+
+    // 焦点重连保护：强力恢复输入舱光标与焦点，确保键盘可立即键入
+    this.deps.restoreComposerFocus();
+  }
+
+  /** 删除会话 */
+  async deleteSession(id: string, gatewayId?: string): Promise<void> {
+    const state = this.deps.getState();
+    const targetSession =
+      state.sessions.find((s) => matchesSessionTarget(s, id, gatewayId)) ||
+      (state.archivedSessions || []).find((s) => matchesSessionTarget(s, id, gatewayId)) ||
+      state.sessions.find((s) => s.id === id) ||
+      (state.archivedSessions || []).find((s) => s.id === id);
+    const targetGw = gatewayId || targetSession?.gatewayId || state.activeGatewayId;
+    const gatewayClient = this.resolveTargetClient(targetGw);
     if (!gatewayClient || !id) return;
 
     this.deps.sessionListGeneration.invalidateForDelete();
 
-    const targetSession =
-      state.sessions.find((s) => s.id === id) ||
-      (state.archivedSessions || []).find((s) => s.id === id);
     const targetProfiles = new Set<string>();
     if (targetSession?.botName) targetProfiles.add(targetSession.botName);
     if (state.profileName) targetProfiles.add(state.profileName);
@@ -366,24 +486,22 @@ export class SessionOperationService {
     }
 
     const desktopApi = this.deps.getDesktopApi?.();
+    const primaryUrl = this.deps.getEffectiveUrl(state.gatewayUrl);
+    const targetBaseUrl = this.deps.getGatewayUrlForGateway?.(targetGw) || primaryUrl;
+    const sameAsPrimary =
+      targetBaseUrl.replace(/\/+$/, '').toLowerCase() === primaryUrl.replace(/\/+$/, '').toLowerCase();
 
     try {
       const lifecycle = new SessionLifecycleService({
         rpc: gatewayClient,
-        platformBridge: desktopApi,
-        restFallback: async (path, options) => {
-          if (!desktopApi?.httpProxy) throw new Error('Desktop REST proxy is unavailable');
-          return await desktopApi.httpProxy({
-            baseUrl: this.deps.getEffectiveUrl(state.gatewayUrl),
-            path,
-            method: options?.method,
-            ticket: this.deps.getCurrentTicket() ?? '',
-            params: options?.params,
-            body: options?.body,
-          });
-        },
-        baseUrl: () => this.deps.getEffectiveUrl(state.gatewayUrl),
-        ticket: () => this.deps.getCurrentTicket() ?? '',
+        platformBridge: sameAsPrimary ? desktopApi : undefined,
+        restFallback: sameAsPrimary
+          ? async () => {
+              throw new Error('Desktop REST proxy is unavailable');
+            }
+          : undefined,
+        baseUrl: () => (sameAsPrimary ? primaryUrl : targetBaseUrl),
+        ticket: () => (sameAsPrimary ? (this.deps.getCurrentTicket() ?? '') : ''),
       });
       const outcome = await lifecycle.deleteSession(id, [...targetProfiles]);
       for (const failedProfile of outcome.failedProfiles) {
@@ -391,83 +509,16 @@ export class SessionOperationService {
       }
       if (outcome.status === 'failed') throw new Error(`Delete failed for profiles: ${outcome.failedProfiles.join(', ')}`);
 
-      state.sessions = state.sessions.filter((s) => !outcome.pruneIds.includes(s.id));
-      state.archivedSessions = (state.archivedSessions || []).filter((s) => !outcome.pruneIds.includes(s.id));
-      state.pendingSessionIds = state.pendingSessionIds.filter((pid) => pid !== id);
-      this.deps.sessionMessagesCache.delete(id);
-      this.deps.forgetOlderCursorState(id);
-      this.deps.sessionDrafts.delete(id);
-      this.deps.unreadSessionIds.delete(id);
-      this.deps.activeRunningSessionIds.delete(id);
-      this.deps.activityTransitionTracker.clear('session', id);
-      this.deps.sessionHandleRegistry.unregister(id);
-      this.deps.onSessionDeleted?.(id, targetSession?.botName);
-
-      // 持久化缓存清理：清空该会话在 IndexedDB 中的消息通道并持久化最新索引
-      const deleteCacheRef: CacheChannelRef = {
-        profile: targetSession?.botName || state.profileName || 'default',
-        channel: 'session',
-        channelId: id,
-      };
-      void this.deps.cacheService.dropChannel(deleteCacheRef).catch(() => undefined);
-      this.deps.persistSessionsToCache(state.sessions);
-
-      // 如果被删除的会话正在流式运行，安全重置流式看门狗与标志，彻底杜绝输入框被全局 isStreaming 锁死
-      this.deps.getLiveStreamRegistry?.().removeSession(id);
-      if (this.deps.getActiveStreamingStoredSessionId() === id) {
-        this.deps.resetActiveStreamingState();
-      }
-
-      if (state.activeSessionId === id) {
-        this.handleArmedOnDelete(id);
-        state.activeSessionId = state.sessions[0]?.id || '';
-        state.activeLiveSessionId = '';
-        if (state.activeSessionId) {
-          await this.selectSession(state.activeSessionId);
-        } else {
-          // 当删除最后一条会话导致会话池为空时，干净平滑回退至默认智能体工位，拉取并激活 Forever Chat 终身会话通道
-          const targetBot = state.profileName || 'default';
-          await this.deps.openBotChat(targetBot);
-        }
-      } else {
-        this.deps.render();
-      }
-
-      // 焦点重连保护：强力恢复输入舱光标与焦点，确保键盘可立即键入
-      this.deps.restoreComposerFocus();
+      await this.finalizeDeletedSession(id, targetGw, targetSession, outcome.pruneIds, {
+        dropPersistentCache: true,
+      });
     } catch (e: unknown) {
       console.error('[Hermes Gateway] Delete session failed:', e);
       const msg = describeRpcError(e);
       if (rpcErrorCode(e) === RpcErrorCode.SessionMissing) {
-        state.sessions = state.sessions.filter((s) => s.id !== id);
-        state.archivedSessions = (state.archivedSessions || []).filter((s) => s.id !== id);
-        state.pendingSessionIds = state.pendingSessionIds.filter((pid) => pid !== id);
-        this.deps.sessionMessagesCache.delete(id);
-        this.deps.forgetOlderCursorState(id);
-        this.deps.sessionDrafts.delete(id);
-        this.deps.unreadSessionIds.delete(id);
-        this.deps.activeRunningSessionIds.delete(id);
-        this.deps.activityTransitionTracker.clear('session', id);
-        this.deps.sessionHandleRegistry.unregister(id);
-        this.deps.onSessionDeleted?.(id, targetSession?.botName);
-        this.deps.getLiveStreamRegistry?.().removeSession(id);
-        if (this.deps.getActiveStreamingStoredSessionId() === id) {
-          this.deps.resetActiveStreamingState();
-        }
-        if (state.activeSessionId === id) {
-          this.handleArmedOnDelete(id);
-          state.activeSessionId = state.sessions[0]?.id || '';
-          state.activeLiveSessionId = '';
-          if (state.activeSessionId) {
-            await this.selectSession(state.activeSessionId);
-          } else {
-            const targetBot = state.profileName || 'default';
-            await this.deps.openBotChat(targetBot);
-          }
-        } else {
-          this.deps.render();
-        }
-        this.deps.restoreComposerFocus();
+        await this.finalizeDeletedSession(id, targetGw, targetSession, [id], {
+          dropPersistentCache: false,
+        });
         return;
       }
       state.dockNotice = `Delete session failed: ${msg}`;
@@ -477,9 +528,18 @@ export class SessionOperationService {
   }
 
   /** 重命名会话 */
-  async renameSession(id: string, currentTitle: string, nextTitleOverride?: string): Promise<void> {
-    const gatewayClient = this.deps.getGatewayClient();
+  async renameSession(
+    id: string,
+    currentTitle: string,
+    nextTitleOverride?: string,
+    gatewayId?: string,
+  ): Promise<void> {
     const state = this.deps.getState();
+    const targetSession =
+      state.sessions.find((s) => matchesSessionTarget(s, id, gatewayId)) ||
+      (state.archivedSessions || []).find((s) => matchesSessionTarget(s, id, gatewayId));
+    const targetGw = gatewayId || targetSession?.gatewayId || state.activeGatewayId;
+    const gatewayClient = this.resolveTargetClient(targetGw);
 
     let newTitle: string | null = nextTitleOverride !== undefined ? nextTitleOverride : null;
     if (newTitle === null && this.deps.promptDialog) {
@@ -495,16 +555,16 @@ export class SessionOperationService {
       if (gatewayClient) {
         await gatewayClient.call('session.title', { session_id: id, title: trimmed });
       }
-      state.sessions = state.sessions.map((s) => (s.id === id ? { ...s, title: trimmed } : s));
+      state.sessions = state.sessions.map((s) => (matchesSessionTarget(s, id, targetGw) ? { ...s, title: trimmed } : s));
       state.archivedSessions = (state.archivedSessions || []).map((s) =>
-        s.id === id ? { ...s, title: trimmed } : s,
+        matchesSessionTarget(s, id, targetGw) ? { ...s, title: trimmed } : s,
       );
       this.deps.render();
     } catch {
       // Optimistically update locally even if server returns error
-      state.sessions = state.sessions.map((s) => (s.id === id ? { ...s, title: trimmed } : s));
+      state.sessions = state.sessions.map((s) => (matchesSessionTarget(s, id, targetGw) ? { ...s, title: trimmed } : s));
       state.archivedSessions = (state.archivedSessions || []).map((s) =>
-        s.id === id ? { ...s, title: trimmed } : s,
+        matchesSessionTarget(s, id, targetGw) ? { ...s, title: trimmed } : s,
       );
       this.deps.render();
     }
@@ -527,13 +587,16 @@ export class SessionOperationService {
   }
 
   /** 置顶 / 取消置顶会话（同步切换 pinned 状态并持久化排序） */
-  async pinSession(id: string): Promise<void> {
+  async pinSession(id: string, gatewayId?: string): Promise<void> {
     const state = this.deps.getState();
-    const target = state.sessions.find((s) => s.id === id);
+    const target =
+      state.sessions.find((s) => matchesSessionTarget(s, id, gatewayId)) ||
+      state.sessions.find((s) => s.id === id);
     if (!target) return;
+    const targetGw = gatewayId || target.gatewayId;
     const nextPinned = !target.pinned;
     const updated: NormalizedSession = { ...target, pinned: nextPinned };
-    const rest = state.sessions.filter((s) => s.id !== id);
+    const rest = state.sessions.filter((s) => !matchesSessionTarget(s, id, targetGw));
     state.sessions = nextPinned ? [updated, ...rest] : [...rest, updated];
     this.deps.persistSessionsToCache(state.sessions);
     this.deps.showToast(this.deps.t('toast.pinned', { title: target.title }));
@@ -541,9 +604,12 @@ export class SessionOperationService {
   }
 
   /** 导出会话 Markdown 历史 */
-  async exportMarkdown(id: string): Promise<void> {
+  async exportMarkdown(id: string, gatewayId?: string): Promise<void> {
     const state = this.deps.getState();
-    const activeTitle = state.sessions.find((s) => s.id === id)?.title || 'session';
+    const target =
+      state.sessions.find((s) => matchesSessionTarget(s, id, gatewayId)) ||
+      state.sessions.find((s) => s.id === id);
+    const activeTitle = target?.title || 'session';
     const mdContent = state.messages
       // 【规则】导出口径与视图一致：hidden 行不导出，时间线事件单独标注
       .filter((m) => (m.displayKind ?? 'user') !== 'hidden')
@@ -571,16 +637,22 @@ export class SessionOperationService {
   }
 
   /** 显式设置会话「已完成（归档）/ 进行中（恢复）」；Bot 主工位免疫，RPC 失败绝不伪造本地状态 */
-  async setSessionArchived(id: string, archived: boolean, explicitProfile?: string): Promise<boolean> {
-    const gatewayClient = this.deps.getGatewayClient();
+  async setSessionArchived(
+    id: string,
+    archived: boolean,
+    explicitProfile?: string,
+    gatewayId?: string,
+  ): Promise<boolean> {
     const state = this.deps.getState();
     const normalizedExplicit = explicitProfile ? normalizeOrgProfileName(explicitProfile) : null;
     const matchesTarget = (s: NormalizedSession): boolean =>
-      s.id === id && (!normalizedExplicit || normalizeOrgProfileName(s.botName) === normalizedExplicit);
+      matchesSessionTarget(s, id, gatewayId, normalizedExplicit);
     const target =
       state.sessions.find(matchesTarget) ||
       (state.archivedSessions || []).find(matchesTarget);
     if (!target || target.hidden) return false;
+    const targetGw = gatewayId || target.gatewayId || state.activeGatewayId;
+    const gatewayClient = this.resolveTargetClient(targetGw);
     if (!gatewayClient) {
       this.deps.showToast(this.deps.t('rail.orgSyncFailed', { detail: 'Gateway not connected' }));
       return false;
@@ -604,13 +676,15 @@ export class SessionOperationService {
     }
 
     const targetKey = sessionCompositeKey({ id, botName: target.botName || explicitProfile });
+    const isSameArchiveEntity = (s: NormalizedSession): boolean =>
+      sessionCompositeKey(s) === targetKey && (!targetGw || !s.gatewayId || s.gatewayId === targetGw);
     const updated: NormalizedSession = { ...target, isArchived: archived };
     if (archived) {
-      state.sessions = state.sessions.filter((s) => sessionCompositeKey(s) !== targetKey);
-      state.archivedSessions = upsertSessionByCompositeKey(state.archivedSessions || [], updated);
+      state.sessions = state.sessions.filter((s) => !isSameArchiveEntity(s));
+      state.archivedSessions = upsertSessionByCompositeKey(state.archivedSessions || [], updated, targetGw);
     } else {
-      state.archivedSessions = (state.archivedSessions || []).filter((s) => sessionCompositeKey(s) !== targetKey);
-      state.sessions = upsertSessionByCompositeKey(state.sessions, updated);
+      state.archivedSessions = (state.archivedSessions || []).filter((s) => !isSameArchiveEntity(s));
+      state.sessions = upsertSessionByCompositeKey(state.sessions, updated, targetGw);
     }
     this.deps.persistSessionsToCache(state.sessions);
     this.deps.render();
@@ -618,90 +692,122 @@ export class SessionOperationService {
   }
 
   /** 归档或恢复会话 */
-  async archiveSession(id: string, explicitProfile?: string): Promise<void> {
+  async archiveSession(id: string, explicitProfile?: string, gatewayId?: string): Promise<void> {
     const state = this.deps.getState();
     const normalizedExplicit = explicitProfile ? normalizeOrgProfileName(explicitProfile) : null;
     const matchesTarget = (s: NormalizedSession): boolean =>
-      s.id === id && (!normalizedExplicit || normalizeOrgProfileName(s.botName) === normalizedExplicit);
+      matchesSessionTarget(s, id, gatewayId, normalizedExplicit);
     const isCurrentlyArchived =
       (state.archivedSessions || []).some(matchesTarget) ||
       state.sessions.some((s) => matchesTarget(s) && Boolean(s.isArchived));
-    await this.setSessionArchived(id, !isCurrentlyArchived, explicitProfile);
+    await this.setSessionArchived(id, !isCurrentlyArchived, explicitProfile, gatewayId);
   }
 
   /** 拉取跨 Profile 已归档（已完成）会话列表，独立保存在 archivedSessions 中避免与活跃列表重调互相冲刷 */
   async fetchArchivedSessions(_options?: { force?: boolean }): Promise<void> {
-    const client = this.deps.getGatewayClient();
-    if (!client) return;
     const state = this.deps.getState();
+    const isMultiGw = state.gatewayCount >= 2;
+    const connectedEntries =
+      isMultiGw && this.deps.getConnectedGatewayClients
+        ? this.deps.getConnectedGatewayClients()
+        : [];
+    const fallbackClient = connectedEntries.length > 0 ? null : this.deps.getGatewayClient();
+    const gatewayTargets: Array<{ gatewayId?: string; client: HermesGatewayClient }> =
+      connectedEntries.length > 0
+        ? connectedEntries
+        : fallbackClient
+          ? [{ client: fallbackClient }]
+          : [];
+    if (gatewayTargets.length === 0) return;
 
     state.doneLoading = true;
     state.doneError = '';
     this.deps.render();
 
-    const targetProfiles = new Set<string>(['default']);
-    if (state.profileName) targetProfiles.add(state.profileName);
-    for (const p of state.profiles) {
-      if (p.name) targetProfiles.add(p.name);
-    }
-    const targetProfileList = Array.from(targetProfiles);
-    const profileMap = new Map<string, AgentProfile>();
-    for (const p of state.profiles) profileMap.set(p.name, p);
-
-    const results = await Promise.allSettled(
-      targetProfileList.map(async (profName) => {
-        const outcome = await client.listArchivedSessions(profName, 100);
-        if (!outcome.ok || !outcome.sessions) {
-          return { ok: false, profile: profName, error: outcome.error ?? 'unknown error', sessions: [] as NormalizedSession[] };
+    const perGatewayResults = await Promise.all(
+      gatewayTargets.map(async ({ gatewayId, client }) => {
+        const gwProfiles = gatewayId
+          ? state.profiles.filter((p) => !p.gatewayId || p.gatewayId === gatewayId)
+          : state.profiles;
+        const targetProfiles = new Set<string>(['default']);
+        if (!gatewayId || state.activeGatewayId === gatewayId) {
+          if (state.profileName) targetProfiles.add(state.profileName);
         }
-        const prof = profileMap.get(profName);
-        const mapped = outcome.sessions.map((s) => {
-          const botName = s.botName || profName;
-          const matchingProfile = profileMap.get(botName) || prof;
-          const timeWithDate = (this.deps.formatSessionTime ? this.deps.formatSessionTime(s.timestamp) : '') || s.time;
-          const resolvedAvatar =
-            matchingProfile?.avatar ||
-            (this.deps.resolveAgentAvatar ? this.deps.resolveAgentAvatar(botName) || this.deps.resolveAgentAvatar(profName) : '') ||
-            '';
-          return {
-            ...s,
-            isArchived: true,
-            time: timeWithDate,
-            botName,
-            botDisplayName: matchingProfile?.displayName || botName,
-            botAvatar: resolvedAvatar,
-          };
-        });
-        return { ok: true, profile: profName, error: '', sessions: mapped };
+        for (const p of gwProfiles) {
+          if (p.name) targetProfiles.add(p.name);
+        }
+        const profileMap = new Map<string, AgentProfile>();
+        for (const p of gwProfiles) profileMap.set(p.name, p);
+
+        const settledBatches = await Promise.allSettled(
+          Array.from(targetProfiles).map(async (profName) => {
+            const outcome = await client.listArchivedSessions(profName, 100);
+            if (!outcome.ok || !outcome.sessions) {
+              return { ok: false, profile: profName, error: outcome.error ?? 'unknown error', sessions: [] as NormalizedSession[] };
+            }
+            const prof = profileMap.get(profName);
+            const mapped = outcome.sessions.map((s) => {
+              const botName = s.botName || profName;
+              const matchingProfile = profileMap.get(botName) || prof;
+              const timeWithDate = (this.deps.formatSessionTime ? this.deps.formatSessionTime(s.timestamp) : '') || s.time;
+              const resolvedAvatar =
+                matchingProfile?.avatar ||
+                (this.deps.resolveAgentAvatar ? this.deps.resolveAgentAvatar(botName, gatewayId) || this.deps.resolveAgentAvatar(profName, gatewayId) : '') ||
+                '';
+              return {
+                ...s,
+                ...(gatewayId ? { gatewayId } : {}),
+                isArchived: true,
+                time: timeWithDate,
+                botName,
+                botDisplayName: matchingProfile?.displayName || botName,
+                botAvatar: resolvedAvatar,
+              };
+            });
+            return { ok: true, profile: profName, error: '', sessions: mapped };
+          }),
+        );
+        return { gatewayId, targetProfiles: Array.from(targetProfiles), settledBatches };
       }),
     );
 
-    const settled = results.map((r, idx) =>
-      r.status === 'fulfilled'
-        ? r.value
-        : {
-            ok: false,
-            profile: targetProfileList[idx] ?? 'unknown',
-            error: String(r.reason),
-            sessions: [] as NormalizedSession[],
-          },
-    );
+    const settled: Array<{ ok: boolean; gatewayId?: string; profile: string; error: string; sessions: NormalizedSession[] }> = [];
+    for (const gwGroup of perGatewayResults) {
+      gwGroup.settledBatches.forEach((r, idx) => {
+        settled.push(
+          r.status === 'fulfilled'
+            ? { ...r.value, gatewayId: gwGroup.gatewayId }
+            : {
+                ok: false,
+                gatewayId: gwGroup.gatewayId,
+                profile: gwGroup.targetProfiles[idx] ?? 'unknown',
+                error: String(r.reason),
+                sessions: [] as NormalizedSession[],
+              },
+        );
+      });
+    }
     const allOk = settled.every((r) => r.ok);
     const anyOk = settled.some((r) => r.ok);
-    const activeKeys = new Set(state.sessions.filter((s) => !s.isArchived).map((s) => sessionCompositeKey(s)));
+    const scopedArchivedKey = (s: { gatewayId?: string; botName?: string; id: string }): string =>
+      `${s.gatewayId || ''}::${sessionCompositeKey(s)}`;
+    const activeKeys = new Set(state.sessions.filter((s) => !s.isArchived).map(scopedArchivedKey));
 
     if (anyOk) {
       const succeededProfiles = new Set(
-        settled.filter((r) => r.ok).map((r) => normalizeOrgProfileName(r.profile)),
+        settled
+          .filter((r) => r.ok)
+          .map((r) => `${r.gatewayId || ''}::${normalizeOrgProfileName(r.profile)}`),
       );
       const deduped = new Map<string, NormalizedSession>();
       if (!allOk) {
         // 部分 Profile 失败时保留失败 Profile 既有缓存，且绝不标记 doneSessionsLoaded = true（防止误触发 pruneStale）
         for (const prevItem of state.archivedSessions || []) {
           if (prevItem.hidden || prevItem.isSubagent) continue;
-          const key = sessionCompositeKey(prevItem);
+          const key = scopedArchivedKey(prevItem);
           if (activeKeys.has(key)) continue;
-          if (!succeededProfiles.has(normalizeOrgProfileName(prevItem.botName))) {
+          const profKey = `${prevItem.gatewayId || ''}::${normalizeOrgProfileName(prevItem.botName)}`;
+          if (!succeededProfiles.has(profKey)) {
             deduped.set(key, prevItem);
           }
         }
@@ -709,7 +815,7 @@ export class SessionOperationService {
       for (const batch of settled) {
         if (!batch.ok) continue;
         for (const item of batch.sessions) {
-          const key = sessionCompositeKey(item);
+          const key = scopedArchivedKey(item);
           if (item.hidden || item.isSubagent || activeKeys.has(key)) continue;
           const prev = deduped.get(key);
           if (!prev || (item.timestamp || 0) >= (prev.timestamp || 0)) {
@@ -737,16 +843,28 @@ export class SessionOperationService {
   }
 
   /** 激活选中会话并加载消息 */
-  async selectSession(id: string, options?: { preserveFocus?: boolean; botName?: string }): Promise<void> {
+  async selectSession(
+    id: string,
+    options?: { preserveFocus?: boolean; botName?: string; gatewayId?: string },
+  ): Promise<void> {
     if (!id) return;
     const state = this.deps.getState();
+    const outgoingGw = state.activeFocus?.gatewayId || state.activeGatewayId;
     const normalizedOptBot = options?.botName ? normalizeOrgProfileName(options.botName) : null;
+    const targetSession =
+      state.sessions.find((s) => matchesSessionTarget(s, id, options?.gatewayId, normalizedOptBot)) ||
+      (state.archivedSessions || []).find((s) => matchesSessionTarget(s, id, options?.gatewayId, normalizedOptBot)) ||
+      state.sessions.find((s) => matchesSessionTarget(s, id, options?.gatewayId)) ||
+      (state.archivedSessions || []).find((s) => matchesSessionTarget(s, id, options?.gatewayId));
+    const targetGw = options?.gatewayId || targetSession?.gatewayId || state.activeGatewayId;
+    const switchingGateway = Boolean(targetGw && outgoingGw && targetGw !== outgoingGw);
     const switchingProfile = Boolean(
       normalizedOptBot && normalizedOptBot !== normalizeOrgProfileName(state.profileName),
     );
     if (
       state.activeSessionId === id &&
       !switchingProfile &&
+      !switchingGateway &&
       state.activeLiveSessionId &&
       state.messages.length > 0
     ) {
@@ -757,14 +875,15 @@ export class SessionOperationService {
     // Preserve draft & message snapshot for outgoing session
     const currentInputVal = this.getInputValue();
     const isDifferentId = Boolean(state.activeSessionId && state.activeSessionId !== id);
-    if (isDifferentId || (state.activeSessionId && switchingProfile)) {
+    if (isDifferentId || (state.activeSessionId && (switchingProfile || switchingGateway))) {
       this.deps.cancelSmoothScrollOnLeave?.();
       this.deps.captureStreamAnchor?.();
-      if (isDifferentId && currentInputVal !== undefined) {
+      const outgoingKey = resolveScopedEntityRuntimeKey(state.activeSessionId, outgoingGw, state.gatewayCount);
+      if ((isDifferentId || switchingGateway) && currentInputVal !== undefined) {
         if (!isCorruptedSystemErrorDraft(currentInputVal)) {
-          this.deps.sessionDrafts.set(state.activeSessionId, currentInputVal);
+          this.deps.sessionDrafts.set(outgoingKey, currentInputVal);
         } else {
-          this.deps.sessionDrafts.delete(state.activeSessionId);
+          this.deps.sessionDrafts.delete(outgoingKey);
         }
       }
       // 【关键隔离 1】：离开旧会话时立即清空 DOM 输入框，绝不将旧会话文本残留带入切换期
@@ -776,37 +895,38 @@ export class SessionOperationService {
 
       if (state.rollbackArmed && state.rollbackArmed.sessionId === state.activeSessionId) {
         this.disarmRollbackOnLeave();
-      } else if (isDifferentId && state.messages.length > 0) {
-        this.deps.sessionMessagesCache.set(state.activeSessionId, [...state.messages]);
+      } else if ((isDifferentId || switchingGateway) && state.messages.length > 0) {
+        this.deps.sessionMessagesCache.set(outgoingKey, [...state.messages]);
       }
     }
 
-    const existingLiveStream = this.deps.getLiveStreamRegistry?.().getBySession(id);
+    const scopedSessionKey = resolveScopedEntityRuntimeKey(id, targetGw, state.gatewayCount);
+    const streamRegistry = this.resolveStreamRegistry(targetGw);
+    const existingLiveStream = streamRegistry?.getBySession(id);
     state.activeSessionId = id;
+    state.activeGatewayId = targetGw;
     state.activeLiveSessionId = existingLiveStream?.liveSessionId || ''; // must be re-resolved through session.resume
     // 【规则】进入计划必须在 activeSessionId 已切、DOM 尚未替换时锁存：
     // 它只读 SessionScrollMemory，不读 DOM，因此不受 React 异步提交时序影响。
     this.deps.beginSessionEnter?.(id);
     this.deps.incrementActiveLoadMessagesGeneration?.();
-    applyEnteredRead(this.deps.unreadSessionIds, id);
-    this.deps.activityTransitionTracker.clear('session', id);
+    applyEnteredRead(this.deps.unreadSessionIds, scopedSessionKey);
+    this.deps.activityTransitionTracker.clear('session', scopedSessionKey);
     state.modelMenuOpen = false;
 
     // 严格更新互斥单焦点：仅当未要求保持焦点时，更新为普通会话焦点
     if (!options?.preserveFocus) {
-      state.activeFocus = { type: 'session', sessionId: id };
+      state.activeFocus = targetGw
+        ? { type: 'session', sessionId: id, gatewayId: targetGw }
+        : { type: 'session', sessionId: id };
     }
+    this.deps.onActiveFocusChanged?.();
 
     // Sync isStreaming with the target session
-    state.isStreaming = Boolean(existingLiveStream) || this.deps.getActiveStreamingStoredSessionId() === id;
+    state.isStreaming =
+      Boolean(existingLiveStream) ||
+      (!switchingGateway && this.deps.getActiveStreamingStoredSessionId() === id);
 
-    const matchTarget = (s: NormalizedSession): boolean =>
-      s.id === id && (!normalizedOptBot || normalizeOrgProfileName(s.botName) === normalizedOptBot);
-    const targetSession =
-      state.sessions.find(matchTarget) ||
-      (state.archivedSessions || []).find(matchTarget) ||
-      state.sessions.find((s) => s.id === id) ||
-      (state.archivedSessions || []).find((s) => s.id === id);
     const targetBotName = options?.botName || targetSession?.botName;
     if (targetBotName && targetBotName !== state.profileName) {
       state.profileName = targetBotName;
@@ -815,12 +935,13 @@ export class SessionOperationService {
     // Force reset messages snapshot to re-bind reactive DOM for streaming
     this.deps.setLastMessagesSnapshot(null);
 
-    await this.deps.loadMessages(id, targetBotName);
+    await this.deps.loadMessages(id, targetBotName, targetGw);
 
     // 【竞态守卫 (Rules)】等待历史期间用户可能已经切走：迟到的会话绝对不得把草稿与焦点写进新会话的输入框。
     if (
       state.activeSessionId !== id ||
-      (normalizedOptBot && normalizeOrgProfileName(state.profileName) !== normalizedOptBot)
+      (normalizedOptBot && normalizeOrgProfileName(state.profileName) !== normalizedOptBot) ||
+      (targetGw && state.activeGatewayId && state.activeGatewayId !== targetGw)
     ) {
       return;
     }
@@ -828,11 +949,11 @@ export class SessionOperationService {
     // 【流式切回工具补刷 (Why)】流式态的 ToolSection 渲染空壳把 DOM 所有权交给 toolPatchQueue；
     // 若用户切离后再切回仍在流式运行的会话，需要补排一次 toolPatch，把已存在的 toolCalls 刷进新挂载的空壳。
     if (state.isStreaming) {
-      if (this.deps.getLiveStreamRegistry?.().hasSession(id)) {
+      if (streamRegistry?.hasSession(id)) {
         this.deps.onSyncFocusedStream?.(id);
       }
       const streamingMsgId =
-        this.deps.getLiveStreamRegistry?.().getBySession(id)?.messageId ??
+        streamRegistry?.getBySession(id)?.messageId ??
         this.deps.getActiveStreamingMessageId?.();
       if (streamingMsgId) {
         const streamingMsg = state.messages.find((m) => m.id === streamingMsgId);
@@ -843,10 +964,10 @@ export class SessionOperationService {
     }
 
     // Restore draft for incoming session without clobbering live typing during network load
-    const incomingDraft = this.deps.sessionDrafts.get(id) || '';
+    const incomingDraft = this.deps.sessionDrafts.get(scopedSessionKey) || '';
     const restoredCurrent = this.getInputValue();
     if (isCorruptedSystemErrorDraft(incomingDraft)) {
-      this.deps.sessionDrafts.delete(id);
+      this.deps.sessionDrafts.delete(scopedSessionKey);
       this.setInputValue('');
     } else if (restoredCurrent !== undefined) {
       // 若在网络加载期间用户在空白框里已敲入了非报错文字，保留实时输入；否则权威恢复目标草稿或置空
@@ -865,8 +986,8 @@ export class SessionOperationService {
 
   /** 将所选模型推送到活动实时会话 */
   async applyModelToLiveSession(model: string, _provider?: string): Promise<void> {
-    const gatewayClient = this.deps.getGatewayClient();
     const state = this.deps.getState();
+    const gatewayClient = this.resolveTargetClient(state.activeFocus?.gatewayId || state.activeGatewayId);
     if (!gatewayClient || !model) return;
 
     const liveId = await this.deps.ensureLiveSessionId();
@@ -890,7 +1011,7 @@ export class SessionOperationService {
   async switchModel(model: string, provider?: string): Promise<void> {
     if (!model) return;
     const state = this.deps.getState();
-    const gatewayClient = this.deps.getGatewayClient();
+    const gatewayClient = this.resolveTargetClient(state.activeFocus?.gatewayId || state.activeGatewayId);
 
     const previous = state.selectedModel;
     state.selectedModel = model;
@@ -954,7 +1075,7 @@ export class SessionOperationService {
   /** 切换思考级别 */
   async switchReasoning(effort: AppState['reasoningLevel']): Promise<void> {
     const state = this.deps.getState();
-    const gatewayClient = this.deps.getGatewayClient();
+    const gatewayClient = this.resolveTargetClient(state.activeFocus?.gatewayId || state.activeGatewayId);
 
     state.reasoningLevel = effort;
     this.deps.render();
@@ -995,7 +1116,7 @@ export class SessionOperationService {
   /** 切换工具审批策略 */
   async switchApproval(mode: 'manual' | 'smart' | 'off'): Promise<void> {
     const state = this.deps.getState();
-    const gatewayClient = this.deps.getGatewayClient();
+    const gatewayClient = this.resolveTargetClient(state.activeFocus.gatewayId || state.activeGatewayId);
 
     state.approvalMode = mode;
     this.deps.render();
@@ -1047,11 +1168,10 @@ export class SessionOperationService {
   }
 
   async enrichVisibleSessionPreviews(): Promise<void> {
-    const client = this.deps.getGatewayClient();
-    if (!client || !this.deps.sessionPreviewCache) return;
+    if (!this.deps.sessionPreviewCache) return;
     const gen = ++this.enrichPreviewGeneration;
     const state = this.deps.getState();
-
+    const isMultiGw = state.gatewayCount >= 2;
     const currentBot = state.profileName || 'default';
     const showAllBots = state.leftRailLayout === 'grouped';
     const targets = state.sessions
@@ -1061,10 +1181,11 @@ export class SessionOperationService {
           !s.hidden &&
           !s.isSubagent &&
           s.source !== 'subagent' &&
-          (showAllBots || s.botName === currentBot || (!s.botName && currentBot === 'default')),
+          (showAllBots || isMultiGw || s.botName === currentBot || (!s.botName && currentBot === 'default')),
       )
       .filter((s) => {
-        const cached = this.deps.sessionPreviewCache!.get(s.id);
+        const key = resolveScopedEntityRuntimeKey(s.id, s.gatewayId, state.gatewayCount);
+        const cached = this.deps.sessionPreviewCache!.get(key);
         return !cached || Math.abs((s.timestamp || 0) - cached.lastActive) >= 1000;
       })
       .sort((a, b) => {
@@ -1079,11 +1200,14 @@ export class SessionOperationService {
     const updates = new Map<string, { text: string; ts: number }>();
     await Promise.all(
       targets.map(async (t) => {
+        const client = this.resolveTargetClient(t.gatewayId);
+        if (!client) return;
         try {
           const last = await client.fetchLastMessage(t.id, { profile: t.botName || 'default' });
           if (last && last.text) {
-            updates.set(t.id, { text: last.text, ts: last.timestamp || t.timestamp });
-            this.deps.sessionPreviewCache!.set(t.id, {
+            const key = resolveScopedEntityRuntimeKey(t.id, t.gatewayId, state.gatewayCount);
+            updates.set(key, { text: last.text, ts: last.timestamp || t.timestamp });
+            this.deps.sessionPreviewCache!.set(key, {
               lastActive: t.timestamp,
               text: last.text,
               botName: t.botName,
@@ -1099,7 +1223,8 @@ export class SessionOperationService {
 
     let changed = false;
     state.sessions = state.sessions.map((s) => {
-      const upd = updates.get(s.id);
+      const key = resolveScopedEntityRuntimeKey(s.id, s.gatewayId, state.gatewayCount);
+      const upd = updates.get(key);
       if (upd && s.preview !== upd.text) {
         changed = true;
         return { ...s, preview: upd.text };
@@ -1117,6 +1242,9 @@ export class SessionOperationService {
   async fetchSessions(): Promise<void> {
     if (this.deps.fetchSessions) {
       return this.deps.fetchSessions();
+    }
+    if (this.deps.onMultiGatewayRefresh && (await this.deps.onMultiGatewayRefresh())) {
+      return;
     }
     const client = this.deps.getGatewayClient();
     if (!client) return;

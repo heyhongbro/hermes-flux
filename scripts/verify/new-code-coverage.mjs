@@ -211,11 +211,19 @@ async function collectLcov(suite, targetFiles = []) {
 
   const env = { ...process.env, FORCE_COLOR: '0' };
   delete env.NODE_TEST_CONTEXT;
+  const concurrency = Math.max(2, Math.min(6, Math.floor((os.availableParallelism?.() ?? 4) / 2)));
 
   const r = spawnSync(
     process.execPath,
-    ['--test', '--experimental-test-coverage', '--test-reporter=lcov', `--test-reporter-destination=${outFile}`, ...files],
-    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 300 * 1000, env },
+    [
+      '--test',
+      '--experimental-test-coverage',
+      '--test-reporter=lcov',
+      `--test-reporter-destination=${outFile}`,
+      `--test-concurrency=${concurrency}`,
+      ...files,
+    ],
+    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 20 * 60 * 1000, env },
   );
   if (r.error || r.signal) {
     if (fs.existsSync(outFile)) {

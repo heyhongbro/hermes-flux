@@ -61,6 +61,7 @@ export interface GatewayAuthResult {
   latency: number;
   ticket?: string;
   version?: string;
+  installId?: string;
 }
 
 /**
@@ -73,6 +74,7 @@ export interface GatewayAuthResult {
 interface GatewayStatusPayload {
   auth_required?: boolean;
   version?: string;
+  install_id?: string;
 }
 
 /** 网关 /api/auth/ws-ticket 的响应最小面 */
@@ -290,8 +292,9 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
   const ua = (overrides?.userAgent ?? (typeof navigator !== 'undefined' ? navigator.userAgent : '')).toLowerCase();
   const isAndroid = currentPlatform === 'android' || (currentPlatform === 'web' && ua.includes('android'));
   const isIos = currentPlatform === 'ios' || (currentPlatform === 'web' && /iphone|ipad|ipod/.test(ua));
-  const wsProxyMatch = /hermeswsproxy\/(\d+)/.exec(ua);
+  const wsProxyMatch = /hermeswsproxy\/(\d+)(?:\/([a-f0-9]+))?/i.exec(ua);
   const wsProxyPort = wsProxyMatch ? Number(wsProxyMatch[1]) : 0;
+  const wsProxyNonce = wsProxyMatch?.[2] || '';
 
   const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs = authTimeoutMs): Promise<Response> => {
     const controller = new AbortController();
@@ -414,6 +417,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         const statusData = readJsonObject(await statusRes.json().catch(() => ({})) as unknown);
         const authRequired = statusData.auth_required === true;
         const statusVersion = readOptionalString(statusData, 'version');
+        const installId = readOptionalString(statusData, 'install_id');
 
         if (!authRequired) {
           return {
@@ -421,6 +425,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
             message: `网关直连就绪 (无需认证) · 延迟 ${latency}ms`,
             latency,
             version: statusVersion,
+            ...(installId ? { installId } : {}),
           };
         }
 
@@ -491,6 +496,7 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
           message: `认证成功 · 延迟 ${latency}ms · Gateway v${statusVersion || '0.22.5'}`,
           latency,
           version: statusVersion,
+          ...(installId ? { installId } : {}),
         };
       } catch (err: unknown) {
         return {
@@ -834,7 +840,8 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
     ...(wsProxyPort > 0
       ? {
           proxyWebSocketUrl(wsUrl: string): string {
-            return `ws://127.0.0.1:${wsProxyPort}/__gw/ws?target=${encodeURIComponent(wsUrl)}`;
+            const tokenSuffix = wsProxyNonce ? `&token=${encodeURIComponent(wsProxyNonce)}` : '';
+            return `ws://127.0.0.1:${wsProxyPort}/__gw/ws?target=${encodeURIComponent(wsUrl)}${tokenSuffix}`;
           },
         }
       : {}),

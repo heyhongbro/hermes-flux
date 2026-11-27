@@ -21,6 +21,10 @@
 import type { AppState } from '../state/appState.js';
 import type { I18nKey } from '@hermes-flux/ui';
 import type { HermesDesktopBridge } from '../../preload/index.js';
+import {
+  buildGatewaySecretKey,
+  purgeLegacyPlaintextPasswords,
+} from '../persistence/secretMigration.js';
 
 export interface OnboardingControllerDeps {
   getState: () => AppState;
@@ -47,6 +51,15 @@ export function createOnboardingController(deps: OnboardingControllerDeps): Onbo
 
     const state = getState();
     const desktopApi = getDesktopApi();
+    const syncGatewaySecret = (rawUrl: string, rawPassword: string): void => {
+      purgeLegacyPlaintextPasswords();
+      const secretKey = buildGatewaySecretKey(rawUrl);
+      if (secretKey && rawPassword) {
+        void desktopApi?.setGatewaySecret?.(secretKey, rawPassword)?.catch((err: unknown) => {
+          console.warn('[Onboarding] setGatewaySecret failed:', err);
+        });
+      }
+    };
 
     // 1. 文件附加按钮
     const attachBtn = doc.getElementById('dock-attach-file-btn');
@@ -89,10 +102,7 @@ export function createOnboardingController(deps: OnboardingControllerDeps): Onbo
     if (obPassInput) {
       obPassInput.oninput = () => {
         state.password = obPassInput.value;
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem('hermes_flux_password', state.password);
-          localStorage.setItem('hermes_aura_password', state.password);
-        }
+        syncGatewaySecret(state.gatewayUrl, state.password);
       };
     }
     const obProfileInput = doc.getElementById('onboarding-profile-name') as HTMLInputElement | null;
@@ -129,16 +139,15 @@ export function createOnboardingController(deps: OnboardingControllerDeps): Onbo
             localStorage.setItem('hermes_flux_username', userInput);
             localStorage.setItem('hermes_aura_username', userInput);
           }
-          if (passInput !== undefined) {
-            state.password = passInput;
-            localStorage.setItem('hermes_flux_password', passInput);
-            localStorage.setItem('hermes_aura_password', passInput);
-          }
           if (profileInput !== undefined) {
             state.profileName = profileInput || 'default';
             localStorage.setItem('hermes_flux_profile', state.profileName);
             localStorage.setItem('hermes_aura_profile', state.profileName);
           }
+        }
+        if (passInput !== undefined) {
+          state.password = passInput;
+          syncGatewaySecret(urlInput, passInput);
         }
 
         onboardingTestBtn.innerText = 'Testing...';
@@ -162,6 +171,7 @@ export function createOnboardingController(deps: OnboardingControllerDeps): Onbo
         state.username = (doc.getElementById('onboarding-username') as HTMLInputElement)?.value || '';
         state.password = (doc.getElementById('onboarding-password') as HTMLInputElement)?.value || '';
         state.profileName = (doc.getElementById('onboarding-profile-name') as HTMLInputElement)?.value || 'default';
+        syncGatewaySecret(urlInput, state.password);
         connect();
       };
     }

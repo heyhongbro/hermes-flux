@@ -52,7 +52,7 @@ export interface ForegroundSyncDeps {
   refreshActiveSession: (opts?: { forceRefreshAfterReconnect?: boolean }) => Promise<void>;
   refreshGroupRoomLog: (roomId: string) => Promise<unknown>;
   ensureGroupPollerRunning?: (roomId: string) => void;
-  openBotChat: (botName: string) => Promise<void>;
+  openBotChat: (botName: string, gatewayId?: string) => Promise<void>;
   getActiveViewContext: () => ActiveViewContext;
   hasUnsavedBotDrafts: () => boolean;
   refreshBotHubView?: () => Promise<unknown> | void;
@@ -152,7 +152,7 @@ export function createForegroundSyncCoordinator(deps: ForegroundSyncDeps): Foreg
       deps.ensureGroupPollerRunning?.(roomId);
       conversationTask = deps.refreshGroupRoomLog(roomId);
     } else if (state.activeFocus.type === 'bot' && !state.activeSessionId) {
-      conversationTask = deps.openBotChat(state.activeFocus.botName);
+      conversationTask = deps.openBotChat(state.activeFocus.botName, state.activeFocus.gatewayId);
     } else if (state.activeSessionId) {
       conversationTask = deps.refreshActiveSession({ forceRefreshAfterReconnect: forceReconnect });
     }

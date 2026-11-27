@@ -17,10 +17,24 @@
  *   - 服务不做网络请求，不读协议，不判权威——权威判断属于调用方。
  */
 
-import type { CacheChannelRef, CachedAgentSummary, CachedMessageRow, CachedSessionSummary } from './types.js';
-import { CACHE_SCHEMA_VERSION, createEnvelope, isReadableEnvelope } from './types.js';
-import type { ICacheStore } from './ICacheStore.js';
-import { channelKey, messageKey } from './ICacheStore.js';
+import {
+  CACHE_SCHEMA_VERSION,
+  createEnvelope,
+  isReadableEnvelope,
+  normalizeCachedMessageRow,
+  resolveCacheGatewayId,
+  type CacheChannelRef,
+  type CachedAgentSummary,
+  type CachedMessageRow,
+  type CachedSessionSummary,
+} from './types.js';
+import {
+  channelKey,
+  messageKey,
+  resolveIndexKey,
+  type CacheIndexKey,
+  type ICacheStore,
+} from './ICacheStore.js';
 import { applyTruncation, evictToCap, maxOrderKey, mergeRemoteWindow, sortByDisplayAsc, upsertMessageRows } from './cacheMerge.js';
 
 /** 默认结构性上限。 */
@@ -65,6 +79,9 @@ export class CacheService {
   /** 通道级串行锁：key → 队尾 promise */
   private readonly channelTails = new Map<string, Promise<unknown>>();
 
+  /** 群聊通道已知最高 authorityEpoch，用于拦截失联降级旧主的陈旧覆盖。 */
+  private readonly roomAuthorityEpochs = new Map<string, number>();
+
   constructor(store: ICacheStore, options: CacheServiceOptions = {}) {
     this.store = store;
     this.sessionCap = Math.max(1, options.sessionCap ?? DEFAULT_SESSION_CAP);
@@ -75,33 +92,62 @@ export class CacheService {
   // ────────────────────────────── 索引 ──────────────────────────────
 
   /** 读取会话索引；版本不符或损坏时返回空数组并清掉该键。 */
-  async readSessions(): Promise<CachedSessionSummary[]> {
-    return this.readIndexList<CachedSessionSummary>('sessions', isSessionSummary);
+  async readSessions(gatewayId?: string): Promise<CachedSessionSummary[]> {
+    return this.readIndexList<CachedSessionSummary>(
+      resolveIndexKey('sessions', gatewayId),
+      isSessionSummary,
+    );
   }
 
-  /** 写入会话索引，按上限裁剪（全局按 timestamp 倒序保留最新）。 */
-  async writeSessions(rows: readonly CachedSessionSummary[]): Promise<CachedSessionSummary[]> {
-    const sorted = [...rows].sort((a, b) => b.timestamp - a.timestamp);
-    const kept = sorted.slice(0, this.sessionCap);
-    await this.store.writeIndex('sessions', createEnvelope(kept, this.now()));
+  /** 写入会话索引，按网关分桶独立执行 `sessionCap` 上限裁剪（跨网关互不挤出）。 */
+  async writeSessions(
+    rows: readonly CachedSessionSummary[],
+    gatewayId?: string,
+  ): Promise<CachedSessionSummary[]> {
+    const buckets = new Map<string, CachedSessionSummary[]>();
+    for (const row of rows) {
+      const bucketKey = gatewayId
+        ? resolveCacheGatewayId({ kind: row.kind, gatewayId })
+        : resolveCacheGatewayId(row);
+      const list = buckets.get(bucketKey) ?? [];
+      list.push(row);
+      buckets.set(bucketKey, list);
+    }
+    const kept: CachedSessionSummary[] = [];
+    for (const bucketRows of buckets.values()) {
+      bucketRows.sort((a, b) => b.timestamp - a.timestamp);
+      kept.push(...bucketRows.slice(0, this.sessionCap));
+    }
+    kept.sort((a, b) => b.timestamp - a.timestamp);
+    await this.store.writeIndex(
+      resolveIndexKey('sessions', gatewayId),
+      createEnvelope(kept, this.now()),
+    );
     return kept;
   }
 
   /** 读取 Agent 索引。 */
-  async readAgents(): Promise<CachedAgentSummary[]> {
-    return this.readIndexList<CachedAgentSummary>('agents', isAgentSummary);
+  async readAgents(gatewayId?: string): Promise<CachedAgentSummary[]> {
+    return this.readIndexList<CachedAgentSummary>(
+      resolveIndexKey('agents', gatewayId),
+      isAgentSummary,
+    );
   }
 
   /** 写入 Agent 索引。 */
-  async writeAgents(rows: readonly CachedAgentSummary[]): Promise<void> {
-    await this.store.writeIndex('agents', createEnvelope([...rows], this.now()));
+  async writeAgents(rows: readonly CachedAgentSummary[], gatewayId?: string): Promise<void> {
+    await this.store.writeIndex(
+      resolveIndexKey('agents', gatewayId),
+      createEnvelope([...rows], this.now()),
+    );
   }
 
   /** 读取头像表（name → dataUrl）。 */
-  async readAvatars(): Promise<Record<string, string>> {
-    const raw = await this.store.readIndex('avatars');
+  async readAvatars(gatewayId?: string): Promise<Record<string, string>> {
+    const indexKey = resolveIndexKey('avatars', gatewayId);
+    const raw = await this.store.readIndex(indexKey);
     if (!isReadableEnvelope(raw)) {
-      if (raw !== null) await this.store.removeIndex('avatars');
+      if (raw !== null) await this.store.removeIndex(indexKey);
       return {};
     }
     const items = raw.items;
@@ -116,19 +162,23 @@ export class CacheService {
   }
 
   /** 写入头像表。非 data:image/ 前缀的项会被丢弃，防止半截写入产生裂图。 */
-  async writeAvatars(items: Record<string, string>): Promise<void> {
+  async writeAvatars(items: Record<string, string>, gatewayId?: string): Promise<void> {
     const clean: Record<string, string> = {};
     for (const [key, value] of Object.entries(items)) {
       if (isImageDataUrl(value)) clean[key] = value;
     }
-    await this.store.writeIndex('avatars', createEnvelope(clean, this.now()));
+    await this.store.writeIndex(
+      resolveIndexKey('avatars', gatewayId),
+      createEnvelope(clean, this.now()),
+    );
   }
 
   // ────────────────────────────── 消息 ──────────────────────────────
 
   /** 打开通道：倒序取最新 limit 行，并给出 fence 基线。 */
   async openChannel(ref: CacheChannelRef, limit: number): Promise<OpenChannelResult> {
-    const rows = await this.store.listMessages({ ...ref, limit });
+    const normRef = this.normalizeChannelRef(ref);
+    const rows = await this.store.listMessages({ ...normRef, limit });
     return { rows, fenceMax: maxOrderKey(rows) };
   }
 
@@ -151,8 +201,9 @@ export class CacheService {
   ): Promise<CachedMessageRow[]> {
     const safeLimit = Math.max(0, Math.floor(limit));
     if (safeLimit === 0) return [];
-    return this.withChannelLock(ref, async () => {
-      const allRows = await this.store.listMessages({ ...ref, limit: this.messageCap });
+    const normRef = this.normalizeChannelRef(ref);
+    return this.withChannelLock(normRef, async () => {
+      const allRows = await this.store.listMessages({ ...normRef, limit: this.messageCap });
       if (allRows.length === 0) return [];
       if (allRows.some((r) => typeof r.displaySeq !== 'number' || !Number.isFinite(r.displaySeq))) {
         return [];
@@ -186,11 +237,22 @@ export class CacheService {
    * 【规则】写入后立即按 `messageCap` 淘汰最旧；淘汰只看 orderKey。
    */
   async appendRows(ref: CacheChannelRef, rows: readonly CachedMessageRow[]): Promise<AppendResult> {
-    return this.withChannelLock(ref, async () => {
+    const normRef = this.normalizeChannelRef(ref);
+    return this.withChannelLock(normRef, async () => {
       if (rows.length === 0) return { written: 0, evictedKeys: [] };
-      let toWrite: readonly CachedMessageRow[] = rows;
-      if (rows.some((r) => typeof r.displaySeq !== 'number')) {
-        const existing = await this.store.listMessages({ ...ref, limit: this.messageCap });
+      const normalizedIncoming = rows.map((r) => normalizeCachedMessageRow(r, normRef));
+      const needsExisting =
+        normalizedIncoming.some((r) => typeof r.displaySeq !== 'number') ||
+        (normRef.channel === 'room' && typeof normRef.authorityEpoch === 'number');
+      let existing: CachedMessageRow[] = [];
+      if (needsExisting) {
+        existing = await this.store.listMessages({ ...normRef, limit: this.messageCap });
+        if (!this.acceptOrRejectRoomEpoch(normRef, existing)) {
+          return { written: 0, evictedKeys: [] };
+        }
+      }
+      let toWrite: readonly CachedMessageRow[] = normalizedIncoming;
+      if (normalizedIncoming.some((r) => typeof r.displaySeq !== 'number')) {
         const existingByKey = new Map<string, CachedMessageRow>();
         let maxSeq = 0;
         for (const r of existing) {
@@ -199,12 +261,12 @@ export class CacheService {
             maxSeq = r.displaySeq;
           }
         }
-        for (const r of rows) {
+        for (const r of normalizedIncoming) {
           if (typeof r.displaySeq === 'number' && r.displaySeq > maxSeq) {
             maxSeq = r.displaySeq;
           }
         }
-        toWrite = rows.map((r) => {
+        toWrite = normalizedIncoming.map((r) => {
           if (typeof r.displaySeq === 'number') return r;
           const prev = existingByKey.get(messageKey(r));
           if (prev && typeof prev.displaySeq === 'number') {
@@ -215,7 +277,7 @@ export class CacheService {
         });
       }
       await this.store.putMessages(toWrite);
-      const evicted = await this.trimChannel(ref);
+      const evicted = await this.trimChannel(normRef);
       return { written: toWrite.length, evictedKeys: evicted };
     });
   }
@@ -232,16 +294,27 @@ export class CacheService {
     fenceMax: number,
     pendingKeys: ReadonlySet<string> = new Set<string>()
   ): Promise<ApplyRemoteWindowResult> {
-    return this.withChannelLock(ref, async () => {
-      const local = await this.store.listMessages({ ...ref, limit: this.messageCap });
-      const remoteMax = maxOrderKey(remote);
-      const merged = mergeRemoteWindow({ local, remote, fenceMax, remoteMax, pendingKeys });
+    const normRef = this.normalizeChannelRef(ref);
+    return this.withChannelLock(normRef, async () => {
+      const local = await this.store.listMessages({ ...normRef, limit: this.messageCap });
+      if (!this.acceptOrRejectRoomEpoch(normRef, local)) {
+        return { rows: local, evictedKeys: [], remoteMax: maxOrderKey(local) };
+      }
+      const normalizedRemote = remote.map((r) => normalizeCachedMessageRow(r, normRef));
+      const remoteMax = maxOrderKey(normalizedRemote);
+      const merged = mergeRemoteWindow({
+        local,
+        remote: normalizedRemote,
+        fenceMax,
+        remoteMax,
+        pendingKeys,
+      });
 
       const trimmed = evictToCap(merged.rows, this.messageCap);
       const evictedKeys = [...merged.evictedKeys, ...trimmed.evictedKeys];
 
       // 整体替换该通道：先清后写，保证不残留被围栏判定为幽灵的旧行
-      await this.store.deleteMessages({ ...ref });
+      await this.store.deleteMessages({ ...normRef });
       if (trimmed.rows.length > 0) await this.store.putMessages(trimmed.rows);
 
       return { rows: [...trimmed.rows].reverse(), evictedKeys, remoteMax };
@@ -258,12 +331,13 @@ export class CacheService {
     targetOrderKey: number,
     survivorMap: ReadonlyMap<number, number | null> | null
   ): Promise<{ rows: CachedMessageRow[]; removed: number }> {
-    return this.withChannelLock(ref, async () => {
-      const local = await this.store.listMessages({ ...ref, limit: this.messageCap });
+    const normRef = this.normalizeChannelRef(ref);
+    return this.withChannelLock(normRef, async () => {
+      const local = await this.store.listMessages({ ...normRef, limit: this.messageCap });
       const next = applyTruncation({ rows: local, targetOrderKey, survivorMap });
       const removed = local.length - next.length;
 
-      await this.store.deleteMessages({ ...ref });
+      await this.store.deleteMessages({ ...normRef });
       if (next.length > 0) await this.store.putMessages(next);
 
       return { rows: [...next].reverse(), removed };
@@ -272,7 +346,8 @@ export class CacheService {
 
   /** 删除整个通道（删除会话时使用）。 */
   async dropChannel(ref: CacheChannelRef): Promise<number> {
-    return this.withChannelLock(ref, async () => this.store.dropChannel(ref));
+    const normRef = this.normalizeChannelRef(ref);
+    return this.withChannelLock(normRef, async () => this.store.dropChannel(normRef));
   }
 
   /** 复用纯函数做一次幂等 upsert（供调用方在本端合并时使用）。 */
@@ -282,7 +357,40 @@ export class CacheService {
 
   // ────────────────────────────── 内部 ──────────────────────────────
 
-  private async readIndexList<T>(key: 'sessions' | 'agents', guard: (value: unknown) => boolean): Promise<T[]> {
+  private normalizeChannelRef(ref: CacheChannelRef): CacheChannelRef {
+    return {
+      ...ref,
+      gatewayId: resolveCacheGatewayId(ref),
+    };
+  }
+
+  private readKnownRoomEpoch(key: string, localRows: readonly CachedMessageRow[]): number {
+    let known = this.roomAuthorityEpochs.get(key) ?? 0;
+    for (const row of localRows) {
+      if (typeof row.authorityEpoch === 'number' && row.authorityEpoch > known) {
+        known = row.authorityEpoch;
+      }
+    }
+    return known;
+  }
+
+  private acceptOrRejectRoomEpoch(
+    ref: CacheChannelRef,
+    localRows: readonly CachedMessageRow[],
+  ): boolean {
+    if (ref.channel !== 'room' || typeof ref.authorityEpoch !== 'number') {
+      return true;
+    }
+    const key = channelKey(ref);
+    const known = this.readKnownRoomEpoch(key, localRows);
+    if (ref.authorityEpoch < known) {
+      return false;
+    }
+    this.roomAuthorityEpochs.set(key, ref.authorityEpoch);
+    return true;
+  }
+
+  private async readIndexList<T>(key: CacheIndexKey, guard: (value: unknown) => boolean): Promise<T[]> {
     const raw = await this.store.readIndex(key);
     if (!isReadableEnvelope(raw)) {
       if (raw !== null) await this.store.removeIndex(key);

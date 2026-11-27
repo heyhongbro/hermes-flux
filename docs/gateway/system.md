@@ -5,13 +5,22 @@
 
 | 方法 | 入参（契约） | 出参（契约） | 调用点 | 真实探针 |
 | --- | --- | --- | --- | --- |
+| `client.capabilities` | `server_requests` `desktop_local` | `server_requests` `declines_not_shown` `canonical_clarify_batch` | `packages/core/src/rpc/client.ts:948` | 跳过：客户端能力协商需结合在线反向请求句柄表在真实建连期触发，离线基线显式跳过，由契约白名单与 RPC 客户端能力单测守护 |
 | `commands.catalog` | `session_id` `profile` | `pairs` `sub` `canon` `commands` `categories` `skills` `skill_count` `warning` `plugin_discovery_error` `plugin_commands` | `packages/core/src/session/interactiveService.ts:212` | 跳过：动态命令目录由在线网关运行时按 profile 动态生成，离线探针显式跳过，由契约表严格守护 |
-| `config.get` | `profile` `key` `cwd` `session_id` | `value` `display` `tool_progress` `model` `provider` `providers` `home` `cwd` `branch` `config` `prompt` `mtime` `mcp_rev` | `packages/core/src/rpc/client.ts:1255` | 跳过：离线基线未连真实网关录制 config.get，由契约白名单与会话状态栏 Threshold 单测守护；连真实网关跑 probe:gateway 可补录 |
-| `model.options` | `profile` `session_id` `explicit_only` `include_unconfigured` `refresh` | `providers` `model` `provider` | `packages/core/src/rpc/client.ts:1143`<br>`packages/desktop/src/renderer/providerCatalog.ts:95` | ✅ 0.22.5 |
-| `ping` | — | — | `packages/core/src/rpc/client.ts:415`<br>`packages/core/src/rpc/client.ts:502`<br>`packages/core/src/rpc/client.ts:618` | ✅ 0.22.5 |
+| `config.get` | `profile` `key` `cwd` `session_id` | `value` `display` `tool_progress` `model` `provider` `providers` `home` `cwd` `branch` `config` `prompt` `mtime` `mcp_rev` | `packages/core/src/rpc/client.ts:1381` | 跳过：离线基线未连真实网关录制 config.get，由契约白名单与会话状态栏 Threshold 单测守护；连真实网关跑 probe:gateway 可补录 |
+| `model.options` | `profile` `session_id` `explicit_only` `include_unconfigured` `refresh` | `providers` `model` `provider` | `packages/core/src/rpc/client.ts:1265`<br>`packages/desktop/src/renderer/providerCatalog.ts:95` | ✅ 0.22.5 |
+| `ping` | — | — | `packages/core/src/rpc/client.ts:471`<br>`packages/core/src/rpc/client.ts:558`<br>`packages/core/src/rpc/client.ts:680` | ✅ 0.22.5 |
 | `shell.exec` | `command` `profile` `session_id` | `stdout` `stderr` `code` | `packages/desktop/src/renderer/services/projectDirectoryActions.ts:48` | ✅ 0.22.5 |
 
 ## 明细
+
+### `client.capabilities`
+
+- 参数类型：`ClientCapabilitiesParams`
+- 结果类型：`ClientCapabilitiesResult`
+- 真实探针：跳过 —— 客户端能力协商需结合在线反向请求句柄表在真实建连期触发，离线基线显式跳过，由契约白名单与 RPC 客户端能力单测守护
+- 调用点：
+  - `packages/core/src/rpc/client.ts:948`
 
 ### `commands.catalog`
 
@@ -27,7 +36,7 @@
 - 结果类型：`ConfigGetResult`
 - 真实探针：跳过 —— 离线基线未连真实网关录制 config.get，由契约白名单与会话状态栏 Threshold 单测守护；连真实网关跑 probe:gateway 可补录
 - 调用点：
-  - `packages/core/src/rpc/client.ts:1255`
+  - `packages/core/src/rpc/client.ts:1381`
 
 ### `model.options`
 
@@ -35,7 +44,7 @@
 - 结果类型：`ModelOptionsResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/rpc/client.ts:1143`
+  - `packages/core/src/rpc/client.ts:1265`
   - `packages/desktop/src/renderer/providerCatalog.ts:95`
 
 ### `ping`
@@ -44,9 +53,9 @@
 - 结果类型：`(未纳入生成契约)`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/rpc/client.ts:415`
-  - `packages/core/src/rpc/client.ts:502`
-  - `packages/core/src/rpc/client.ts:618`
+  - `packages/core/src/rpc/client.ts:471`
+  - `packages/core/src/rpc/client.ts:558`
+  - `packages/core/src/rpc/client.ts:680`
 
 ### `shell.exec`
 

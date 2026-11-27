@@ -35,6 +35,7 @@ import {
 } from '@hermes-flux/ui';
 import type { AppState } from '../state/appState.js';
 import type { HermesDesktopBridge } from '../../preload/index.js';
+import { hydrateOrMigrateGatewaySecret } from '../persistence/secretMigration.js';
 
 export const LEFT_RAIL_WIDTH = { min: 264, max: 480, defaultValue: 264 } as const;
 export const RIGHT_RAIL_WIDTH = { min: 380, defaultValue: 640 } as const;
@@ -572,6 +573,13 @@ export function createAppBootstrap(deps: AppBootstrapDeps): AppBootstrap {
         }
       }
     }
+
+    state.password = await hydrateOrMigrateGatewaySecret({
+      gatewayUrl: state.gatewayUrl,
+      initialPassword: state.password,
+      storage: typeof localStorage !== 'undefined' ? localStorage : null,
+      secretBridge: desktopApi,
+    });
 
     void restoreCacheToState();
     connect();

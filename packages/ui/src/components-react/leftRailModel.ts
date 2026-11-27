@@ -25,6 +25,7 @@ import type {
   LeftRailProfile,
   LeftRailProject,
   LeftRailSession,
+  RailEntityGatewayBadge,
 } from '../components/LeftRail/types.js';
 
 export type {
@@ -37,6 +38,7 @@ export type {
   LeftRailProfile,
   LeftRailProject,
   LeftRailSession,
+  RailEntityGatewayBadge,
 };
 
 export interface LeftRailSessionEntry {
@@ -79,6 +81,7 @@ export interface LeftRailModelInput {
   doneLoading?: boolean;
   doneError?: string;
   searchQuery: string;
+  gatewayCount?: number;
   isSessionsGroupExpanded?: boolean;
   isGroupsGroupExpanded?: boolean;
   /** Agent 域首次到达相位；缺省 ready。 */
@@ -89,11 +92,13 @@ export interface LeftRailModelInput {
 }
 
 export interface LeftRailModel {
+  isMultiGateway: boolean;
   currentFocus: LeftRailActiveFocus;
   selectedAgent: LeftRailProfile;
   isDefaultHq: boolean;
   defaultAgent: LeftRailProfile;
   otherAgents: LeftRailProfile[];
+  allAgents: LeftRailProfile[];
   activeSessions: LeftRailSession[];
   archivedSessions: LeftRailSession[];
   visibleGroups: LeftRailGroupRoom[];
@@ -163,8 +168,29 @@ export function formatLeftRailTime(timestamp?: number, now: Date = new Date()): 
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
-/** 会话归属判定：Default 中枢持有通用会话，专职 Bot 只持有自身名下会话。 */
+/** 单双网关统合来源微标构建（单网关严格返回 undefined，保证像素零变化）。 */
+export function buildEntityGatewayBadge(
+  isMultiGateway: boolean,
+  gatewayLabel?: string,
+  gatewayOffline?: boolean,
+  crossGateway?: boolean,
+): RailEntityGatewayBadge | undefined {
+  if (!isMultiGateway || !gatewayLabel) return undefined;
+  return {
+    label: gatewayLabel,
+    ...(gatewayOffline ? { offline: true } : {}),
+    ...(crossGateway ? { crossGateway: true } : {}),
+  };
+}
+
+function gatewayMatches(scopeGatewayId?: string, entityGatewayId?: string): boolean {
+  if (!scopeGatewayId || !entityGatewayId) return true;
+  return scopeGatewayId === entityGatewayId;
+}
+
+/** 会话归属判定：Default 中枢持有通用会话，专职 Bot 只持有自身名下会话；多网关时追加 gatewayId 隔离。 */
 function belongsToAgent(session: LeftRailSession, agent: LeftRailProfile, isDefaultHq: boolean): boolean {
+  if (!gatewayMatches(agent.gatewayId, session.gatewayId)) return false;
   const botName = (session.botName || 'default').toLowerCase();
   if (isDefaultHq) return botName === 'default' || !session.botName;
   const botDisplay = (session.botDisplayName || '').toLowerCase();
@@ -172,8 +198,9 @@ function belongsToAgent(session: LeftRailSession, agent: LeftRailProfile, isDefa
   return botName === agent.name.toLowerCase() || (Boolean(agentDisplay) && botDisplay === agentDisplay);
 }
 
-/** 群聊归属判定：Default 中枢是主大厅，专职 Bot 只列自己参与的群。 */
+/** 群聊归属判定：Default 中枢是主大厅，专职 Bot 只列自己参与的群；多网关时追加 gatewayId 匹配。 */
 function groupBelongsToAgent(group: LeftRailGroupRoom, agent: LeftRailProfile, isDefaultHq: boolean): boolean {
+  if (!gatewayMatches(agent.gatewayId, group.gatewayId)) return false;
   if (isDefaultHq) return true;
   const members = (group.members || []).map((m) => m.toLowerCase());
   return members.includes(agent.name.toLowerCase())
@@ -201,14 +228,21 @@ export function buildLeftRailModel(input: LeftRailModelInput): LeftRailModel {
       ? { type: 'session', sessionId: input.activeSessionId }
       : { type: 'bot', botName: input.profileName || 'default' });
 
-  const activeSession = sessions.find((s) => s.id === input.activeSessionId);
+  const activeSession = sessions.find(
+    (s) => s.id === input.activeSessionId && gatewayMatches(currentFocus.gatewayId, s.gatewayId),
+  );
   const currentAgentName = currentFocus.type === 'bot'
     ? currentFocus.botName
     : currentFocus.type === 'session'
       ? (activeSession?.botName || input.profileName || 'default')
       : (input.profileName || 'default');
+  const currentGatewayId = currentFocus.gatewayId || activeSession?.gatewayId;
 
-  const selectedAgent: LeftRailProfile = profiles.find((p) => p.name.toLowerCase() === currentAgentName.toLowerCase())
+  const selectedAgent: LeftRailProfile = profiles.find(
+    (p) => p.name.toLowerCase() === currentAgentName.toLowerCase() && gatewayMatches(currentGatewayId, p.gatewayId),
+  )
+    || profiles.find((p) => p.name.toLowerCase() === currentAgentName.toLowerCase())
+    || profiles.find((p) => p.isDefault && gatewayMatches(currentGatewayId, p.gatewayId))
     || profiles.find((p) => p.isDefault)
     || {
       name: currentAgentName,
@@ -217,9 +251,13 @@ export function buildLeftRailModel(input: LeftRailModelInput): LeftRailModel {
       lastMessage: '',
       lastTime: '',
       activityState: 'read',
+      ...(currentGatewayId ? { gatewayId: currentGatewayId } : {}),
     };
 
-  const defaultAgent: LeftRailProfile = profiles.find((p) => p.isDefault || p.name.toLowerCase() === 'default')
+  const defaultAgent: LeftRailProfile = profiles.find(
+    (p) => (p.isDefault || p.name.toLowerCase() === 'default') && gatewayMatches(currentGatewayId, p.gatewayId),
+  )
+    || profiles.find((p) => p.isDefault || p.name.toLowerCase() === 'default')
     || {
       name: 'default',
       displayName: t('rail.defaultAssistant'),
@@ -236,16 +274,16 @@ export function buildLeftRailModel(input: LeftRailModelInput): LeftRailModel {
 
   const scoped = sessions.filter((s) => belongsToAgent(s, selectedAgent, isDefaultHq));
   const activeSessions = scoped
-    .filter((s) => !s.isArchived && !s.isDone && matchesQuery(query, s.title, s.preview))
+    .filter((s) => !s.isArchived && !s.isDone && matchesQuery(query, s.title, s.preview, s.gatewayLabel))
     .sort(byNewest);
   const archivedSessions = scoped
-    .filter((s) => Boolean(s.isArchived || s.isDone) && matchesQuery(query, s.title))
+    .filter((s) => Boolean(s.isArchived || s.isDone) && matchesQuery(query, s.title, s.gatewayLabel))
     .sort(byNewest);
 
   const agentScopedGroups = groups.filter((g) => groupBelongsToAgent(g, selectedAgent, isDefaultHq));
   const visibleGroups = agentScopedGroups
     .filter((g) => !g.isDone && !doneRoomSet.has(g.roomId))
-    .filter((g) => matchesQuery(query, g.name, g.lastMessage))
+    .filter((g) => matchesQuery(query, g.name, g.lastMessage, g.gatewayLabel))
     .sort(byRoomUpdated);
 
   const partitioned = partitionRailOrgEntities<LeftRailSessionEntry, LeftRailGroupEntry>({
@@ -259,8 +297,8 @@ export function buildLeftRailModel(input: LeftRailModelInput): LeftRailModel {
     containerCollapsed: input.containerCollapsed,
     hiddenProjectIds: input.hiddenProjectIds,
     searchQuery: input.searchQuery,
-    matchesSessionSearch: (s, q) => matchesQuery(q, s.title, s.preview),
-    matchesGroupSearch: (g, q) => matchesQuery(q, g.name, g.lastMessage),
+    matchesSessionSearch: (s, q) => matchesQuery(q, s.title, s.preview, s.gatewayLabel),
+    matchesGroupSearch: (g, q) => matchesQuery(q, g.name, g.lastMessage, g.gatewayLabel),
     mapSession: (s, meta) => ({
       kind: 'session',
       session: s,
@@ -280,17 +318,32 @@ export function buildLeftRailModel(input: LeftRailModelInput): LeftRailModel {
     }),
   });
 
+  const isMultiGateway = (input.gatewayCount ?? 1) >= 2;
+  const allAgents = profiles
+    .filter((p) => matchesQuery(query, p.displayName, p.name, p.description, p.lastMessage, p.gatewayLabel))
+    .sort((a, b) => {
+      const gwCmp = (a.gatewayId || '').localeCompare(b.gatewayId || '');
+      if (isMultiGateway && gwCmp !== 0) {
+        return (b.timestamp || 0) - (a.timestamp || 0) || gwCmp;
+      }
+      const aDef = a.isDefault || a.name.toLowerCase() === 'default' ? 1 : 0;
+      const bDef = b.isDefault || b.name.toLowerCase() === 'default' ? 1 : 0;
+      return bDef - aDef || (b.timestamp || 0) - (a.timestamp || 0) || a.name.localeCompare(b.name);
+    });
+
   const otherAgents = profiles
     .filter((p) => !p.isDefault && p.name.toLowerCase() !== 'default')
-    .filter((p) => matchesQuery(query, p.displayName, p.name, p.description, p.lastMessage))
+    .filter((p) => matchesQuery(query, p.displayName, p.name, p.description, p.lastMessage, p.gatewayLabel))
     .sort(byNewest);
 
   return {
+    isMultiGateway,
     currentFocus,
     selectedAgent,
     isDefaultHq,
     defaultAgent,
     otherAgents,
+    allAgents,
     activeSessions,
     archivedSessions,
     visibleGroups,
@@ -313,16 +366,20 @@ export function buildLeftRailModel(input: LeftRailModelInput): LeftRailModel {
 }
 
 /** 焦点归属判定：用于行高亮与激活指示条，避免组件内出现三重 if 链。 */
-export function isSessionFocused(focus: LeftRailActiveFocus, sessionId: string): boolean {
-  return focus.type === 'session' && focus.sessionId === sessionId;
+export function isSessionFocused(focus: LeftRailActiveFocus, sessionId: string, gatewayId?: string): boolean {
+  return focus.type === 'session' && focus.sessionId === sessionId && gatewayMatches(focus.gatewayId, gatewayId);
 }
 
-export function isGroupFocused(focus: LeftRailActiveFocus, roomId: string): boolean {
-  return focus.type === 'group' && focus.roomId === roomId;
+export function isGroupFocused(focus: LeftRailActiveFocus, roomId: string, gatewayId?: string): boolean {
+  return focus.type === 'group' && focus.roomId === roomId && gatewayMatches(focus.gatewayId, gatewayId);
 }
 
-export function isBotFocused(focus: LeftRailActiveFocus, botName: string): boolean {
-  return focus.type === 'bot' && focus.botName.toLowerCase() === botName.toLowerCase();
+export function isBotFocused(focus: LeftRailActiveFocus, botName: string, gatewayId?: string): boolean {
+  return (
+    focus.type === 'bot' &&
+    focus.botName.toLowerCase() === botName.toLowerCase() &&
+    gatewayMatches(focus.gatewayId, gatewayId)
+  );
 }
 
 /**
@@ -330,23 +387,33 @@ export function isBotFocused(focus: LeftRailActiveFocus, botName: string): boole
  * 设计意图 (Why)：微轨代表当前工作台的 Agent 主权上下文。无论用户处于该 Agent 的专属工位、
  *   该 Agent 名下的普通会话，还是在该 Agent 上下文下查看群聊，微轨对应的 Agent 头像必须持续保有选中高亮效果。
  * 防范的历史坑 (Pitfall)：曾仅匹配 focus.type === 'bot'，用户一旦点开普通会话或群聊微轨高亮立即熄灭，视觉锚点丢失。
- * 约束与规则 (Rules)：大小写不敏感匹配；找不到 session 时回退 selectedAgentName。
+ * 约束与规则 (Rules)：大小写不敏感匹配；找不到 session 时回退 selectedAgentName；多网关下附带 gatewayId 判定。
  */
 export function isAgentScopeActive(params: {
   agentName: string;
+  agentGatewayId?: string;
   focus: LeftRailActiveFocus;
   selectedAgentName: string;
+  selectedAgentGatewayId?: string;
   activeSessionBotName?: string;
+  activeSessionGatewayId?: string;
 }): boolean {
   const target = params.agentName.toLowerCase();
 
   // 1. 焦点直接落在专职 Bot 工位
   if (params.focus.type === 'bot') {
-    return params.focus.botName.toLowerCase() === target;
+    return (
+      params.focus.botName.toLowerCase() === target &&
+      gatewayMatches(params.focus.gatewayId, params.agentGatewayId)
+    );
   }
 
   // 2. 焦点在普通会话：优先匹配该会话所属的 botName，其次匹配当前抽屉上下文的 selectedAgent
   if (params.focus.type === 'session') {
+    const scopeGw = params.activeSessionGatewayId || params.focus.gatewayId || params.selectedAgentGatewayId;
+    if (!gatewayMatches(scopeGw, params.agentGatewayId)) {
+      return false;
+    }
     if (params.activeSessionBotName) {
       return params.activeSessionBotName.toLowerCase() === target;
     }
@@ -354,9 +421,8 @@ export function isAgentScopeActive(params: {
   }
 
   // 3. 焦点在群聊：微轨保持当前承载抽屉会话的 selectedAgent 选中态
-  if (params.focus.type === 'group') {
-    return params.selectedAgentName.toLowerCase() === target;
-  }
-
-  return params.selectedAgentName.toLowerCase() === target;
+  return (
+    params.selectedAgentName.toLowerCase() === target &&
+    gatewayMatches(params.focus.gatewayId || params.selectedAgentGatewayId, params.agentGatewayId)
+  );
 }

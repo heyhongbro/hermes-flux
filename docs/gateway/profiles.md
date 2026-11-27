@@ -5,12 +5,12 @@
 
 | 方法 | 入参（契约） | 出参（契约） | 调用点 | 真实探针 |
 | --- | --- | --- | --- | --- |
-| `profiles.configure` | `profile` `name` `ui_meta` `ui_meta_expected_revisions` `soul` `description` `model` `provider` `confirm_expensive_model` `disabled_skills` `enabled_toolsets` `enabled_mcp_servers` | `ok` `applied` `confirm_required` `confirm_message` | `packages/core/src/organization/profileMetaAdapter.ts:130`<br>`packages/core/src/organization/profileMetaAdapter.ts:184`<br>`packages/core/src/profile/profileService.ts:255` | ✅ 0.22.5 |
-| `profiles.create` | `profile` `name` `description` `clone_from` `clone_all` `clone_channels` `no_skills` `no_alias` `soul` `model` `provider` `share_auth` `mirror_credentials` | `ok` `name` `path` `soul_written` `model_set` `mirrored` `warnings` | `packages/core/src/profile/profileService.ts:196` | ✅ 0.22.5 |
-| `profiles.describe` | `profile` `name` | `name` `description` `soul` `model` `skills` `toolsets` `toolsets_pinned` `mcp_servers` | `packages/core/src/profile/profileService.ts:109`<br>`packages/core/src/profile/profileService.ts:165`<br>`packages/desktop/src/renderer/services/learningService.ts:111` | ✅ 0.22.5 |
-| `profiles.get_asset` | `profile` `name` `asset` | `found` `mime` `size` `data` | `packages/core/src/profile/profileService.ts:280` | ✅ 0.22.5 |
-| `profiles.list` | `profile` `include_sessions` | `profiles` `bot_mode_protocol` `install_id` | `packages/core/src/organization/profileMetaAdapter.ts:111`<br>`packages/core/src/profile/profileService.ts:82`<br>`packages/core/src/rpc/client.ts:1213`<br>`packages/desktop/src/renderer/settingsController.ts:162` | ✅ 0.22.5 |
-| `profiles.set_asset` | `profile` `name` `asset` `data` `clear` | `ok` `asset` `size` `removed` | `packages/core/src/profile/profileService.ts:305` | ✅ 0.22.5 |
+| `profiles.configure` | `profile` `name` `ui_meta` `ui_meta_expected_revisions` `soul` `description` `model` `provider` `confirm_expensive_model` `disabled_skills` `enabled_toolsets` `enabled_mcp_servers` | `ok` `applied` `confirm_required` `confirm_message` | `packages/core/src/organization/profileMetaAdapter.ts:130`<br>`packages/core/src/organization/profileMetaAdapter.ts:184`<br>`packages/core/src/profile/profileService.ts:274` | ✅ 0.22.5 |
+| `profiles.create` | `profile` `name` `description` `clone_from` `clone_all` `clone_channels` `no_skills` `no_alias` `soul` `model` `provider` `share_auth` `mirror_credentials` | `ok` `name` `path` `soul_written` `model_set` `mirrored` `warnings` | `packages/core/src/profile/profileService.ts:215` | ✅ 0.22.5 |
+| `profiles.describe` | `profile` `name` | `name` `description` `soul` `model` `skills` `toolsets` `toolsets_pinned` `mcp_servers` | `packages/core/src/profile/profileService.ts:128`<br>`packages/core/src/profile/profileService.ts:184`<br>`packages/desktop/src/renderer/services/learningService.ts:111` | ✅ 0.22.5 |
+| `profiles.get_asset` | `profile` `name` `asset` | `found` `mime` `size` `data` | `packages/core/src/profile/profileService.ts:299` | ✅ 0.22.5 |
+| `profiles.list` | `profile` `include_sessions` | `profiles` `bot_mode_protocol` `install_id` | `packages/core/src/organization/profileMetaAdapter.ts:111`<br>`packages/core/src/profile/profileService.ts:96`<br>`packages/core/src/rpc/client.ts:1335`<br>`packages/desktop/src/renderer/settingsController.ts:162` | ✅ 0.22.5 |
+| `profiles.set_asset` | `profile` `name` `asset` `data` `clear` | `ok` `asset` `size` `removed` | `packages/core/src/profile/profileService.ts:324` | ✅ 0.22.5 |
 
 ## 明细
 
@@ -22,7 +22,7 @@
 - 调用点：
   - `packages/core/src/organization/profileMetaAdapter.ts:130`
   - `packages/core/src/organization/profileMetaAdapter.ts:184`
-  - `packages/core/src/profile/profileService.ts:255`
+  - `packages/core/src/profile/profileService.ts:274`
 
 ### `profiles.create`
 
@@ -31,7 +31,7 @@
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 本次探针走的是守卫分支：错误码 `4062`（属于正确行为，不是失败）
 - 调用点：
-  - `packages/core/src/profile/profileService.ts:196`
+  - `packages/core/src/profile/profileService.ts:215`
 
 ### `profiles.describe`
 
@@ -39,8 +39,8 @@
 - 结果类型：`ProfilesDescribeResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/profile/profileService.ts:109`
-  - `packages/core/src/profile/profileService.ts:165`
+  - `packages/core/src/profile/profileService.ts:128`
+  - `packages/core/src/profile/profileService.ts:184`
   - `packages/desktop/src/renderer/services/learningService.ts:111`
 
 ### `profiles.get_asset`
@@ -49,7 +49,7 @@
 - 结果类型：`ProfilesGetAssetResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/profile/profileService.ts:280`
+  - `packages/core/src/profile/profileService.ts:299`
 
 ### `profiles.list`
 
@@ -58,8 +58,8 @@
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
   - `packages/core/src/organization/profileMetaAdapter.ts:111`
-  - `packages/core/src/profile/profileService.ts:82`
-  - `packages/core/src/rpc/client.ts:1213`
+  - `packages/core/src/profile/profileService.ts:96`
+  - `packages/core/src/rpc/client.ts:1335`
   - `packages/desktop/src/renderer/settingsController.ts:162`
 
 ### `profiles.set_asset`
@@ -68,5 +68,5 @@
 - 结果类型：`ProfilesSetAssetResult`
 - 真实探针：已通过（网关 0.22.5，录制于 2026-11-01T01:59:35.303Z）
 - 调用点：
-  - `packages/core/src/profile/profileService.ts:305`
+  - `packages/core/src/profile/profileService.ts:324`
 

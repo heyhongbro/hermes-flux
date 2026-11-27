@@ -9,7 +9,7 @@
 | 契约来源 | `apps/shared/src/gateway-contract.generated.ts`（网关 Pydantic 模型自动生成） |
 | 契约指纹 | `e3cf16a3d9832437…` |
 | 同步时间 | 2026-11-12T09:29:35.736Z |
-| 契约内方法总数 | 290（本仓库实际使用 76 个，本文档只覆盖用到的） |
+| 契约内方法总数 | 290（本仓库实际使用 78 个，本文档只覆盖用到的） |
 | 契约内事件总数 | 74 |
 | 探针网关版本 | 0.22.5 |
 | 探针录制时间 | 2026-11-01T01:59:35.303Z |
@@ -18,9 +18,9 @@
 
 | 模块 | 方法数 | 已探针 | 文档 |
 | --- | --- | --- | --- |
-| 系统与能力探测 | 5 | 3 | [system.md](./system.md) |
+| 系统与能力探测 | 6 | 3 | [system.md](./system.md) |
 | Bot 档案与资产 | 6 | 6 | [profiles.md](./profiles.md) |
-| 会话生命周期 | 13 | 11 | [sessions.md](./sessions.md) |
+| 会话生命周期 | 14 | 11 | [sessions.md](./sessions.md) |
 | 多 Agent 群聊 | 7 | 7 | [groups.md](./groups.md) |
 | 工程与工作区 | 9 | 9 | [projects.md](./projects.md) |
 | 代码时光机 | 3 | 3 | [rollback.md](./rollback.md) |

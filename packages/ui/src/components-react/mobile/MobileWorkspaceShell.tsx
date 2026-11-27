@@ -345,6 +345,7 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
 
           <MobileConversationScreen
             gatewayConnected={snapshot.gatewayConnected}
+            activeEntityGatewayOffline={snapshot.activeEntityGatewayOffline}
             connectionPhase={snapshot.connectionPhase}
             connectionReconnectAttempt={snapshot.connectionReconnectAttempt}
             connectionAuthError={snapshot.connectionAuthError}

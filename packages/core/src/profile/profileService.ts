@@ -39,8 +39,9 @@ import type {
   SessionItemPayload,
   IRpcCaller,
 } from '../rpc/types.js';
-import { readSessionHandles, defaultSessionHandleRegistry } from '../session/sessionRegistry.js';
+import { readSessionHandles, defaultSessionHandleRegistry, type SessionHandleRegistry } from '../session/sessionRegistry.js';
 import { normalizeAgentProfile } from '../rpc/profileNormalize.js';
+import { extractInstallId } from '../rpc/gatewayProtocol.js';
 import { parseBotDetail, type BotDetailData, type BotIdentityHint } from './botManagement.js';
 
 /** 旧编辑器兼容字段 + 新面板需要的配置域。 */
@@ -61,6 +62,12 @@ export interface ForeverChatDescriptor {
 }
 
 export class ProfileService {
+  private readonly handleRegistry: SessionHandleRegistry;
+
+  constructor(options?: { handleRegistry?: SessionHandleRegistry }) {
+    this.handleRegistry = options?.handleRegistry ?? defaultSessionHandleRegistry;
+  }
+
   /**
    * 内存级 Profile 缓存，避免重复高频调用 profiles.list
    */
@@ -70,6 +77,13 @@ export class ProfileService {
    * 缓存各 Bot 对应的唯一 Forever Chat ID：botProfile -> ForeverChatDescriptor
    */
   private foreverChatCache = new Map<string, ForeverChatDescriptor>();
+
+  /** 最近一次从 `profiles.list` 捕获到的网关实例稳定 ID (`install_id`) */
+  private lastInstallId: string | undefined;
+
+  public getLastInstallId(): string | undefined {
+    return this.lastInstallId;
+  }
 
   /**
    * 拉取所有专职 Bot 列表
@@ -82,6 +96,11 @@ export class ProfileService {
     const res = await bridge.request<ProfilesListResult>('profiles.list');
     if (!res || !Array.isArray(res.profiles)) {
       throw new Error('网关返回了非法的 profiles.list 响应数据结构');
+    }
+
+    const installId = extractInstallId(res);
+    if (installId) {
+      this.lastInstallId = installId;
     }
 
     // 归一化只做一次，且与 client.listProfiles() 共用同一实现：
@@ -374,7 +393,7 @@ export class ProfileService {
       throw new Error(`为 Bot [${botProfile}] 创建终生主工位失败: 缺少 session_id`);
     }
     if (handles) {
-      defaultSessionHandleRegistry.register(handles);
+      this.handleRegistry.register(handles);
     }
 
     // 4. 将其标记为 hidden 避免在普通旁聊列表中混排

@@ -88,6 +88,7 @@ export interface MobileActionSheetState {
   id: string;
   title: string;
   botName?: string;
+  gatewayId?: string;
   isProtected?: boolean;
   isDone?: boolean;
   currentContainerId?: string | null;
@@ -103,6 +104,8 @@ export interface MobileWorkspaceSnapshot {
   locale: 'zh' | 'en';
   gatewayConnected: boolean;
   gatewayConnecting: boolean;
+  gatewayCount?: number;
+  activeEntityGatewayOffline?: boolean;
   connectionPhase?: GatewayConnectionPhase;
   connectionReconnectAttempt?: number;
   connectionAuthError?: boolean;
@@ -182,9 +185,9 @@ export interface MobileWorkspaceActions {
   onSelectHomeTab: (tab: MobileHomeTab) => void;
   onSelectBotSubpage: (subpage: MobileBotSubpage) => void;
   onOpenSettingsSubpage: (subpage: MobileSettingsSubpage) => void;
-  onSelectBot: (botName: string) => void;
-  onSelectGroup: (roomId: string) => void;
-  onSelectSession: (sessionId: string, botName?: string) => void;
+  onSelectBot: (botName: string, gatewayId?: string) => void;
+  onSelectGroup: (roomId: string, gatewayId?: string) => void;
+  onSelectSession: (sessionId: string, botName?: string, gatewayId?: string) => void;
   onToggleSection: (section: 'bots' | 'groups' | 'sessions') => void;
   onToggleContainer?: (containerId: string) => void;
   onToggleDoneSection?: () => void;

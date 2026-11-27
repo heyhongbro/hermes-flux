@@ -22,15 +22,38 @@ import type { MessageDisplayKind, MessageDisplayMetadata } from '../session/disp
 import type { MessageAttachmentItem } from '../session/messageAttachments.js';
 
 /** 缓存信封版本。结构变更时提升，读到不匹配的值直接丢弃重建。 */
-export const CACHE_SCHEMA_VERSION = 1 as const;
+export const CACHE_SCHEMA_VERSION = 2 as const;
+
+/** 未显式归属到独立网关实例时的默认本地通道/索引分桶标识。 */
+export const DEFAULT_CACHE_GATEWAY_ID = '__default__' as const;
+
+/** 跨机/单机群聊缓存的稳定哨兵分桶标识（避免 groups.promote 切主后历史消息孤儿化）。 */
+export const ROOM_CACHE_GATEWAY_ID = '__room__' as const;
 
 /** 消息所属通道。群聊与单会话的主键序号语义不同，必须显式区分。 */
 export type CacheChannel = 'session' | 'room';
+
+/** 解析缓存实体的权威分桶 `gatewayId`：群聊固定落入 `'__room__'`，缺失或空白回退 `'__default__'`。 */
+export function resolveCacheGatewayId(input: {
+  readonly channel?: CacheChannel;
+  readonly kind?: 'session' | 'group';
+  readonly gatewayId?: string;
+}): string {
+  if (input.channel === 'room' || input.kind === 'group') {
+    return ROOM_CACHE_GATEWAY_ID;
+  }
+  const trimmed = typeof input.gatewayId === 'string' ? input.gatewayId.trim() : '';
+  return trimmed || DEFAULT_CACHE_GATEWAY_ID;
+}
 
 /** 会话索引行：message 的入口，不含正文。 */
 export interface CachedSessionSummary {
   /** stored_session_id 或 room_id */
   id: string;
+  /** 归属网关实例 ID（群聊固定为 `'__room__'`，缺省兼容默认网关） */
+  gatewayId?: string;
+  /** 群聊权威代际（防止 promote 切主后低代际陈旧快照倒灌覆盖） */
+  authorityEpoch?: number;
   /** 归属 profile；群聊房间固定为空串（hosted rooms 不属于任何 profile） */
   profile: string;
   kind: 'session' | 'group';
@@ -57,6 +80,8 @@ export interface CachedSessionSummary {
 export interface CachedAgentSummary {
   /** 网关侧唯一名 */
   name: string;
+  /** 归属网关实例 ID */
+  gatewayId?: string;
   displayName: string;
   description?: string;
   model?: string;
@@ -78,8 +103,12 @@ export interface CachedToolCall {
   inlineDiff?: string;
 }
 
-/** 消息缓存行。主键四元组 (profile, channel, channelId, orderKey)。 */
+/** 消息缓存行。主键五元组 (gatewayId, profile, channel, channelId, orderKey)。 */
 export interface CachedMessageRow {
+  /** 归属网关实例 ID（群聊固定 `'__room__'`，缺省回退 `'__default__'`） */
+  gatewayId?: string;
+  /** 群聊消息写入时的权威代际（可选） */
+  authorityEpoch?: number;
   profile: string;
   channel: CacheChannel;
   channelId: string;
@@ -120,11 +149,33 @@ export interface CachedMessageRow {
 
 /** 通道引用：定位一个会话或一个房间的消息集合。 */
 export interface CacheChannelRef {
-  /** 归属网关 ID（支持多网关独立隔离，可选向后兼容） */
+  /** 归属网关 ID（支持多网关独立隔离，群聊固定 `'__room__'`） */
   gatewayId?: string;
+  /** 群聊权威代际，用于防止低代际陈旧节点覆盖高代际缓存 */
+  authorityEpoch?: number;
   profile: string;
   channel: CacheChannel;
   channelId: string;
+}
+
+/** 归一化消息缓存行的 5 元组 `gatewayId` 与可选群聊 `authorityEpoch`。 */
+export function normalizeCachedMessageRow(
+  row: CachedMessageRow,
+  ref?: CacheChannelRef,
+): CachedMessageRow {
+  const gatewayId = resolveCacheGatewayId({
+    channel: row.channel,
+    gatewayId: row.gatewayId ?? ref?.gatewayId,
+  });
+  const authorityEpoch =
+    typeof row.authorityEpoch === 'number'
+      ? row.authorityEpoch
+      : ref?.authorityEpoch;
+  return {
+    ...row,
+    gatewayId,
+    ...(typeof authorityEpoch === 'number' ? { authorityEpoch } : {}),
+  };
 }
 
 /** 网关认证方式 */

@@ -46,11 +46,12 @@ export interface LeftRailControllerDeps {
   showToast: (message: string) => void;
   describeRpcError: (error: unknown) => string;
   getGatewayClient: () => HermesGatewayClient | null;
+  getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
   groupRoomStore: GroupRoomStore;
   cancelColdStartFocus: () => void;
-  selectSession: (id: string, opts?: { botName?: string }) => void | Promise<void>;
-  openBotChat: (profile: string) => void | Promise<void>;
-  openGroupRoom: (roomId: string) => void | Promise<void>;
+  selectSession: (id: string, opts?: { botName?: string; gatewayId?: string }) => void | Promise<void>;
+  openBotChat: (profile: string, gatewayId?: string) => void | Promise<void>;
+  openGroupRoom: (roomId: string, gatewayId?: string) => void | Promise<void>;
   fetchProjects: () => void | Promise<void>;
   fetchGroupRooms: () => void | Promise<void>;
   beginLeftRailResize: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -66,10 +67,10 @@ export interface LeftRailControllerDeps {
   activityTransitionTracker: ActivityTransitionTracker;
   onToggleContainer?: (containerId: string) => void;
   onRetryDoneSection?: () => void;
-  onRequestMarkDone?: (entityKind: 'session' | 'group', id: string, title: string, profile?: string) => void;
-  onRestoreDone?: (entityKind: 'session' | 'group', id: string, profile?: string) => void;
+  onRequestMarkDone?: (entityKind: 'session' | 'group', id: string, title: string, profile?: string, gatewayId?: string) => void;
+  onRestoreDone?: (entityKind: 'session' | 'group', id: string, profile?: string, gatewayId?: string) => void;
   onSearchQueryChanged?: (query: string) => void;
-  getMoveEntityContext?: (entityKind: 'session' | 'group', id: string, profile?: string) => {
+  getMoveEntityContext?: (entityKind: 'session' | 'group', id: string, profile?: string, gatewayId?: string) => {
     isDone: boolean;
     currentContainerId: string | null;
     hasCwdProjectMatch: boolean;
@@ -101,12 +102,14 @@ export class LeftRailController {
       getProfileName: () => deps.getState().profileName,
       getSearchQuery: () => deps.getState().sessionSearchQuery,
       getLayout: () => deps.getState().leftRailLayout,
+      getGatewayCount: () => deps.getState().gatewayCount ?? 1,
       isBotsGroupExpanded: () => deps.getState().isBotsGroupExpanded !== false,
       isSessionsGroupExpanded: () => deps.getState().isSessionsGroupExpanded !== false,
       isGroupsGroupExpanded: () => deps.getState().isGroupsGroupExpanded !== false,
       getError: () => deps.getState().sessionListError,
       isCollapsed: () => deps.getState().leftRailCollapsed,
       getEditingGroupRoomId: () => deps.getState().editingGroupRoomId,
+      getEditingGroupGatewayId: () => deps.getState().editingGroupGatewayId,
       getProfilesPhase: () => deps.getState().profilesPhase,
       getSessionsPhase: () => deps.getState().sessionsPhase,
       getActivityVariant: () => deps.getActivityVariant(),
@@ -134,20 +137,20 @@ export class LeftRailController {
       });
     };
     return {
-      onSelectSession: (sessionId: string, botName?: string) => {
+      onSelectSession: (sessionId: string, botName?: string, gatewayId?: string) => {
         deps.cancelColdStartFocus();
-        void deps.selectSession(sessionId, { botName });
+        void deps.selectSession(sessionId, { botName, ...(gatewayId ? { gatewayId } : {}) });
       },
-      onSelectBot: (profileName: string) => {
+      onSelectBot: (profileName: string, gatewayId?: string) => {
         deps.cancelColdStartFocus();
-        void deps.openBotChat(profileName);
+        void (gatewayId ? deps.openBotChat(profileName, gatewayId) : deps.openBotChat(profileName));
       },
-      onSelectGroup: (roomId: string) => {
+      onSelectGroup: (roomId: string, gatewayId?: string) => {
         deps.cancelColdStartFocus();
-        void deps.openGroupRoom(roomId);
+        void (gatewayId ? deps.openGroupRoom(roomId, gatewayId) : deps.openGroupRoom(roomId));
       },
-      onOpenSessionMenu: (sessionId: string, title: string, x: number, y: number, profile?: string) => {
-        const entityCtx = deps.getMoveEntityContext?.('session', sessionId, profile);
+      onOpenSessionMenu: (sessionId: string, title: string, x: number, y: number, profile?: string, gatewayId?: string) => {
+        const entityCtx = deps.getMoveEntityContext?.('session', sessionId, profile, gatewayId);
         state.sessionContextMenu = {
           x,
           y,
@@ -157,24 +160,33 @@ export class LeftRailController {
           sessionId,
           sessionTitle: title,
           sessionProfile: profile,
+          ...(gatewayId ? { gatewayId } : {}),
           ...entityCtx,
           projects: state.projects.filter((p) => !p.archived).map((p) => ({ id: p.id, name: p.name })),
           folders: state.orgFolders.map((f) => ({ id: f.id, name: f.name })),
         };
         deps.render();
       },
-      onOpenBotMenu: (profileName: string, x: number, y: number) => {
-        state.sessionContextMenu = { x, y, targetType: 'bot', targetId: profileName, targetName: profileName };
+      onOpenBotMenu: (profileName: string, x: number, y: number, gatewayId?: string) => {
+        state.sessionContextMenu = {
+          x,
+          y,
+          targetType: 'bot',
+          targetId: profileName,
+          targetName: profileName,
+          ...(gatewayId ? { gatewayId } : {}),
+        };
         deps.render();
       },
-      onOpenGroupMenu: (roomId: string, name: string, x: number, y: number) => {
-        const entityCtx = deps.getMoveEntityContext?.('group', roomId);
+      onOpenGroupMenu: (roomId: string, name: string, x: number, y: number, gatewayId?: string) => {
+        const entityCtx = deps.getMoveEntityContext?.('group', roomId, undefined, gatewayId);
         state.sessionContextMenu = {
           x,
           y,
           targetType: 'group',
           targetId: roomId,
           targetName: name,
+          ...(gatewayId ? { gatewayId } : {}),
           ...entityCtx,
           projects: state.projects.filter((p) => !p.archived).map((p) => ({ id: p.id, name: p.name })),
           folders: state.orgFolders.map((f) => ({ id: f.id, name: f.name })),
@@ -221,11 +233,11 @@ export class LeftRailController {
       onRetryDoneSection: () => {
         deps.onRetryDoneSection?.();
       },
-      onRequestMarkDone: (entityKind: 'session' | 'group', id: string, title: string, profile?: string) => {
-        deps.onRequestMarkDone?.(entityKind, id, title, profile);
+      onRequestMarkDone: (entityKind: 'session' | 'group', id: string, title: string, profile?: string, gatewayId?: string) => {
+        deps.onRequestMarkDone?.(entityKind, id, title, profile, gatewayId);
       },
-      onRestoreDone: (entityKind: 'session' | 'group', id: string, profile?: string) => {
-        deps.onRestoreDone?.(entityKind, id, profile);
+      onRestoreDone: (entityKind: 'session' | 'group', id: string, profile?: string, gatewayId?: string) => {
+        deps.onRestoreDone?.(entityKind, id, profile, gatewayId);
       },
       onToggleBots: () => {
         state.isBotsGroupExpanded = !state.isBotsGroupExpanded;
@@ -242,15 +254,17 @@ export class LeftRailController {
         persistGroupedSections();
         deps.render();
       },
-      onStartGroupRename: (roomId: string) => {
+      onStartGroupRename: (roomId: string, gatewayId?: string) => {
         state.editingGroupRoomId = roomId;
+        state.editingGroupGatewayId = gatewayId;
         deps.render();
       },
-      onConfirmGroupRename: (roomId: string, name: string) => {
-        void this.confirmGroupRename(roomId, name);
+      onConfirmGroupRename: (roomId: string, name: string, gatewayId?: string) => {
+        void this.confirmGroupRename(roomId, name, gatewayId ?? state.editingGroupGatewayId);
       },
       onCancelGroupRename: () => {
         state.editingGroupRoomId = undefined;
+        state.editingGroupGatewayId = undefined;
         deps.render();
       },
       onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => {
@@ -259,18 +273,28 @@ export class LeftRailController {
     };
   }
 
-  async confirmGroupRename(roomId: string, name: string): Promise<void> {
+  async confirmGroupRename(roomId: string, name: string, gatewayId?: string): Promise<void> {
     const { deps } = this;
     const state = deps.getState();
-    const client = deps.getGatewayClient();
+    const targetGw =
+      gatewayId ||
+      (state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId
+        ? state.activeFocus.gatewayId
+        : undefined) ||
+      state.groupRooms.find((r) => r.roomId === roomId)?.gatewayId ||
+      state.activeGatewayId;
+    const client = deps.getClientForGateway ? deps.getClientForGateway(targetGw) : deps.getGatewayClient();
     const newName = name.trim();
     state.editingGroupRoomId = undefined;
+    state.editingGroupGatewayId = undefined;
     if (!newName || !client) {
       deps.render();
       return;
     }
-    const previousName = state.groupRooms.find((r) => r.roomId === roomId)?.name;
-    state.groupRooms = state.groupRooms.map((r) => (r.roomId === roomId ? { ...r, name: newName } : r));
+    const matchesRoom = (r: { roomId: string; gatewayId?: string }): boolean =>
+      r.roomId === roomId && (!targetGw || !r.gatewayId || r.gatewayId === targetGw);
+    const previousName = state.groupRooms.find(matchesRoom)?.name;
+    state.groupRooms = state.groupRooms.map((r) => (matchesRoom(r) ? { ...r, name: newName } : r));
     deps.render();
     try {
       await deps.groupRoomStore.renameRoom(roomId, newName, client);
@@ -278,7 +302,7 @@ export class LeftRailController {
       await deps.fetchGroupRooms();
     } catch (err) {
       if (previousName !== undefined) {
-        state.groupRooms = state.groupRooms.map((r) => (r.roomId === roomId ? { ...r, name: previousName } : r));
+        state.groupRooms = state.groupRooms.map((r) => (matchesRoom(r) ? { ...r, name: previousName } : r));
         deps.render();
       }
       deps.showToast(deps.t('ctx.groupRenameFailed', { error: deps.describeRpcError(err) }));

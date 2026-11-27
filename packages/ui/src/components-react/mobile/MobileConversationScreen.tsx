@@ -25,6 +25,7 @@ import { MobileMorphingComposer } from './MobileMorphingComposer.js';
 
 export interface MobileConversationScreenProps {
   gatewayConnected: boolean;
+  activeEntityGatewayOffline?: boolean;
   connectionPhase?: GatewayConnectionPhase;
   connectionReconnectAttempt?: number;
   connectionAuthError?: boolean;
@@ -63,6 +64,7 @@ export interface MobileConversationScreenProps {
 
 export function MobileConversationScreen({
   gatewayConnected,
+  activeEntityGatewayOffline,
   connectionPhase,
   connectionReconnectAttempt,
   connectionAuthError,
@@ -95,6 +97,8 @@ export function MobileConversationScreen({
   const showOfflineCard =
     !gatewayConnected &&
     (connectionPhase === undefined || connectionPhase === 'unconfigured');
+  const effectiveDockNotice =
+    dockNotice || (activeEntityGatewayOffline ? t('gateway.offlineReadOnlyNotice') : '');
   const streamRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
@@ -205,14 +209,14 @@ export function MobileConversationScreen({
         ) : null}
       </div>
 
-      {dockNotice ? <div className="m-stage__notice">{dockNotice}</div> : null}
+      {effectiveDockNotice ? <div className="m-stage__notice">{effectiveDockNotice}</div> : null}
 
       <div className="m-stage__composer-dock">
         <MobileMorphingComposer
           inputId="mobile-stage-prompt-input"
           placeholder={placeholder}
           isStreaming={isStreaming}
-          disabled={!gatewayConnected}
+          disabled={!gatewayConnected || Boolean(activeEntityGatewayOffline)}
           selectedModel={selectedModel}
           currentProvider={currentProvider}
           availableModels={availableModels}

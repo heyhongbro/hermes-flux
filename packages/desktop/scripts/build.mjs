@@ -210,6 +210,9 @@ async function buildAll() {
 
     // 主进程单测独立产物
     nodeModuleTask('src/main/cookieHeader.ts', 'dist/main/cookieHeader.mjs', null),
+    nodeModuleTask('src/main/gatewayCookiePool.ts', 'dist/main/gatewayCookiePool.mjs', null),
+    nodeModuleTask('src/main/debugPortPolicy.ts', 'dist/main/debugPortPolicy.mjs', null),
+    nodeModuleTask('src/main/secretStore.ts', 'dist/main/secretStore.mjs', null),
     nodeModuleTask('src/main/workspaceFs.ts', 'dist/main/workspaceFs.mjs', null),
     nodeModuleTask('src/main/mediaStreamProtocol.ts', 'dist/main/mediaStreamProtocol.mjs', ['@hermes-flux/core']),
     nodeModuleTask('src/main/powerEvents.ts', 'dist/main/powerEvents.mjs', null),
@@ -244,12 +247,15 @@ async function buildAll() {
 
     // 持久化领域模块
     nodeModuleTask('src/renderer/persistence/persistedJson.ts', 'dist/renderer/persistence/persistedJson.mjs', null),
+    nodeModuleTask('src/renderer/persistence/secretMigration.ts', 'dist/renderer/persistence/secretMigration.mjs', null),
     nodeModuleTask('src/renderer/persistence/botActivityStore.ts', 'dist/renderer/persistence/botActivityStore.mjs'),
     nodeModuleTask('src/renderer/persistence/sessionDrafts.ts', 'dist/renderer/persistence/sessionDrafts.mjs', null),
+    nodeModuleTask('src/renderer/services/settingsStorageHelpers.ts', 'dist/renderer/services/settingsStorageHelpers.mjs'),
 
     // 各子领域控制器与管理器
     nodeModuleTask('src/renderer/completion/inputCompletion.ts', 'dist/renderer/completion/inputCompletion.mjs', ['@hermes-flux/ui', '@hermes-flux/core']),
     nodeModuleTask('src/renderer/cache/desktopCacheBridge.ts', 'dist/renderer/cache/desktopCacheBridge.mjs'),
+    nodeModuleTask('src/renderer/cache/DesktopCacheStore.ts', 'dist/renderer/cache/DesktopCacheStore.mjs'),
     nodeModuleTask('src/renderer/presence/agentPresenceManager.ts', 'dist/renderer/presence/agentPresenceManager.mjs'),
     nodeModuleTask('src/renderer/navigation/promptNavigatorManager.ts', 'dist/renderer/navigation/promptNavigatorManager.mjs'),
     nodeModuleTask('src/renderer/cascade/modelCascadeManager.ts', 'dist/renderer/cascade/modelCascadeManager.mjs'),
@@ -289,6 +295,9 @@ async function buildAll() {
     nodeModuleTask('src/renderer/services/sessionOperationService.ts', 'dist/renderer/services/sessionOperationService.mjs'),
     nodeModuleTask('src/renderer/services/messageLoadingService.ts', 'dist/renderer/services/messageLoadingService.mjs'),
     nodeModuleTask('src/renderer/services/turnExecutionService.ts', 'dist/renderer/services/turnExecutionService.mjs'),
+    nodeModuleTask('src/renderer/gateway/gatewayRegistryStore.ts', 'dist/renderer/gateway/gatewayRegistryStore.mjs'),
+    nodeModuleTask('src/renderer/gateway/multiGatewayRuntime.ts', 'dist/renderer/gateway/multiGatewayRuntime.mjs'),
+    nodeModuleTask('src/renderer/gateway/multiGatewayCoordinator.ts', 'dist/renderer/gateway/multiGatewayCoordinator.mjs'),
     nodeModuleTask('src/renderer/gateway/gatewayEventDispatcher.ts', 'dist/renderer/gateway/gatewayEventDispatcher.mjs'),
     nodeModuleTask('src/renderer/messageWindowManager.ts', 'dist/renderer/messageWindowManager.mjs'),
     nodeModuleTask('src/renderer/services/foregroundSyncCoordinator.ts', 'dist/renderer/services/foregroundSyncCoordinator.mjs'),

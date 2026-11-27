@@ -272,6 +272,16 @@ test('ModalInteractionController 领域行为测试', async (t) => {
     modal.onConfirm();
     assert.equal(calls.deleteSession.length, 1);
     assert.equal(calls.deleteSession[0], 'sess-1');
+
+    // 4. group-rename propagates editingGroupGatewayId
+    controller.handleContextMenuAction('group-rename', {
+      targetType: 'group',
+      targetId: 'room-gw',
+      targetName: 'Room GW',
+      gatewayId: 'gw-b',
+    });
+    assert.equal(getState().editingGroupRoomId, 'room-gw');
+    assert.equal(getState().editingGroupGatewayId, 'gw-b');
   });
 
   await t.test('6. closeContextMenuIfClickedOutside 点击外部关闭菜单', async () => {

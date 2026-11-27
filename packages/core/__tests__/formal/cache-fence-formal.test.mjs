@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fc from 'fast-check';
-import { CacheService, MemoryCacheStore, mergeRemoteWindow, messageKey } from '../../dist/index.js';
+import {
+  CacheService,
+  MemoryCacheStore,
+  buildChannelBounds,
+  mergeRemoteWindow,
+  messageKey,
+  ROOM_CACHE_GATEWAY_ID,
+} from '../../dist/index.js';
 
 /**
  * 缓存子系统形式化不变量（定理 22~26）
@@ -323,5 +330,181 @@ test('定理 29 [readOlderRows 展示序精确切片]: 随机非单调 orderKey 
       }
     ),
     { numRuns: 1000 }
+  );
+});
+
+test('定理 30 [多网关 5 元组并行零串扰]: 相同 profile/channelId 下两网关随机交替读写删截，彼此零污染且游标前缀绝对不相交', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(rowArb, { minLength: 1, maxLength: 8 }),
+      fc.array(rowArb, { minLength: 1, maxLength: 8 }),
+      fc.array(
+        fc.oneof(
+          fc.record({ kind: fc.constant('append'), rows: fc.array(rowArb, { minLength: 1, maxLength: 4 }) }),
+          fc.record({ kind: fc.constant('remote'), rows: fc.array(rowArb, { minLength: 0, maxLength: 4 }) }),
+          fc.record({ kind: fc.constant('truncate'), target: orderArb }),
+          fc.record({ kind: fc.constant('drop') }),
+        ),
+        { minLength: 1, maxLength: 8 },
+      ),
+      async (initASpecs, initBSpecs, opsOnA) => {
+        const refA = { gatewayId: 'gw-alpha', profile: 'default', channel: 'session', channelId: 'same-id' };
+        const refB = { gatewayId: 'gw-beta', profile: 'default', channel: 'session', channelId: 'same-id' };
+        const boundsA = buildChannelBounds(refA, 'full');
+        const boundsB = buildChannelBounds(refB, 'full');
+        assert.notDeepEqual(boundsA.lower, boundsB.lower);
+
+        const { service } = makeService();
+        const rowsA = dedupe(initASpecs.map((s) => toRow(s, { gatewayId: 'gw-alpha', channelId: 'same-id' })));
+        const rowsB = dedupe(initBSpecs.map((s) => toRow(s, { gatewayId: 'gw-beta', channelId: 'same-id' })));
+        await service.appendRows(refA, rowsA);
+        await service.appendRows(refB, rowsB);
+
+        const snapshotB = (await service.openChannel(refB, 1000)).rows;
+
+        for (const op of opsOnA) {
+          if (op.kind === 'append') {
+            await service.appendRows(
+              refA,
+              dedupe(op.rows.map((s) => toRow(s, { gatewayId: 'gw-alpha', channelId: 'same-id' }))),
+            );
+          } else if (op.kind === 'remote') {
+            const { fenceMax } = await service.openChannel(refA, 1000);
+            await service.applyRemoteWindow(
+              refA,
+              dedupe(op.rows.map((s) => toRow(s, { gatewayId: 'gw-alpha', channelId: 'same-id' }))),
+              fenceMax,
+            );
+          } else if (op.kind === 'truncate') {
+            await service.truncate(refA, op.target, null);
+          } else {
+            await service.dropChannel(refA);
+          }
+        }
+
+        const afterB = (await service.openChannel(refB, 1000)).rows;
+        assert.deepEqual(afterB, snapshotB, '网关 A 的任何读写删截都绝不可改变网关 B 的通道快照');
+      },
+    ),
+    { numRuns: 200 },
+  );
+});
+
+test('定理 31 [多网关索引独立上限守恒]: 多网关混写与分桶读写严格各自保有 <= sessionCap 条，绝不互相挤死', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.integer({ min: 1, max: 10 }),
+      fc.array(fc.integer({ min: 1000, max: 5000 }), { minLength: 1, maxLength: 15 }),
+      fc.array(fc.integer({ min: 1, max: 500 }), { minLength: 1, maxLength: 15 }),
+      async (cap, tsA, tsB) => {
+        const { service } = makeService();
+        const capService = new CacheService(new MemoryCacheStore(), {
+          sessionCap: cap,
+          messageCap: 100,
+          now: () => 1_700_000_000_000,
+        });
+
+        const rowsA = tsA.map((ts, i) => ({
+          id: `a-${i}`,
+          gatewayId: 'gw-a',
+          profile: 'default',
+          kind: 'session',
+          title: `A-${i}`,
+          timestamp: ts,
+          isArchived: false,
+          hidden: false,
+          pinned: false,
+          unread: false,
+        }));
+        const rowsB = tsB.map((ts, i) => ({
+          id: `b-${i}`,
+          gatewayId: 'gw-b',
+          profile: 'default',
+          kind: 'session',
+          title: `B-${i}`,
+          timestamp: ts,
+          isArchived: false,
+          hidden: false,
+          pinned: false,
+          unread: false,
+        }));
+
+        const keptMixed = await capService.writeSessions([...rowsA, ...rowsB]);
+        const keptA = keptMixed.filter((r) => r.gatewayId === 'gw-a');
+        const keptB = keptMixed.filter((r) => r.gatewayId === 'gw-b');
+        assert.equal(keptA.length, Math.min(rowsA.length, cap));
+        assert.equal(keptB.length, Math.min(rowsB.length, cap));
+
+        // 独立分桶 writeSessions(rows, gw) 互不覆盖
+        await service.writeSessions(rowsA.slice(0, cap), 'gw-a');
+        await service.writeSessions(rowsB.slice(0, cap), 'gw-b');
+        assert.equal((await service.readSessions('gw-a')).length, Math.min(rowsA.length, cap));
+        assert.equal((await service.readSessions('gw-b')).length, Math.min(rowsB.length, cap));
+      },
+    ),
+    { numRuns: 200 },
+  );
+});
+
+test('定理 32 [群聊哨兵归属与 authorityEpoch 单调守恒]: 跨机同 room 恒落 __room__ 且低 epoch 写入绝不覆盖高 epoch 快照', async () => {
+  await fc.assert(
+    fc.asyncProperty(
+      fc.stringMatching(/^[a-z0-9]{1,8}$/),
+      fc.array(rowArb, { minLength: 1, maxLength: 8 }),
+      fc.array(rowArb, { minLength: 0, maxLength: 6 }),
+      fc.integer({ min: 2, max: 50 }),
+      fc.integer({ min: 1, max: 49 }),
+      async (roomSuffix, highSpecs, staleSpecs, highEpoch, rawDelta) => {
+        const lowEpoch = Math.max(0, highEpoch - 1 - (rawDelta % highEpoch));
+        const roomId = `room-${roomSuffix}`;
+        const refHigh = {
+          gatewayId: 'gw-primary',
+          profile: '',
+          channel: 'room',
+          channelId: roomId,
+          authorityEpoch: highEpoch,
+        };
+        const refReadOther = {
+          gatewayId: 'gw-promoted',
+          profile: '',
+          channel: 'room',
+          channelId: roomId,
+        };
+        const refStale = {
+          gatewayId: 'gw-old-primary',
+          profile: '',
+          channel: 'room',
+          channelId: roomId,
+          authorityEpoch: lowEpoch,
+        };
+
+        assert.equal(buildChannelBounds(refHigh, 'full').lower[0], ROOM_CACHE_GATEWAY_ID);
+        assert.equal(buildChannelBounds(refReadOther, 'full').lower[0], ROOM_CACHE_GATEWAY_ID);
+
+        const { service } = makeService();
+        const highRows = dedupe(
+          highSpecs.map((s) =>
+            toRow(s, { gatewayId: ROOM_CACHE_GATEWAY_ID, profile: '', channel: 'room', channelId: roomId }),
+          ),
+        );
+        await service.appendRows(refHigh, highRows);
+        const beforeStale = await service.openChannel(refReadOther, 1000);
+        assert.equal(beforeStale.rows.length, highRows.length);
+
+        const staleRows = dedupe(
+          staleSpecs.map((s) =>
+            toRow(s, { gatewayId: ROOM_CACHE_GATEWAY_ID, profile: '', channel: 'room', channelId: roomId }),
+          ),
+        );
+        await service.applyRemoteWindow(refStale, staleRows, beforeStale.fenceMax);
+        const afterStale = await service.openChannel(refReadOther, 1000);
+        assert.deepEqual(
+          afterStale.rows.map((r) => [r.orderKey, r.text]),
+          beforeStale.rows.map((r) => [r.orderKey, r.text]),
+          '低 authorityEpoch 的陈旧节点绝不可覆盖或清空高代际群聊缓存',
+        );
+      },
+    ),
+    { numRuns: 200 },
   );
 });

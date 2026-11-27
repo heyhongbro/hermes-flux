@@ -22,7 +22,7 @@
  *   3. 加载态同步收敛：isLoadingOlder 必须在同步路径置 false 并触发 render，不可仅靠 requestAnimationFrame。
  */
 
-import type { AppState } from '../state/appState.js';
+import { resolveScopedEntityRuntimeKey, type AppState } from '../state/appState.js';
 import {
   type HermesGatewayClient,
   type SessionMessagesOutcome,
@@ -79,6 +79,7 @@ export const MESSAGE_CACHE_LIMIT = 500;
 export interface MessageLoadingDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
   readonly render: () => void;
 
   readonly sessionMessagesCache: Map<string, MessageViewModel[]>;
@@ -121,7 +122,9 @@ export interface MessageLoadingDeps {
   // 流式与代际状态
   readonly getActiveStreamingStoredSessionId: () => string | null;
   readonly getLiveStreamRegistry?: () => LiveStreamRegistry;
+  readonly getLiveStreamRegistryForGateway?: (gatewayId?: string) => LiveStreamRegistry | undefined;
   readonly defaultSessionHandleRegistry: SessionHandleRegistry;
+  readonly getSessionHandleRegistryForGateway?: (gatewayId?: string) => SessionHandleRegistry;
   readonly activeRunningSessionIds: Set<string>;
   readonly activityTransitionTracker: { clear: (type: 'session' | 'group' | 'bot', id: string) => void };
   readonly getGeneration?: () => number;
@@ -153,13 +156,15 @@ export interface MessageLoadingDeps {
     storedSessionId: string,
     liveSessionId: string,
     resumeResult?: Record<string, unknown>,
+    gatewayId?: string,
   ) => void;
-  readonly onReconnectStreamFinished?: (storedSessionId: string) => void;
+  readonly onReconnectStreamFinished?: (storedSessionId: string, gatewayId?: string) => void;
   readonly onActiveTurnDiscovered?: (input: {
     storedSessionId: string;
     liveSessionId: string;
     resumeResult: Record<string, unknown>;
     botName: string | null;
+    gatewayId?: string;
   }) => void;
   readonly onForceSyncMessageList?: (force?: boolean) => void;
 
@@ -223,13 +228,15 @@ export class MessageLoadingService {
       storedSessionId: string,
       liveSessionId: string,
       resumeResult?: Record<string, unknown>,
+      gatewayId?: string,
     ) => void;
-    onReconnectStreamFinished?: (storedSessionId: string) => void;
+    onReconnectStreamFinished?: (storedSessionId: string, gatewayId?: string) => void;
     onActiveTurnDiscovered?: (input: {
       storedSessionId: string;
       liveSessionId: string;
       resumeResult: Record<string, unknown>;
       botName: string | null;
+      gatewayId?: string;
     }) => void;
     onForceSyncMessageList?: (force?: boolean) => void;
   } = {};
@@ -257,16 +264,63 @@ export class MessageLoadingService {
     this.reconnectHooks = hooks;
   }
 
-  private isSessionStreaming(sessionId: string): boolean {
+  private resolveTargetClient(gatewayId?: string): HermesGatewayClient | null {
+    return this.deps.getClientForGateway
+      ? this.deps.getClientForGateway(gatewayId)
+      : this.deps.getGatewayClient();
+  }
+
+  private scopedKey(sessionId: string, gatewayId?: string): string {
+    return resolveScopedEntityRuntimeKey(sessionId, gatewayId, this.deps.getState().gatewayCount);
+  }
+
+  private resolveStreamRegistry(gatewayId?: string): LiveStreamRegistry | undefined {
+    return this.deps.getLiveStreamRegistryForGateway?.(gatewayId) ?? this.deps.getLiveStreamRegistry?.();
+  }
+
+  private resolveHandleRegistry(gatewayId?: string): SessionHandleRegistry {
+    return this.deps.getSessionHandleRegistryForGateway?.(gatewayId) ?? this.deps.defaultSessionHandleRegistry;
+  }
+
+  private findMatchingSession(
+    state: AppState,
+    sessionId: string,
+    botName?: string,
+    gatewayId?: string,
+  ): AppState['sessions'][number] | undefined {
+    const matchIn = (list: AppState['sessions'] | undefined) =>
+      list?.find(
+        (s) =>
+          s.id === sessionId &&
+          (!botName || s.botName === botName) &&
+          (!gatewayId || !s.gatewayId || s.gatewayId === gatewayId),
+      ) ||
+      list?.find((s) => s.id === sessionId && (!gatewayId || !s.gatewayId || s.gatewayId === gatewayId));
+    return matchIn(state.sessions) || matchIn(state.archivedSessions);
+  }
+
+  private isSessionStreaming(sessionId: string, gatewayId?: string): boolean {
+    const state = this.deps.getState();
+    const sameFocusGw = !gatewayId || (state.activeFocus?.gatewayId || state.activeGatewayId) === gatewayId;
     return Boolean(
-      this.deps.getLiveStreamRegistry?.().hasSession(sessionId) ||
-      this.deps.getActiveStreamingStoredSessionId() === sessionId,
+      this.resolveStreamRegistry(gatewayId)?.hasSession(sessionId) ||
+      (sameFocusGw && this.deps.getActiveStreamingStoredSessionId() === sessionId),
     );
   }
 
-  private resolveForeverBotName(sessionId: string): string | null {
-    for (const [bName, foreverId] of this.deps.botForeverChatCache.entries()) {
-      if (foreverId === sessionId) return bName;
+  private resolveForeverBotName(sessionId: string, gatewayId?: string): string | null {
+    const gwPrefix = gatewayId ? `${gatewayId.trim()}:` : '';
+    if (gwPrefix) {
+      for (const [bKey, foreverId] of this.deps.botForeverChatCache.entries()) {
+        if (foreverId === sessionId && bKey.startsWith(gwPrefix)) {
+          return bKey.slice(gwPrefix.length);
+        }
+      }
+    }
+    for (const [bKey, foreverId] of this.deps.botForeverChatCache.entries()) {
+      if (foreverId !== sessionId) continue;
+      const sepIdx = bKey.indexOf(':');
+      return sepIdx >= 0 ? bKey.slice(sepIdx + 1) : bKey;
     }
     return null;
   }
@@ -284,35 +338,43 @@ export class MessageLoadingService {
   }
 
   /** 标记会话以服务端权威为准（消费 server-priority） */
-  markSessionServerPriority(sessionId: string): void {
-    this.sessionHistoryTrust.set(sessionId, 'server-priority');
+  markSessionServerPriority(sessionId: string, gatewayId?: string): void {
+    this.sessionHistoryTrust.set(this.scopedKey(sessionId, gatewayId), 'server-priority');
   }
 
   /** 清理会话游标与高估回退标记 */
-  forgetOlderCursorState(sessionId: string): void {
-    this.sessionServerOffset.delete(sessionId);
-    this.sessionAuthoritativeOffset.delete(sessionId);
-    const prefix = `${sessionId}:`;
-    for (const key of [...this.sessionOvershootRetry]) {
-      if (key.startsWith(prefix)) this.sessionOvershootRetry.delete(key);
+  forgetOlderCursorState(sessionId: string, gatewayId?: string): void {
+    const scoped = this.scopedKey(sessionId, gatewayId);
+    const keys = scoped !== sessionId ? [scoped, sessionId] : [scoped];
+    for (const k of keys) {
+      this.sessionServerOffset.delete(k);
+      this.sessionAuthoritativeOffset.delete(k);
+      this.sessionHistoryTrust.delete(k);
+      this.untrustedOrderCacheSessions.delete(k);
+      const prefix = `${k}:`;
+      for (const retryKey of [...this.sessionOvershootRetry]) {
+        if (retryKey.startsWith(prefix)) this.sessionOvershootRetry.delete(retryKey);
+      }
     }
   }
 
   /** 同步不可信缓存排序标记 */
-  syncUntrustedCacheOrderFlag(sessionId: string, rows: readonly CachedMessageRow[]): void {
+  syncUntrustedCacheOrderFlag(sessionId: string, rows: readonly CachedMessageRow[], gatewayId?: string): void {
+    const key = this.scopedKey(sessionId, gatewayId);
     if (hasLegacyUnorderedCacheRows(rows)) {
-      this.untrustedOrderCacheSessions.add(sessionId);
+      this.untrustedOrderCacheSessions.add(key);
     } else {
-      this.untrustedOrderCacheSessions.delete(sessionId);
+      this.untrustedOrderCacheSessions.delete(key);
     }
   }
 
   /** 判定当前会话是否仍存在尚未耗尽的父会话血缘段 */
-  hasRemainingParentLineage(sessionId: string): boolean {
+  hasRemainingParentLineage(sessionId: string, gatewayId?: string): boolean {
     if (!sessionId) return false;
     const state = this.deps.getState();
+    const key = this.scopedKey(sessionId, gatewayId);
     const parents = resolveLineageChain(sessionId, state.sessions).slice(1);
-    return parents.some((id) => this.sessionServerOffset.get(`${sessionId}:${id}:exhausted`) !== 1);
+    return parents.some((id) => this.sessionServerOffset.get(`${key}:${id}:exhausted`) !== 1);
   }
 
   /** 解析网关原始消息行 */
@@ -328,9 +390,12 @@ export class MessageLoadingService {
   }
 
   /** 会话历史加载入口 */
-  async loadMessages(sessionId: string, targetBotName?: string): Promise<void> {
-    const cached = sessionId ? this.deps.sessionMessagesCache.get(sessionId) : undefined;
+  async loadMessages(sessionId: string, targetBotName?: string, gatewayId?: string): Promise<void> {
     const state = this.deps.getState();
+    const targetGw = gatewayId ?? (state.activeFocus?.gatewayId || state.activeGatewayId);
+    const cacheKey = sessionId ? resolveScopedEntityRuntimeKey(sessionId, targetGw, state.gatewayCount) : '';
+    const cached = cacheKey ? this.deps.sessionMessagesCache.get(cacheKey) : undefined;
+    const gatewayClient = this.resolveTargetClient(targetGw);
     /**
      * 【缓存批次不是终态 (Rules)】命中内存缓存只代表「可以立刻上屏」，不代表「权威最新页已到」。
      *   旧实现命中缓存就直接 `ready`，进入计划据此把缓存批次当终态收敛：
@@ -338,10 +403,10 @@ export class MessageLoadingService {
      *   因此只有「无网关的纯离线读缓存」才允许立刻 ready；有网关时必须由
      *   `loadMessagesInner` 结束（REST 已返回或已判定失败）后的 finally 收敛。
      */
-    state.messagesPhase = cached && cached.length > 0 && !this.deps.getGatewayClient() ? 'ready' : 'loading';
+    state.messagesPhase = cached && cached.length > 0 && !gatewayClient ? 'ready' : 'loading';
     const expectedGeneration = this.activeLoadMessagesGeneration + 1;
     try {
-      await this.loadMessagesInner(sessionId, targetBotName);
+      await this.loadMessagesInner(sessionId, targetBotName, undefined, targetGw);
     } finally {
       if (!sessionId || expectedGeneration === this.activeLoadMessagesGeneration) {
         state.messagesPhase = 'ready';
@@ -394,14 +459,15 @@ export class MessageLoadingService {
     const state = this.deps.getState();
     const sessionId = state.activeSessionId;
     if (!sessionId || this.deps.isGroupConversationActive(sessionId)) return;
+    const targetGw = state.activeFocus?.gatewayId || state.activeGatewayId;
     const resolvedBotName = state.activeFocus.type === 'bot'
       ? state.activeFocus.botName
-      : state.sessions.find((s) => s.id === sessionId)?.botName || state.profileName;
+      : this.findMatchingSession(state, sessionId, undefined, targetGw)?.botName || state.profileName;
     await this.loadMessagesInner(sessionId, resolvedBotName, {
       silent: true,
       forceRefreshAfterReconnect: opts?.forceRefreshAfterReconnect,
       checkLiveTurn: opts?.checkLiveTurn,
-    });
+    }, targetGw);
   }
 
   /** 会话历史加载内核 */
@@ -409,9 +475,11 @@ export class MessageLoadingService {
     sessionId: string,
     targetBotName?: string,
     opts?: { silent?: boolean; forceRefreshAfterReconnect?: boolean; checkLiveTurn?: boolean },
+    gatewayId?: string,
   ): Promise<void> {
     const state = this.deps.getState();
-    const gatewayClient = this.deps.getGatewayClient();
+    const targetGw = gatewayId ?? (state.activeFocus?.gatewayId || state.activeGatewayId);
+    const gatewayClient = this.resolveTargetClient(targetGw);
     const cacheService = this.deps.cacheService;
     const silent = Boolean(opts?.silent);
     const forceRefreshAfterReconnect = Boolean(opts?.forceRefreshAfterReconnect);
@@ -429,26 +497,30 @@ export class MessageLoadingService {
     const currentGen = silent ? this.activeLoadMessagesGeneration : this.incrementGeneration();
     const loadStartedAt = performance.now();
     state.activeSessionId = sessionId;
+    if (!silent && targetGw) {
+      state.activeGatewayId = targetGw;
+    }
+    const cacheKey = resolveScopedEntityRuntimeKey(sessionId, targetGw, state.gatewayCount);
 
     // 精准解析当前会话归属的 Profile
     const resolvedBotName = targetBotName
-      || state.sessions.find((s) => s.id === sessionId)?.botName
+      || this.findMatchingSession(state, sessionId, undefined, targetGw)?.botName
       || (state.activeFocus.type === 'bot' ? state.activeFocus.botName : state.profileName)
       || 'default';
 
     this.deps.onSessionActivated?.(sessionId, resolvedBotName);
 
-    const cached = silent ? undefined : this.deps.sessionMessagesCache.get(sessionId);
+    const cached = silent ? undefined : this.deps.sessionMessagesCache.get(cacheKey);
     if (!silent) {
       // 1. Instant Cache Hit (0ms)
       if (cached && cached.length > 0) {
         state.messages = [...cached];
-        this.syncActiveSessionPreviewToRail(sessionId, state.messages, resolvedBotName);
+        this.syncActiveSessionPreviewToRail(sessionId, state.messages, resolvedBotName, targetGw);
         state.hasOlderMessages = computeHasOlderMessages(
           state.messages,
-          this.sessionServerOffset.get(sessionId),
+          this.sessionServerOffset.get(cacheKey),
           INITIAL_WINDOW_PAGE_SIZE,
-          this.hasRemainingParentLineage(sessionId),
+          this.hasRemainingParentLineage(sessionId, targetGw),
         );
         this.deps.render();
         this.deps.logSession?.debug('session rendered from cache', {
@@ -467,13 +539,15 @@ export class MessageLoadingService {
     //    - 正常切换保留实时流缓冲区（若因重进清空 activeLiveSessionId 则立即恢复）；
     //    - 断连重连/重检后先调 session.resume 校验网关端是否仍在生成，已收口则清理本地卡死流态并重拉权威历史。
     let streamFinishedOnReconnect = false;
-    if (this.isSessionStreaming(sessionId)) {
+    const streamRegistry = this.resolveStreamRegistry(targetGw);
+    const handleRegistry = this.resolveHandleRegistry(targetGw);
+    if (this.isSessionStreaming(sessionId, targetGw)) {
       const shouldProbeLive = forceRefreshAfterReconnect || Boolean(opts?.checkLiveTurn);
       if (!shouldProbeLive) {
-        const existingStream = this.deps.getLiveStreamRegistry?.().getBySession(sessionId);
+        const existingStream = streamRegistry?.getBySession(sessionId);
         if (!state.activeLiveSessionId) {
           state.activeLiveSessionId =
-            existingStream?.liveSessionId || this.deps.defaultSessionHandleRegistry.toLiveId(sessionId) || sessionId;
+            existingStream?.liveSessionId || handleRegistry.toLiveId(sessionId) || sessionId;
         }
         if (existingStream) {
           state.isStreaming = true;
@@ -487,7 +561,7 @@ export class MessageLoadingService {
                 timestamp: this.deps.formatTimestamp(existingStream.startedAt),
               },
             ];
-            this.deps.sessionMessagesCache.set(sessionId, state.messages);
+            this.deps.sessionMessagesCache.set(cacheKey, state.messages);
             this.deps.render();
           }
         }
@@ -510,7 +584,7 @@ export class MessageLoadingService {
         ) as Record<string, unknown>;
         const checkHandles = readSessionHandles(checkRes, sessionId);
         if (checkHandles) {
-          this.deps.defaultSessionHandleRegistry.register(checkHandles);
+          handleRegistry.register(checkHandles);
           state.activeLiveSessionId = checkHandles.liveId;
           this.deps.onLiveSessionReady?.(checkHandles.storedId, checkHandles.liveId, rawCheckInfo, resolvedBotName);
         } else {
@@ -522,10 +596,11 @@ export class MessageLoadingService {
             sessionId,
             state.activeLiveSessionId,
             checkRes,
+            targetGw,
           );
           return;
         }
-        (this.reconnectHooks.onReconnectStreamFinished ?? this.deps.onReconnectStreamFinished)?.(sessionId);
+        (this.reconnectHooks.onReconnectStreamFinished ?? this.deps.onReconnectStreamFinished)?.(sessionId, targetGw);
         streamFinishedOnReconnect = true;
       } catch (err) {
         this.deps.logSession?.debug('reconnect streaming reconciliation failed, preserving live buffer', { err });
@@ -534,7 +609,12 @@ export class MessageLoadingService {
     }
 
     // 2.5 持久化缓存命中（内存未命中时）：先把历史读出来，再拉最新
-    const cacheRef: CacheChannelRef = { profile: resolvedBotName, channel: 'session', channelId: sessionId };
+    const cacheRef: CacheChannelRef = {
+      ...(targetGw ? { gatewayId: targetGw } : {}),
+      profile: resolvedBotName,
+      channel: 'session',
+      channelId: sessionId,
+    };
     let cacheFenceMax = 0;
     if (!silent && (!cached || cached.length === 0)) {
       try {
@@ -542,18 +622,18 @@ export class MessageLoadingService {
         cacheFenceMax = opened.fenceMax;
         const stillCurrent = currentGen === this.activeLoadMessagesGeneration && state.activeSessionId === sessionId;
         if (opened.rows.length > 0 && stillCurrent && state.messages.length === 0) {
-          this.syncUntrustedCacheOrderFlag(sessionId, opened.rows);
+          this.syncUntrustedCacheOrderFlag(sessionId, opened.rows, targetGw);
           state.messages = sortByDisplayAsc(opened.rows).map(toMessageViewModel);
-          this.deps.sessionMessagesCache.set(sessionId, state.messages);
-          this.sessionServerOffset.set(sessionId, Math.max(
-            this.sessionServerOffset.get(sessionId) || 0,
+          this.deps.sessionMessagesCache.set(cacheKey, state.messages);
+          this.sessionServerOffset.set(cacheKey, Math.max(
+            this.sessionServerOffset.get(cacheKey) || 0,
             countLocalCoveredRows(state.messages, sessionId),
           ));
           state.hasOlderMessages = computeHasOlderMessages(
             state.messages,
             opened.rows.length,
             INITIAL_WINDOW_PAGE_SIZE,
-            this.hasRemainingParentLineage(sessionId),
+            this.hasRemainingParentLineage(sessionId, targetGw),
           );
           this.deps.render();
           this.deps.logSession?.info('session rendered from persistent cache', {
@@ -591,15 +671,15 @@ export class MessageLoadingService {
 
       if (outcome.status === 'success' && outcome.messages.length > 0) {
         const parsed = this.parseRawMessages(outcome.messages);
-        const existing = this.deps.sessionMessagesCache.get(sessionId);
+        const existing = this.deps.sessionMessagesCache.get(cacheKey);
         const sessionHistoryTrust = this.sessionHistoryTrust;
-        const serverPriority = takeServerPriority(sessionHistoryTrust, sessionId);
-        const replaceUntrustedCache = this.untrustedOrderCacheSessions.delete(sessionId);
+        const serverPriority = takeServerPriority(sessionHistoryTrust, cacheKey);
+        const replaceUntrustedCache = this.untrustedOrderCacheSessions.delete(cacheKey);
         if (replaceUntrustedCache) {
           await cacheService.dropChannel(cacheRef);
           if (currentGen !== this.activeLoadMessagesGeneration || state.activeSessionId !== sessionId) return;
           cacheFenceMax = 0;
-          this.sessionServerOffset.delete(sessionId);
+          this.sessionServerOffset.delete(cacheKey);
         }
         const merged = planSessionLoadMerge(
           parsed,
@@ -616,29 +696,29 @@ export class MessageLoadingService {
           merged.length === parsed.length &&
           typeof parsed[0]?.rowId === 'number' &&
           parsed[0].rowId! > existingLastDurableRowId + 1;
-        this.deps.sessionMessagesCache.set(sessionId, merged);
+        this.deps.sessionMessagesCache.set(cacheKey, merged);
         this.deps.persistMessagesToCache(cacheRef, merged, cacheFenceMax);
-        this.syncActiveSessionPreviewToRail(sessionId, merged, resolvedBotName);
+        this.syncActiveSessionPreviewToRail(sessionId, merged, resolvedBotName, targetGw);
         const serverKnownCount = outcome.pagination?.returned ?? outcome.messages.length;
         this.sessionAuthoritativeOffset.set(
-          sessionId,
+          cacheKey,
           nonContiguousJump
             ? serverKnownCount
-            : Math.max(this.sessionAuthoritativeOffset.get(sessionId) || 0, serverKnownCount),
+            : Math.max(this.sessionAuthoritativeOffset.get(cacheKey) || 0, serverKnownCount),
         );
-        if (nonContiguousJump) this.sessionServerOffset.delete(sessionId);
+        if (nonContiguousJump) this.sessionServerOffset.delete(cacheKey);
         const localCoveredRows = countLocalCoveredRows(merged, sessionId);
         const currentKnown = Math.max(
-          this.sessionServerOffset.get(sessionId) || 0,
+          this.sessionServerOffset.get(cacheKey) || 0,
           serverKnownCount,
           localCoveredRows,
         );
-        this.sessionServerOffset.set(sessionId, currentKnown);
+        this.sessionServerOffset.set(cacheKey, currentKnown);
         const messagesChanged = !silent || !areMessageListsEquivalent(state.messages, merged);
         state.messages = merged;
         state.hasOlderMessages = merged.length > serverKnownCount
           ? true
-          : computeHasOlderMessages(merged, serverKnownCount, INITIAL_WINDOW_PAGE_SIZE, this.hasRemainingParentLineage(sessionId));
+          : computeHasOlderMessages(merged, serverKnownCount, INITIAL_WINDOW_PAGE_SIZE, this.hasRemainingParentLineage(sessionId, targetGw));
         if (!silent || messagesChanged) {
           state.dockNotice = '';
         }
@@ -675,18 +755,13 @@ export class MessageLoadingService {
         const rawInfo = (
           res && typeof res === 'object' && res.info && typeof res.info === 'object' ? res.info : res
         ) as Record<string, unknown>;
-        const archivedBeforeResume = state.archivedSessions ?? [];
-        const activeBeforeResume =
-          state.sessions.find((s) => s.id === sessionId && (!resolvedBotName || s.botName === resolvedBotName)) ||
-          state.sessions.find((s) => s.id === sessionId) ||
-          archivedBeforeResume.find((s) => s.id === sessionId && (!resolvedBotName || s.botName === resolvedBotName)) ||
-          archivedBeforeResume.find((s) => s.id === sessionId);
-        const prevRecordedCwd = state.sessionCwds?.[sessionId] || '';
+        const activeBeforeResume = this.findMatchingSession(state, sessionId, resolvedBotName, targetGw);
+        const prevRecordedCwd = state.sessionCwds?.[cacheKey] || '';
         const prevSessionCwd = activeBeforeResume?.cwd || '';
 
         const handles = readSessionHandles(res, sessionId);
         if (handles) {
-          this.deps.defaultSessionHandleRegistry.register(handles);
+          handleRegistry.register(handles);
           state.activeLiveSessionId = handles.liveId;
           this.deps.onLiveSessionReady?.(handles.storedId, handles.liveId, rawInfo, resolvedBotName);
         } else {
@@ -701,15 +776,11 @@ export class MessageLoadingService {
         let changed = Boolean(
           resumedCwd && (prevRecordedCwd !== resumedCwd || prevSessionCwd !== resumedCwd),
         );
-        if (resumedCwd && state.sessionCwds?.[sessionId] !== resumedCwd) {
-          state.sessionCwds = { ...(state.sessionCwds ?? {}), [sessionId]: resumedCwd };
+        if (resumedCwd && state.sessionCwds?.[cacheKey] !== resumedCwd) {
+          state.sessionCwds = { ...(state.sessionCwds ?? {}), [cacheKey]: resumedCwd };
           changed = true;
         }
-        const archivedSessions = state.archivedSessions ?? [];
-        const currentActive = state.sessions.find((s) => s.id === sessionId && (!resolvedBotName || s.botName === resolvedBotName))
-          || state.sessions.find((s) => s.id === sessionId)
-          || archivedSessions.find((s) => s.id === sessionId && (!resolvedBotName || s.botName === resolvedBotName))
-          || archivedSessions.find((s) => s.id === sessionId);
+        const currentActive = this.findMatchingSession(state, sessionId, resolvedBotName, targetGw);
         if (currentActive) {
           if (resumedCwd && currentActive.cwd !== resumedCwd) {
             currentActive.cwd = resumedCwd;
@@ -732,28 +803,28 @@ export class MessageLoadingService {
           const list = Array.isArray(res?.messages) ? res.messages : Array.isArray(res?.history) ? res.history : [];
           if (list.length > 0) {
             const parsed = this.parseRawMessages(list);
-            const existing = this.deps.sessionMessagesCache.get(sessionId);
+            const existing = this.deps.sessionMessagesCache.get(cacheKey);
             const sessionHistoryTrust = this.sessionHistoryTrust;
-            const wsServerPriority = takeServerPriority(sessionHistoryTrust, sessionId);
-            const replaceUntrustedCache = this.untrustedOrderCacheSessions.delete(sessionId);
+            const wsServerPriority = takeServerPriority(sessionHistoryTrust, cacheKey);
+            const replaceUntrustedCache = this.untrustedOrderCacheSessions.delete(cacheKey);
             if (replaceUntrustedCache) {
               await cacheService.dropChannel(cacheRef);
               if (currentGen !== this.activeLoadMessagesGeneration || state.activeSessionId !== sessionId) return;
               cacheFenceMax = 0;
-              this.sessionServerOffset.delete(sessionId);
+              this.sessionServerOffset.delete(cacheKey);
             }
             const merged = planSessionLoadMerge(parsed, existing, wsServerPriority || replaceUntrustedCache);
-            this.deps.sessionMessagesCache.set(sessionId, merged);
+            this.deps.sessionMessagesCache.set(cacheKey, merged);
             this.deps.persistMessagesToCache(cacheRef, merged, cacheFenceMax);
-            this.syncActiveSessionPreviewToRail(sessionId, merged, resolvedBotName);
+            this.syncActiveSessionPreviewToRail(sessionId, merged, resolvedBotName, targetGw);
             state.messages = merged;
             this.deps.onSessionMessagesLoaded?.(sessionId);
             this.sessionAuthoritativeOffset.set(
-              sessionId,
-              Math.max(this.sessionAuthoritativeOffset.get(sessionId) || 0, parsed.length),
+              cacheKey,
+              Math.max(this.sessionAuthoritativeOffset.get(cacheKey) || 0, parsed.length),
             );
-            this.sessionServerOffset.set(sessionId, Math.max(
-              this.sessionServerOffset.get(sessionId) || 0,
+            this.sessionServerOffset.set(cacheKey, Math.max(
+              this.sessionServerOffset.get(cacheKey) || 0,
               merged.length,
               countLocalCoveredRows(merged, sessionId),
             ));
@@ -761,13 +832,13 @@ export class MessageLoadingService {
               merged,
               merged.length,
               INITIAL_WINDOW_PAGE_SIZE,
-              this.hasRemainingParentLineage(sessionId),
+              this.hasRemainingParentLineage(sessionId, targetGw),
             );
             this.deps.render();
           } else {
-            const existing = this.deps.sessionMessagesCache.get(sessionId);
+            const existing = this.deps.sessionMessagesCache.get(cacheKey);
             const sessionHistoryTrust = this.sessionHistoryTrust;
-            takeServerPriority(sessionHistoryTrust, sessionId);
+            takeServerPriority(sessionHistoryTrust, cacheKey);
             if (existing && existing.length > 0) {
               state.messages = [...existing];
               this.deps.render();
@@ -779,24 +850,25 @@ export class MessageLoadingService {
           const resumeState = extractResumeInflightState(res);
           const reconciled = reconcileAuthoritativeActivity({
             runningIds: this.deps.activeRunningSessionIds,
-            entityId: sessionId,
+            entityId: cacheKey,
             isGatewayRunning: Boolean(res.running),
             hasInflightStreaming: resumeState.isRunning,
-            currentStreamingId: this.isSessionStreaming(sessionId) ? sessionId : this.deps.getActiveStreamingStoredSessionId(),
+            currentStreamingId: this.isSessionStreaming(sessionId, targetGw) ? cacheKey : this.deps.getActiveStreamingStoredSessionId(),
           });
           if (reconciled) {
-            this.deps.activityTransitionTracker.clear('session', sessionId);
+            this.deps.activityTransitionTracker.clear('session', cacheKey);
             this.deps.logSession?.info('reconciled orphan running state via authoritative gateway status', { sessionId });
             this.deps.render();
           }
           if (resumeState.isRunning) {
-            this.deps.activeRunningSessionIds.add(sessionId);
+            this.deps.activeRunningSessionIds.add(cacheKey);
             const activeHook = this.reconnectHooks.onActiveTurnDiscovered ?? this.deps.onActiveTurnDiscovered;
             activeHook?.({
               storedSessionId: sessionId,
               liveSessionId: state.activeLiveSessionId || sessionId,
               resumeResult: res,
-              botName: this.resolveForeverBotName(sessionId),
+              botName: this.resolveForeverBotName(sessionId, targetGw),
+              gatewayId: targetGw,
             });
           }
         }
@@ -825,9 +897,11 @@ export class MessageLoadingService {
   /** 向上翻页加载更早的历史记录 */
   async loadOlderMessages(options?: { preserveViewportWindow?: boolean }): Promise<void> {
     const state = this.deps.getState();
-    const gatewayClient = this.deps.getGatewayClient();
+    const targetGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const gatewayClient = this.resolveTargetClient(targetGw);
     const sessionId = state.activeSessionId;
     if (!sessionId || !gatewayClient) return;
+    const cacheKey = resolveScopedEntityRuntimeKey(sessionId, targetGw, state.gatewayCount);
 
     if (state.isLoadingOlder) {
       if (performance.now() - this.olderLoadingStartedAt > 20000) {
@@ -844,7 +918,7 @@ export class MessageLoadingService {
       return;
     }
 
-    const resolvedProfile = state.sessions.find((s) => s.id === sessionId)?.botName
+    const resolvedProfile = this.findMatchingSession(state, sessionId, undefined, targetGw)?.botName
       || (state.activeFocus.type === 'bot' ? state.activeFocus.botName : state.profileName)
       || 'default';
 
@@ -881,7 +955,12 @@ export class MessageLoadingService {
       const oldestRowId = sessionEarliestRowId();
       if (typeof oldestRowId === 'number' && oldestRowId > 1) {
         try {
-          const cacheRef: CacheChannelRef = { profile: resolvedProfile, channel: 'session', channelId: sessionId };
+          const cacheRef: CacheChannelRef = {
+            ...(targetGw ? { gatewayId: targetGw } : {}),
+            profile: resolvedProfile,
+            channel: 'session',
+            channelId: sessionId,
+          };
           const localOlderRows = await this.deps.cacheService.readOlderRows(cacheRef, oldestRowId, 100);
           if (localOlderRows.length > 0) {
             const cachedBatch = sortByDisplayAsc(localOlderRows).map(toMessageViewModel);
@@ -897,7 +976,7 @@ export class MessageLoadingService {
               }
               this.deps.setMessageWindowStart(0);
               this.deps.setMessageWindowEnd(state.messages.length);
-              this.deps.sessionMessagesCache.set(sessionId, state.messages);
+              this.deps.sessionMessagesCache.set(cacheKey, state.messages);
               state.hasOlderMessages = true;
               batchAppended = true;
             }
@@ -912,14 +991,14 @@ export class MessageLoadingService {
       for (const targetId of lineageChain) {
         if (batchAppended || attempts >= MAX_PAGE_ATTEMPTS) break;
 
-        const cursorKey = `${sessionId}:${targetId}`;
+        const cursorKey = `${cacheKey}:${targetId}`;
         if (this.sessionServerOffset.get(`${cursorKey}:exhausted`) === 1) continue;
 
         while (attempts < MAX_PAGE_ATTEMPTS) {
           attempts += 1;
 
           const storedOffset = this.sessionParentOffsetMap.get(cursorKey)
-            ?? (targetId === sessionId ? (this.sessionServerOffset.get(sessionId) ?? 0) : 0);
+            ?? (targetId === sessionId ? (this.sessionServerOffset.get(cacheKey) ?? 0) : 0);
 
           const earliestLocalRowId = targetId === sessionId ? sessionEarliestRowId() : null;
           const floorSuppressed = this.sessionOvershootRetry.has(cursorKey);
@@ -962,12 +1041,12 @@ export class MessageLoadingService {
               isTargetSelf: targetId === sessionId,
               floorSuppressed,
               queryOffset,
-              safeFallbackOffset: this.sessionAuthoritativeOffset.get(sessionId) ?? 0,
+              safeFallbackOffset: this.sessionAuthoritativeOffset.get(cacheKey) ?? 0,
             });
             if (zeroPlan.action === 'retry-fallback') {
               this.sessionOvershootRetry.add(cursorKey);
               this.sessionParentOffsetMap.delete(cursorKey);
-              this.sessionServerOffset.set(sessionId, zeroPlan.fallbackOffset);
+              this.sessionServerOffset.set(cacheKey, zeroPlan.fallbackOffset);
               continue;
             }
             this.sessionServerOffset.set(`${cursorKey}:exhausted`, 1);
@@ -1014,10 +1093,10 @@ export class MessageLoadingService {
           });
           this.sessionParentOffsetMap.set(cursorKey, cursorPlan.nextOffset);
           if (targetId === sessionId) {
-            this.sessionServerOffset.set(sessionId, cursorPlan.nextOffset);
+            this.sessionServerOffset.set(cacheKey, cursorPlan.nextOffset);
             this.sessionAuthoritativeOffset.set(
-              sessionId,
-              Math.max(this.sessionAuthoritativeOffset.get(sessionId) || 0, cursorPlan.nextOffset),
+              cacheKey,
+              Math.max(this.sessionAuthoritativeOffset.get(cacheKey) || 0, cursorPlan.nextOffset),
             );
           }
 
@@ -1037,12 +1116,12 @@ export class MessageLoadingService {
           }
           this.deps.setMessageWindowStart(0);
           this.deps.setMessageWindowEnd(state.messages.length);
-          this.deps.sessionMessagesCache.set(sessionId, state.messages);
+          this.deps.sessionMessagesCache.set(cacheKey, state.messages);
 
           if (targetId === sessionId) {
             const ownMessages = state.messages.filter((m) => !m.sessionId || m.sessionId === sessionId);
             this.deps.persistMessagesToCache(
-              { profile: resolvedProfile, channel: 'session', channelId: sessionId },
+              { ...(targetGw ? { gatewayId: targetGw } : {}), profile: resolvedProfile, channel: 'session', channelId: sessionId },
               ownMessages.slice(-MESSAGE_CACHE_LIMIT),
               0,
             );
@@ -1052,7 +1131,7 @@ export class MessageLoadingService {
             this.sessionServerOffset.set(`${cursorKey}:exhausted`, 1);
           }
           const remainingUnexhausted = lineageChain.some(
-            (id) => this.sessionServerOffset.get(`${sessionId}:${id}:exhausted`) !== 1,
+            (id) => this.sessionServerOffset.get(`${cacheKey}:${id}:exhausted`) !== 1,
           );
           state.hasOlderMessages = returned >= OLDER_BATCH_PAGE_SIZE || remainingUnexhausted;
           batchAppended = true;
@@ -1094,7 +1173,7 @@ export class MessageLoadingService {
     }
 
     const anyLineageRemaining = lineageChain.some(
-      (id) => this.sessionServerOffset.get(`${sessionId}:${id}:exhausted`) !== 1,
+      (id) => this.sessionServerOffset.get(`${cacheKey}:${id}:exhausted`) !== 1,
     );
     if (!shouldKeepOlderMessagesAfterLoop({ fetchFailed, anyLineageRemaining })) {
       state.hasOlderMessages = false;
@@ -1105,9 +1184,11 @@ export class MessageLoadingService {
   }
 
   /** 将当前活动会话的最新真实消息与时间反哺给左侧栏对应的卡片实体 */
-  syncActiveSessionPreviewToRail(sessionId: string, messages: MessageViewModel[], botName?: string): void {
+  syncActiveSessionPreviewToRail(sessionId: string, messages: MessageViewModel[], botName?: string, gatewayId?: string): void {
     if (!sessionId || messages.length === 0) return;
     const state = this.deps.getState();
+    const targetGw = gatewayId ?? (state.activeFocus?.gatewayId || state.activeGatewayId);
+    const cacheKey = this.scopedKey(sessionId, targetGw);
 
     const visibleMessages = messages.filter((m) => (m.displayKind ?? 'user') === 'user');
     if (visibleMessages.length === 0) return;
@@ -1121,6 +1202,7 @@ export class MessageLoadingService {
       profiles: state.profiles,
       activityMap,
       formatTime: this.deps.formatSessionTime,
+      gatewayId: targetGw,
     }));
     if (botRes) {
       state.profiles = botRes.profiles;
@@ -1128,7 +1210,9 @@ export class MessageLoadingService {
     }
 
     // 2. 若为普通会话，更新该普通会话的预览与时间戳
-    const sess = state.sessions.find((s) => s.id === sessionId && (!botName || s.botName === botName))
+    const sess =
+      state.sessions.find((s) => s.id === sessionId && (!botName || s.botName === botName) && (!targetGw || !s.gatewayId || s.gatewayId === targetGw))
+      || state.sessions.find((s) => s.id === sessionId && (!targetGw || !s.gatewayId || s.gatewayId === targetGw))
       || state.sessions.find((s) => s.id === sessionId);
     if (sess) {
       const lastMsg = visibleMessages[visibleMessages.length - 1];
@@ -1138,7 +1222,7 @@ export class MessageLoadingService {
         sess.preview = lastText;
         sess.timestamp = rawTs;
         sess.time = this.deps.formatSessionTime(rawTs);
-        this.deps.sessionPreviewCache.set(sessionId, {
+        this.deps.sessionPreviewCache.set(cacheKey, {
           lastActive: rawTs,
           text: lastText,
           botName: sess.botName,

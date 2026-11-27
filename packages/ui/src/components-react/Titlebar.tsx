@@ -11,14 +11,20 @@ import {
   SettingsGlyph,
   StatusPanelGlyph,
 } from '../icons/titlebarGlyphs.js';
+import {
+  GatewayHealthPopover,
+  type TitlebarGatewayHealthItem,
+} from './GatewayHealthPopover.js';
 
 export interface TitlebarProps {
   platform: 'windows' | 'macos' | 'linux' | 'ios' | 'android' | 'web';
   title?: string;
   isMaximized: boolean;
   gatewayConnected: boolean;
-  /** 精细化连接状态点属性（reconnecting/syncing 闪烁过渡；缺失时按 gatewayConnected 回退） */
+  /** 精细化连接状态点属性（reconnecting/syncing/partial 闪烁过渡；缺失时按 gatewayConnected 回退） */
   connectionStatus?: TitlebarConnectionStatus;
+  /** 多网关健康明细（点击顶栏圆点打开 GatewayHealthPopover 展示） */
+  gateways?: readonly TitlebarGatewayHealthItem[];
   /** 左栏折叠态：驱动顶栏左段宽度与折叠按钮呈现（快照单一供给，不读 DOM 属性）。 */
   leftRailCollapsed: boolean;
   /** 左侧栏布局模式：grouped 模式无微轨，折叠态顶栏左段只保留按钮容量宽度。 */
@@ -30,7 +36,7 @@ export interface TitlebarProps {
   /** 当前全局活跃（运行中/排队中）子 Agent 数：> 0 时仅呈现微妙指示点 */
   runningSubagentCount?: number;
   /** 处于专职智能体工位或群聊工位时，顶栏呈现真实头像或拼图微头像（现按裁决留空不渲染）。 */
-  activeAvatar?: 
+  activeAvatar?:
     | { kind: 'bot'; avatar?: string; name: string }
     | { kind: 'group'; members: string[]; profiles: Array<{ name: string; avatar?: string; displayName?: string }> };
   onMinimize: () => void;
@@ -39,6 +45,9 @@ export interface TitlebarProps {
   onToggleLeftRail: () => void;
   onToggleInspector: () => void;
   onOpenSettings: () => void;
+  onReconnectGateway?: (gatewayId: string) => void;
+  onDisconnectGateway?: (gatewayId: string) => void;
+  onManageGateways?: () => void;
 }
 
 /**
@@ -58,18 +67,33 @@ export interface TitlebarProps {
  *   5. 左簇图标（☰ / 设置）与右簇图标（检查舱 / 窗控三键）共用同一 28px 热区与同一字形网格，
  *      保证顶栏内所有元素共享一条垂直中线。
  */
-export function Titlebar({ platform, isMaximized, gatewayConnected, connectionStatus, leftRailCollapsed, leftRailLayout = 'dual-rail', inspectorCollapsed, rightPodMode, runningSubagentCount = 0, onMinimize, onMaximize, onClose, onToggleLeftRail, onToggleInspector, onOpenSettings }: TitlebarProps): React.ReactElement {
+export function Titlebar({ platform, isMaximized, gatewayConnected, connectionStatus, gateways, leftRailCollapsed, leftRailLayout = 'dual-rail', inspectorCollapsed, rightPodMode, runningSubagentCount = 0, onMinimize, onMaximize, onClose, onToggleLeftRail, onToggleInspector, onOpenSettings, onReconnectGateway, onDisconnectGateway, onManageGateways }: TitlebarProps): React.ReactElement {
+  const [healthPopoverOpen, setHealthPopoverOpen] = React.useState(false);
   const isWindows = platform === 'windows';
   const effectivePodMode = rightPodMode ?? (inspectorCollapsed === false ? 'files' : 'closed');
   const resolvedStatus = connectionStatus ?? (gatewayConnected ? 'connected' : 'offline');
   const statusTitle =
     resolvedStatus === 'connected'
       ? t('titlebar.online')
-      : resolvedStatus === 'reconnecting'
-        ? t('conn.reconnecting')
-        : resolvedStatus === 'syncing'
-          ? t('conn.syncing')
-          : t('titlebar.offline');
+      : resolvedStatus === 'partial'
+        ? t('titlebar.partialOffline')
+        : resolvedStatus === 'reconnecting'
+          ? t('conn.reconnecting')
+          : resolvedStatus === 'syncing'
+            ? t('conn.syncing')
+            : t('titlebar.offline');
+  const explicitGateways = gateways && gateways.length > 0 ? gateways : null;
+  const effectiveGateways: readonly TitlebarGatewayHealthItem[] =
+    explicitGateways ?? [
+      {
+        gatewayId: '__default__',
+        name: t('gateway.localNode'),
+        status: resolvedStatus,
+        connected: gatewayConnected,
+        routeKind: 'direct',
+      },
+    ];
+
   return <header className="flux-titlebar" data-testid="react-titlebar" data-left-rail-layout={leftRailLayout} data-left-rail-collapsed={leftRailCollapsed ? 'true' : 'false'} data-inspector-collapsed={inspectorCollapsed === false ? 'false' : 'true'} data-right-pod-mode={effectivePodMode}>
     <div className="titlebar-left">
       {/* macOS 交通灯由系统原生绘制（titleBarStyle: 'hiddenInset'），此处严禁再画一套。
@@ -79,8 +103,31 @@ export function Titlebar({ platform, isMaximized, gatewayConnected, connectionSt
     </div>
     <div className="titlebar-center" />
     <div className="titlebar-right">
-      <div className="titlebar-connection-box flex items-center px-1" title={statusTitle}>
-        <span className="titlebar-connection-indicator" data-connected={gatewayConnected} data-status={resolvedStatus} />
+      <div className="relative flex items-center">
+        <button
+          id="titlebar-gateway-health-btn"
+          type="button"
+          className="icon-btn titlebar-connection-box"
+          title={statusTitle}
+          aria-label={statusTitle}
+          aria-haspopup="dialog"
+          aria-expanded={healthPopoverOpen}
+          onClick={(event) => {
+            event.stopPropagation?.();
+            setHealthPopoverOpen((prev) => !prev);
+          }}
+        >
+          <span className="titlebar-connection-indicator" data-connected={gatewayConnected} data-status={resolvedStatus} />
+        </button>
+        {healthPopoverOpen ? (
+          <GatewayHealthPopover
+            gateways={effectiveGateways}
+            onReconnectGateway={explicitGateways ? onReconnectGateway : undefined}
+            onDisconnectGateway={explicitGateways ? onDisconnectGateway : undefined}
+            onManageGateways={onManageGateways ?? onOpenSettings}
+            onClose={() => setHealthPopoverOpen(false)}
+          />
+        ) : null}
       </div>
       <button
         id="toggle-inspector-btn"

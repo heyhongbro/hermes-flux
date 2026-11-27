@@ -38,6 +38,10 @@ import {
 } from '@hermes-flux/ui';
 
 import {
+  resolveScopedBotRuntimeKey,
+  resolveScopedEntityRuntimeKey,
+} from '../state/appState.js';
+import {
   normalizeOrgProfileName,
   resolveActivityState,
   type NormalizedSession,
@@ -68,12 +72,14 @@ export interface LeftRailSnapshotInputs {
   profileName: string;
   searchQuery: string;
   layout?: LeftRailLayoutMode;
+  gatewayCount?: number;
   isBotsGroupExpanded?: boolean;
   isSessionsGroupExpanded: boolean;
   isGroupsGroupExpanded: boolean;
   error: string;
   collapsed: boolean;
   editingGroupRoomId?: string;
+  editingGroupGatewayId?: string;
   profilesPhase: DataPhase;
   sessionsPhase: DataPhase;
   activityVariant: ActivityIndicatorVariant;
@@ -98,12 +104,14 @@ export interface LeftRailSnapshotHost {
   readonly getProfileName: () => string;
   readonly getSearchQuery: () => string;
   readonly getLayout?: () => LeftRailLayoutMode;
+  readonly getGatewayCount?: () => number;
   readonly isBotsGroupExpanded?: () => boolean;
   readonly isSessionsGroupExpanded: () => boolean;
   readonly isGroupsGroupExpanded: () => boolean;
   readonly getError: () => string;
   readonly isCollapsed: () => boolean;
   readonly getEditingGroupRoomId: () => string | undefined;
+  readonly getEditingGroupGatewayId?: () => string | undefined;
   readonly getProfilesPhase: () => DataPhase;
   readonly getSessionsPhase: () => DataPhase;
   readonly getActivityVariant: () => ActivityIndicatorVariant;
@@ -149,6 +157,7 @@ export function sameLeftRailInputs(
     prev.profileName === next.profileName &&
     prev.searchQuery === next.searchQuery &&
     prev.layout === next.layout &&
+    prev.gatewayCount === next.gatewayCount &&
     prev.isBotsGroupExpanded === next.isBotsGroupExpanded &&
     prev.isSessionsGroupExpanded === next.isSessionsGroupExpanded &&
     prev.isGroupsGroupExpanded === next.isGroupsGroupExpanded &&
@@ -158,6 +167,7 @@ export function sameLeftRailInputs(
     prev.sessionsPhase === next.sessionsPhase &&
     prev.activityVariant === next.activityVariant &&
     prev.editingGroupRoomId === next.editingGroupRoomId &&
+    prev.editingGroupGatewayId === next.editingGroupGatewayId &&
     sameShallowArray(prev.projects, next.projects) &&
     sameShallowArray(prev.folders, next.folders) &&
     prev.assignments === next.assignments &&
@@ -191,14 +201,14 @@ export class LeftRailSnapshotManager {
     const seenKeys = new Set<string>();
     for (const s of activeRaw) {
       if (!s?.id) continue;
-      const key = `${normalizeOrgProfileName(s.botName)}::${s.id}`;
+      const key = `${s.gatewayId || ''}::${normalizeOrgProfileName(s.botName)}::${s.id}`;
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
       mergedRaw.push(s);
     }
     for (const s of archivedRaw) {
       if (!s?.id) continue;
-      const key = `${normalizeOrgProfileName(s.botName)}::${s.id}`;
+      const key = `${s.gatewayId || ''}::${normalizeOrgProfileName(s.botName)}::${s.id}`;
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
       mergedRaw.push(s);
@@ -206,14 +216,16 @@ export class LeftRailSnapshotManager {
     const runningIds = this.host.getActiveRunningSessionIds();
     const unreadIds = this.host.getUnreadSessionIds();
     const streamingId = this.host.getActiveStreamingStoredSessionId();
+    const gatewayCount = this.host.getGatewayCount?.() ?? 1;
 
     const next = mergedRaw.map((s) => {
-      const activityState = resolveActivityState(s.id, {
+      const scopedSessionKey = resolveScopedEntityRuntimeKey(s.id, s.gatewayId, gatewayCount);
+      const activityState = resolveActivityState(scopedSessionKey, {
         runningIds,
         unreadIds,
-        streamingId,
+        streamingId: gatewayCount >= 2 && s.gatewayId ? null : streamingId,
       });
-      const transitionRes = this.host.resolveTransition('session', s.id, activityState, nowMs);
+      const transitionRes = this.host.resolveTransition('session', scopedSessionKey, activityState, nowMs);
       const activityTransition: ActivityTransition = transitionRes.transition;
       const activityTransitionToken = transitionRes.transitionToken;
       const cached = this.railSessionDecorCache.get(s);
@@ -230,6 +242,9 @@ export class LeftRailSnapshotManager {
         cached.value.botName === s.botName &&
         cached.value.botDisplayName === s.botDisplayName &&
         cached.value.botAvatar === s.botAvatar &&
+        cached.value.gatewayId === s.gatewayId &&
+        cached.value.gatewayLabel === s.gatewayLabel &&
+        cached.value.gatewayOffline === s.gatewayOffline &&
         cached.value.activityState === activityState &&
         cached.value.activityTransition === activityTransition &&
         cached.value.activityTransitionToken === activityTransitionToken
@@ -255,13 +270,15 @@ export class LeftRailSnapshotManager {
     const rawGroups = this.host.getGroupRooms();
     const runningIds = this.host.getActiveRunningGroupRoomIds();
     const unreadIds = this.host.getUnreadGroupRoomIds();
+    const gatewayCount = this.host.getGatewayCount?.() ?? 1;
 
     const next = rawGroups.map((g) => {
-      const activityState = resolveActivityState(g.roomId, {
+      const scopedRoomKey = resolveScopedEntityRuntimeKey(g.roomId, g.gatewayId, gatewayCount);
+      const activityState = resolveActivityState(scopedRoomKey, {
         runningIds,
         unreadIds,
       });
-      const transitionRes = this.host.resolveTransition('group', g.roomId, activityState, nowMs);
+      const transitionRes = this.host.resolveTransition('group', scopedRoomKey, activityState, nowMs);
       const activityTransition: ActivityTransition = transitionRes.transition;
       const activityTransitionToken = transitionRes.transitionToken;
       const stamp = [
@@ -270,6 +287,10 @@ export class LeftRailSnapshotManager {
         g.lastMessage,
         g.updatedAt,
         g.createdAt,
+        g.gatewayId ?? '',
+        g.gatewayLabel ?? '',
+        g.gatewayOffline ? 1 : 0,
+        g.crossGateway ? 1 : 0,
         activityState,
         activityTransition,
         activityTransitionToken ?? '',
@@ -296,6 +317,7 @@ export class LeftRailSnapshotManager {
     const rawProfiles = this.host.getProfiles();
     const runningIds = this.host.getActiveRunningBotNames();
     const unreadIds = this.host.getUnreadBotNames();
+    const gatewayCount = this.host.getGatewayCount?.() ?? 1;
 
     const next = rawProfiles.map((p) => {
       const avatar =
@@ -303,11 +325,12 @@ export class LeftRailSnapshotManager {
         this.host.resolveAgentAvatar(p.name) ||
         (p.displayName ? this.host.resolveAgentAvatar(p.displayName) : '') ||
         '';
-      const activityState = resolveActivityState(p.name, {
+      const scopedProfileKey = resolveScopedBotRuntimeKey(p.name, p.gatewayId, gatewayCount);
+      const activityState = resolveActivityState(scopedProfileKey, {
         runningIds,
         unreadIds,
       });
-      const transitionRes = this.host.resolveTransition('bot', p.name, activityState, nowMs);
+      const transitionRes = this.host.resolveTransition('bot', scopedProfileKey, activityState, nowMs);
       const activityTransition: ActivityTransition = transitionRes.transition;
       const activityTransitionToken = transitionRes.transitionToken;
       const stamp = [
@@ -319,6 +342,10 @@ export class LeftRailSnapshotManager {
         p.lastTime,
         p.timestamp,
         p.isDefault ? 1 : 0,
+        p.gatewayId ?? '',
+        p.gatewayLabel ?? '',
+        p.gatewayOffline ? 1 : 0,
+        p.gatewayRouteLabel ?? '',
         activityState,
         activityTransition,
         activityTransitionToken ?? '',
@@ -342,12 +369,12 @@ export class LeftRailSnapshotManager {
     return this.lastDecoratedProfiles;
   }
 
-  public getSnapshot(): LeftRailSnapshot {
-    const nowMs = Date.now();
+  public getSnapshot(nowMs: number = Date.now()): LeftRailSnapshot {
     const sessions = this.decorateSessions(nowMs);
     const groups = this.decorateGroups(nowMs);
     const profiles = this.decorateProfiles(nowMs);
     const layout = resolveLeftRailLayout(this.host.getLayout?.());
+    const gatewayCount = this.host.getGatewayCount?.() ?? 1;
     const isBotsGroupExpanded = this.host.isBotsGroupExpanded ? this.host.isBotsGroupExpanded() : true;
 
     const inputs: LeftRailSnapshotInputs = {
@@ -368,12 +395,14 @@ export class LeftRailSnapshotManager {
       profileName: this.host.getProfileName(),
       searchQuery: this.host.getSearchQuery(),
       layout,
+      gatewayCount,
       isBotsGroupExpanded,
       isSessionsGroupExpanded: this.host.isSessionsGroupExpanded(),
       isGroupsGroupExpanded: this.host.isGroupsGroupExpanded(),
       error: this.host.getError(),
       collapsed: this.host.isCollapsed(),
       editingGroupRoomId: this.host.getEditingGroupRoomId(),
+      editingGroupGatewayId: this.host.getEditingGroupGatewayId?.(),
       profilesPhase: this.host.getProfilesPhase(),
       sessionsPhase: this.host.getSessionsPhase(),
       activityVariant: this.host.getActivityVariant(),
@@ -413,6 +442,7 @@ export class LeftRailSnapshotManager {
             profilesPhase: inputs.profilesPhase,
             sessionsPhase: inputs.sessionsPhase,
             error: inputs.error,
+            gatewayCount: inputs.gatewayCount,
             nowMs,
           })
         : undefined;
@@ -440,12 +470,14 @@ export class LeftRailSnapshotManager {
         profilesPhase: inputs.profilesPhase,
         sessionsPhase: inputs.sessionsPhase,
         error: inputs.error,
+        gatewayCount: inputs.gatewayCount,
       }),
       layout,
       groupedModel,
       collapsed: inputs.collapsed,
       searchQuery: inputs.searchQuery,
       editingGroupRoomId: inputs.editingGroupRoomId,
+      editingGroupGatewayId: inputs.editingGroupGatewayId,
       groupAvatars: profiles,
       activityVariant: inputs.activityVariant,
     };

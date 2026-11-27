@@ -20,7 +20,11 @@
  *   3. 零文本写死：提示与错误文案统一走 deps.t 国际化字典输出。
  */
 
-import type { AppState } from '../state/appState.js';
+import {
+  resolveScopedBotRuntimeKey,
+  resolveScopedEntityRuntimeKey,
+  type AppState,
+} from '../state/appState.js';
 import type { HermesDesktopBridge } from '../../preload/index.js';
 import {
   type HermesGatewayClient,
@@ -47,15 +51,32 @@ import type { ActiveStreamingContext } from '../services/turnExecutionService.js
 import { formatTimestamp } from '../services/turnExecutionService.js';
 import type { BotActivityStore } from '../persistence/botActivityStore.js';
 import { buildGatewayWsUrl, createGatewayReconnectResolver, type GatewayAuthResponse } from '../gatewayConnection.js';
-import { createLiveStreamCoordinator } from './liveStreamCoordinator.js';
+import {
+  collectGatewayScopedSessionIds,
+  createLiveStreamCoordinator,
+  extractGatewayFrameMeta,
+  isFocusedOnBot,
+  isFocusedOnEntity,
+  isSameActiveGateway,
+} from './liveStreamCoordinator.js';
+import { buildGatewaySecretKey, purgeLegacyPlaintextPasswords } from '../persistence/secretMigration.js';
 
-export { createLiveStreamCoordinator, resolveBotNameForSession } from './liveStreamCoordinator.js';
+export {
+  collectGatewayScopedSessionIds,
+  createLiveStreamCoordinator,
+  extractGatewayFrameMeta,
+  isFocusedOnBot,
+  isFocusedOnEntity,
+  isSameActiveGateway,
+  resolveBotNameForSession,
+} from './liveStreamCoordinator.js';
 
 export type TurnWatchdogFeeder = () => void;
 
 export interface GatewayEventDispatcherDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
   readonly setGatewayClient: (client: HermesGatewayClient | null) => void;
   readonly getCurrentTicket: () => string | undefined;
   readonly setCurrentTicket: (ticket: string | undefined) => void;
@@ -71,8 +92,10 @@ export interface GatewayEventDispatcherDeps {
   ) => void;
 
   readonly getSessionHandleRegistry: () => SessionHandleRegistry;
+  readonly getSessionHandleRegistryForGateway?: (gatewayId?: string) => SessionHandleRegistry;
   readonly getLiveStreamRegistry?: () => LiveStreamRegistry;
-  readonly resolveBotNameForSession?: (storedSessionId: string) => string | null;
+  readonly getLiveStreamRegistryForGateway?: (gatewayId?: string) => LiveStreamRegistry | undefined;
+  readonly resolveBotNameForSession?: (storedSessionId: string, gatewayId?: string) => string | null;
   readonly getSessionMessagesCache: () => Map<string, MessageViewModel[]>;
   readonly getTokenCoalescer: () => TokenCoalescer;
   readonly getActivityTransitionTracker: () => ActivityTransitionTracker;
@@ -98,7 +121,7 @@ export interface GatewayEventDispatcherDeps {
   readonly clearSessionsRefreshTimer: () => void;
   readonly scheduleSessionsRefresh: () => void;
 
-  readonly persistTurnToCache: (targetSessionId: string, botName: string | null, msgs: MessageViewModel[]) => void;
+  readonly persistTurnToCache: (targetSessionId: string, botName: string | null, msgs: MessageViewModel[], gatewayId?: string) => void;
   readonly persistSessionsToCache: (sessions: NormalizedSession[]) => void;
   readonly syncProfileLastMessages: () => void;
   readonly syncAgentPresence: () => void;
@@ -153,20 +176,21 @@ export interface GatewayEventDispatcher {
     onConnectedSync?: GatewayEventDispatcherDeps['onConnectedSync'];
     onResumeAliveSync?: GatewayEventDispatcherDeps['onResumeAliveSync'];
   }): void;
-  resumeReconnectStreaming(storedSessionId: string, liveSessionId: string, resumeResult?: Record<string, unknown>): void;
-  finishReconnectStreaming(storedSessionId: string): void;
+  resumeReconnectStreaming(storedSessionId: string, liveSessionId: string, resumeResult?: Record<string, unknown>, gatewayId?: string): void;
+  finishReconnectStreaming(storedSessionId: string, gatewayId?: string): void;
   attachLiveTurnFromResume(input: {
     storedSessionId: string;
     liveSessionId: string;
     resumeResult: Record<string, unknown>;
     botName?: string | null;
+    gatewayId?: string;
   }): boolean;
-  reconcileActiveTurnFromResume(storedSessionId: string, resumeResult: Record<string, unknown>): void;
-  syncFocusedStreamingProjection(preferredSessionId?: string): void;
+  reconcileActiveTurnFromResume(storedSessionId: string, resumeResult: Record<string, unknown>, gatewayId?: string): void;
+  syncFocusedStreamingProjection(preferredSessionId?: string, gatewayId?: string): void;
   getConnectionEpoch(): number;
-  handleGatewayEvent(params: unknown): void;
-  applyTurnActions(actions: TurnAction[]): void;
-  handleInspectorEvent(params: unknown): void;
+  handleGatewayEvent(params: unknown, sourceGatewayId?: string): void;
+  applyTurnActions(actions: TurnAction[], sourceGatewayId?: string): void;
+  handleInspectorEvent(params: unknown, sourceGatewayId?: string): void;
 }
 
 export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): GatewayEventDispatcher {
@@ -177,6 +201,11 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
   let inFlightAuthStartedAt = 0;
   let dynamicOnConnectedSync: GatewayEventDispatcherDeps['onConnectedSync'];
   let dynamicOnResumeAliveSync: GatewayEventDispatcherDeps['onResumeAliveSync'];
+
+  const resolveHandleReg = (gw?: string) =>
+    deps.getSessionHandleRegistryForGateway?.(gw) ?? deps.getSessionHandleRegistry();
+  const resolveStreamReg = (gw?: string) =>
+    deps.getLiveStreamRegistryForGateway?.(gw) ?? deps.getLiveStreamRegistry?.();
 
   const TURN_STREAM_EVENT_TYPES = new Set([
     'message.start',
@@ -194,7 +223,10 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     getConnectionEpoch: () => connectionEpoch,
     getState: () => deps.getState(),
     getGatewayClient: () => deps.getGatewayClient(),
+    getClientForGateway: deps.getClientForGateway,
     getLiveStreamRegistry: () => deps.getLiveStreamRegistry?.(),
+    getLiveStreamRegistryForGateway: deps.getLiveStreamRegistryForGateway,
+    getSessionHandleRegistryForGateway: deps.getSessionHandleRegistryForGateway,
     resolveBotNameForSession: deps.resolveBotNameForSession,
     getSessionMessagesCache: () => deps.getSessionMessagesCache(),
     getActiveRunningSessionIds: () => deps.getActiveRunningSessionIds(),
@@ -224,7 +256,7 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     }
   }
 
-  function handleInspectorEvent(params: unknown): void {
+  function handleInspectorEvent(params: unknown, sourceGatewayId?: string): void {
     if (!params || typeof params !== 'object') return;
     const frame = params as { type?: unknown; payload?: Record<string, unknown> };
     const type = typeof frame.type === 'string' ? frame.type : '';
@@ -232,6 +264,8 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     if (!type) return;
 
     const state = deps.getState();
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    if (sourceGatewayId && activeGw && sourceGatewayId !== activeGw) return;
 
     if (type === 'artifact.created' || type === 'artifact.updated') {
       const id = typeof payload.id === 'string' ? payload.id : '';
@@ -274,17 +308,27 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     }
   }
 
-  function applyTurnActionsInternal(actions: TurnAction[], sourceStoredSessionId: string | null): void {
+  function applyTurnActionsInternal(
+    actions: TurnAction[],
+    sourceStoredSessionId: string | null,
+    sourceGatewayId?: string,
+  ): void {
     let needsRender = false;
     let finalReplace: { messageId: string; text: string } | null = null;
     const state = deps.getState();
     const ctx = deps.getActiveStreamingContext();
-    const streamRegistry = deps.getLiveStreamRegistry?.();
+    const streamRegistry = resolveStreamReg(sourceGatewayId);
+    const matchesActiveGw = isSameActiveGateway(state, sourceGatewayId);
+    const scopedSess = (sid: string) => resolveScopedEntityRuntimeKey(sid, sourceGatewayId, state.gatewayCount);
+    const scopedBot = (bot: string) => resolveScopedBotRuntimeKey(bot, sourceGatewayId, state.gatewayCount);
+    const isFocusedTarget = (sid: string | null | undefined) =>
+      sid ? isFocusedOnEntity(state, sid, sourceGatewayId) : matchesActiveGw;
 
     for (const action of actions) {
       switch (action.type) {
         case 'turn-started': {
-          const targetStartedId = sourceStoredSessionId || ctx.activeStreamingStoredSessionId || state.activeSessionId;
+          const fallbackStartedId = matchesActiveGw ? (ctx.activeStreamingStoredSessionId || state.activeSessionId) : null;
+          const targetStartedId = sourceStoredSessionId || fallbackStartedId;
           const startedStream = targetStartedId ? streamRegistry?.getBySession(targetStartedId) : undefined;
           if (startedStream && action.turnId && !startedStream.turnId) {
             startedStream.turnId = action.turnId;
@@ -295,14 +339,16 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
               startedStream.storedSessionId,
               startedStream.messageId,
               remotePromptText,
+              undefined,
+              sourceGatewayId,
             )) {
-              if (startedStream.storedSessionId === state.activeSessionId) {
+              if (isFocusedTarget(startedStream.storedSessionId)) {
                 deps.onForceSyncMessageList?.(true);
                 needsRender = true;
               }
             }
           }
-          if (!sourceStoredSessionId || targetStartedId === state.activeSessionId) {
+          if ((!sourceStoredSessionId && matchesActiveGw) || isFocusedOnEntity(state, targetStartedId, sourceGatewayId)) {
             if (!state.isStreaming) {
               state.isStreaming = true;
               needsRender = true;
@@ -370,13 +416,13 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
         }
 
         case 'stream-activity': {
-          const activitySid = liveCoord.resolveStoredSessionId(action.sessionId);
+          const activitySid = liveCoord.resolveStoredSessionId(action.sessionId, sourceGatewayId);
           const touched = activitySid ? Boolean(streamRegistry?.touchActivity(activitySid)) : false;
           if (
             touched ||
             (activitySid && (
-              activitySid === ctx.activeStreamingStoredSessionId ||
-              deps.getActiveRunningSessionIds().has(activitySid)
+              (matchesActiveGw && activitySid === ctx.activeStreamingStoredSessionId) ||
+              deps.getActiveRunningSessionIds().has(scopedSess(activitySid))
             ))
           ) {
             deps.feedTurnWatchdog?.();
@@ -390,66 +436,46 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
           let parsedRawArgs: Record<string, unknown> | undefined;
           let parsedDelegationId: string | undefined;
           const rawArgsInput: unknown = action.toolCall.args;
-          if (typeof rawArgsInput === 'string') {
-            const trimmedArgs = rawArgsInput.trim();
-            if (trimmedArgs.startsWith('{')) {
-              try {
-                const obj: unknown = JSON.parse(trimmedArgs);
-                if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-                  parsedRawArgs = obj as Record<string, unknown>;
-                }
-              // gate-degrade: 工具参数非合法 JSON 时保留原始字符串，不阻断工具展示
-              } catch {}
-            }
+          if (typeof rawArgsInput === 'string' && rawArgsInput.trim().startsWith('{')) {
+            try {
+              const obj: unknown = JSON.parse(rawArgsInput.trim());
+              if (obj && typeof obj === 'object' && !Array.isArray(obj)) parsedRawArgs = obj as Record<string, unknown>;
+            // gate-degrade: 工具参数非合法 JSON 时保留原始字符串，不阻断工具展示
+            } catch {}
           } else if (rawArgsInput && typeof rawArgsInput === 'object' && !Array.isArray(rawArgsInput)) {
             parsedRawArgs = rawArgsInput as Record<string, unknown>;
           }
-          if (parsedRawArgs) {
-            const rawDid = parsedRawArgs.delegation_id ?? parsedRawArgs.delegationId;
-            if (typeof rawDid === 'string' && rawDid) {
-              parsedDelegationId = rawDid;
-            }
-          }
-          const ownerSessionId = streamRegistry?.getSessionIdForMessage(action.messageId) ?? ctx.activeStreamingStoredSessionId;
+          const rawDid = parsedRawArgs?.delegation_id ?? parsedRawArgs?.delegationId;
+          if (typeof rawDid === 'string' && rawDid) parsedDelegationId = rawDid;
+          const ownerSessionId =
+            streamRegistry?.getSessionIdForMessage(action.messageId) ??
+            (matchesActiveGw ? ctx.activeStreamingStoredSessionId : null);
           if (ownerSessionId) streamRegistry?.touchActivity(ownerSessionId);
-          const target = !ownerSessionId || ownerSessionId === state.activeSessionId
+          const appendStartedTool = (msg?: MessageViewModel): boolean => {
+            if (!msg) return false;
+            if (!msg.toolCalls) msg.toolCalls = [];
+            if (msg.toolCalls.some((tc) => tc.id === action.toolCall.id)) return true;
+            msg.toolCalls.push({
+              id: action.toolCall.id,
+              name: action.toolCall.name,
+              status: 'running',
+              args: action.toolCall.args,
+              ...(parsedRawArgs ? { rawArgs: parsedRawArgs } : {}),
+              ...(parsedDelegationId ? { delegationId: parsedDelegationId } : {}),
+              startTime: now,
+            });
+            return true;
+          };
+          const target = isFocusedTarget(ownerSessionId)
             ? state.messages.find((m) => m.id === action.messageId)
             : undefined;
-          if (target) {
-            if (!target.toolCalls) target.toolCalls = [];
-            if (!target.toolCalls.some((tc) => tc.id === action.toolCall.id)) {
-              target.toolCalls.push({
-                id: action.toolCall.id,
-                name: action.toolCall.name,
-                status: 'running',
-                args: action.toolCall.args,
-                ...(parsedRawArgs ? { rawArgs: parsedRawArgs } : {}),
-                ...(parsedDelegationId ? { delegationId: parsedDelegationId } : {}),
-                startTime: now,
-              });
-            }
-            deps.scheduleToolPatch(action.messageId);
-          }
+          if (appendStartedTool(target)) deps.scheduleToolPatch(action.messageId);
           if (ownerSessionId) {
-            const cached = deps.getSessionMessagesCache().get(ownerSessionId);
-            const cachedTarget = cached?.find((m) => m.id === action.messageId);
-            if (cachedTarget) {
-              if (!cachedTarget.toolCalls) cachedTarget.toolCalls = [];
-              if (!cachedTarget.toolCalls.some((t) => t.id === action.toolCall.id)) {
-                cachedTarget.toolCalls.push({
-                  id: action.toolCall.id,
-                  name: action.toolCall.name,
-                  status: 'running',
-                  args: action.toolCall.args,
-                  ...(parsedRawArgs ? { rawArgs: parsedRawArgs } : {}),
-                  ...(parsedDelegationId ? { delegationId: parsedDelegationId } : {}),
-                  startTime: now,
-                });
-              }
-            }
+            const cached = deps.getSessionMessagesCache().get(scopedSess(ownerSessionId));
+            appendStartedTool(cached?.find((m) => m.id === action.messageId));
           }
           if (action.toolCall.name === 'delegate_task') {
-            deps.onStatusTurnAction?.(action, deps.toStoredSessionId);
+            deps.onStatusTurnAction?.(action, (id) => liveCoord.resolveStoredSessionId(id, sourceGatewayId));
           }
           break;
         }
@@ -458,33 +484,28 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
           deps.feedTurnWatchdog?.();
           const now = Date.now();
           const updateTc = (target?: MessageViewModel) => {
-            if (target && target.toolCalls) {
-              const tc = target.toolCalls.find((t) => action.toolCallId && t.id === action.toolCallId);
-              if (tc) {
-                tc.status = 'completed';
-                if (action.output) {
-                  tc.output = typeof action.output === 'object' ? JSON.stringify(action.output, null, 2) : String(action.output);
-                }
-                if (action.imagePath) {
-                  tc.imagePath = action.imagePath;
-                }
-                if (action.inlineDiff) {
-                  tc.inlineDiff = action.inlineDiff;
-                }
-                const serverMs = action.durationMs;
-                if (typeof serverMs === 'number' && serverMs >= 0) {
-                  tc.durationMs = tc.durationMs !== undefined ? Math.max(tc.durationMs, serverMs) : serverMs;
-                } else if (tc.startTime) {
-                  const computed = Math.max(100, now - tc.startTime);
-                  tc.durationMs = tc.durationMs !== undefined ? Math.max(tc.durationMs, computed) : computed;
-                }
-              }
+            const tc = target?.toolCalls?.find((t) => action.toolCallId && t.id === action.toolCallId);
+            if (!tc) return;
+            tc.status = 'completed';
+            if (action.output) {
+              tc.output = typeof action.output === 'object' ? JSON.stringify(action.output, null, 2) : String(action.output);
+            }
+            if (action.imagePath) tc.imagePath = action.imagePath;
+            if (action.inlineDiff) tc.inlineDiff = action.inlineDiff;
+            const serverMs = action.durationMs;
+            if (typeof serverMs === 'number' && serverMs >= 0) {
+              tc.durationMs = tc.durationMs !== undefined ? Math.max(tc.durationMs, serverMs) : serverMs;
+            } else if (tc.startTime) {
+              const computed = Math.max(100, now - tc.startTime);
+              tc.durationMs = tc.durationMs !== undefined ? Math.max(tc.durationMs, computed) : computed;
             }
           };
 
-          const toolOwnerId = streamRegistry?.getSessionIdForMessage(action.messageId) ?? ctx.activeStreamingStoredSessionId;
+          const toolOwnerId =
+            streamRegistry?.getSessionIdForMessage(action.messageId) ??
+            (matchesActiveGw ? ctx.activeStreamingStoredSessionId : null);
           if (toolOwnerId) streamRegistry?.touchActivity(toolOwnerId);
-          const target = !toolOwnerId || toolOwnerId === state.activeSessionId
+          const target = isFocusedTarget(toolOwnerId)
             ? state.messages.find((m) => m.id === action.messageId)
             : undefined;
           if (target) {
@@ -492,27 +513,28 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
             deps.scheduleToolPatch(action.messageId);
           }
           if (toolOwnerId) {
-            const cached = deps.getSessionMessagesCache().get(toolOwnerId);
-            updateTc(cached?.find((m) => m.id === action.messageId));
+            updateTc(deps.getSessionMessagesCache().get(scopedSess(toolOwnerId))?.find((m) => m.id === action.messageId));
           }
           break;
         }
 
         case 'persisted-turn': {
-          const persistOwnerId = streamRegistry?.getSessionIdForMessage(action.messageId) ?? ctx.activeStreamingStoredSessionId ?? state.activeSessionId;
-          let changed = !persistOwnerId || persistOwnerId === state.activeSessionId
-            ? bindTurnRowIds({
-                messages: state.messages,
-                assistantMessageId: action.messageId,
-                userRowId: action.userRowId,
-                assistantRowId: action.assistantRowId,
-                rowIds: action.rowIds,
-              })
-            : false;
+          const persistOwnerId =
+            streamRegistry?.getSessionIdForMessage(action.messageId) ??
+            (matchesActiveGw ? (ctx.activeStreamingStoredSessionId ?? state.activeSessionId) : null);
+          const isPersistFocused = isFocusedTarget(persistOwnerId);
+          const bindArgs = {
+            assistantMessageId: action.messageId,
+            userRowId: action.userRowId,
+            assistantRowId: action.assistantRowId,
+            rowIds: action.rowIds,
+          };
+          let changed = isPersistFocused ? bindTurnRowIds({ messages: state.messages, ...bindArgs }) : false;
 
+          const persistCacheKey = persistOwnerId ? scopedSess(persistOwnerId) : '';
           if (persistOwnerId) {
-            const cached = deps.getSessionMessagesCache().get(persistOwnerId);
-            if (cached && (persistOwnerId !== state.activeSessionId || cached !== state.messages)) {
+            const cached = deps.getSessionMessagesCache().get(persistCacheKey);
+            if (cached && (!isPersistFocused || cached !== state.messages)) {
               const cachedChanged = bindTurnRowIds({
                 messages: cached,
                 assistantMessageId: action.messageId,
@@ -527,10 +549,14 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
           if (changed) {
             needsRender = true;
             const ownerStream = persistOwnerId ? streamRegistry?.getBySession(persistOwnerId) : undefined;
-            const ownerBotName = ownerStream?.botName ?? (persistOwnerId === ctx.activeStreamingStoredSessionId ? ctx.activeStreamingBotName : null);
-            const msgsToPersist = persistOwnerId === state.activeSessionId ? state.messages : (deps.getSessionMessagesCache().get(persistOwnerId) || []);
+            const ownerBotName =
+              ownerStream?.botName ??
+              (matchesActiveGw && persistOwnerId === ctx.activeStreamingStoredSessionId ? ctx.activeStreamingBotName : null);
+            const msgsToPersist = isPersistFocused
+              ? state.messages
+              : (deps.getSessionMessagesCache().get(persistCacheKey) || []);
             if (persistOwnerId && msgsToPersist.length > 0) {
-              deps.persistTurnToCache(persistOwnerId, ownerBotName, msgsToPersist);
+              deps.persistTurnToCache(persistOwnerId, ownerBotName, msgsToPersist, sourceGatewayId);
             }
           }
           break;
@@ -550,25 +576,26 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
           // 【清理未执行的工具补丁 rAF (Pitfall)】防止回合结束后迟到 rAF 覆写 React 接管的 #msg-tools-*
           deps.clearToolPatchQueue?.();
           deps.stopRunningToolTimers();
-          const rawTargetId = sourceStoredSessionId || action.sessionId || ctx.activeStreamingStoredSessionId;
-          const completedTargetId = deps.toStoredSessionId(liveCoord.resolveStoredSessionId(rawTargetId) || rawTargetId);
+          const rawTargetId =
+            sourceStoredSessionId || action.sessionId || (matchesActiveGw ? ctx.activeStreamingStoredSessionId : null);
+          const completedTargetId = liveCoord.resolveStoredSessionId(rawTargetId, sourceGatewayId) ?? deps.toStoredSessionId(rawTargetId);
           const completedStream = completedTargetId ? streamRegistry?.removeSession(completedTargetId) : undefined;
           const completedBotName =
             completedStream?.botName ??
-            (completedTargetId === ctx.activeStreamingStoredSessionId ? ctx.activeStreamingBotName : null);
-          const replaceTargetId = completedTargetId || ctx.activeStreamingStoredSessionId;
+            (matchesActiveGw && completedTargetId === ctx.activeStreamingStoredSessionId ? ctx.activeStreamingBotName : null);
+          const replaceTargetId = completedTargetId || (matchesActiveGw ? ctx.activeStreamingStoredSessionId : null);
           if (finalReplace) {
             const replacement = finalReplace;
-            if (!replaceTargetId || replaceTargetId === state.activeSessionId || !streamRegistry) {
+            if (isFocusedTarget(replaceTargetId) || !streamRegistry) {
               deps.setMessageContent(replacement.messageId, replacement.text);
             }
             if (replaceTargetId) {
-              const cached = deps.getSessionMessagesCache().get(replaceTargetId);
+              const cached = deps.getSessionMessagesCache().get(scopedSess(replaceTargetId));
               const target = cached?.find((m) => m.id === replacement.messageId);
               if (target) target.content = replacement.text;
             }
           }
-          const isFocused = !completedTargetId || completedTargetId === state.activeSessionId;
+          const isFocused = isFocusedTarget(completedTargetId);
           const markCompletedTools = (msgs: MessageViewModel[]) => {
             for (const msg of msgs) {
               if (msg.toolCalls) {
@@ -585,31 +612,34 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
           };
           if (isFocused) markCompletedTools(state.messages);
           if (completedTargetId) {
-            const cached = deps.getSessionMessagesCache().get(completedTargetId);
+            const completedKey = scopedSess(completedTargetId);
+            const cached = deps.getSessionMessagesCache().get(completedKey);
             if (cached && (!isFocused || cached !== state.messages)) markCompletedTools(cached);
-            const isSessionFocused = completedTargetId === state.activeSessionId;
+            const isSessionFocused = isFocusedOnEntity(state, completedTargetId, sourceGatewayId);
             if (isSessionFocused && wasNearBottomBeforeSettle) {
               deps.setPendingScrollToBottom?.(true);
             }
-            deps.completeEntityTurn('session', deps.getActiveRunningSessionIds(), deps.getUnreadSessionIds(), completedTargetId, isSessionFocused);
+            deps.completeEntityTurn('session', deps.getActiveRunningSessionIds(), deps.getUnreadSessionIds(), completedKey, isSessionFocused);
             if (isSessionFocused) {
-              deps.getSessionMessagesCache().set(completedTargetId, [...state.messages]);
+              deps.getSessionMessagesCache().set(completedKey, [...state.messages]);
             }
-            const msgsToPersist = isSessionFocused ? state.messages : (deps.getSessionMessagesCache().get(completedTargetId) || []);
+            const msgsToPersist = isSessionFocused ? state.messages : (deps.getSessionMessagesCache().get(completedKey) || []);
             if (msgsToPersist.length > 0) {
-              deps.persistTurnToCache(completedTargetId, completedBotName, msgsToPersist);
+              deps.persistTurnToCache(completedTargetId, completedBotName, msgsToPersist, sourceGatewayId);
             }
-            const completedSess = state.sessions.find((s) => s.id === completedTargetId);
+            const completedSess = state.sessions.find(
+              (s) => s.id === completedTargetId && (!sourceGatewayId || !s.gatewayId || s.gatewayId === sourceGatewayId),
+            );
             if (completedSess) {
               const finalMsg = isSessionFocused
                 ? (state.messages.length > 0 ? state.messages[state.messages.length - 1] : null)
-                : (deps.getSessionMessagesCache().get(completedTargetId)?.slice(-1)[0] || null);
+                : (deps.getSessionMessagesCache().get(completedKey)?.slice(-1)[0] || null);
               if (finalMsg?.content) {
                 completedSess.preview = finalMsg.content;
               }
               completedSess.timestamp = Date.now();
               completedSess.time = formatTimestamp(Date.now());
-              state.sessions = [completedSess, ...state.sessions.filter((s) => s.id !== completedSess.id)];
+              state.sessions = [completedSess, ...state.sessions.filter((s) => s !== completedSess)];
               deps.persistSessionsToCache(state.sessions);
             }
             if (isSessionFocused && !finalReplace && !completedStream && action.finalText) {
@@ -617,50 +647,20 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
             }
           }
           if (completedBotName) {
-            const isBotFocused = state.activeFocus.type === 'bot' && state.activeFocus.botName === completedBotName;
+            const completedBotKey = scopedBot(completedBotName);
+            const isBotFocused = isFocusedOnBot(state, completedBotName, sourceGatewayId);
             const finalMsg = isBotFocused
               ? (state.messages.length > 0 ? state.messages[state.messages.length - 1] : null)
-              : (completedTargetId ? deps.getSessionMessagesCache().get(completedTargetId)?.slice(-1)[0] || null : null);
+              : (completedTargetId ? deps.getSessionMessagesCache().get(scopedSess(completedTargetId))?.slice(-1)[0] || null : null);
             if (finalMsg?.content) {
-              deps.getBotActivityStore().updateLatestActivity(completedBotName, finalMsg.content, Date.now());
+              deps.getBotActivityStore().updateLatestActivity(completedBotName, finalMsg.content, Date.now(), sourceGatewayId);
             }
-            deps.completeEntityTurn('bot', deps.getActiveRunningBotNames(), deps.getUnreadBotNames(), completedBotName, isBotFocused);
-            if (ctx.activeStreamingBotName === completedBotName) {
+            deps.completeEntityTurn('bot', deps.getActiveRunningBotNames(), deps.getUnreadBotNames(), completedBotKey, isBotFocused);
+            if (matchesActiveGw && ctx.activeStreamingBotName === completedBotName) {
               deps.setActiveStreamingContext({ activeStreamingBotName: null });
             }
           }
-          deps.syncProfileLastMessages();
-          const matchesProjectedCtx = Boolean(
-            ctx.activeStreamingStoredSessionId && ctx.activeStreamingStoredSessionId === completedTargetId,
-          );
-          if (matchesProjectedCtx) {
-            deps.setActiveStreamingContext({
-              activeStreamingMessageId: null,
-              activeStreamingStoredSessionId: null,
-              activeStreamingLiveId: null,
-              activeStreamingBotName: null,
-            });
-          }
-          if (isFocused) {
-            if (streamRegistry && state.activeSessionId && streamRegistry.hasSession(state.activeSessionId)) {
-              liveCoord.syncFocusedStreamingProjection(state.activeSessionId);
-            } else {
-              state.isStreaming = false;
-              state.turnStartedAt = undefined;
-              deps.setTurnStartedSessionId(null);
-              deps.clearPresenceTerminal();
-              if (!streamRegistry || streamRegistry.size() === 0) {
-                deps.disarmTurnWatchdog();
-              }
-            }
-          } else if (
-            streamRegistry
-            && streamRegistry.size() === 0
-            && !state.isStreaming
-            && !deps.getActiveStreamingContext().activeStreamingStoredSessionId
-          ) {
-            deps.disarmTurnWatchdog();
-          }
+          settleTurnTerminalView(streamRegistry, state, isFocused, matchesActiveGw, completedTargetId, ctx, sourceGatewayId);
           needsRender = true;
           break;
         }
@@ -670,94 +670,75 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
           deps.getTokenCoalescer().flush();
           deps.clearToolPatchQueue?.();
           deps.stopRunningToolTimers();
-          const rawFailedId = sourceStoredSessionId || action.sessionId || ctx.activeStreamingStoredSessionId;
-          const failedTargetId = deps.toStoredSessionId(liveCoord.resolveStoredSessionId(rawFailedId) || rawFailedId);
+          const rawFailedId =
+            sourceStoredSessionId || action.sessionId || (matchesActiveGw ? ctx.activeStreamingStoredSessionId : null);
+          const failedTargetId = liveCoord.resolveStoredSessionId(rawFailedId, sourceGatewayId) ?? deps.toStoredSessionId(rawFailedId);
           const failedStream = failedTargetId ? streamRegistry?.removeSession(failedTargetId) : undefined;
           const failedBotName =
             failedStream?.botName ??
-            (failedTargetId === ctx.activeStreamingStoredSessionId ? ctx.activeStreamingBotName : null);
+            (matchesActiveGw && failedTargetId === ctx.activeStreamingStoredSessionId ? ctx.activeStreamingBotName : null);
           const failedMsgId =
             failedStream?.messageId ??
-            (failedTargetId === ctx.activeStreamingStoredSessionId || !failedTargetId ? ctx.activeStreamingMessageId : null);
-          const isFocusedFailed = !failedTargetId || failedTargetId === state.activeSessionId;
+            (matchesActiveGw && (failedTargetId === ctx.activeStreamingStoredSessionId || !failedTargetId)
+              ? ctx.activeStreamingMessageId
+              : null);
+          const isFocusedFailed = isFocusedTarget(failedTargetId);
+          const failedKey = failedTargetId ? scopedSess(failedTargetId) : '';
           const pendingMsg = failedMsgId
-            ? (state.messages.find((m) => m.id === failedMsgId) ??
-              (failedTargetId ? deps.getSessionMessagesCache().get(failedTargetId)?.find((m) => m.id === failedMsgId) : undefined))
+            ? ((isFocusedFailed ? state.messages.find((m) => m.id === failedMsgId) : undefined) ??
+              (failedKey ? deps.getSessionMessagesCache().get(failedKey)?.find((m) => m.id === failedMsgId) : undefined))
             : undefined;
           if (pendingMsg && !pendingMsg.content) {
             pendingMsg.content = deps.t('chat.turnFailedPrefix', { message: action.message });
           }
           if (failedTargetId) {
-            if (failedTargetId === state.activeSessionId && wasNearBottomBeforeFail) {
+            if (isFocusedOnEntity(state, failedTargetId, sourceGatewayId) && wasNearBottomBeforeFail) {
               deps.setPendingScrollToBottom?.(true);
             }
-            applyTurnFailed(deps.getActiveRunningSessionIds(), failedTargetId);
-            deps.getActivityTransitionTracker().clear('session', failedTargetId);
+            applyTurnFailed(deps.getActiveRunningSessionIds(), failedKey);
+            deps.getActivityTransitionTracker().clear('session', failedKey);
           }
           if (failedBotName) {
-            applyTurnFailed(deps.getActiveRunningBotNames(), failedBotName);
-            deps.getActivityTransitionTracker().clear('bot', failedBotName);
-            if (ctx.activeStreamingBotName === failedBotName) {
+            const failedBotKey = scopedBot(failedBotName);
+            applyTurnFailed(deps.getActiveRunningBotNames(), failedBotKey);
+            deps.getActivityTransitionTracker().clear('bot', failedBotKey);
+            if (matchesActiveGw && ctx.activeStreamingBotName === failedBotName) {
               deps.setActiveStreamingContext({ activeStreamingBotName: null });
             }
           }
-          deps.syncProfileLastMessages();
-          const matchesProjectedCtx = Boolean(
-            ctx.activeStreamingStoredSessionId && ctx.activeStreamingStoredSessionId === failedTargetId,
+          settleTurnTerminalView(
+            streamRegistry,
+            state,
+            isFocusedFailed,
+            matchesActiveGw,
+            failedTargetId,
+            ctx,
+            sourceGatewayId,
+            action.message,
           );
-          if (matchesProjectedCtx) {
-            deps.setActiveStreamingContext({
-              activeStreamingMessageId: null,
-              activeStreamingStoredSessionId: null,
-              activeStreamingLiveId: null,
-              activeStreamingBotName: null,
-            });
-          }
-          if (isFocusedFailed) {
-            if (streamRegistry && state.activeSessionId && streamRegistry.hasSession(state.activeSessionId)) {
-              liveCoord.syncFocusedStreamingProjection(state.activeSessionId);
-            } else {
-              state.isStreaming = false;
-              state.turnStartedAt = undefined;
-              deps.setTurnStartedSessionId(null);
-              deps.armPresenceTerminal({ kind: 'failed', message: action.message });
-              // 【消除同步双 render (Pitfall)】setTimedDockNotice 默认会立即调用 render()，
-              // 会提前消费 pendingScrollToBottom 并让批末 deps.render() 落在 messagesChanged=false 路径；
-              // 传 skipRender: true 仅落盘通知与倒计时，由批末统一执行唯一一次 render()。
-              deps.setTimedDockNotice(action.message, undefined, { skipRender: true });
-              if (!streamRegistry || streamRegistry.size() === 0) {
-                deps.disarmTurnWatchdog();
-              }
-            }
-          } else if (
-            streamRegistry
-            && streamRegistry.size() === 0
-            && !state.isStreaming
-            && !deps.getActiveStreamingContext().activeStreamingStoredSessionId
-          ) {
-            deps.disarmTurnWatchdog();
-          }
           needsRender = true;
           break;
         }
 
         case 'session-reclaimed': {
-          const reclaimedSid = liveCoord.resolveStoredSessionId(action.storedSessionId || action.sessionId);
+          const reclaimedSid = liveCoord.resolveStoredSessionId(action.storedSessionId || action.sessionId, sourceGatewayId);
           const reclaimedStream = reclaimedSid ? streamRegistry?.removeSession(reclaimedSid) : undefined;
           if (reclaimedSid) {
-            deps.getActiveRunningSessionIds().delete(reclaimedSid);
-            deps.getActivityTransitionTracker().clear('session', reclaimedSid);
+            const reclaimedKey = scopedSess(reclaimedSid);
+            deps.getActiveRunningSessionIds().delete(reclaimedKey);
+            deps.getActivityTransitionTracker().clear('session', reclaimedKey);
           }
           if (reclaimedStream?.botName) {
-            deps.getActiveRunningBotNames().delete(reclaimedStream.botName);
-            deps.getActivityTransitionTracker().clear('bot', reclaimedStream.botName);
+            const reclaimedBotKey = scopedBot(reclaimedStream.botName);
+            deps.getActiveRunningBotNames().delete(reclaimedBotKey);
+            deps.getActivityTransitionTracker().clear('bot', reclaimedBotKey);
           }
-          if (reclaimedSid && reclaimedSid === state.activeSessionId) {
+          if (reclaimedSid && isFocusedOnEntity(state, reclaimedSid, sourceGatewayId)) {
             state.activeLiveSessionId = '';
-            liveCoord.syncFocusedStreamingProjection(reclaimedSid);
+            liveCoord.syncFocusedStreamingProjection(reclaimedSid, sourceGatewayId);
             void deps.refreshActiveSession?.({ forceRefreshAfterReconnect: true, checkLiveTurn: true });
-          } else if (reclaimedSid && reclaimedSid === ctx.activeStreamingStoredSessionId) {
-            liveCoord.syncFocusedStreamingProjection(state.activeSessionId);
+          } else if (reclaimedSid && matchesActiveGw && reclaimedSid === ctx.activeStreamingStoredSessionId) {
+            liveCoord.syncFocusedStreamingProjection(state.activeSessionId, sourceGatewayId);
           }
           needsRender = true;
           break;
@@ -765,11 +746,16 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
 
         case 'refresh-sessions':
           deps.scheduleSessionsRefresh();
-          liveCoord.scheduleActiveSessionIdleSync();
+          if (matchesActiveGw) liveCoord.scheduleActiveSessionIdleSync();
           break;
 
         case 'session-title':
-          state.sessions = applySessionTitle(state.sessions, action.sessionId, action.title);
+          state.sessions =
+            sourceGatewayId && (state.gatewayCount ?? 1) >= 2
+              ? state.sessions.map((s) =>
+                  !s.gatewayId || s.gatewayId === sourceGatewayId ? applySessionTitle([s], action.sessionId, action.title)[0] : s,
+                )
+              : applySessionTitle(state.sessions, action.sessionId, action.title);
           needsRender = true;
           break;
 
@@ -793,26 +779,30 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
         case 'subagent-log':
         case 'subagent-complete':
         case 'subagent-failed': {
-          deps.onStatusTurnAction?.(action, deps.toStoredSessionId);
+          deps.onStatusTurnAction?.(action, (id) => liveCoord.resolveStoredSessionId(id, sourceGatewayId));
           const rawSid = action.type === 'subagent-spawn' ? action.parentSessionId : action.sessionId;
-          const storedSid = liveCoord.resolveStoredSessionId(rawSid);
+          const storedSid = liveCoord.resolveStoredSessionId(rawSid, sourceGatewayId);
           if (storedSid) {
+            const storedKey = scopedSess(storedSid);
             if (action.type === 'session-info') {
               const infoRec = action.info as Record<string, unknown>;
               const infoRunning = Boolean(infoRec?.running || infoRec?.streaming);
               if (infoRunning) {
                 if (
                   streamRegistry?.touchActivity(storedSid) ||
-                  storedSid === ctx.activeStreamingStoredSessionId ||
-                  deps.getActiveRunningSessionIds().has(storedSid)
+                  (matchesActiveGw && storedSid === ctx.activeStreamingStoredSessionId) ||
+                  deps.getActiveRunningSessionIds().has(storedKey)
                 ) {
                   deps.feedTurnWatchdog?.();
                 }
-                if (storedSid === state.activeSessionId && streamRegistry && !streamRegistry.hasSession(storedSid)) {
+                if (isFocusedOnEntity(state, storedSid, sourceGatewayId) && streamRegistry && !streamRegistry.hasSession(storedSid)) {
                   liveCoord.scheduleActiveSessionIdleSync(50);
                 }
               }
-            } else if (streamRegistry?.touchActivity(storedSid) || storedSid === ctx.activeStreamingStoredSessionId) {
+            } else if (
+              streamRegistry?.touchActivity(storedSid) ||
+              (matchesActiveGw && storedSid === ctx.activeStreamingStoredSessionId)
+            ) {
               deps.feedTurnWatchdog?.();
             }
           }
@@ -825,58 +815,89 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     deps.syncAgentPresence();
   }
 
-  function applyTurnActions(actions: TurnAction[]): void {
-    applyTurnActionsInternal(actions, null);
+  function settleTurnTerminalView(
+    streamRegistry: LiveStreamRegistry | undefined,
+    state: AppState,
+    isFocused: boolean,
+    matchesActiveGw: boolean,
+    targetId: string | null | undefined,
+    ctx: ActiveStreamingContext,
+    sourceGatewayId: string | undefined,
+    failedMessage?: string,
+  ): void {
+    deps.syncProfileLastMessages();
+    if (matchesActiveGw && ctx.activeStreamingStoredSessionId && ctx.activeStreamingStoredSessionId === targetId) {
+      deps.setActiveStreamingContext({
+        activeStreamingMessageId: null,
+        activeStreamingStoredSessionId: null,
+        activeStreamingLiveId: null,
+        activeStreamingBotName: null,
+      });
+    }
+    if (isFocused) {
+      if (streamRegistry && state.activeSessionId && streamRegistry.hasSession(state.activeSessionId)) {
+        liveCoord.syncFocusedStreamingProjection(state.activeSessionId, sourceGatewayId);
+      } else {
+        state.isStreaming = false;
+        state.turnStartedAt = undefined;
+        deps.setTurnStartedSessionId(null);
+        if (failedMessage !== undefined) {
+          deps.armPresenceTerminal({ kind: 'failed', message: failedMessage });
+          // 【消除同步双 render (Pitfall)】setTimedDockNotice 默认会立即调用 render()，
+          // 会提前消费 pendingScrollToBottom 并让批末 deps.render() 落在 messagesChanged=false 路径；
+          // 传 skipRender: true 仅落盘通知与倒计时，由批末统一执行唯一一次 render()。
+          deps.setTimedDockNotice(failedMessage, undefined, { skipRender: true });
+        } else {
+          deps.clearPresenceTerminal();
+        }
+        if (!streamRegistry || streamRegistry.size() === 0) deps.disarmTurnWatchdog();
+      }
+    } else if (
+      streamRegistry && streamRegistry.size() === 0 && !state.isStreaming &&
+      !deps.getActiveStreamingContext().activeStreamingStoredSessionId
+    ) {
+      deps.disarmTurnWatchdog();
+    }
   }
 
-  function handleGatewayEvent(params: unknown): void {
-    const runningStoredIds = Array.from(deps.getActiveRunningSessionIds());
-    const registry = deps.getSessionHandleRegistry();
-    const runningLiveIds = registry.getLiveIds(runningStoredIds);
+  function applyTurnActions(actions: TurnAction[], sourceGatewayId?: string): void {
+    applyTurnActionsInternal(actions, null, sourceGatewayId);
+  }
+
+  function handleGatewayEvent(params: unknown, sourceGatewayId?: string): void {
     const state = deps.getState();
+    const runningStoredIds = collectGatewayScopedSessionIds(
+      deps.getActiveRunningSessionIds(),
+      sourceGatewayId,
+      state.gatewayCount,
+    );
+    const registry = resolveHandleReg(sourceGatewayId);
+    const runningLiveIds = registry.getLiveIds(runningStoredIds);
     const ctx = deps.getActiveStreamingContext();
-    const streamRegistry = deps.getLiveStreamRegistry?.();
+    const streamRegistry = resolveStreamReg(sourceGatewayId);
     const registeredStoredIds = streamRegistry ? streamRegistry.listSessionIds() : [];
     const registeredLiveIds = [
       ...registry.getLiveIds(registeredStoredIds),
       ...registeredStoredIds.map((sid) => streamRegistry?.getBySession(sid)?.liveSessionId || ''),
     ];
 
-    const frameRec = params && typeof params === 'object' ? (params as Record<string, unknown>) : null;
-    const frameType =
-      frameRec && typeof frameRec.type === 'string'
-        ? frameRec.type
-        : frameRec && typeof frameRec.event === 'string'
-          ? frameRec.event
-          : frameRec && typeof frameRec.kind === 'string'
-            ? frameRec.kind
-            : '';
-    const framePayload =
-      frameRec && frameRec.payload && typeof frameRec.payload === 'object' && !Array.isArray(frameRec.payload)
-        ? (frameRec.payload as Record<string, unknown>)
-        : null;
-    const rawFrameSessionId =
-      frameRec && typeof frameRec.session_id === 'string' && frameRec.session_id
-        ? frameRec.session_id
-        : framePayload && typeof framePayload.session_id === 'string' && framePayload.session_id
-          ? framePayload.session_id
-          : '';
-    const frameStoredId = rawFrameSessionId ? liveCoord.resolveStoredSessionId(rawFrameSessionId) : null;
+    const { frameType, framePayload, rawFrameSessionId } = extractGatewayFrameMeta(params);
+    const frameStoredId = rawFrameSessionId ? liveCoord.resolveStoredSessionId(rawFrameSessionId, sourceGatewayId) : null;
 
-    const activeLiveMapped = state.activeSessionId ? registry.toLiveId(state.activeSessionId) : null;
-    const activeStoredMapped = state.activeLiveSessionId ? registry.toStoredId(state.activeLiveSessionId) : null;
-    const streamingLiveMapped = ctx.activeStreamingStoredSessionId ? registry.toLiveId(ctx.activeStreamingStoredSessionId) : null;
-    const streamingStoredMapped = ctx.activeStreamingLiveId ? registry.toStoredId(ctx.activeStreamingLiveId) : null;
-
+    const focusMatchesSource = isSameActiveGateway(state, sourceGatewayId);
     const activeIds = [
-      state.activeLiveSessionId,
-      state.activeSessionId,
-      activeLiveMapped,
-      activeStoredMapped,
-      ctx.activeStreamingLiveId,
-      ctx.activeStreamingStoredSessionId,
-      streamingLiveMapped,
-      streamingStoredMapped,
+      ...(focusMatchesSource
+        ? [
+            state.activeLiveSessionId,
+            state.activeSessionId,
+            state.activeSessionId ? registry.toLiveId(state.activeSessionId) : null,
+            state.activeLiveSessionId ? registry.toStoredId(state.activeLiveSessionId) : null,
+            ctx.activeStreamingLiveId,
+            ctx.activeStreamingStoredSessionId,
+            ctx.activeStreamingStoredSessionId ? registry.toLiveId(ctx.activeStreamingStoredSessionId) : null,
+            ctx.activeStreamingLiveId ? registry.toStoredId(ctx.activeStreamingLiveId) : null,
+          ]
+        : []),
       ...runningStoredIds,
       ...runningLiveIds,
       ...registeredStoredIds,
@@ -886,15 +907,18 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     let frameStream = streamRegistry && frameStoredId ? streamRegistry.getBySession(frameStoredId) : undefined;
     if (streamRegistry && rawFrameSessionId && frameStoredId && !frameStream && TURN_STREAM_EVENT_TYPES.has(frameType)) {
       const isFocusedFrame =
-        frameStoredId === state.activeSessionId ||
-        (Boolean(state.activeLiveSessionId) && rawFrameSessionId === state.activeLiveSessionId);
+        isFocusedOnEntity(state, frameStoredId, sourceGatewayId) ||
+        (focusMatchesSource && Boolean(state.activeLiveSessionId) && rawFrameSessionId === state.activeLiveSessionId);
+      const frameScopedKey = resolveScopedEntityRuntimeKey(frameStoredId, sourceGatewayId, state.gatewayCount);
       const isKnownSession =
-        state.sessions.some((s) => s.id === frameStoredId) ||
-        Boolean(deps.resolveBotNameForSession?.(frameStoredId)) ||
-        deps.getActiveRunningSessionIds().has(frameStoredId);
+        state.sessions.some(
+          (s) => s.id === frameStoredId && (!sourceGatewayId || !s.gatewayId || s.gatewayId === sourceGatewayId),
+        ) ||
+        Boolean(deps.resolveBotNameForSession?.(frameStoredId, sourceGatewayId)) ||
+        deps.getActiveRunningSessionIds().has(frameScopedKey);
       const shouldAttach =
         isFocusedFrame ||
-        deps.getActiveRunningSessionIds().has(frameStoredId) ||
+        deps.getActiveRunningSessionIds().has(frameScopedKey) ||
         (frameType === 'message.start' && isKnownSession);
       if (shouldAttach) {
         const startUserText =
@@ -910,36 +934,26 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
         frameStream = liveCoord.ensureRemoteObserverStream(frameStoredId, rawFrameSessionId, {
           turnId: startTurnId,
           userText: startUserText,
-        });
+        }, sourceGatewayId);
         activeIds.push(rawFrameSessionId, frameStoredId);
       }
     }
 
     const resolvedStreamingMessageId = streamRegistry && frameStoredId
-      ? (frameStream?.messageId ?? (frameStoredId === ctx.activeStreamingStoredSessionId ? ctx.activeStreamingMessageId : null))
-      : ctx.activeStreamingMessageId;
+      ? (frameStream?.messageId ?? (focusMatchesSource && frameStoredId === ctx.activeStreamingStoredSessionId ? ctx.activeStreamingMessageId : null))
+      : (focusMatchesSource ? ctx.activeStreamingMessageId : null);
 
     const actions = reduceGatewayEvent(params, {
       activeSessionIds: Array.from(new Set(activeIds)),
       activeStreamingMessageId: resolvedStreamingMessageId,
     });
-    if (actions.length > 0) applyTurnActionsInternal(actions, frameStoredId);
+    if (actions.length > 0) applyTurnActionsInternal(actions, frameStoredId, sourceGatewayId);
 
-    if (params && typeof params === 'object') {
-      const evtName =
-        'event' in params && typeof params.event === 'string'
-          ? params.event
-          : 'type' in params && typeof params.type === 'string'
-            ? params.type
-            : 'kind' in params && typeof params.kind === 'string'
-              ? params.kind
-              : '';
-      if (evtName === 'projects.changed') {
-        void deps.fetchProjects();
-      }
+    if (frameType === 'projects.changed' && focusMatchesSource) {
+      void deps.fetchProjects();
     }
 
-    handleInspectorEvent(params);
+    handleInspectorEvent(params, sourceGatewayId);
   }
 
   async function connect(targetUrl?: string): Promise<void> {
@@ -1002,15 +1016,14 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
 
     // 连接成功后回写配置（P-032）：写盘失败只影响下次启动的记忆，不得中断连接流程。
     // 该路径是连接成功的副作用而非用户主动保存，失败只记日志、不弹窗打扰。
+    purgeLegacyPlaintextPasswords();
     let persistFailure: StorageWriteFailure = { ok: true };
     const persistedEntries: ReadonlyArray<readonly [string, string]> = [
       ['hermes_flux_gateway_url', state.gatewayUrl],
       ['hermes_flux_username', state.username],
-      ['hermes_flux_password', state.password],
       ['hermes_flux_profile', state.profileName],
       ['hermes_aura_gateway_url', state.gatewayUrl],
       ['hermes_aura_username', state.username],
-      ['hermes_aura_password', state.password],
       ['hermes_aura_profile', state.profileName],
     ];
     for (const [key, value] of persistedEntries) {
@@ -1023,6 +1036,13 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
       console.warn('[gateway] failed to persist connection config; memory state is still active', {
         reason: persistFailure.reason,
         error: String(persistFailure.error),
+      });
+    }
+    const secretKey = buildGatewaySecretKey(state.gatewayUrl);
+    const desktopApiForSecret = deps.getDesktopApi();
+    if (secretKey && state.password && desktopApiForSecret?.setGatewaySecret) {
+      void desktopApiForSecret.setGatewaySecret(secretKey, state.password).catch((err: unknown) => {
+        console.warn('[gateway] failed to sync gateway secret to OS keystore', err);
       });
     }
 
@@ -1352,30 +1372,35 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     storedSessionId: string,
     liveSessionId: string,
     resumeResult?: Record<string, unknown>,
+    gatewayId?: string,
   ): void {
-    const streamRegistry = deps.getLiveStreamRegistry?.();
+    const streamRegistry = resolveStreamReg(gatewayId);
     if (streamRegistry) {
       if (resumeResult) {
         liveCoord.attachLiveTurnFromResume({
           storedSessionId,
           liveSessionId,
           resumeResult,
-          botName: deps.resolveBotNameForSession?.(storedSessionId) ?? null,
+          botName: deps.resolveBotNameForSession?.(storedSessionId, gatewayId) ?? null,
+          gatewayId,
         });
       } else if (streamRegistry.hasSession(storedSessionId)) {
         streamRegistry.updateLiveId(storedSessionId, liveSessionId);
-        liveCoord.syncFocusedStreamingProjection(storedSessionId);
+        liveCoord.syncFocusedStreamingProjection(storedSessionId, gatewayId);
       }
       return;
     }
-    if (deps.getActiveStreamingContext().activeStreamingStoredSessionId === storedSessionId) {
+    const state = deps.getState();
+    const sameGw = isSameActiveGateway(state, gatewayId);
+    if (sameGw && deps.getActiveStreamingContext().activeStreamingStoredSessionId === storedSessionId) {
       deps.setActiveStreamingContext({ activeStreamingLiveId: liveSessionId });
       deps.armTurnWatchdog();
     }
   }
 
-  function finishReconnectStreaming(storedSessionId: string): void {
-    const streamRegistry = deps.getLiveStreamRegistry?.();
+  function finishReconnectStreaming(storedSessionId: string, gatewayId?: string): void {
+    const state = deps.getState();
+    const streamRegistry = resolveStreamReg(gatewayId);
     const removedStream = streamRegistry?.removeSession(storedSessionId);
     if (removedStream) {
       deps.getTokenCoalescer().dropMessage?.(removedStream.messageId);
@@ -1386,9 +1411,13 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     deps.clearToolPatchQueue?.();
     deps.stopRunningToolTimers();
     if (removedStream?.botName) {
-      deps.getActiveRunningBotNames().delete(removedStream.botName);
+      deps.getActiveRunningBotNames().delete(
+        resolveScopedBotRuntimeKey(removedStream.botName, gatewayId, state.gatewayCount),
+      );
     }
-    if (deps.getActiveStreamingContext().activeStreamingStoredSessionId === storedSessionId) {
+    const sameGw = isSameActiveGateway(state, gatewayId);
+    const focused = isFocusedOnEntity(state, storedSessionId, gatewayId);
+    if (sameGw && deps.getActiveStreamingContext().activeStreamingStoredSessionId === storedSessionId) {
       deps.setActiveStreamingContext({
         activeStreamingMessageId: null,
         activeStreamingStoredSessionId: null,
@@ -1396,8 +1425,7 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
         activeStreamingBotName: null,
       });
     }
-    const state = deps.getState();
-    if (state.activeSessionId === storedSessionId || !streamRegistry || streamRegistry.size() === 0) {
+    if (focused || !streamRegistry || streamRegistry.size() === 0) {
       state.isStreaming = false;
       state.turnStartedAt = undefined;
       deps.setTurnStartedSessionId(null);
@@ -1405,7 +1433,9 @@ export function createGatewayEventDispatcher(deps: GatewayEventDispatcherDeps): 
     if (!streamRegistry || streamRegistry.size() === 0) {
       deps.disarmTurnWatchdog();
     }
-    deps.getActiveRunningSessionIds().delete(storedSessionId);
+    deps.getActiveRunningSessionIds().delete(
+      resolveScopedEntityRuntimeKey(storedSessionId, gatewayId, state.gatewayCount),
+    );
   }
 
   async function retryNow(): Promise<void> {

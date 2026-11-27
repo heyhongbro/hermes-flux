@@ -12,13 +12,13 @@
  *      经典双轨主工位卡保持既有 `'rounded'`（8px）形态不变，避免破坏既有回归基线。
  *
  * 【约束与规则 (Rules)】
- *   1. 尺寸与间距以普通会话为基准（min-h-12, px-2, py-1.5, gap-2）；
+ *   1. 尺寸与间距以普通会话为基准（min-h-12, px-2, py-1, gap-2）；
  *   2. 严格复用 primitives（Button / Input / Skeleton / ActivityIndicator），禁止自造样式轮子；
  *   3. 时间与摘要均为纯展示，禁止在渲染热路径引入 Intl。
  */
 
 import * as React from 'react';
-import { Check, RotateCcw } from 'lucide-react';
+import { Check, RotateCcw, WifiOff } from 'lucide-react';
 import { t } from '../i18n/index.js';
 import { renderBotAvatar, renderGroupCollageAvatar } from '../utils/botAvatar.js';
 import { Button } from './primitives/Button.js';
@@ -26,6 +26,7 @@ import { Input } from './primitives/Input.js';
 import { Skeleton } from './primitives/Skeleton.js';
 import { ActivityIndicator, type ActivityEntityKind } from './primitives/ActivityIndicator.js';
 import type { ActivityIndicatorVariant } from '../tokens/activityIndicator.js';
+import type { RailEntityGatewayBadge } from '../components/LeftRail/types.js';
 import {
   formatLeftRailTime,
   type ActivityTransition,
@@ -63,16 +64,18 @@ export function CollageAvatar({
   members,
   profiles,
   size,
+  gatewayId,
 }: {
   members: string[];
   profiles: LeftRailProfile[];
   size: number;
+  gatewayId?: string;
 }): React.ReactElement {
   return (
     <span
       aria-hidden="true"
       className="inline-flex shrink-0"
-      dangerouslySetInnerHTML={{ __html: renderGroupCollageAvatar(members, profiles, size) }}
+      dangerouslySetInnerHTML={{ __html: renderGroupCollageAvatar(members, profiles, size, gatewayId) }}
     />
   );
 }
@@ -130,6 +133,8 @@ export interface RailEntityRowProps {
   entityKind?: ActivityEntityKind;
   activityVariant?: ActivityIndicatorVariant;
   titleAttr?: string;
+  /** 多网关次级来源短标签（仅多网关模式传入；非紧凑行固定落在 Row 2 subtitle 左侧）。 */
+  gatewayBadge?: RailEntityGatewayBadge;
   /** 骨架占位行：loading 时禁用点击、不渲染时间与活动点，仅保留头像槽位与两条占位条。 */
   loading?: boolean;
   /** 骨架行的 data-skeleton 标记（仅 loading 时输出），供探针区分会话行与主工位卡。 */
@@ -138,6 +143,21 @@ export interface RailEntityRowProps {
   onClick?: () => void;
   onContextMenu?: (event: React.MouseEvent) => void;
   dataAttributes?: Record<string, string>;
+}
+
+/** 统一实体来源短标签微标：桌面侧栏与移动端实体行共用同一发丝线微标样式。 */
+export function EntityGatewayBadgePill({ badge }: { badge: RailEntityGatewayBadge }): React.ReactElement {
+  return (
+    <span
+      data-gateway-badge={badge.label}
+      className="inline-flex max-w-16 shrink-0 items-center gap-1 rounded-inner border border-border-subtle px-1 font-code text-micro text-muted-foreground"
+    >
+      {badge.offline ? (
+        <WifiOff size={10} strokeWidth={2} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+      ) : null}
+      <span className="truncate">{badge.label}</span>
+    </span>
+  );
 }
 
 /**
@@ -160,6 +180,7 @@ export function RailEntityRow({
   entityKind,
   activityVariant,
   titleAttr,
+  gatewayBadge,
   loading = false,
   skeletonSlot = 'session',
   hoverAction,
@@ -167,12 +188,15 @@ export function RailEntityRow({
   onContextMenu,
   dataAttributes,
 }: RailEntityRowProps): React.ReactElement {
+  const isOffline = Boolean(gatewayBadge?.offline);
+  const badgePill = gatewayBadge ? <EntityGatewayBadgePill badge={gatewayBadge} /> : null;
+
   const mainButton = (
     <button
       type="button"
       disabled={loading}
       aria-busy={loading}
-      className={`${className} ${hoverAction && !loading ? '' : 'group '}relative flex w-full items-center gap-2 rounded-card px-2 py-1.5 text-left transition-colors duration-150 ${
+      className={`${className} ${hoverAction && !loading ? '' : 'group '}relative flex w-full items-center gap-2 rounded-card px-2 py-1 text-left transition-colors duration-150 ${
         compact ? 'min-h-8' : 'min-h-12'
       } ${
         loading
@@ -180,13 +204,17 @@ export function RailEntityRow({
           : active
             ? 'active bg-card-active text-foreground'
             : 'hover:bg-card-hover/80 text-secondary-foreground hover:text-foreground'
-      }`}
+      }${!loading && isOffline ? ' opacity-60' : ''}`}
       title={titleAttr}
       onClick={loading ? undefined : onClick}
       onContextMenu={loading ? undefined : onContextMenu}
       {...(loading
         ? { 'data-skeleton': skeletonSlot }
-        : { 'data-entity-row': entityKind || 'entity', ...(dataAttributes || {}) })}
+        : {
+            'data-entity-row': entityKind || 'entity',
+            ...(isOffline ? { 'data-gateway-offline': 'true' } : {}),
+            ...(dataAttributes || {}),
+          })}
     >
       {avatar && <span aria-hidden="true" className="shrink-0 flex items-center justify-center">{avatar}</span>}
       {loading ? (
@@ -198,7 +226,10 @@ export function RailEntityRow({
       ) : (
         <span className="flux-rail-entity-col flex min-w-0 flex-1 flex-col gap-1">
           <span className="flex min-w-0 items-center justify-between gap-2">
-            <span className="truncate text-body font-medium text-foreground">{title}</span>
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="truncate text-body font-medium text-foreground">{title}</span>
+              {compact && badgePill ? badgePill : null}
+            </span>
             <span className="ml-auto flex shrink-0 items-center gap-1">
               <ActivityIndicator
                 state={activityState}
@@ -217,8 +248,15 @@ export function RailEntityRow({
               )}
             </span>
           </span>
-          {!compact && subtitle && (
-            <span className="truncate text-aux font-normal text-muted-foreground/90">{subtitle}</span>
+          {!compact && (badgePill || subtitle) && (
+            <span className="flex min-w-0 items-center gap-1">
+              {badgePill}
+              {subtitle ? (
+                <span className="min-w-0 flex-1 truncate text-aux font-normal text-muted-foreground/90">
+                  {subtitle}
+                </span>
+              ) : null}
+            </span>
           )}
         </span>
       )}

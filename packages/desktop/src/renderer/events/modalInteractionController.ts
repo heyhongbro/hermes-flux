@@ -41,23 +41,23 @@ export interface ModalInteractionDeps {
     containerId?: string;
     title?: string;
   }) => Promise<string | null>;
-  readonly deleteSession: (id: string) => Promise<void>;
-  readonly renameSession: (id: string, title: string) => Promise<void>;
-  readonly pinSession: (id: string) => Promise<void>;
-  readonly archiveSession: (id: string) => Promise<void>;
-  readonly exportMarkdown: (id: string) => Promise<void>;
+  readonly deleteSession: (id: string, gatewayId?: string) => Promise<void>;
+  readonly renameSession: (id: string, title: string, gatewayId?: string) => Promise<void>;
+  readonly pinSession: (id: string, gatewayId?: string) => Promise<void>;
+  readonly archiveSession: (id: string, explicitProfile?: string, gatewayId?: string) => Promise<void>;
+  readonly exportMarkdown: (id: string, gatewayId?: string) => Promise<void>;
   readonly copySessionId: (id: string) => Promise<void>;
-  readonly openBotChat: (profile: string) => Promise<void> | void;
+  readonly openBotChat: (profile: string, gatewayId?: string) => Promise<void> | void;
   readonly openBotSettings: (profile: string) => void;
-  readonly openGroupRoom: (roomId: string) => Promise<void>;
+  readonly openGroupRoom: (roomId: string, gatewayId?: string) => Promise<void>;
   readonly createGroupRoom: (title: string, members: string[]) => Promise<{ room_id?: string; room?: { room_id?: string } } | null>;
-  readonly disbandGroupRoom: (roomId: string) => Promise<void>;
+  readonly disbandGroupRoom: (roomId: string, gatewayId?: string) => Promise<void>;
   readonly fetchGroupRooms: () => Promise<void>;
   readonly routeSend?: (text: string) => Promise<void>;
   readonly sendGroupMessage?: (roomId: string, text: string) => Promise<void>;
-  readonly requestMarkDone?: (kind: 'session' | 'group', id: string, title: string, profile?: string) => void;
-  readonly restoreDone?: (kind: 'session' | 'group', id: string, profile?: string) => Promise<boolean>;
-  readonly moveEntityToFolder?: (kind: 'session' | 'group', id: string, containerId: string | null, profile?: string) => Promise<boolean>;
+  readonly requestMarkDone?: (kind: 'session' | 'group', id: string, title: string, profile?: string, gatewayId?: string) => void;
+  readonly restoreDone?: (kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string) => Promise<boolean>;
+  readonly moveEntityToFolder?: (kind: 'session' | 'group', id: string, containerId: string | null, profile?: string, gatewayId?: string) => Promise<boolean>;
   readonly promptCreateFolder?: (moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string } | null) => void;
   readonly promptRenameFolder?: (folderId: string, currentName: string) => void;
   readonly confirmDeleteFolder?: (folderId: string, name: string) => void;
@@ -75,6 +75,7 @@ export interface SubmitTaskModalInput {
   title?: string;
   projectId?: string;
   containerId?: string;
+  gatewayId?: string;
   members?: string[];
   firstMessage?: string;
 }
@@ -309,7 +310,8 @@ export class ModalInteractionController {
             containerId: targetContainerId || undefined,
           });
         }
-        await this.deps.openGroupRoom(roomId);
+        const targetGw = input?.gatewayId || state.activeFocus?.gatewayId || state.activeGatewayId;
+        await this.deps.openGroupRoom(roomId, targetGw);
         this.deps.restoreComposerFocus();
         if (firstMessage && this.deps.sendGroupMessage) {
           await this.deps.sendGroupMessage(roomId, firstMessage);
@@ -340,11 +342,11 @@ export class ModalInteractionController {
     if (!ctx) return;
 
     if (action === 'bot-chat') {
-      void this.deps.openBotChat(ctx.targetId);
+      void this.deps.openBotChat(ctx.targetId, ctx.gatewayId);
     } else if (action === 'bot-edit') {
       this.deps.openBotSettings(ctx.targetId);
     } else if (action === 'group-rename') {
-      this.deps.commitState({ editingGroupRoomId: ctx.targetId });
+      this.deps.commitState({ editingGroupRoomId: ctx.targetId, editingGroupGatewayId: ctx.gatewayId });
       this.deps.requestRender();
       if (typeof window !== 'undefined') {
         window.setTimeout(() => {
@@ -369,7 +371,7 @@ export class ModalInteractionController {
           isDanger: true,
           onConfirm: () => {
             this.deps.restoreComposerFocus();
-            void this.deps.disbandGroupRoom(ctx.targetId).catch((err: unknown) => {
+            void this.deps.disbandGroupRoom(ctx.targetId, ctx.gatewayId).catch((err: unknown) => {
               const errorMessage = err instanceof Error ? err.message : String(err);
               this.deps.commitState({
                 dockNotice: this.deps.t('ctx.disbandGroupFailed', { error: errorMessage }),
@@ -384,23 +386,23 @@ export class ModalInteractionController {
       });
       this.deps.requestRender();
     } else if (action === 'rename') {
-      void this.deps.renameSession(ctx.targetId, ctx.targetName);
+      void this.deps.renameSession(ctx.targetId, ctx.targetName, ctx.gatewayId);
     } else if (action === 'copy-id') {
       void this.deps.copySessionId(ctx.targetId);
     } else if (action === 'pin') {
-      void this.deps.pinSession(ctx.targetId);
+      void this.deps.pinSession(ctx.targetId, ctx.gatewayId);
     } else if (action === 'export') {
-      void this.deps.exportMarkdown(ctx.targetId);
+      void this.deps.exportMarkdown(ctx.targetId, ctx.gatewayId);
     } else if (action === 'archive' || action === 'mark-done') {
       const kind = ctx.targetType === 'group' ? 'group' : 'session';
       if (this.deps.requestMarkDone) {
-        this.deps.requestMarkDone(kind, ctx.targetId, ctx.targetName || ctx.targetId, ctx.sessionProfile);
+        this.deps.requestMarkDone(kind, ctx.targetId, ctx.targetName || ctx.targetId, ctx.sessionProfile, ctx.gatewayId);
       } else if (kind === 'session') {
-        void this.deps.archiveSession(ctx.targetId);
+        void this.deps.archiveSession(ctx.targetId, ctx.sessionProfile, ctx.gatewayId);
       }
     } else if (action === 'restore-active') {
       const kind = ctx.targetType === 'group' ? 'group' : 'session';
-      void this.deps.restoreDone?.(kind, ctx.targetId, ctx.sessionProfile);
+      void this.deps.restoreDone?.(kind, ctx.targetId, ctx.sessionProfile, ctx.gatewayId);
     } else if (action === 'new-folder') {
       this.deps.promptCreateFolder?.(null);
     } else if (action === 'new-folder-and-move') {
@@ -408,12 +410,12 @@ export class ModalInteractionController {
       this.deps.promptCreateFolder?.({ kind, id: ctx.targetId, profile: ctx.sessionProfile });
     } else if (action === 'move-folder:__unassign__') {
       const kind = ctx.targetType === 'group' ? 'group' : 'session';
-      void this.deps.moveEntityToFolder?.(kind, ctx.targetId, null, ctx.sessionProfile);
+      void this.deps.moveEntityToFolder?.(kind, ctx.targetId, null, ctx.sessionProfile, ctx.gatewayId);
     } else if (action.startsWith('move-folder:')) {
       const folderId = action.slice('move-folder:'.length);
       const kind = ctx.targetType === 'group' ? 'group' : 'session';
       if (folderId) {
-        void this.deps.moveEntityToFolder?.(kind, ctx.targetId, folderId, ctx.sessionProfile);
+        void this.deps.moveEntityToFolder?.(kind, ctx.targetId, folderId, ctx.sessionProfile, ctx.gatewayId);
       }
     } else if (action === 'folder-new-chat') {
       this.deps.openNewChatInContainer?.('session', ctx.targetId);
@@ -422,7 +424,7 @@ export class ModalInteractionController {
     } else if (action === 'folder-delete') {
       this.deps.confirmDeleteFolder?.(ctx.targetId, ctx.targetName);
     } else if (action === 'delete') {
-      this.requestDeleteSession(ctx.targetId, ctx.targetName || ctx.targetId);
+      this.requestDeleteSession(ctx.targetId, ctx.targetName || ctx.targetId, ctx.gatewayId);
     }
   }
 
@@ -432,7 +434,7 @@ export class ModalInteractionController {
    * @param id 会话 ID
    * @param name 会话标题或名称（用于展示在二次确认窗中）
    */
-  public requestDeleteSession(id: string, name?: string): void {
+  public requestDeleteSession(id: string, name?: string, gatewayId?: string): void {
     const sessionName = name || id;
     this.deps.commitState({
       confirmModal: {
@@ -443,7 +445,7 @@ export class ModalInteractionController {
         isDanger: true,
         onConfirm: () => {
           this.deps.restoreComposerFocus();
-          void this.deps.deleteSession(id);
+          void this.deps.deleteSession(id, gatewayId);
         },
         onCancel: () => {
           this.deps.restoreComposerFocus();

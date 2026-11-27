@@ -89,18 +89,18 @@ test('拖拽状态机：真实产物必须写入并清理 resizing 标记与持�
 
 test('群聊重命名：空名与断连不发 RPC，失败必须回滚乐观改名', () => {
   const src = fs.readFileSync(RENDERER, 'utf8');
-  const start = src.indexOf('async function confirmGroupRename');
-  assert.ok(start > -1, '产物中必须存在 confirmGroupRename');
-  const nextTopLevel = src.indexOf('\nfunction ', start + 10);
-  const body = src.slice(start, nextTopLevel === -1 ? start + 3000 : nextTopLevel);
+  const start = src.indexOf('async confirmGroupRename(');
+  assert.ok(start > -1, '产物中必须存在 LeftRailController.confirmGroupRename');
+  const nextMethod = src.indexOf('\n  decorateRailSessions(', start + 10);
+  const body = src.slice(start, nextMethod === -1 ? start + 3000 : nextMethod);
 
-  assert.match(body, /if \(!newName \|\| !gatewayClient\)/, '空名或未连接网关时必须提前返回，不得发 RPC');
+  assert.match(body, /if \(!newName \|\| !client\)/, '空名或未连接网关时必须提前返回，不得发 RPC');
   assert.match(body, /previousName/, '失败回滚必须有原名快照');
   // 回滚语句必须位于 catch 块内：catch 之后仍要出现一次 groupRooms 回滚
   const catchIndex = body.indexOf('} catch');
   assert.ok(catchIndex > -1, '必须有 catch 分支处理失败');
   const afterCatch = body.slice(catchIndex);
-  assert.match(afterCatch, /state\.groupRooms = state\.groupRooms\.map/, '失败后必须在 catch 内把乐观改名回滚');
+  assert.match(afterCatch, /state\d*\.groupRooms = state\d*\.groupRooms\.map/, '失败后必须在 catch 内把乐观改名回滚');
   assert.match(afterCatch, /previousName/, '回滚必须使用 catch 之前捕获的原名快照');
   // 快照必须在乐观改名之前取，否则拿到的是已被覆盖的新名
   assert.ok(

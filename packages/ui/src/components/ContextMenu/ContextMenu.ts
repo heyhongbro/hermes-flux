@@ -33,6 +33,7 @@ export interface ContextMenuProps {
   sessionId?: string;
   sessionTitle?: string;
   sessionProfile?: string;
+  gatewayId?: string;
   isDone?: boolean;
   currentContainerId?: string | null;
   hasCwdProjectMatch?: boolean;

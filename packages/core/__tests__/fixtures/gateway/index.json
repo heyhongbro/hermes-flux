@@ -1654,6 +1654,20 @@
       "ok": false,
       "skipped": true,
       "reason": "历史衍生树按路径读取依赖磁盘树文件，离线探针显式跳过，由标准化合并单测与形式化不变量守护"
+    },
+    {
+      "module": "system",
+      "method": "client.capabilities",
+      "ok": false,
+      "skipped": true,
+      "reason": "客户端能力协商需结合在线反向请求句柄表在真实建连期触发，离线基线显式跳过，由契约白名单与 RPC 客户端能力单测守护"
+    },
+    {
+      "module": "sessions",
+      "method": "session.events.since",
+      "ok": false,
+      "skipped": true,
+      "reason": "断点续传增量事件回放依赖活跃会话与 replay_epoch 游标上下文，离线基线显式跳过，由契约白名单与断线续传协议单测守护"
     }
   ],
   "note": "主基线录制自 0.22.5；extensions 模块（mcp.servers.status / skills.manage / skills.reload）录制自 0.21.6 @ 2026-11-08T13:22:20.724Z，逐条带 gatewayVersion 标注。"

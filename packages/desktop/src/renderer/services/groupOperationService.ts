@@ -24,7 +24,7 @@
  *   3. 零文本写死：系统通知与欢迎提示统一走 deps.t。
  */
 
-import type { AppState } from '../state/appState.js';
+import { resolveScopedEntityRuntimeKey, type AppState } from '../state/appState.js';
 import {
   type HermesGatewayClient,
   type GroupMessageEntry,
@@ -35,6 +35,7 @@ import {
   applyEnteredRead,
   captureGroupLogBaseline,
   runGuarded,
+  settleTurnTermination,
 } from '@hermes-flux/core';
 import type { I18nKey, MessageViewModel, LeftRailGroupRoom } from '@hermes-flux/ui';
 
@@ -45,6 +46,8 @@ export type SessionEnterBeginHook = (sessionId: string, options?: { forcePinToBo
 export interface GroupOperationDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
+  readonly onActiveFocusChanged?: () => void;
   readonly render: () => void;
   readonly t: (key: I18nKey, params?: Record<string, string | number>) => string;
   readonly disarmRollbackOnLeave: () => void;
@@ -76,6 +79,11 @@ export interface GroupOperationDeps {
   beginSessionEnter?: SessionEnterBeginHook;
   captureStreamAnchor?: GroupAnchorCapturer;
   readonly onGroupActivated?: (roomId: string) => void;
+  readonly activeRunningSessionIds?: Set<string>;
+  readonly activeRunningBotNames?: Set<string>;
+  readonly onGroupDisbanded?: (roomId: string) => void;
+  readonly selectSession?: (id: string, opts?: { gatewayId?: string }) => Promise<void> | void;
+  readonly onMultiGatewayRefresh?: () => Promise<void>;
 }
 
 export interface GroupOperationService {
@@ -83,11 +91,12 @@ export interface GroupOperationService {
   isHostedRoom(id: string): boolean;
   fetchGroupRooms(): Promise<void>;
   syncActiveGroupSpeakerFromMessages(): void;
-  openGroupRoom(roomId: string): Promise<void>;
+  openGroupRoom(roomId: string, gatewayId?: string): Promise<void>;
   refreshGroupRoomLog(roomId: string): Promise<number>;
   syncGroupRoomLogsToState(roomId: string, logs: readonly GroupMessageEntry[]): void;
   sendGroupMessage(roomId: string, text: string): Promise<void>;
   createGroupRoom(title: string, members: string[]): Promise<{ room_id?: string; room?: { room_id?: string } } | null>;
+  disbandGroupRoom(roomId: string, gatewayId?: string): Promise<void>;
 }
 
 export function createGroupOperationService(deps: GroupOperationDeps): GroupOperationService {
@@ -95,13 +104,18 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
   const groupRoomStore = deps.groupRoomStore ?? new GroupRoomStore();
 
   function isHostedRoom(id: string): boolean {
-    return hostedRoomIds.has(id);
+    return hostedRoomIds.has(id) || deps.getState().groupRooms.some((g) => g.roomId === id);
   }
 
   async function fetchGroupRooms(): Promise<void> {
+    const state = deps.getState();
+    if ((state.gatewayCount ?? 1) >= 2 && deps.onMultiGatewayRefresh) {
+      await deps.onMultiGatewayRefresh();
+      deps.render();
+      return;
+    }
     const client = deps.getGatewayClient();
     if (!client) return;
-    const state = deps.getState();
     try {
       if (state.profiles.length === 0) {
         try {
@@ -164,7 +178,10 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
       return;
     }
     const roomId = state.activeFocus.roomId;
-    const members = state.groupRooms.find((g) => g.roomId === roomId)?.members ?? [];
+    const activeGw = state.activeFocus.gatewayId || state.activeGatewayId;
+    const members =
+      (state.groupRooms.find((g) => g.roomId === roomId && (!activeGw || !g.gatewayId || g.gatewayId === activeGw)) ??
+        state.groupRooms.find((g) => g.roomId === roomId))?.members ?? [];
     state.activeGroupSpeaker = resolveGroupSpeaker(state.messages, members, state.profiles);
   }
 
@@ -187,7 +204,7 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
    *   1. 首帧同步清理视口并声明 loading，0ms 触发 deps.render() 显示骨架屏；
    *   2. 不得降级或假冒普通会话。
    */
-  async function openGroupRoom(roomId: string): Promise<void> {
+  async function openGroupRoom(roomId: string, gatewayId?: string): Promise<void> {
     if (!roomId) return;
     const state = deps.getState();
 
@@ -196,16 +213,25 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
     deps.disarmRollbackOnLeave();
     deps.captureStreamAnchor?.();
 
+    const targetRoom =
+      state.groupRooms.find((r) => r.roomId === roomId && (!gatewayId || !r.gatewayId || r.gatewayId === gatewayId)) ??
+      state.groupRooms.find((r) => r.roomId === roomId);
+    const targetGw = gatewayId || targetRoom?.gatewayId || state.activeGatewayId;
+    const outgoingGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+
     // 若前序处于普通会话且存在消息，存入内存缓存供折返恢复
     if (state.activeSessionId && state.messages.length > 0 && deps.sessionMessagesCache) {
-      deps.sessionMessagesCache.set(state.activeSessionId, [...state.messages]);
+      const outCacheKey = resolveScopedEntityRuntimeKey(state.activeSessionId, outgoingGw, state.gatewayCount);
+      deps.sessionMessagesCache.set(outCacheKey, [...state.messages]);
     }
 
-    // 2. 率先同步写入群聊焦点并重置单聊 Session ID（彻底隔断跨域逃逸）
-    state.activeFocus = { type: 'group', roomId };
-    applyEnteredRead(deps.unreadGroupRoomIds, roomId);
-    deps.activityTransitionTracker.clear('group', roomId);
-    const targetRoom = state.groupRooms.find((r) => r.roomId === roomId);
+    // 2. 率先同步写入群聊焦点与所属网关，并重置单聊 Session ID（彻底隔断跨域逃逸）
+    state.activeGatewayId = targetGw;
+    state.activeFocus = targetGw ? { type: 'group', roomId, gatewayId: targetGw } : { type: 'group', roomId };
+    deps.onActiveFocusChanged?.();
+    const scopedGroupKey = resolveScopedEntityRuntimeKey(roomId, targetGw, state.gatewayCount);
+    applyEnteredRead(deps.unreadGroupRoomIds, scopedGroupKey);
+    deps.activityTransitionTracker.clear('group', scopedGroupKey);
 
     state.activeSessionId = '';
     state.activeLiveSessionId = '';
@@ -225,7 +251,7 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
     const generation = deps.nextLoadMessagesGeneration();
     const guard = { sessionId: roomId, generation };
 
-    const client = deps.getGatewayClient();
+    const client = deps.getClientForGateway ? deps.getClientForGateway(targetGw) : deps.getGatewayClient();
     let fetchedLogs: GroupMessageEntry[] = [];
 
     if (client) {
@@ -320,7 +346,7 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
     syncActiveGroupSpeakerFromMessages();
     deps.render();
 
-    if (hostedRoomIds.has(roomId) && deps.activeRunningGroupRoomIds.has(roomId) && !deps.groupPollerManager.isPolling(roomId)) {
+    if (isHostedRoom(roomId) && deps.activeRunningGroupRoomIds.has(scopedGroupKey) && !deps.groupPollerManager.isPolling(roomId)) {
       deps.groupPollerManager.startAwaitReply(roomId, captureGroupLogBaseline(fetchedLogs));
     }
   }
@@ -341,9 +367,61 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
     title: string,
     members: string[],
   ): Promise<{ room_id?: string; room?: { room_id?: string } } | null> {
-    const client = deps.getGatewayClient();
+    const state = deps.getState();
+    const client = deps.getClientForGateway
+      ? deps.getClientForGateway(state.activeGatewayId)
+      : deps.getGatewayClient();
     if (!client) return null;
     return await groupRoomStore.createRoom(title, members, client);
+  }
+
+  async function disbandGroupRoom(roomId: string, gatewayId?: string): Promise<void> {
+    const state = deps.getState();
+    const targetGw =
+      gatewayId ||
+      state.groupRooms.find((r) => r.roomId === roomId)?.gatewayId ||
+      state.activeGatewayId;
+    const client = deps.getClientForGateway
+      ? deps.getClientForGateway(targetGw)
+      : deps.getGatewayClient();
+    if (!client) return;
+    const ok = await groupRoomStore.disbandRoom(roomId, client);
+    if (!ok) throw new Error('Room disband rejected by gateway');
+    const matchesRoom = (r: { roomId: string; gatewayId?: string }): boolean =>
+      r.roomId === roomId && (!targetGw || !r.gatewayId || r.gatewayId === targetGw);
+    state.groupRooms = state.groupRooms.filter((r) => !matchesRoom(r));
+    deps.persistGroupsToCache(state.groupRooms);
+    deps.groupPollerManager.stop(roomId);
+    const roomKey = resolveScopedEntityRuntimeKey(roomId, targetGw, state.gatewayCount);
+    settleTurnTermination({
+      runningSessionIds: deps.activeRunningSessionIds ?? new Set<string>(),
+      runningBotNames: deps.activeRunningBotNames ?? new Set<string>(),
+      runningGroupRoomIds: deps.activeRunningGroupRoomIds,
+      groupRoomId: roomKey,
+    });
+    deps.unreadGroupRoomIds.delete(roomKey);
+    deps.activityTransitionTracker.clear('group', roomKey);
+    deps.onGroupDisbanded?.(roomId);
+    await fetchGroupRooms();
+    if (state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId) {
+      state.activeGroupSpeaker = null;
+      deps.turnExecutionService.resetActiveGroupThread();
+      const candidate = state.sessions.find((s) => !s.isArchived && !s.isSubagent);
+      if (candidate) {
+        void deps.selectSession?.(
+          candidate.id,
+          candidate.gatewayId ? { gatewayId: candidate.gatewayId } : undefined,
+        );
+      } else {
+        state.activeFocus = { type: 'session', sessionId: '' };
+        state.activeSessionId = '';
+        state.activeLiveSessionId = '';
+        state.isStreaming = false;
+        state.messagesPhase = 'ready';
+        state.messages = [];
+        deps.render();
+      }
+    }
   }
 
   return {
@@ -356,5 +434,6 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
     syncGroupRoomLogsToState,
     sendGroupMessage,
     createGroupRoom,
+    disbandGroupRoom,
   };
 }

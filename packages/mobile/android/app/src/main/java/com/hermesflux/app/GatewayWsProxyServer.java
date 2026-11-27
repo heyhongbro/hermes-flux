@@ -12,7 +12,10 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -63,9 +66,35 @@ final class GatewayWsProxyServer {
     }
 
     private final Set<Socket> activeSockets = Collections.synchronizedSet(new HashSet<>());
+    private final Set<String> allowedTargetOrigins = Collections.synchronizedSet(new HashSet<>());
+    private final String authNonce = generateAuthNonce();
     private volatile boolean running;
     private ServerSocket serverSocket;
     private Thread acceptThread;
+
+    String getAuthNonce() {
+        return authNonce;
+    }
+
+    void allowTargetOrigin(String rawOrigin) {
+        if (rawOrigin == null || rawOrigin.trim().isEmpty()) {
+            return;
+        }
+        try {
+            final URI parsed = new URI(rawOrigin.trim());
+            final String scheme = parsed.getScheme() == null ? "" : parsed.getScheme().toLowerCase(Locale.ROOT);
+            final String host = parsed.getHost();
+            if (host == null || host.isEmpty()) {
+                return;
+            }
+            if (!"ws".equals(scheme) && !"wss".equals(scheme) && !"http".equals(scheme) && !"https".equals(scheme)) {
+                return;
+            }
+            allowedTargetOrigins.add(canonicalTargetOrigin(scheme, host, parsed.getPort()));
+        } catch (Exception ignored) {
+            // Ignore malformed origin entries
+        }
+    }
 
     synchronized int start() throws IOException {
         if (running && serverSocket != null && !serverSocket.isClosed()) {
@@ -209,6 +238,13 @@ final class GatewayWsProxyServer {
                 return;
             }
 
+            final String token = reqUri.getQueryParameter("token");
+            if (!isValidNonce(token)) {
+                rejectHttp(clientOut, 403, "Forbidden");
+                closeTracked(client);
+                return;
+            }
+
             final String rawTarget = reqUri.getQueryParameter("target");
             if (rawTarget == null || rawTarget.isEmpty()) {
                 rejectHttp(clientOut, 400, "Bad Request");
@@ -237,9 +273,20 @@ final class GatewayWsProxyServer {
                 closeTracked(client);
                 return;
             }
+            if (isBlockedTargetHost(host) || !isAllowedWsPath(targetUri.getRawPath())) {
+                rejectHttp(clientOut, 403, "Forbidden");
+                closeTracked(client);
+                return;
+            }
 
             final boolean isTls = "wss".equals(scheme);
             final int port = targetUri.getPort() > 0 ? targetUri.getPort() : (isTls ? 443 : 80);
+            final String targetOrigin = canonicalTargetOrigin(scheme, host, port);
+            if (!allowedTargetOrigins.isEmpty() && !allowedTargetOrigins.contains(targetOrigin)) {
+                rejectHttp(clientOut, 403, "Forbidden");
+                closeTracked(client);
+                return;
+            }
 
             upstream = openUpstreamSocket(host, port, isTls);
             activeSockets.add(upstream);
@@ -393,6 +440,70 @@ final class GatewayWsProxyServer {
 
     private static boolean containsBareControlNewline(String value) {
         return value != null && (value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0);
+    }
+
+    private boolean isValidNonce(String candidate) {
+        if (candidate == null || candidate.isEmpty()) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+            authNonce.getBytes(StandardCharsets.UTF_8),
+            candidate.getBytes(StandardCharsets.UTF_8)
+        );
+    }
+
+    private static String generateAuthNonce() {
+        final byte[] bytes = new byte[16];
+        new SecureRandom().nextBytes(bytes);
+        final StringBuilder hex = new StringBuilder(bytes.length * 2);
+        for (final byte b : bytes) {
+            hex.append(Character.forDigit((b >> 4) & 0xF, 16));
+            hex.append(Character.forDigit(b & 0xF, 16));
+        }
+        return hex.toString();
+    }
+
+    private static String canonicalTargetOrigin(String scheme, String host, int port) {
+        final String httpScheme = ("wss".equals(scheme) || "https".equals(scheme)) ? "https" : "http";
+        final int effectivePort = port > 0 ? port : ("https".equals(httpScheme) ? 443 : 80);
+        final String lowerHost = host.toLowerCase(Locale.ROOT);
+        final String formattedHost = (lowerHost.contains(":") && !lowerHost.startsWith("["))
+            ? ("[" + lowerHost + "]")
+            : lowerHost;
+        return httpScheme + "://" + formattedHost + ":" + effectivePort;
+    }
+
+    private static boolean isBlockedTargetHost(String host) {
+        final String lower = host.toLowerCase(Locale.ROOT);
+        final String bare = lower.startsWith("[") && lower.endsWith("]")
+            ? lower.substring(1, lower.length() - 1)
+            : lower;
+        return bare.startsWith("169.254.")
+            || bare.startsWith("fe80:")
+            || "metadata.google.internal".equals(bare);
+    }
+
+    private static boolean isAllowedWsPath(String rawPath) {
+        if (rawPath == null || rawPath.isEmpty()) {
+            return false;
+        }
+        final String decoded;
+        try {
+            decoded = URLDecoder.decode(rawPath, "UTF-8");
+        } catch (Exception err) {
+            return false;
+        }
+        if (rawPath.contains("..") || decoded.contains("..") || rawPath.contains("\\") || decoded.contains("\\")) {
+            return false;
+        }
+        final String normalized = decoded.replaceAll("/+", "/");
+        if (isProxySelfPath(normalized)) {
+            return false;
+        }
+        return "/api/ws".equals(normalized)
+            || normalized.startsWith("/api/ws/")
+            || "/ws".equals(normalized)
+            || normalized.startsWith("/ws/");
     }
 
     private static boolean isProxySelfPath(String decodedPath) {

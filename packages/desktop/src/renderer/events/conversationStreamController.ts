@@ -37,7 +37,7 @@ import {
   planUpwardScrollAction,
   shouldExpandWindow,
 } from '../messageWindow.js';
-import type { AppState } from '../state/appState.js';
+import { resolveScopedEntityRuntimeKey, type AppState } from '../state/appState.js';
 import {
   messageActionController,
 } from '../messageActions.js';
@@ -312,7 +312,11 @@ export function createConversationStreamController(
 
     state.messages = cut.kept;
     if (state.activeSessionId) {
-      getSessionMessagesCache().set(state.activeSessionId, [...state.messages]);
+      const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+      getSessionMessagesCache().set(
+        resolveScopedEntityRuntimeKey(state.activeSessionId, activeGw, state.gatewayCount),
+        [...state.messages],
+      );
     }
     void refilled;
     state.rollbackArmed = {
@@ -336,7 +340,11 @@ export function createConversationStreamController(
       return;
     }
     state.messages = armed.snapshot.map((m) => ({ ...m }));
-    getSessionMessagesCache().set(armed.sessionId, [...state.messages]);
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    getSessionMessagesCache().set(
+      resolveScopedEntityRuntimeKey(armed.sessionId, activeGw, state.gatewayCount),
+      [...state.messages],
+    );
     state.rollbackArmed = null;
     setTimedDockNotice(t('chat.rollbackCancelled'));
     render();

@@ -62,7 +62,7 @@ export interface MobileBotHubScreenProps {
   settingsSnapshot: SettingsSnapshot;
   modelDetails: MobileModelOption[];
   onSelectBotSubpage: (subpage: Exclude<MobileBotSubpage, null>) => void;
-  onOpenBotChat: (botName: string) => void;
+  onOpenBotChat: (botName: string, gatewayId?: string) => void;
   onOpenSettingsGateway: () => void;
   onHapticSelection?: () => void;
   settingsActions: SettingsActions;
@@ -515,7 +515,10 @@ export function MobileBotHubScreen({
             type="button"
             className="m-bot-hub__chat-btn"
             data-testid="mobile-bot-open-chat"
-            onClick={() => onOpenBotChat(current.id)}
+            onClick={() => {
+              const currentProfileGw = allProfiles.find((p) => p.name.toLowerCase() === current.id.toLowerCase())?.gatewayId;
+              onOpenBotChat(current.id, currentProfileGw);
+            }}
           >
             <MessageSquare size={14} aria-hidden="true" />
             <span>{t('mobile.botHub.startChat')}</span>

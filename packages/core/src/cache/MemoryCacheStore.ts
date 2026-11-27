@@ -16,7 +16,11 @@
  *   - 所有方法同步完成、异步返回，保证测试可确定复现。
  */
 
-import type { CacheChannelRef, CachedMessageRow } from './types.js';
+import {
+  normalizeCachedMessageRow,
+  type CacheChannelRef,
+  type CachedMessageRow,
+} from './types.js';
 import {
   channelKey,
   type CacheIndexKey,
@@ -47,7 +51,8 @@ export class MemoryCacheStore implements ICacheStore {
     if (rows.length === 0) return;
     // 先按通道聚合，再一次替换，避免逐条 set 造成的中间可见态
     const staged = new Map<string, Map<number, CachedMessageRow>>();
-    for (const row of rows) {
+    for (const rawRow of rows) {
+      const row = normalizeCachedMessageRow(rawRow);
       const key = channelKey(row);
       const bucket = staged.get(key) ?? new Map<number, CachedMessageRow>();
       const prev = bucket.get(row.orderKey);

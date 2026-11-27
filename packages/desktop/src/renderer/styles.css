@@ -789,6 +789,7 @@ html[data-platform="web"] .titlebar-right {
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 auto; border: 1px solid transparent; border-radius: var(--radius-card); background: transparent; color: var(--secondary-foreground); cursor: pointer; -webkit-app-region: no-drag; transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease; }
 #toggle-inspector-btn { position: relative; }
 .icon-btn:hover { background: var(--card-hover); color: var(--foreground); }
+.flux-titlebar .icon-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
 /* 自绘 macOS 交通灯样式已随 B-i 裁决删除（系统原生三键由 titleBarStyle 绘制）。
    防范的历史坑(Pitfall)：这些规则一旦残留，随时可能被重新挂上 DOM，导致系统三键与自绘三键
@@ -800,6 +801,7 @@ html[data-platform="web"] .titlebar-right {
 /* 连接态由 data-connected / data-status 属性驱动：文案(title)随语言切换，用它做选择器会在英文界面直接失效。 */
 .titlebar-connection-indicator[data-connected="true"],
 .titlebar-connection-indicator[data-status="connected"] { background: var(--success); }
+.titlebar-connection-indicator[data-status="partial"] { background: var(--warning); }
 .titlebar-connection-indicator[data-status="reconnecting"] {
   background: var(--warning);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 28%, transparent);
@@ -1993,9 +1995,12 @@ button {
   /* 顶栏图标按钮的 44px 触控下限不得靠撑大按钮盒实现：
      顶栏内容高只有 32px，44px 的盒子会让按下底色上下各压出 6px 到对话区。
      视觉保持 28px，命中区用伪元素外扩到 44px，两者兼得。
-     但外扩 8px 会让相邻按钮的命中区各越界 8px、彼此重叠 8px（中间那道缝变成"点☰打开设置"），
-     所以移动端把左簇 gap 从 8px 提到 16px，让两个 44px 命中区恰好相接而不重叠。 */
+     但外扩 8px 会让相邻按钮的命中区各越界 8px、彼此重叠 8px（中间那道缝变成"点☰打开设置"或"点健康点开检查舱"），
+     所以移动端同时把左右两簇 gap 从 8px 提到 16px，让相邻 44px 命中区恰好相接而不重叠。 */
   .titlebar-left {
+    gap: 16px;
+  }
+  .titlebar-right {
     gap: 16px;
   }
   .flux-titlebar .icon-btn {

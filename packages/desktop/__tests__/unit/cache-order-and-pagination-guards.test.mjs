@@ -68,7 +68,7 @@ test('渲染层接线守卫：旧毒缓存只可在远端权威响应成功后�
     '必须标记旧毒缓存待权威到达后清洗'
   );
   assert.ok(
-    cacheHitBlock.includes('syncUntrustedCacheOrderFlag(sessionId, opened.rows)'),
+    cacheHitBlock.includes('syncUntrustedCacheOrderFlag(sessionId, opened.rows'),
     '读取持久缓存时必须检查并记录旧毒缓存标记'
   );
   assert.ok(
@@ -79,12 +79,12 @@ test('渲染层接线守卫：旧毒缓存只可在远端权威响应成功后�
   // REST 与 WS fallback 两个权威成功块内都必须消费 untrustedOrderCacheSessions 并清洗重建
   const restSuccessStart = rendererSource.indexOf("if (outcome.status === 'success' && outcome.messages.length > 0)");
   const restSuccessBlock = rendererSource.slice(restSuccessStart, restSuccessStart + 900);
-  assert.ok(restSuccessBlock.includes('untrustedOrderCacheSessions.delete(sessionId)'));
+  assert.ok(/untrustedOrderCacheSessions\.delete\((?:sessionId|cacheKey)\)/.test(restSuccessBlock));
   assert.ok(restSuccessBlock.includes('await cacheService.dropChannel(cacheRef)'));
 
   const wsFallbackStart = rendererSource.indexOf('if (!fastLoaded) {');
   const wsFallbackBlock = rendererSource.slice(wsFallbackStart, wsFallbackStart + 1000);
-  assert.ok(wsFallbackBlock.includes('untrustedOrderCacheSessions.delete(sessionId)'));
+  assert.ok(/untrustedOrderCacheSessions\.delete\((?:sessionId|cacheKey)\)/.test(wsFallbackBlock));
   assert.ok(wsFallbackBlock.includes('await cacheService.dropChannel(cacheRef)'));
 
   // 翻页两处窗口均维持纯原生流全量窗口 [0, state.messages.length]，且边界异常接入纯函数

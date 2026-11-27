@@ -5,11 +5,13 @@ export * from './tokens/skins.js';
 export * from './i18n/index.js';
 export {
   buildLeftRailModel,
+  buildEntityGatewayBadge,
   toSnippet,
   formatLeftRailTime,
   isSessionFocused,
   isGroupFocused,
   isBotFocused,
+  isAgentScopeActive,
   type LeftRailModel,
   type LeftRailModelInput,
   type LeftRailSession,
@@ -17,9 +19,11 @@ export {
   type LeftRailProfile,
   type LeftRailActiveFocus,
   type LeftRailFolder,
+  type RailEntityGatewayBadge,
   type ActivityState as LeftRailActivityState,
   type ActivityTransition,
 } from './components-react/leftRailModel.js';
+export { renderGroupCollageAvatar } from './utils/botAvatar.js';
 export type { LeftRailProject } from './components/LeftRail/types.js';
 export * from './components/MiddlePod/MiddlePod.js';
 export { mountFileTypeSprite, renderFileTypeIcon, resolveFileTypeIcon } from './lib/fileTypeIcons.js';
@@ -88,6 +92,14 @@ export * from './utils/imagePreprocessor.js';
 export * from './components-react/primitives/index.js';
 export { StatusBar, type StatusBarProps } from './components-react/StatusBar.js';
 export { Titlebar, type TitlebarProps as ReactTitlebarProps } from './components-react/Titlebar.js';
+export {
+  GatewayHealthPopover,
+  resolveGatewayDotToneClass,
+  formatGatewayHealthMeta,
+  formatGatewayRouteLabel,
+  type GatewayHealthPopoverProps,
+  type TitlebarGatewayHealthItem,
+} from './components-react/GatewayHealthPopover.js';
 export { LeftRail as ReactLeftRail, type LeftRailProps as ReactLeftRailProps } from './components-react/LeftRail.js';
 export { RailEntityRow, type RailEntityRowProps } from './components-react/RailEntityRow.js';
 export { GroupedLeftRail, type GroupedLeftRailProps } from './components-react/GroupedLeftRail.js';

@@ -52,8 +52,8 @@ export interface ConversationOrgCoordinatorDeps {
   readonly showToast: (message: string, durationMs?: number) => void;
   readonly restoreComposerFocus: () => void;
   readonly describeRpcError: (error: unknown) => string;
-  readonly setSessionArchived: (id: string, archived: boolean, profile?: string) => Promise<boolean>;
-  readonly isForeverChatSession?: (sessionId: string, profile?: string) => boolean;
+  readonly setSessionArchived: (id: string, archived: boolean, profile?: string, gatewayId?: string) => Promise<boolean>;
+  readonly isForeverChatSession?: (sessionId: string, profile?: string, gatewayId?: string) => boolean;
   readonly fetchArchivedSessions: (options?: { force?: boolean }) => Promise<void>;
   readonly refreshProfilesFromServer?: () => Promise<void>;
   readonly openNewChatInContainer: (kind: 'session' | 'group', containerId: string) => void;
@@ -71,13 +71,13 @@ export interface ConversationOrgCoordinator {
   toggleContainer(containerId: string): void;
   ensureDoneSessionsLoaded(force?: boolean): Promise<void>;
   onSearchQueryChanged(query: string): void;
-  requestMarkDone(kind: 'session' | 'group', id: string, title: string, profile?: string): void;
-  markDoneConfirmed(kind: 'session' | 'group', id: string, profile?: string): Promise<boolean>;
-  restoreDone(kind: 'session' | 'group', id: string, profile?: string): Promise<boolean>;
-  autoReopenIfDone(kind: 'session' | 'group', id: string, profile?: string): void;
+  requestMarkDone(kind: 'session' | 'group', id: string, title: string, profile?: string, gatewayId?: string): void;
+  markDoneConfirmed(kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string): Promise<boolean>;
+  restoreDone(kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string): Promise<boolean>;
+  autoReopenIfDone(kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string): void;
   createFolder(
     name: string,
-    moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string } | null,
+    moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string; gatewayId?: string } | null,
   ): Promise<string | null>;
   renameFolder(folderId: string, nextName: string): Promise<boolean>;
   deleteFolder(folderId: string): Promise<boolean>;
@@ -86,18 +86,19 @@ export interface ConversationOrgCoordinator {
     id: string,
     containerId: string | null,
     profile?: string,
+    gatewayId?: string,
   ): Promise<boolean>;
   assignNewEntityContainer(
     kind: 'session' | 'group',
     id: string,
     opts: { projectId?: string; containerId?: string; profile?: string },
   ): Promise<void>;
-  pruneDeletedEntity(kind: 'session' | 'group', id: string, profile?: string): void;
-  promptCreateFolder(moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string } | null): void;
+  pruneDeletedEntity(kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string): void;
+  promptCreateFolder(moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string; gatewayId?: string } | null): void;
   promptRenameFolder(folderId: string, currentName: string): void;
   confirmDeleteFolder(folderId: string, name: string): void;
   refreshOnFocusIfStale(): void;
-  getMoveEntityContext(kind: 'session' | 'group', id: string, profile?: string): {
+  getMoveEntityContext(kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string): {
     isDone: boolean;
     currentContainerId: string | null;
     hasCwdProjectMatch: boolean;
@@ -151,23 +152,25 @@ export function createConversationOrgCoordinator(
     return changed;
   }
 
-  function findSessionById(id: string, profile?: string) {
+  function findSessionById(id: string, profile?: string, gatewayId?: string) {
     const state = deps.getState();
     const targetProfile = profile ? normalizeOrgProfileName(profile) : null;
-    const match = (s: { id: string; botName?: string }) =>
-      s.id === id && (!targetProfile || normalizeOrgProfileName(s.botName) === targetProfile);
+    const match = (s: { id: string; botName?: string; gatewayId?: string }) =>
+      s.id === id &&
+      (!targetProfile || normalizeOrgProfileName(s.botName) === targetProfile) &&
+      (!gatewayId || !s.gatewayId || s.gatewayId === gatewayId);
     return state.sessions.find(match) || state.archivedSessions.find(match);
   }
 
-  function resolveSessionBotName(id: string, explicitProfile?: string): string {
+  function resolveSessionBotName(id: string, explicitProfile?: string, gatewayId?: string): string {
     if (explicitProfile) return explicitProfile;
-    const sess = findSessionById(id);
+    const sess = findSessionById(id, undefined, gatewayId);
     return sess?.botName || 'default';
   }
 
-  function isForeverSession(id: string, profile?: string): boolean {
-    const target = findSessionById(id, profile);
-    return Boolean(target?.hidden || deps.isForeverChatSession?.(id, profile));
+  function isForeverSession(id: string, profile?: string, gatewayId?: string): boolean {
+    const target = findSessionById(id, profile, gatewayId);
+    return Boolean(target?.hidden || deps.isForeverChatSession?.(id, profile, target?.gatewayId || gatewayId));
   }
 
   function hydrateFromProfiles(profiles: readonly AgentProfile[]): void {
@@ -221,11 +224,16 @@ export function createConversationOrgCoordinator(
     }
   }
 
-  async function markDoneConfirmed(kind: 'session' | 'group', id: string, profile?: string): Promise<boolean> {
+  async function markDoneConfirmed(
+    kind: 'session' | 'group',
+    id: string,
+    profile?: string,
+    gatewayId?: string,
+  ): Promise<boolean> {
     if (kind === 'session') {
-      const target = findSessionById(id, profile);
-      if (!target || target.hidden || deps.isForeverChatSession?.(id, profile)) return false;
-      return deps.setSessionArchived(id, true, target.botName || profile);
+      const target = findSessionById(id, profile, gatewayId);
+      if (!target || target.hidden || deps.isForeverChatSession?.(id, profile, target.gatewayId || gatewayId)) return false;
+      return deps.setSessionArchived(id, true, target.botName || profile, target.gatewayId || gatewayId);
     }
     try {
       const snap = await orgService.setRoomDone(id, true);
@@ -238,11 +246,16 @@ export function createConversationOrgCoordinator(
     }
   }
 
-  async function restoreDone(kind: 'session' | 'group', id: string, profile?: string): Promise<boolean> {
+  async function restoreDone(
+    kind: 'session' | 'group',
+    id: string,
+    profile?: string,
+    gatewayId?: string,
+  ): Promise<boolean> {
     if (kind === 'session') {
-      const target = findSessionById(id, profile);
-      if (target?.hidden || deps.isForeverChatSession?.(id, profile)) return false;
-      return deps.setSessionArchived(id, false, target?.botName || profile);
+      const target = findSessionById(id, profile, gatewayId);
+      if (target?.hidden || deps.isForeverChatSession?.(id, profile, target?.gatewayId || gatewayId)) return false;
+      return deps.setSessionArchived(id, false, target?.botName || profile, target?.gatewayId || gatewayId);
     }
     try {
       const snap = await orgService.setRoomDone(id, false);
@@ -255,11 +268,19 @@ export function createConversationOrgCoordinator(
     }
   }
 
-  function requestMarkDone(kind: 'session' | 'group', id: string, title: string, profile?: string): void {
+  function requestMarkDone(
+    kind: 'session' | 'group',
+    id: string,
+    title: string,
+    profile?: string,
+    gatewayId?: string,
+  ): void {
     const state = deps.getState();
+    let resolvedGatewayId = gatewayId;
     if (kind === 'session') {
-      const target = findSessionById(id, profile);
+      const target = findSessionById(id, profile, gatewayId);
       if (!target || target.hidden || deps.isForeverChatSession?.(id, profile)) return;
+      resolvedGatewayId = resolvedGatewayId || target.gatewayId;
     }
     const label = title || id;
     state.confirmModal = {
@@ -273,7 +294,7 @@ export function createConversationOrgCoordinator(
       isDanger: false,
       onConfirm: () => {
         deps.restoreComposerFocus();
-        void markDoneConfirmed(kind, id, profile);
+        void markDoneConfirmed(kind, id, profile, resolvedGatewayId);
       },
       onCancel: () => {
         deps.restoreComposerFocus();
@@ -282,28 +303,25 @@ export function createConversationOrgCoordinator(
     deps.render();
   }
 
-  function autoReopenIfDone(kind: 'session' | 'group', id: string, profile?: string): void {
+  function autoReopenIfDone(kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string): void {
     const state = deps.getState();
     if (!id || !state.orgPrefs.autoReopenOnSend) return;
     if (kind === 'session') {
       const targetProfile = profile ? normalizeOrgProfileName(profile) : null;
-      const archivedMatch = state.archivedSessions.find(
-        (s) => s.id === id && (!targetProfile || normalizeOrgProfileName(s.botName) === targetProfile),
-      );
-      const flaggedMatch = state.sessions.find(
-        (s) =>
-          s.id === id &&
-          Boolean(s.isArchived) &&
-          (!targetProfile || normalizeOrgProfileName(s.botName) === targetProfile),
-      );
+      const matchSess = (s: { id: string; botName?: string; gatewayId?: string }) =>
+        s.id === id &&
+        (!targetProfile || normalizeOrgProfileName(s.botName) === targetProfile) &&
+        (!gatewayId || !s.gatewayId || s.gatewayId === gatewayId);
+      const archivedMatch = state.archivedSessions.find(matchSess);
+      const flaggedMatch = state.sessions.find((s) => Boolean(s.isArchived) && matchSess(s));
       const matched = archivedMatch || flaggedMatch;
       if (matched) {
-        void restoreDone('session', id, matched.botName || profile);
+        void restoreDone('session', id, matched.botName || profile, matched.gatewayId || gatewayId);
       }
       return;
     }
     if (Boolean(state.orgDoneRooms[id])) {
-      void restoreDone('group', id);
+      void restoreDone('group', id, undefined, gatewayId);
     }
   }
 
@@ -312,12 +330,14 @@ export function createConversationOrgCoordinator(
     id: string,
     containerId: string | null,
     profile?: string,
+    gatewayId?: string,
   ): Promise<boolean> {
     const state = deps.getState();
     if (kind === 'session') {
-      if (isForeverSession(id, profile)) return false;
-      const target = findSessionById(id, profile);
-      const entityKey = buildSessionEntityKey(resolveSessionBotName(id, profile), id);
+      if (isForeverSession(id, profile, gatewayId)) return false;
+      const target = findSessionById(id, profile, gatewayId);
+      const resolvedGw = target?.gatewayId || gatewayId;
+      const entityKey = buildSessionEntityKey(resolveSessionBotName(id, profile, resolvedGw), id);
       const hasCwdProjectMatch = Boolean(matchProjectByCwd(target?.cwd, state.projects));
       try {
         const snap = await orgService.assignEntity({
@@ -354,7 +374,7 @@ export function createConversationOrgCoordinator(
 
   async function createFolder(
     name: string,
-    moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string } | null,
+    moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string; gatewayId?: string } | null,
   ): Promise<string | null> {
     const trimmed = name.trim();
     if (!trimmed) return null;
@@ -368,7 +388,7 @@ export function createConversationOrgCoordinator(
         null;
       deps.render();
       if (created && moveTarget) {
-        await moveEntityToFolder(moveTarget.kind, moveTarget.id, created.id, moveTarget.profile);
+        await moveEntityToFolder(moveTarget.kind, moveTarget.id, created.id, moveTarget.profile, moveTarget.gatewayId);
       }
       return created?.id ?? null;
     } catch (err) {
@@ -442,7 +462,7 @@ export function createConversationOrgCoordinator(
     }
   }
 
-  function pruneDeletedEntity(kind: 'session' | 'group', id: string, profile?: string): void {
+  function pruneDeletedEntity(kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string): void {
     const state = deps.getState();
     if (!deps.getGatewayClient() || !state.gatewayConnected) return;
 
@@ -460,7 +480,7 @@ export function createConversationOrgCoordinator(
       return;
     }
 
-    const deletedKey = buildSessionEntityKey(resolveSessionBotName(id, profile), id);
+    const deletedKey = buildSessionEntityKey(resolveSessionBotName(id, profile, gatewayId), id);
     if (state.sessionsPhase === 'ready' && state.doneSessionsLoaded) {
       const validSessionKeys = new Set<string>();
       for (const s of [...state.sessions, ...state.archivedSessions]) {
@@ -490,7 +510,7 @@ export function createConversationOrgCoordinator(
   }
 
   function promptCreateFolder(
-    moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string } | null,
+    moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string; gatewayId?: string } | null,
   ): void {
     if (deps.promptText) {
       const inputName = deps.promptText(deps.t('ctx.folderNamePrompt'), '');
@@ -583,9 +603,9 @@ export function createConversationOrgCoordinator(
     }
   }
 
-  function getMoveEntityContext(kind: 'session' | 'group', id: string, profile?: string) {
+  function getMoveEntityContext(kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string) {
     const state = deps.getState();
-    const target = kind === 'session' ? findSessionById(id, profile) : undefined;
+    const target = kind === 'session' ? findSessionById(id, profile, gatewayId) : undefined;
     const key =
       kind === 'group'
         ? buildRoomEntityKey(id)

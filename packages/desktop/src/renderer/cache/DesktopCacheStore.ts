@@ -21,6 +21,7 @@
 
 import {
   buildChannelBounds,
+  normalizeCachedMessageRow,
   type CacheChannelRef,
   type CacheIndexKey,
   type CachedMessageRow,
@@ -31,11 +32,13 @@ import {
 
 const INDEX_PREFIX = 'hermes_flux_cache_index_';
 const DB_NAME = 'hermes_flux_cache';
-const DB_VERSION = 1;
+export const DESKTOP_CACHE_DB_VERSION = 2;
+const DB_VERSION = DESKTOP_CACHE_DB_VERSION;
 const STORE_MESSAGES = 'messages';
+export const MESSAGE_KEY_PATH = ['gatewayId', 'profile', 'channel', 'channelId', 'orderKey'] as const;
 
-/** 数组主键：profile + channel + channelId + orderKey */
-type MessageKeyTuple = [string, string, string, number];
+/** 数组主键：gatewayId + profile + channel + channelId + orderKey */
+type MessageKeyTuple = [string, string, string, string, number];
 
 export class DesktopCacheStore implements ICacheStore {
   /** localStorage 不可用时的降级容器 */
@@ -91,8 +94,8 @@ export class DesktopCacheStore implements ICacheStore {
     const db = await this.openDb();
     await this.runTransaction(db, 'readwrite', (store) => {
       for (const row of rows) {
-        // 主键由 keyPath 从行对象提取，禁止再传第二个参数（否则 IndexedDB 抛 DataError）
-        store.put(row);
+        // 主键由 5 元组 keyPath 从行对象提取，禁止再传第二个参数（否则 IndexedDB 抛 DataError）
+        store.put(normalizeCachedMessageRow(row));
       }
     });
   }
@@ -211,11 +214,12 @@ export class DesktopCacheStore implements ICacheStore {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = () => {
         const db = request.result;
-        if (!db.objectStoreNames.contains(STORE_MESSAGES)) {
-          db.createObjectStore(STORE_MESSAGES, {
-            keyPath: ['profile', 'channel', 'channelId', 'orderKey'],
-          });
+        if (db.objectStoreNames.contains(STORE_MESSAGES)) {
+          db.deleteObjectStore(STORE_MESSAGES);
         }
+        db.createObjectStore(STORE_MESSAGES, {
+          keyPath: [...MESSAGE_KEY_PATH],
+        });
       };
       request.onerror = () => reject(request.error);
       request.onsuccess = () => resolve(request.result);

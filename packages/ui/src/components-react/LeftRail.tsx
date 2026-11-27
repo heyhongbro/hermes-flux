@@ -9,7 +9,9 @@ import { Skeleton } from './primitives/Skeleton.js';
 import { Tooltip } from './primitives/Tooltip.js';
 import { ActivityIndicator } from './primitives/ActivityIndicator.js';
 import type { ActivityIndicatorVariant } from '../tokens/activityIndicator.js';
+import { deriveGatewayMonogram } from '@hermes-flux/core';
 import {
+  buildEntityGatewayBadge,
   isBotFocused,
   isAgentScopeActive,
   isGroupFocused,
@@ -33,6 +35,7 @@ import {
   RailOrgContainerSection,
   buildDoneHoverAction,
 } from './RailOrgContainers.js';
+import { formatGatewayRouteLabel } from './GatewayHealthPopover.js';
 import { GroupedLeftRail } from './GroupedLeftRail.js';
 import type { GroupedLeftRailModel } from './groupedLeftRailModel.js';
 
@@ -47,34 +50,44 @@ export interface LeftRailProps {
   collapsed: boolean;
   searchQuery: string;
   editingGroupRoomId?: string;
+  editingGroupGatewayId?: string;
   /** 左轨会话指示器动效变体（默认为 cloud 积雨流云点阵）。 */
   activityVariant?: ActivityIndicatorVariant;
   /** 群聊拼图头像的成员资产来源；缺省时回退确定性字母块，不影响行可用性。 */
   groupAvatars?: LeftRailProfile[];
-  onSelectSession: (sessionId: string, botName?: string) => void;
-  onSelectBot: (profileName: string) => void;
-  onSelectGroup: (roomId: string) => void;
-  onOpenSessionMenu: (sessionId: string, title: string, x: number, y: number, profile?: string) => void;
-  onOpenBotMenu: (profileName: string, x: number, y: number) => void;
-  onOpenGroupMenu: (roomId: string, name: string, x: number, y: number) => void;
+  onSelectSession: (sessionId: string, botName?: string, gatewayId?: string) => void;
+  onSelectBot: (profileName: string, gatewayId?: string) => void;
+  onSelectGroup: (roomId: string, gatewayId?: string) => void;
+  onOpenSessionMenu: (sessionId: string, title: string, x: number, y: number, profile?: string, gatewayId?: string) => void;
+  onOpenBotMenu: (profileName: string, x: number, y: number, gatewayId?: string) => void;
+  onOpenGroupMenu: (roomId: string, name: string, x: number, y: number, gatewayId?: string) => void;
   onSearchChange: (value: string) => void;
   /** PR-3d：新建入口按甲板分型，会话 header 传 session、群聊 header 传 group。 */
   onNewChat: (kind: 'session' | 'group') => void;
   onToggleBots?: () => void;
   onToggleSessions: () => void;
   onToggleGroups: () => void;
-  onStartGroupRename: (roomId: string) => void;
-  onConfirmGroupRename: (roomId: string, name: string) => void;
+  onStartGroupRename: (roomId: string, gatewayId?: string) => void;
+  onConfirmGroupRename: (roomId: string, name: string, gatewayId?: string) => void;
   onCancelGroupRename: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
   onToggleContainer?: (containerId: string) => void;
   onToggleDoneSection?: () => void;
   onRetryDoneSection?: () => void;
-  onRequestMarkDone?: (entityKind: 'session' | 'group', id: string, title: string, profile?: string) => void;
-  onRestoreDone?: (entityKind: 'session' | 'group', id: string, profile?: string) => void;
+  onRequestMarkDone?: (entityKind: 'session' | 'group', id: string, title: string, profile?: string, gatewayId?: string) => void;
+  onRestoreDone?: (entityKind: 'session' | 'group', id: string, profile?: string, gatewayId?: string) => void;
   onOpenFolderMenu?: (folderId: string, name: string, x: number, y: number) => void;
   onOpenRailMenu?: (x: number, y: number) => void;
   onNewChatInContainer?: (kind: 'session' | 'group', containerId: string) => void;
+}
+
+function isEditingGroup(
+  editingRoomId: string | undefined,
+  editingGatewayId: string | undefined,
+  roomId: string,
+  gatewayId?: string,
+): boolean {
+  return editingRoomId === roomId && (!editingGatewayId || !gatewayId || editingGatewayId === gatewayId);
 }
 
 /**
@@ -88,23 +101,28 @@ const STATION_SKELETON_CLASS = 'size-station-card shrink-0 rounded-panel';
 const AgentStationItem = React.memo(function AgentStationItem({
   agent,
   active,
+  isMultiGateway = false,
   activityVariant,
   onClick,
   onContextMenu,
 }: {
   agent: LeftRailProfile;
   active: boolean;
+  isMultiGateway?: boolean;
   activityVariant?: ActivityIndicatorVariant;
   onClick: () => void;
   onContextMenu: (event: React.MouseEvent) => void;
 }): React.ReactElement {
-  return <Button
+  const displayTitle = agent.displayName || agent.name;
+  const hostBadgeChar = isMultiGateway && agent.gatewayLabel ? deriveGatewayMonogram(agent.gatewayLabel) : '';
+  const buttonEl = <Button
     variant="ghost"
     size="icon"
-    className={`station-agent-badge rail-pinned-bot-row relative size-station-card shrink-0 rounded-panel border p-0 transition-all duration-150 ${active ? 'active border-primary bg-primary-subtle' : 'border-transparent bg-transparent hover:bg-card-hover/70'}`}
+    className={`station-agent-badge rail-pinned-bot-row relative size-station-card shrink-0 rounded-panel border p-0 transition-all duration-150 ${active ? 'active border-primary bg-primary-subtle' : 'border-transparent bg-transparent hover:bg-card-hover/70'}${agent.gatewayOffline ? ' opacity-60' : ''}`}
     data-profile={agent.name}
     data-station-profile={agent.name}
-    title={t('rail.enterBotChat', { name: agent.displayName || agent.name })}
+    {...(agent.gatewayId ? { 'data-gateway-id': agent.gatewayId } : {})}
+    title={isMultiGateway ? undefined : t('rail.enterBotChat', { name: displayTitle })}
     onClick={onClick}
     onContextMenu={onContextMenu}
   >
@@ -119,8 +137,30 @@ const AgentStationItem = React.memo(function AgentStationItem({
       entityKind="bot"
       variant={activityVariant}
     />
+    {hostBadgeChar ? (
+      <span
+        aria-hidden="true"
+        data-station-host-badge={hostBadgeChar}
+        className="pointer-events-none absolute bottom-0 right-0 flex size-4 items-center justify-center rounded-inner border border-border-subtle bg-sidebar font-code text-micro font-semibold text-muted-foreground"
+      >
+        {hostBadgeChar}
+      </span>
+    ) : null}
   </Button>;
-}, (prev, next) => prev.agent === next.agent && prev.active === next.active && prev.activityVariant === next.activityVariant);
+
+  if (!isMultiGateway) return buttonEl;
+  const routeLabel = formatGatewayRouteLabel(agent.gatewayRouteLabel);
+  const gwDesc = agent.gatewayLabel
+    ? routeLabel
+      ? `${displayTitle} · ${agent.gatewayLabel} (${routeLabel})`
+      : `${displayTitle} · ${agent.gatewayLabel}`
+    : displayTitle;
+  return <Tooltip content={gwDesc} placement="right">{buttonEl}</Tooltip>;
+// Why: DualRailLeftRail 在多/单网关间切换外部容器节点，React 会重新挂载 AgentStationItem，comparator 无需冗余比较 isMultiGateway。
+}, (prev, next) =>
+  prev.agent === next.agent &&
+  prev.active === next.active &&
+  prev.activityVariant === next.activityVariant);
 
 /**
  * 会话行（消费统一的 RailEntityRow 组件）。
@@ -130,6 +170,7 @@ const SessionRow = React.memo(function SessionRow({
   session,
   active,
   compact,
+  isMultiGateway = false,
   activityVariant,
   hoverAction,
   className,
@@ -139,6 +180,7 @@ const SessionRow = React.memo(function SessionRow({
   session: LeftRailSession;
   active: boolean;
   compact?: boolean;
+  isMultiGateway?: boolean;
   activityVariant?: ActivityIndicatorVariant;
   hoverAction?: RailRowHoverAction;
   className?: string;
@@ -152,6 +194,7 @@ const SessionRow = React.memo(function SessionRow({
     compact={compact}
     title={session.title}
     subtitle={subtitle}
+    gatewayBadge={buildEntityGatewayBadge(isMultiGateway, session.gatewayLabel, session.gatewayOffline)}
     timestamp={session.timestamp}
     timeFallback={session.time}
     activityState={session.activityState}
@@ -166,12 +209,14 @@ const SessionRow = React.memo(function SessionRow({
       'data-id': session.id,
       'data-title': session.title,
       'data-bot': session.botName || '',
+      ...(session.gatewayId ? { 'data-gateway-id': session.gatewayId } : {}),
     }}
   />;
 }, (prev, next) =>
   prev.session === next.session &&
   prev.active === next.active &&
   prev.compact === next.compact &&
+  prev.isMultiGateway === next.isMultiGateway &&
   prev.activityVariant === next.activityVariant &&
   prev.hoverAction?.label === next.hoverAction?.label &&
   prev.className === next.className);
@@ -185,6 +230,7 @@ const GroupRow = React.memo(function GroupRow({
   profiles,
   active,
   editing,
+  isMultiGateway = false,
   activityVariant,
   hoverAction,
   className,
@@ -197,12 +243,12 @@ const GroupRow = React.memo(function GroupRow({
   profiles: LeftRailProfile[];
   active: boolean;
   editing: boolean;
+  isMultiGateway?: boolean;
   activityVariant?: ActivityIndicatorVariant;
   hoverAction?: RailRowHoverAction;
   className?: string;
   onSelect: () => void;
   onMenu: (x: number, y: number) => void;
-  onStartRename: () => void;
   onConfirmRename: (name: string) => void;
   onCancelRename: () => void;
 }): React.ReactElement {
@@ -215,9 +261,10 @@ const GroupRow = React.memo(function GroupRow({
   return <RailEntityRow
     className={className ? `rail-group-item ${className}` : 'rail-group-item'}
     active={active}
-    avatar={<CollageAvatar members={group.members} profiles={profiles} size={36} />}
+    avatar={<CollageAvatar members={group.members} profiles={profiles} size={36} gatewayId={group.gatewayId} />}
     title={group.name}
     subtitle={subtitle}
+    gatewayBadge={buildEntityGatewayBadge(isMultiGateway, group.gatewayLabel, group.gatewayOffline, group.crossGateway)}
     timestamp={group.updatedAt || group.createdAt}
     activityState={group.activityState}
     activityTransition={group.activityTransition}
@@ -229,6 +276,7 @@ const GroupRow = React.memo(function GroupRow({
     onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); onMenu(event.clientX, event.clientY); }}
     dataAttributes={{
       'data-room-id': group.roomId,
+      ...(group.gatewayId ? { 'data-gateway-id': group.gatewayId } : {}),
     }}
   />;
 }, (prev, next) =>
@@ -236,6 +284,7 @@ const GroupRow = React.memo(function GroupRow({
   prev.profiles === next.profiles &&
   prev.active === next.active &&
   prev.editing === next.editing &&
+  prev.isMultiGateway === next.isMultiGateway &&
   prev.activityVariant === next.activityVariant &&
   prev.hoverAction?.label === next.hoverAction?.label &&
   prev.className === next.className);
@@ -261,20 +310,25 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
   const microRailWidth = 'calc(var(--geo-micro-rail, clamp(56px, 3.5vw, 56px)) + 1px)';
   const railWidth = props.collapsed ? microRailWidth : 'var(--rail-w-left, 264px)';
 
-  const activeSessionBotName = focus.type === 'session'
-    ? model.activeSessions.find((s) => s.id === focus.sessionId)?.botName
+  const activeSession = focus.type === 'session'
+    ? model.activeSessions.find(
+      (s) => s.id === focus.sessionId && (!focus.gatewayId || !s.gatewayId || s.gatewayId === focus.gatewayId),
+    )
     : undefined;
-  const isAgentActive = (name: string): boolean => isAgentScopeActive({
+  const isAgentActive = (name: string, gatewayId?: string): boolean => isAgentScopeActive({
     agentName: name,
+    agentGatewayId: gatewayId,
     focus,
     selectedAgentName: model.selectedAgent.name,
-    activeSessionBotName,
+    selectedAgentGatewayId: model.selectedAgent.gatewayId,
+    activeSessionBotName: activeSession?.botName,
+    activeSessionGatewayId: activeSession?.gatewayId,
   });
 
-  const openBotMenu = (event: React.MouseEvent, name: string): void => {
+  const openBotMenu = (event: React.MouseEvent, name: string, gatewayId?: string): void => {
     event.preventDefault();
     event.stopPropagation();
-    props.onOpenBotMenu(name, event.clientX, event.clientY);
+    props.onOpenBotMenu(name, event.clientX, event.clientY, gatewayId);
   };
 
   return <aside
@@ -287,26 +341,46 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
       {profilesLoading ? <>
         {/* 与真实结构同形：首卡在滚动区外，其余在 flex-1 滚动区内，骨架不得让布局跳动。 */}
         <Skeleton slot="agent" className={STATION_SKELETON_CLASS} />
-        <div className="station-agents-scroll flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="station-agents-scroll flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto py-1 scrollbar-none">
           <Skeleton slot="agent" className={STATION_SKELETON_CLASS} />
           <Skeleton slot="agent" className={STATION_SKELETON_CLASS} />
         </div>
-      </> : <>
+      </> : model.isMultiGateway ? (
+        <div className="station-agents-scroll flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto py-1 scrollbar-none">
+          {model.allAgents.map((agent) => <AgentStationItem
+            key={`${agent.gatewayId || ''}::${agent.name}`}
+            agent={agent}
+            active={isAgentActive(agent.name, agent.gatewayId)}
+            isMultiGateway
+            activityVariant={props.activityVariant}
+            onClick={() => props.onSelectBot(agent.name, agent.gatewayId)}
+            onContextMenu={(event) => openBotMenu(event, agent.name, agent.gatewayId)}
+          />)}
+        </div>
+      ) : <>
         <AgentStationItem
           agent={model.defaultAgent}
-          active={isAgentActive(model.defaultAgent.name)}
+          active={isAgentActive(model.defaultAgent.name, model.defaultAgent.gatewayId)}
           activityVariant={props.activityVariant}
-          onClick={() => props.onSelectBot('default')}
-          onContextMenu={(event) => openBotMenu(event, 'default')}
+          onClick={() => (
+            model.defaultAgent.gatewayId
+              ? props.onSelectBot('default', model.defaultAgent.gatewayId)
+              : props.onSelectBot('default')
+          )}
+          onContextMenu={(event) => openBotMenu(event, 'default', model.defaultAgent.gatewayId)}
         />
-        <div className="station-agents-scroll flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="station-agents-scroll flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto py-1 scrollbar-none">
           {model.otherAgents.map((agent) => <AgentStationItem
             key={agent.name}
             agent={agent}
-            active={isAgentActive(agent.name)}
+            active={isAgentActive(agent.name, agent.gatewayId)}
             activityVariant={props.activityVariant}
-            onClick={() => props.onSelectBot(agent.name)}
-            onContextMenu={(event) => openBotMenu(event, agent.name)}
+            onClick={() => (
+              agent.gatewayId
+                ? props.onSelectBot(agent.name, agent.gatewayId)
+                : props.onSelectBot(agent.name)
+            )}
+            onContextMenu={(event) => openBotMenu(event, agent.name, agent.gatewayId)}
           />)}
         </div>
       </>}
@@ -349,10 +423,11 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
           />
           : <RailEntityRow
             className="rail-pinned-bot-row rail-primary-agent-card"
-            active={isBotFocused(focus, profile.name)}
+            active={isBotFocused(focus, profile.name, profile.gatewayId)}
             avatar={<Avatar profile={profile} size={36} />}
             title={profile.displayName || profile.name}
             subtitle={toSnippet(profile.lastMessage || profile.description) || t('rail.defaultBotSnippet')}
+            gatewayBadge={buildEntityGatewayBadge(model.isMultiGateway, profile.gatewayLabel, profile.gatewayOffline)}
             timestamp={profile.timestamp}
             timeFallback={profile.lastTime}
             activityState={profile.activityState}
@@ -361,11 +436,12 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
             entityKind="bot"
             activityVariant={props.activityVariant}
             titleAttr={t('rail.enterBotChat', { name: profile.displayName || profile.name })}
-            onClick={() => props.onSelectBot(profile.name)}
-            onContextMenu={(event) => openBotMenu(event, profile.name)}
+            onClick={() => props.onSelectBot(profile.name, profile.gatewayId)}
+            onContextMenu={(event) => openBotMenu(event, profile.name, profile.gatewayId)}
             dataAttributes={{
               'data-primary-bot': profile.name,
               'data-profile': profile.name,
+              ...(profile.gatewayId ? { 'data-gateway-id': profile.gatewayId } : {}),
             }}
           />}
       </div>
@@ -413,40 +489,41 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
             {bucket.items.map((item) =>
               item.kind === 'group' ? (
                 <GroupRow
-                  key={`group-${item.group.roomId}`}
+                  key={`group-${item.group.gatewayId || 'default'}-${item.group.roomId}`}
                   group={item.group}
                   profiles={props.groupAvatars || []}
-                  active={isGroupFocused(focus, item.group.roomId)}
-                  editing={props.editingGroupRoomId === item.group.roomId}
+                  active={isGroupFocused(focus, item.group.roomId, item.group.gatewayId)}
+                  editing={isEditingGroup(props.editingGroupRoomId, props.editingGroupGatewayId, item.group.roomId, item.group.gatewayId)}
+                  isMultiGateway={model.isMultiGateway}
                   activityVariant={props.activityVariant}
                   hoverAction={buildDoneHoverAction({
                     isDone: false,
                     title: item.group.name,
                     onRequestMarkDone: props.onRequestMarkDone
-                      ? () => props.onRequestMarkDone?.('group', item.group.roomId, item.group.name)
+                      ? () => props.onRequestMarkDone?.('group', item.group.roomId, item.group.name, undefined, item.group.gatewayId)
                       : undefined,
                   })}
-                  onSelect={() => props.onSelectGroup(item.group.roomId)}
-                  onMenu={(x, y) => props.onOpenGroupMenu(item.group.roomId, item.group.name, x, y)}
-                  onStartRename={() => props.onStartGroupRename(item.group.roomId)}
-                  onConfirmRename={(name) => props.onConfirmGroupRename(item.group.roomId, name)}
+                  onSelect={() => props.onSelectGroup(item.group.roomId, item.group.gatewayId)}
+                  onMenu={(x, y) => props.onOpenGroupMenu(item.group.roomId, item.group.name, x, y, item.group.gatewayId)}
+                  onConfirmRename={(name) => props.onConfirmGroupRename(item.group.roomId, name, item.group.gatewayId)}
                   onCancelRename={props.onCancelGroupRename}
                 />
               ) : (
                 <SessionRow
-                  key={`session-${item.session.botName || 'default'}-${item.session.id}`}
+                  key={`session-${item.session.gatewayId || 'default'}-${item.session.botName || 'default'}-${item.session.id}`}
                   session={item.session}
-                  active={isSessionFocused(focus, item.session.id)}
+                  active={isSessionFocused(focus, item.session.id, item.session.gatewayId)}
+                  isMultiGateway={model.isMultiGateway}
                   activityVariant={props.activityVariant}
                   hoverAction={buildDoneHoverAction({
                     isDone: false,
                     title: item.session.title,
                     onRequestMarkDone: props.onRequestMarkDone
-                      ? () => props.onRequestMarkDone?.('session', item.session.id, item.session.title, item.session.botName)
+                      ? () => props.onRequestMarkDone?.('session', item.session.id, item.session.title, item.session.botName, item.session.gatewayId)
                       : undefined,
                   })}
-                  onSelect={() => props.onSelectSession(item.session.id, item.session.botName)}
-                  onMenu={(x, y) => props.onOpenSessionMenu(item.session.id, item.session.title, x, y, item.session.botName)}
+                  onSelect={() => props.onSelectSession(item.session.id, item.session.botName, item.session.gatewayId)}
+                  onMenu={(x, y) => props.onOpenSessionMenu(item.session.id, item.session.title, x, y, item.session.botName, item.session.gatewayId)}
                 />
               ),
             )}
@@ -469,23 +546,23 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
           </div>
           <div id="rail-groups-nested-list" className="flex flex-col gap-2" style={{ display: model.isGroupsOpen ? 'flex' : 'none' }}>
             {model.unassignedGroups.map((group) => <GroupRow
-              key={group.roomId}
+              key={`${group.gatewayId || 'default'}-${group.roomId}`}
               group={group}
               profiles={props.groupAvatars || []}
-              active={isGroupFocused(focus, group.roomId)}
-              editing={props.editingGroupRoomId === group.roomId}
+              active={isGroupFocused(focus, group.roomId, group.gatewayId)}
+              editing={isEditingGroup(props.editingGroupRoomId, props.editingGroupGatewayId, group.roomId, group.gatewayId)}
+              isMultiGateway={model.isMultiGateway}
               activityVariant={props.activityVariant}
               hoverAction={buildDoneHoverAction({
                 isDone: false,
                 title: group.name,
                 onRequestMarkDone: props.onRequestMarkDone
-                  ? () => props.onRequestMarkDone?.('group', group.roomId, group.name)
+                  ? () => props.onRequestMarkDone?.('group', group.roomId, group.name, undefined, group.gatewayId)
                   : undefined,
               })}
-              onSelect={() => props.onSelectGroup(group.roomId)}
-              onMenu={(x, y) => props.onOpenGroupMenu(group.roomId, group.name, x, y)}
-              onStartRename={() => props.onStartGroupRename(group.roomId)}
-              onConfirmRename={(name) => props.onConfirmGroupRename(group.roomId, name)}
+              onSelect={() => props.onSelectGroup(group.roomId, group.gatewayId)}
+              onMenu={(x, y) => props.onOpenGroupMenu(group.roomId, group.name, x, y, group.gatewayId)}
+              onConfirmRename={(name) => props.onConfirmGroupRename(group.roomId, name, group.gatewayId)}
               onCancelRename={props.onCancelGroupRename}
             />)}
           </div>
@@ -509,19 +586,20 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
               ? <>{[0, 1, 2, 3].map((slot) => <RailEntityRow key={`session-skeleton-${slot}`} className="session-item" active={false} loading title="" />)}</>
               : model.unassignedSessions.length > 0
                 ? model.unassignedSessions.map((session) => <SessionRow
-                  key={`${session.botName || 'default'}-${session.id}`}
+                  key={`${session.gatewayId || 'default'}-${session.botName || 'default'}-${session.id}`}
                   session={session}
-                  active={isSessionFocused(focus, session.id)}
+                  active={isSessionFocused(focus, session.id, session.gatewayId)}
+                  isMultiGateway={model.isMultiGateway}
                   activityVariant={props.activityVariant}
                   hoverAction={buildDoneHoverAction({
                     isDone: false,
                     title: session.title,
                     onRequestMarkDone: props.onRequestMarkDone
-                      ? () => props.onRequestMarkDone?.('session', session.id, session.title, session.botName)
+                      ? () => props.onRequestMarkDone?.('session', session.id, session.title, session.botName, session.gatewayId)
                       : undefined,
                   })}
-                  onSelect={() => props.onSelectSession(session.id, session.botName)}
-                  onMenu={(x, y) => props.onOpenSessionMenu(session.id, session.title, x, y, session.botName)}
+                  onSelect={() => props.onSelectSession(session.id, session.botName, session.gatewayId)}
+                  onMenu={(x, y) => props.onOpenSessionMenu(session.id, session.title, x, y, session.botName, session.gatewayId)}
                 />)
                 : model.projectContainers.length === 0 && model.folderContainers.length === 0
                   ? <div className="flex flex-col items-center gap-1 px-2 py-5 text-center">
@@ -545,43 +623,44 @@ function DualRailLeftRail(props: LeftRailProps): React.ReactElement {
           {model.doneItems.map((entry) =>
             entry.kind === 'group' ? (
               <GroupRow
-                key={`done-group-${entry.group.roomId}`}
+                key={`done-group-${entry.group.gatewayId || 'default'}-${entry.group.roomId}`}
                 group={entry.group}
                 profiles={props.groupAvatars || []}
-                active={isGroupFocused(focus, entry.group.roomId)}
-                editing={props.editingGroupRoomId === entry.group.roomId}
+                active={isGroupFocused(focus, entry.group.roomId, entry.group.gatewayId)}
+                editing={isEditingGroup(props.editingGroupRoomId, props.editingGroupGatewayId, entry.group.roomId, entry.group.gatewayId)}
+                isMultiGateway={model.isMultiGateway}
                 activityVariant={props.activityVariant}
                 className="opacity-75"
                 hoverAction={buildDoneHoverAction({
                   isDone: true,
                   title: entry.group.name,
                   onRestoreDone: props.onRestoreDone
-                    ? () => props.onRestoreDone?.('group', entry.group.roomId)
+                    ? () => props.onRestoreDone?.('group', entry.group.roomId, undefined, entry.group.gatewayId)
                     : undefined,
                 })}
-                onSelect={() => props.onSelectGroup(entry.group.roomId)}
-                onMenu={(x, y) => props.onOpenGroupMenu(entry.group.roomId, entry.group.name, x, y)}
-                onStartRename={() => props.onStartGroupRename(entry.group.roomId)}
-                onConfirmRename={(name) => props.onConfirmGroupRename(entry.group.roomId, name)}
+                onSelect={() => props.onSelectGroup(entry.group.roomId, entry.group.gatewayId)}
+                onMenu={(x, y) => props.onOpenGroupMenu(entry.group.roomId, entry.group.name, x, y, entry.group.gatewayId)}
+                onConfirmRename={(name) => props.onConfirmGroupRename(entry.group.roomId, name, entry.group.gatewayId)}
                 onCancelRename={props.onCancelGroupRename}
               />
             ) : (
               <SessionRow
-                key={`done-session-${entry.session.botName || 'default'}-${entry.session.id}`}
+                key={`done-session-${entry.session.gatewayId || 'default'}-${entry.session.botName || 'default'}-${entry.session.id}`}
                 session={entry.session}
-                active={isSessionFocused(focus, entry.session.id)}
+                active={isSessionFocused(focus, entry.session.id, entry.session.gatewayId)}
                 compact
+                isMultiGateway={model.isMultiGateway}
                 activityVariant={props.activityVariant}
                 className="opacity-75"
                 hoverAction={buildDoneHoverAction({
                   isDone: true,
                   title: entry.session.title,
                   onRestoreDone: props.onRestoreDone
-                    ? () => props.onRestoreDone?.('session', entry.session.id, entry.session.botName)
+                    ? () => props.onRestoreDone?.('session', entry.session.id, entry.session.botName, entry.session.gatewayId)
                     : undefined,
                 })}
-                onSelect={() => props.onSelectSession(entry.session.id, entry.session.botName)}
-                onMenu={(x, y) => props.onOpenSessionMenu(entry.session.id, entry.session.title, x, y, entry.session.botName)}
+                onSelect={() => props.onSelectSession(entry.session.id, entry.session.botName, entry.session.gatewayId)}
+                onMenu={(x, y) => props.onOpenSessionMenu(entry.session.id, entry.session.title, x, y, entry.session.botName, entry.session.gatewayId)}
               />
             ),
           )}

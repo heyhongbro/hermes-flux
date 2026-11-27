@@ -46,7 +46,7 @@ test('左轨活动指示器变体必须可配置、持久化，并真的推进�
   assert.ok(actionBlock.includes('render()'), '切换后必须触发重渲染，左轨才能立刻换动效');
 
   const railSrc = leftRailDomain || source;
-  const railStart = railSrc.indexOf('getSnapshot(): LeftRailSnapshot');
+  const railStart = railSrc.search(/\bgetSnapshot\((?:[^()]*|\([^()]*\))*\)\s*:\s*LeftRailSnapshot/);
   const railBlock = railStart !== -1 ? railSrc.slice(railStart) : source.slice(source.indexOf('function getLeftRailSnapshot'));
   assert.ok(
     railBlock.includes('activityVariant: inputs.activityVariant') || (railBlock.match(/activityVariant: activityIndicatorVariant/g) || []).length >= 1,

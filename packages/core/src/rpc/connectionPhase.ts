@@ -30,7 +30,7 @@ export type GatewayConnectionPhase =
 
 export type ConnectionFailureKind = 'auth' | 'config' | 'transient';
 
-export type TitlebarConnectionStatus = 'connected' | 'reconnecting' | 'syncing' | 'offline';
+export type TitlebarConnectionStatus = 'connected' | 'partial' | 'reconnecting' | 'syncing' | 'offline';
 
 const COLD_START_BACKOFF_MS: readonly number[] = [1000, 2000, 4000, 8000, 15000];
 
@@ -118,11 +118,40 @@ export function resolveConnectionPhase(input: ResolveConnectionPhaseInput): Gate
 export function resolveTitlebarConnectionStatus(
   phase: GatewayConnectionPhase,
   gatewayConnected: boolean,
-): TitlebarConnectionStatus {
+): Exclude<TitlebarConnectionStatus, 'partial'> {
   if (phase === 'syncing') return 'syncing';
   if (phase === 'connecting' || phase === 'reconnecting') return 'reconnecting';
   if (phase === 'connected' || phase === 'synced') return 'connected';
   return gatewayConnected ? 'connected' : 'offline';
+}
+
+/**
+ * 多网关并发连接健康度归约：
+ * - 单网关退化保持与既有四态完全一致；
+ * - 多网关全在线为 connected（有 syncing 则为 syncing），部分离线为 partial，全离线优先 reconnecting。
+ */
+export function resolveAggregateTitlebarStatus(
+  slots: readonly { status: TitlebarConnectionStatus; connected: boolean }[],
+): TitlebarConnectionStatus {
+  if (slots.length === 0) return 'offline';
+  if (slots.length === 1) return slots[0].status;
+  let connectedCount = 0;
+  let hasSyncing = false;
+  let hasReconnecting = false;
+  for (const slot of slots) {
+    if (slot.connected) {
+      connectedCount += 1;
+    }
+    if (slot.status === 'syncing') hasSyncing = true;
+    if (slot.status === 'reconnecting') hasReconnecting = true;
+  }
+  if (connectedCount === slots.length) {
+    return hasSyncing ? 'syncing' : 'connected';
+  }
+  if (connectedCount > 0) {
+    return 'partial';
+  }
+  return hasReconnecting ? 'reconnecting' : 'offline';
 }
 
 /**
