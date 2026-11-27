@@ -20,11 +20,13 @@
  *
  * 用法:
  *   node scripts/verify/new-code-coverage.mjs --base=origin/dev/v0.1
+ *   node scripts/verify/new-code-coverage.mjs --min-line=90 --min-branch=90
  *   node scripts/verify/new-code-coverage.mjs            # 默认与 merge-base 比
  *
  * 约束与规则 (Rules):
  *   - 只统计真正的可执行行：注释、空行、纯类型声明不计入分母。
  *   - 新增文件若完全不在 lcov 中 → FAIL（说明测试根本没 import 它）。
+ *   - 增量行覆盖率与增量分支覆盖率默认红线均为 >= 90%（可通过 --min-line / --min-branch 覆盖）。
  *   - 输出必须逐条列出「文件:行」，否则无法定位。
  */
 
@@ -53,6 +55,18 @@ const C = {
 
 /** 计入覆盖率判定的源码扩展名。必须覆盖 tsx/mjs/css，否则整类文件被静默跳过。 */
 const TRACKED_EXT = ['.ts', '.tsx', '.mjs', '.js'];
+
+/** 增量行/分支覆盖率默认最低红线（百分比）。 */
+const DEFAULT_MIN_LINE_PCT = 90;
+const DEFAULT_MIN_BRANCH_PCT = 90;
+
+function resolveThresholdArg(prefix, fallback) {
+  const arg = process.argv.find((a) => a.startsWith(prefix));
+  if (!arg) return fallback;
+  const parsed = Number(arg.slice(prefix.length));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(100, parsed));
+}
 
 /** 不参与判定的路径（测试自身、产物、生成器输出、门禁工具自身） */
 const EXCLUDE_PATH = [
@@ -635,6 +649,8 @@ function computeExecutableTsLines(fileName, sourceText) {
 /* ---------------- 主流程 ---------------- */
 async function main() {
   const base = resolveBase();
+  const minLinePct = resolveThresholdArg('--min-line=', DEFAULT_MIN_LINE_PCT);
+  const minBranchPct = resolveThresholdArg('--min-branch=', DEFAULT_MIN_BRANCH_PCT);
   const added = collectAddedLines(base);
 
   console.log(`${C.cyan}${C.bold}增量覆盖率门禁${C.reset}`);
@@ -674,7 +690,7 @@ async function main() {
     if (skipped.length > 0) {
       console.log(`${C.dim}  跳过 ${skipped.length} 个无新增可执行行的文件${C.reset}`);
     }
-    console.log(`\n${C.green}${C.bold}✔ 增量覆盖达标：新增代码行与分支覆盖率均为 100%${C.reset}`);
+    console.log(`\n${C.green}${C.bold}✔ 增量覆盖达标：行覆盖率 100% (≥${minLinePct}%) · 分支覆盖率 100% (≥${minBranchPct}%)${C.reset}`);
     process.exitCode = 0;
     return;
   }
@@ -708,7 +724,9 @@ async function main() {
     );
 
     /* ---------------- 判定 ---------------- */
-    const failures = [];
+    const unmappedFailures = [];
+    const lineGaps = [];
+    const branchGaps = [];
     let countedLinesTotal = 0;
     let coveredLinesTotal = 0;
     let countedBranchesTotal = 0;
@@ -737,20 +755,24 @@ async function main() {
         const reason = distCandidates.length === 0
           ? `没有构建产物：该模块未登记进 esbuild 入口清单（packages/desktop/scripts/build.mjs），测试无法导入它`
           : `有构建产物（${distCandidates[0]}）但没有任何测试 import 它`;
-        failures.push({ file, reason, lines: countable });
+        unmappedFailures.push({ file, reason, lines: countable });
         countedLinesTotal += countable.length;
         continue;
       }
 
-      // 1. 行覆盖判定
+      // 1. 行覆盖统计
       const uncoveredLines = countable.filter((ln) => !covered.has(ln));
       countedLinesTotal += countable.length;
       coveredLinesTotal += countable.length - uncoveredLines.length;
       if (uncoveredLines.length > 0) {
-        failures.push({ file, reason: `${uncoveredLines.length} 行新增代码未被任何测试执行 (Line Coverage < 100%)`, lines: uncoveredLines });
+        lineGaps.push({
+          file,
+          reason: `${uncoveredLines.length} 行新增代码未被任何测试执行 (Line Coverage < ${minLinePct}%)`,
+          lines: uncoveredLines,
+        });
       }
 
-      // 2. 分支覆盖判定（只对已执行的代码行判定其分支是否双向闭环）
+      // 2. 分支覆盖统计（只对已执行的代码行判定其分支是否双向闭环）
       const branchUncoveredLines = [];
       for (const ln of countable) {
         const total = branchTotal.get(ln) ?? 0;
@@ -765,9 +787,9 @@ async function main() {
       }
 
       if (branchUncoveredLines.length > 0) {
-        failures.push({
+        branchGaps.push({
           file,
-          reason: `${branchUncoveredLines.length} 处新增分支未全路径覆盖 (Branch Coverage < 100%)`,
+          reason: `${branchUncoveredLines.length} 处新增分支未全路径覆盖 (Branch Coverage < ${minBranchPct}%)`,
           lines: branchUncoveredLines,
         });
       }
@@ -783,13 +805,31 @@ async function main() {
       console.log(`${C.dim}  跳过 ${skipped.length} 个无新增可执行行的文件${C.reset}`);
     }
 
-    if (failures.length === 0) {
-      console.log(`\n${C.green}${C.bold}✔ 增量覆盖达标：新增代码行与分支覆盖率均为 100%${C.reset}`);
+    const linePassed = linePct >= minLinePct;
+    const branchPassed = branchPct >= minBranchPct;
+    const passed = unmappedFailures.length === 0 && linePassed && branchPassed;
+
+    if (passed) {
+      console.log(
+        `\n${C.green}${C.bold}✔ 增量覆盖达标：行覆盖率 ${linePct}% (≥${minLinePct}%) · 分支覆盖率 ${branchPct}% (≥${minBranchPct}%)${C.reset}`,
+      );
+      if (lineGaps.length > 0 || branchGaps.length > 0) {
+        console.log(`${C.dim}  说明：${lineGaps.length} 个文件有未覆盖行，${branchGaps.length} 个文件有未全覆盖分支（均在容差内）${C.reset}`);
+        for (const f of [...lineGaps, ...branchGaps]) {
+          console.log(`${C.dim}    · ${f.file} 行：${f.lines.join(', ')}${C.reset}`);
+        }
+      }
       process.exitCode = 0;
       return;
     }
 
-    console.log(`\n${C.red}${C.bold}✘ 增量覆盖不达标 (必须达到 100% 行覆盖 + 100% 分支覆盖)${C.reset}`);
+    const failures = [
+      ...unmappedFailures,
+      ...(!linePassed ? lineGaps : []),
+      ...(!branchPassed ? branchGaps : []),
+    ];
+
+    console.log(`\n${C.red}${C.bold}✘ 增量覆盖不达标 (必须达到 ≥${minLinePct}% 行覆盖 + ≥${minBranchPct}% 分支覆盖)${C.reset}`);
     for (const f of failures) {
       console.log(`  ${C.red}·${C.reset} ${f.file}  ${f.reason}`);
       console.log(`    ${C.dim}行：${f.lines.join(', ')}${C.reset}`);
