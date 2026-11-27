@@ -926,6 +926,14 @@ export function createModelCatalogFetcher(deps: {
   };
 }
 
+/** 解析会话/群聊进入视口阶段：强贴底或无活跃客户端时直接 ready，其余先进入 loading 等待权威页。 */
+export function resolveSessionEnterPhase(
+  forcePinToBottom: boolean | undefined,
+  hasActiveClient: boolean,
+): 'loading' | 'ready' {
+  return forcePinToBottom ? 'ready' : hasActiveClient ? 'loading' : 'ready';
+}
+
 /** 创建冷启动/休眠恢复期单双模网关生命周期编排适配器。 */
 export function createAppBootstrapGatewayHandlers(deps: {
   readonly multiGateway: {

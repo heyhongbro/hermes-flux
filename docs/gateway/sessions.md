@@ -9,11 +9,11 @@
 | `session.archive` | `session_id` `session_key` `archived` `profile` | `archived` `session_key` | `packages/desktop/src/renderer/services/sessionOperationService.ts:671`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:674` | ✅ 0.22.5 |
 | `session.branch_whole` | `session_id` `profile` `name` `idempotency_key` | `session_id` `stored_session_id` `title` `parent` `message_count` `messages_omitted` `info` | `packages/core/src/session/handoffService.ts:91` | ✅ 0.22.5 |
 | `session.close` | `session_id` `profile` | `closed` `messages` | `packages/core/src/session/SessionLifecycleService.ts:40` | ✅ 0.22.5 |
-| `session.compress` | `session_id` `profile` `focus_topic` | `status` `removed` `before_messages` `after_messages` `before_tokens` `after_tokens` `summary` `usage` `info` `messages` `compressed` `lock_held` `message` `turn_isolation` `host_ack` | `packages/core/src/rpc/client.ts:1175` | Skipped: Context compression persistently rewrites session history and compaction nodes; explicitly skipped in offline probes and guarded by idle-guard unit tests and the contract allowlist. |
-| `session.context_breakdown` | `session_id` `profile` | `categories` `context_max` `context_percent` `context_used` `estimated_total` `context_estimated` `context_source` `model` `context_files` | `packages/core/src/rpc/client.ts:1164` | Skipped: Context breakdown requires session state with an active model; explicitly skipped in offline probes and guarded by the contract allowlist, Core parser, and status-bar component unit tests. |
+| `session.compress` | `session_id` `profile` `focus_topic` | `status` `removed` `before_messages` `after_messages` `before_tokens` `after_tokens` `summary` `usage` `info` `messages` `compressed` `lock_held` `message` `turn_isolation` `host_ack` | `packages/core/src/rpc/client.ts:1172` | Skipped: Context compression persistently rewrites session history and compaction nodes; explicitly skipped in offline probes and guarded by idle-guard unit tests and the contract allowlist. |
+| `session.context_breakdown` | `session_id` `profile` | `categories` `context_max` `context_percent` `context_used` `estimated_total` `context_estimated` `context_source` `model` `context_files` | `packages/core/src/rpc/client.ts:1161` | Skipped: Context breakdown requires session state with an active model; explicitly skipped in offline probes and guarded by the contract allowlist, Core parser, and status-bar component unit tests. |
 | `session.create` | `profile` `cols` `source` `cwd` `cwd_explicit` `messages` `parent_session_id` `title` `model` `provider` `reasoning_effort` `fast` `service_tier` `close_on_disconnect` `hidden` `room_plumbing` `follow_profile_config` `idempotency_key` `request_id` `row_cwd` `base_url` `api_key` `toolsets` `reasoning` `max_turns` `ignore_rules` `yolo` `safe_mode` `ignore_user_config` `skills` `checkpoints` `accept_hooks` `pass_session_id` `editor` `run_budget` `verbose` `client_env` `client` | `session_id` `stored_session_id` `message_count` `messages` `info` | `packages/core/src/profile/profileService.ts:385`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:296`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:301`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:308` | ✅ 0.22.5 |
 | `session.delete` | `session_id` `profile` | `deleted` | `packages/core/src/session/SessionLifecycleService.ts:52` | ✅ 0.22.5 |
-| `session.events.since` | `session_id` `profile` `last_seen` `replay_epoch` `last_sequence` | `events` `latest_seq` `truncated` `count` `epoch` `open_requests` | `packages/core/src/rpc/client.ts:1035` | Skipped: 断点续传增量事件回放依赖活跃会话与 replay_epoch 游标上下文，离线基线显式跳过，由契约白名单与断线续传协议单测守护 |
+| `session.events.since` | `session_id` `profile` `last_seen` `replay_epoch` `last_sequence` | `events` `latest_seq` `truncated` `count` `epoch` `open_requests` | `packages/core/src/rpc/client.ts:1032` | Skipped: 断点续传增量事件回放依赖活跃会话与 replay_epoch 游标上下文，离线基线显式跳过，由契约白名单与断线续传协议单测守护 |
 | `session.interrupt` | `session_id` `profile` `expected_hosted_task_id` `execution_generation` | `status` `interrupted` `turn_isolation` | `packages/core/src/session/SessionLifecycleService.ts:45`<br>`packages/core/src/session/interactiveService.ts:196`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:909` | ✅ 0.22.5 |
 | `session.list` | `profile` `title` `limit` `include_hidden` `scope` `workspace` `picker` | `sessions` | `packages/core/src/profile/profileService.ts:355`<br>`packages/core/src/rpc/clientChannelHelpers.ts:137` | ✅ 0.22.5 |
 | `session.resume` | `session_id` `profile` `cols` `source` `lazy` `defer_history` `omit_messages` `eager_build` `close_on_disconnect` `inline_images` `title` `latest` `workspace` `editor` `api_key` `display_projection` | `session_id` `message_count` `messages` `info` `stored_session_id` `resumed` `session_key` `messages_omitted` `hydrating` `running` `turn_started_at` `started_at` `status` `inflight` `queued` `pending_approval` `open_requests` `pending_connection` `todo_state` `auto_continue` | `packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:445`<br>`packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:454`<br>`packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:461`<br>`packages/desktop/src/renderer/gateway/multiGatewayCoordinator.ts:532`<br>`packages/desktop/src/renderer/gateway/multiGatewayCoordinator.ts:538`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:435`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:441`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:451`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:459`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:462`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:356`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:366`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:374` | ✅ 0.22.5 |
@@ -65,7 +65,7 @@
 - Result type: `SessionCompressResult`
 - Live probe: Skipped — Context compression persistently rewrites session history and compaction nodes; explicitly skipped in offline probes and guarded by idle-guard unit tests and the contract allowlist.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1175`
+  - `packages/core/src/rpc/client.ts:1172`
 
 ### `session.context_breakdown`
 
@@ -73,7 +73,7 @@
 - Result type: `SessionContextBreakdownResult`
 - Live probe: Skipped — Context breakdown requires session state with an active model; explicitly skipped in offline probes and guarded by the contract allowlist, Core parser, and status-bar component unit tests.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1164`
+  - `packages/core/src/rpc/client.ts:1161`
 
 ### `session.create`
 
@@ -101,7 +101,7 @@
 - Result type: `SessionEventsSinceResult`
 - Live probe: Skipped — 断点续传增量事件回放依赖活跃会话与 replay_epoch 游标上下文，离线基线显式跳过，由契约白名单与断线续传协议单测守护
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1035`
+  - `packages/core/src/rpc/client.ts:1032`
 
 ### `session.interrupt`
 

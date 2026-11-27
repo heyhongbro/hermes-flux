@@ -78,6 +78,7 @@ import {
   resolveFocusedGatewayId,
   resolveGatewayScopedStoredSessionId,
   resolveMessageSessionIdAcrossRegistries,
+  resolveSessionEnterPhase,
 } from './gateway/multiGatewayCoordinator.js';
 import { createActiveViewSyncAdapters, createForegroundSyncCoordinator } from './services/foregroundSyncCoordinator.js';
 type GatewayAuthResponse = { ok: boolean; message: string; latency: number };
@@ -481,6 +482,9 @@ const conversationOrgCoordinator = createConversationOrgCoordinator({
   openNewChatInContainer: (kind, cid) => { cancelColdStartFocus(); void fetchProjects(); state.selectedNewTaskContainerId = cid; state.newTaskModalTab = kind === 'group' ? 'group' : 'solo'; state.isNewTaskModalOpen = true; render(); },
 });
 
+const beginSessionEnter = (id: string, opts?: Parameters<StreamViewportManager['beginSessionEnter']>[1]) =>
+  streamViewportManager.beginSessionEnter(id, { ...opts, phase: resolveSessionEnterPhase(opts?.forcePinToBottom, Boolean(resolveActiveClient())) });
+
 const groupOperationService = createGroupOperationService({
   getState: () => state, getGatewayClient: () => gatewayClient, getClientForGateway: multiGateway.coordinator.resolveClient,
   onActiveFocusChanged: () => { multiGateway.coordinator.refreshActiveOfflineState(); }, render: () => render(),
@@ -504,10 +508,7 @@ const groupOperationService = createGroupOperationService({
   getCurrentLoadMessagesGeneration: () => activeLoadMessagesGeneration, logSession,
   setPendingScrollToBottom: (p) => renderCoordinator.setPendingScrollToBottom(p),
   captureStreamAnchor: () => captureStreamAnchor(),
-  beginSessionEnter: (id, opts) => streamViewportManager.beginSessionEnter(id, {
-    ...opts,
-    phase: opts?.forcePinToBottom ? 'ready' : (resolveActiveClient() ? 'loading' : 'ready'),
-  }),
+  beginSessionEnter,
   onGroupActivated: (roomId) => statusIntegration.onGroupActivated(roomId),
   activeRunningSessionIds, activeRunningBotNames,
   onGroupDisbanded: (roomId) => conversationOrgCoordinator.pruneDeletedEntity('group', roomId),
@@ -731,7 +732,7 @@ sessionOperationService = createSessionOperationService({
   resetActiveStreamingState: () => { tokenCoalescer.clear(); toolPatchQueue.clear(); turnExecutionService.disarmTurnWatchdog(); activeStreamingMessageId = null; activeStreamingStoredSessionId = null; activeStreamingLiveId = null; activeStreamingBotName = null; state.isStreaming = false; },
   setPendingScrollToBottom: (v) => renderCoordinator.setPendingScrollToBottom(v), cancelSmoothScrollOnLeave: () => scrollEndController.cancelSmoothScroll({ stopNativeSmooth: false, hideImmediately: true }),
   setLastMessagesSnapshot: (v) => renderCoordinator.setLastMessagesSnapshot(v as RenderMessagesSnapshot | null), captureStreamAnchor: () => captureStreamAnchor(),
-  beginSessionEnter: (id, opts) => streamViewportManager.beginSessionEnter(id, { ...opts, phase: opts?.forcePinToBottom ? 'ready' : (resolveActiveClient() ? 'loading' : 'ready') }),
+  beginSessionEnter,
   loadMessages: (id, bot, gw) => loadMessages(id, bot, gw), openBotChat: (bot, gw) => openBotChat(bot, gw), ensureLiveSessionId: () => ensureLiveSessionId(),
   incrementActiveLoadMessagesGeneration: () => { const next = messageLoadingService.incrementGeneration(); activeLoadMessagesGeneration = next; return next; },
   sessionPreviewCache, formatSessionTime: (ts) => formatSessionTime(ts), resolveAgentAvatar: (n, g) => resolveAgentAvatar(n, g), syncProfileLastMessages: () => syncProfileLastMessages(),

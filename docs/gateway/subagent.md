@@ -5,9 +5,9 @@
 
 | Method | Params (Contract) | Result (Contract) | Call Sites | Live Probe |
 | --- | --- | --- | --- | --- |
-| `session.transcript` | `profile` `session_id` `subagent_id` `cursor` `limit` `order` `inline_images` | `session_id` `rows` `next_cursor` `reset` `subagent_id` `available` `running` `child_session_id` | `packages/core/src/rpc/client.ts:1183`<br>`packages/core/src/subagent/subagentStore.ts:1202` | Skipped: Tested gateway 0.23.2 returns -32601; client falls back to REST fetchSessionMessages and subagent.tail; explicitly skipped in offline probes and guarded by fallback invariant unit tests. |
-| `spawn_tree.list` | `profile` `session_id` `cross_session` `limit` | `entries` | `packages/core/src/rpc/client.ts:1195` | Skipped: Historical spawn-tree index relies on persisted disk records; explicitly skipped in offline probes and guarded by inactive-session 4001 isolation unit tests and invariant proofs. |
-| `spawn_tree.load` | `profile` `path` | `session_id` `started_at` `finished_at` `label` `subagents` | `packages/core/src/rpc/client.ts:1203` | Skipped: Loading historical spawn trees by path relies on disk tree files; explicitly skipped in offline probes and guarded by normalized merge unit tests and formal invariants. |
+| `session.transcript` | `profile` `session_id` `subagent_id` `cursor` `limit` `order` `inline_images` | `session_id` `rows` `next_cursor` `reset` `subagent_id` `available` `running` `child_session_id` | `packages/core/src/rpc/client.ts:1180`<br>`packages/core/src/subagent/subagentStore.ts:1202` | Skipped: Tested gateway 0.23.2 returns -32601; client falls back to REST fetchSessionMessages and subagent.tail; explicitly skipped in offline probes and guarded by fallback invariant unit tests. |
+| `spawn_tree.list` | `profile` `session_id` `cross_session` `limit` | `entries` | `packages/core/src/rpc/client.ts:1192` | Skipped: Historical spawn-tree index relies on persisted disk records; explicitly skipped in offline probes and guarded by inactive-session 4001 isolation unit tests and invariant proofs. |
+| `spawn_tree.load` | `profile` `path` | `session_id` `started_at` `finished_at` `label` `subagents` | `packages/core/src/rpc/client.ts:1200` | Skipped: Loading historical spawn trees by path relies on disk tree files; explicitly skipped in offline probes and guarded by normalized merge unit tests and formal invariants. |
 | `subagent.interrupt` | `session_id` `profile` `subagent_id` | `found` `subagent_id` | `packages/core/src/subagent/subagentStore.ts:922` | ✅ 0.22.5 |
 | `subagent.list` | `session_id` `profile` | `subagents` `delegations` | `packages/core/src/subagent/subagentStore.ts:1003` | ✅ 0.22.5 |
 | `subagent.steer` | `session_id` `profile` `subagent_id` `text` | `status` `subagent_id` `text` | `packages/core/src/subagent/subagentStore.ts:850` | ✅ 0.22.5 |
@@ -21,7 +21,7 @@
 - Result type: `StoredTranscriptResult`
 - Live probe: Skipped — Tested gateway 0.23.2 returns -32601; client falls back to REST fetchSessionMessages and subagent.tail; explicitly skipped in offline probes and guarded by fallback invariant unit tests.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1183`
+  - `packages/core/src/rpc/client.ts:1180`
   - `packages/core/src/subagent/subagentStore.ts:1202`
 
 ### `spawn_tree.list`
@@ -30,7 +30,7 @@
 - Result type: `SpawnTreeListResult`
 - Live probe: Skipped — Historical spawn-tree index relies on persisted disk records; explicitly skipped in offline probes and guarded by inactive-session 4001 isolation unit tests and invariant proofs.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1195`
+  - `packages/core/src/rpc/client.ts:1192`
 
 ### `spawn_tree.load`
 
@@ -38,7 +38,7 @@
 - Result type: `SpawnTreeLoadResult`
 - Live probe: Skipped — Loading historical spawn trees by path relies on disk tree files; explicitly skipped in offline probes and guarded by normalized merge unit tests and formal invariants.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1203`
+  - `packages/core/src/rpc/client.ts:1200`
 
 ### `subagent.interrupt`
 

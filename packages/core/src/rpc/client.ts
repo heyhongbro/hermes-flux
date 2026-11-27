@@ -306,9 +306,6 @@ export class HermesGatewayClient {
         this.serverRequestListeners.delete(methodOrHandler);
       };
     }
-    if (!maybeHandler) {
-      return () => {};
-    }
     const typedHandler = maybeHandler as GatewayMethodRequestHandler;
     this.serverRequestHandlers.set(methodOrHandler, typedHandler);
     return () => {

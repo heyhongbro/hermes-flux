@@ -113,7 +113,7 @@ export async function listSessionsWithFallback(
   profile = 'default',
   limit = 50,
 ): Promise<SessionListOutcome> {
-  let lastError: string | undefined;
+  let lastError = '';
   const safeLimit = Math.max(1, Math.min(100, Math.floor(limit) || 50));
   const restFallbackHandler = transport.getRestFallback();
 
@@ -145,7 +145,7 @@ export async function listSessionsWithFallback(
     lastError = `WebSocket 未连接 (当前状态: ${transport.getFsmState()})`;
   }
 
-  return { sessions: [], ok: false, error: lastError ?? '网关未返回会话列表' };
+  return { sessions: [], ok: false, error: lastError };
 }
 
 /** 独立通过 REST 拉取已归档会话列表（WS-only 明确报失败而非伪造空态）。 */
