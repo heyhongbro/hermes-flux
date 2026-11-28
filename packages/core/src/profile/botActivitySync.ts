@@ -82,6 +82,10 @@ export function extractMessagePreview(msg: MinimalMessageLike | undefined | null
  * 【约束与规则 (Rules)】
  * 必须支持按 name 和 displayName 双向匹配；更新后必须保持按 timestamp 倒序维护 profiles 列表。
  */
+export function botActivityKey(botName: string, gatewayId?: string): string {
+  return gatewayId ? `${gatewayId}:${botName}` : botName;
+}
+
 export function applyBotActivity(params: {
   profiles: AgentProfile[];
   activityMap: Map<string, BotActivityRecord>;
@@ -89,8 +93,9 @@ export function applyBotActivity(params: {
   text: string;
   timestamp: number | string;
   formatTime: (ts: number) => string;
+  gatewayId?: string;
 }): { updatedProfile?: AgentProfile; profiles: AgentProfile[] } {
-  const { profiles, activityMap, botName, text, timestamp, formatTime } = params;
+  const { profiles, activityMap, botName, text, timestamp, formatTime, gatewayId } = params;
   if (!botName) {
     return { profiles };
   }
@@ -98,7 +103,7 @@ export function applyBotActivity(params: {
   const numTs = normalizeTimestamp(timestamp);
   const cleanText = cleanMessageSnippet(text);
 
-  activityMap.set(botName, {
+  activityMap.set(botActivityKey(botName, gatewayId), {
     lastMessage: cleanText,
     timestamp: numTs,
   });
@@ -106,7 +111,8 @@ export function applyBotActivity(params: {
   const nextProfiles = profiles.map((p) => {
     const matchesName = p.name.toLowerCase() === botName.toLowerCase();
     const matchesDisplay = Boolean(p.displayName && p.displayName.toLowerCase() === botName.toLowerCase());
-    if (matchesName || matchesDisplay) {
+    const matchesGw = !gatewayId || !p.gatewayId || p.gatewayId === gatewayId;
+    if ((matchesName || matchesDisplay) && matchesGw) {
       return {
         ...p,
         lastMessage: cleanText || p.lastMessage,
@@ -119,7 +125,9 @@ export function applyBotActivity(params: {
 
   nextProfiles.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
   const updatedProfile = nextProfiles.find(
-    (p) => p.name.toLowerCase() === botName.toLowerCase() || (p.displayName && p.displayName.toLowerCase() === botName.toLowerCase())
+    (p) =>
+      (!gatewayId || !p.gatewayId || p.gatewayId === gatewayId) &&
+      (p.name.toLowerCase() === botName.toLowerCase() || (p.displayName && p.displayName.toLowerCase() === botName.toLowerCase()))
   );
 
   return {
@@ -149,8 +157,11 @@ export function syncBotProfiles(params: {
   const { profiles, activityMap, foreverChatCache, sessionMessagesCache, formatTime } = params;
 
   const nextProfiles = profiles.map((p) => {
-    // 1. 本地最新交互最高优先
-    const localAct = activityMap.get(p.name) || (p.displayName ? activityMap.get(p.displayName) : undefined);
+    const gw = p.gatewayId;
+    // 1. 本地最新交互最高优先（多网关按 gatewayId:botName 隔离，防止同名 default 串台）
+    const localAct = gw
+      ? (activityMap.get(botActivityKey(p.name, gw)) || (p.displayName ? activityMap.get(botActivityKey(p.displayName, gw)) : undefined))
+      : (activityMap.get(p.name) || (p.displayName ? activityMap.get(p.displayName) : undefined));
     if (localAct) {
       return {
         ...p,
@@ -161,9 +172,13 @@ export function syncBotProfiles(params: {
     }
 
     // 2. 探查专职 Bot 终身主工位（Forever Chat）缓存中的真实最新对话
-    const foreverChatId = foreverChatCache.get(p.name);
+    const foreverChatId = gw
+      ? foreverChatCache.get(botActivityKey(p.name, gw))
+      : foreverChatCache.get(p.name);
     if (foreverChatId) {
-      const cachedMsgs = sessionMessagesCache.get(foreverChatId);
+      const cachedMsgs =
+        (gw ? sessionMessagesCache.get(`${gw}::${foreverChatId}`) : undefined) ??
+        sessionMessagesCache.get(foreverChatId);
       if (cachedMsgs && cachedMsgs.length > 0) {
         const lastMsg = cachedMsgs[cachedMsgs.length - 1];
         const previewText = extractMessagePreview(lastMsg);
@@ -215,8 +230,9 @@ export function syncActiveSessionToBot(params: {
   profiles: AgentProfile[];
   activityMap: Map<string, BotActivityRecord>;
   formatTime: (ts: number) => string;
+  gatewayId?: string;
 }): { matchedBotName: string | null; updatedText: string; updatedTimestamp: number; profiles: AgentProfile[] } | null {
-  const { sessionId, messages, foreverChatCache, activeFocusBotName, profiles, activityMap, formatTime } = params;
+  const { sessionId, messages, foreverChatCache, activeFocusBotName, profiles, activityMap, formatTime, gatewayId } = params;
   if (!sessionId || messages.length === 0) return null;
 
   const lastMsg = messages[messages.length - 1];
@@ -225,11 +241,17 @@ export function syncActiveSessionToBot(params: {
   const numTs = normalizeTimestamp(rawTs);
 
   let matchedBotName: string | null = null;
-  for (const [botName, fId] of foreverChatCache.entries()) {
-    if (fId === sessionId) {
-      matchedBotName = botName;
+  for (const [rawKey, fId] of foreverChatCache.entries()) {
+    if (fId !== sessionId) continue;
+    const colonIdx = rawKey.indexOf(':');
+    if (colonIdx > 0) {
+      const keyGw = rawKey.slice(0, colonIdx);
+      if (gatewayId && keyGw !== gatewayId) continue;
+      matchedBotName = rawKey.slice(colonIdx + 1);
       break;
     }
+    matchedBotName = rawKey;
+    break;
   }
   if (!matchedBotName && activeFocusBotName) {
     matchedBotName = activeFocusBotName;
@@ -243,6 +265,7 @@ export function syncActiveSessionToBot(params: {
       text: lastText,
       timestamp: numTs,
       formatTime,
+      gatewayId,
     });
     return {
       matchedBotName,

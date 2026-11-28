@@ -62,7 +62,7 @@ const CORS_HEADERS: Record<string, string> = {
 };
 
 export interface PreviewProtocolControllerDeps {
-  getGatewayAuth: () => MediaStreamGatewayAuth;
+  getGatewayAuth: (targetOrigin?: string) => MediaStreamGatewayAuth;
   getFallbackCwd: () => string;
   maxSessions?: number;
   fetchImpl?: typeof fetch;
@@ -455,7 +455,7 @@ export function createPreviewProtocolController(
       return emptyResponse(404);
     }
 
-    const auth = deps.getGatewayAuth();
+    const auth = deps.getGatewayAuth(parsedBase.origin);
     const headers: Record<string, string> = {
       Origin: parsedBase.origin,
     };

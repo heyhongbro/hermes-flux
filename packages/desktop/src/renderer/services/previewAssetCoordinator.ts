@@ -41,12 +41,14 @@ import {
 } from '@hermes-flux/ui';
 import type { HermesDesktopBridge } from '../../preload/index.js';
 import { resolveActiveWorkspaceCwd, type AppState } from '../state/appState.js';
+import { resolveFocusedGatewayId } from '../gateway/multiGatewayCoordinator.js';
 
 export interface PreviewAssetCoordinatorDeps {
   getState: () => AppState;
   render: () => void;
   getDesktopApi: () => HermesDesktopBridge | undefined;
   getGatewayClient: () => HermesGatewayClient | null;
+  getGatewayUrl?: (gatewayId?: string) => string;
   resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   onOpenFilePreview?: (targetPath: string) => Promise<void>;
   onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
@@ -70,6 +72,13 @@ export function createPreviewAssetCoordinator(
 
   const readEffectiveProfile = (state: AppState): string | undefined =>
     state.activeFocus?.type === 'group' ? undefined : state.profileName || undefined;
+
+  const resolveFocusedGatewayUrl = (state: AppState): string | undefined => {
+    const focusedGw = resolveFocusedGatewayId(state);
+    const resolved = deps.getGatewayUrl ? deps.getGatewayUrl(focusedGw) : '';
+    const url = (resolved || state.gatewayUrl || '').trim();
+    return url || undefined;
+  };
 
   const resolveWorkspaceRootForState = (state: AppState): string => {
     const cwd = resolveActiveWorkspaceCwd(state);
@@ -132,7 +141,7 @@ export function createPreviewAssetCoordinator(
     const workspaceRoot = resolveEffectivePreviewScopeRoot(filePath, globalWorkspaceRoot);
     const entryContent = openFile.content;
     const entrySource = openFile.source;
-    const gatewayUrl = state.gatewayUrl || undefined;
+    const gatewayUrl = resolveFocusedGatewayUrl(state);
     const profile = readEffectiveProfile(state);
     const sessionId = state.activeSessionId || undefined;
     const desktopApi = deps.getDesktopApi();
@@ -311,7 +320,7 @@ export function createPreviewAssetCoordinator(
           const latestState = deps.getState();
           const res = await resolvePreviewAsset(assetPath, {
             platformBridge: deps.getDesktopApi() ?? null,
-            gatewayUrl: latestState.gatewayUrl || undefined,
+            gatewayUrl: resolveFocusedGatewayUrl(latestState),
             profile: readEffectiveProfile(latestState),
             sessionId: latestState.activeSessionId || undefined,
             workspaceRoot: workspaceRoot || undefined,

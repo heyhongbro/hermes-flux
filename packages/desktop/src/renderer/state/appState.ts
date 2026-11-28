@@ -53,6 +53,8 @@ import type { ConversationWidthMode, LeftRailLayoutMode, OpenFilePreviewProjecti
 
 import {
   normalizeWorkspacePath,
+  scopedBotKey,
+  scopedEntityKey,
   type FileTreeLoadState,
   type LearningDetailState,
   type LearningLoadState,
@@ -64,6 +66,7 @@ import {
   type BotDraftState,
   type BotManagementStatus,
   type GatewayConnectionPhase,
+  type GatewayPoolHealthSummary,
   type RightPodMode,
 } from '@hermes-flux/core';
 
@@ -110,6 +113,7 @@ export interface AppState {
   doneLoading: boolean;
   doneError: string;
   editingGroupRoomId?: string;
+  editingGroupGatewayId?: string;
   modelMenuOpen: boolean;
   modelCascadeModel?: string;
   collapsedProviders: string[];
@@ -144,10 +148,15 @@ export interface AppState {
   manualDisconnected: boolean;
   gatewayLatencyMs: number;
   gatewayUrl: string;
+  activeGatewayId?: string;
+  gatewayCount: number;
+  gatewayHealthSummary?: GatewayPoolHealthSummary;
+  activeEntityGatewayOffline: boolean;
   username: string;
   password: string;
   isSettingsOpen: boolean;
   settingsSection: SettingsSectionId;
+  settingsGatewayId: string;
   presenceLayout: 'stage' | 'dock';
   conversationWidth: ConversationWidthMode;
   leftRailLayout: LeftRailLayoutMode;
@@ -327,6 +336,7 @@ export function createInitialState(params: InitialStateParams): AppState {
     doneLoading: false,
     doneError: '',
     editingGroupRoomId: undefined,
+    editingGroupGatewayId: undefined,
     profileName: savedProfile,
     modelMenuOpen: false,
     modelCascadeModel: undefined,
@@ -360,10 +370,15 @@ export function createInitialState(params: InitialStateParams): AppState {
     manualDisconnected: false,
     gatewayLatencyMs: 0,
     gatewayUrl: savedUrl,
+    activeGatewayId: undefined,
+    gatewayCount: 1,
+    gatewayHealthSummary: undefined,
+    activeEntityGatewayOffline: false,
     username: savedUser,
     password: savedPass,
     isSettingsOpen: false,
-    settingsSection: 'appearance',
+    settingsSection: 'general',
+    settingsGatewayId: '',
     presenceLayout: readPresenceLayout(),
     conversationWidth: loadConversationWidthMode(),
     leftRailLayout: loadLeftRailLayout(),
@@ -460,9 +475,12 @@ export function resolveActiveViewportKey(
  */
 export function resolveActiveWorkspaceCwd(
   state:
-    | Pick<AppState, 'activeSessionId' | 'activeFocus' | 'sessions' | 'archivedSessions' | 'sessionCwds' | 'projects'>
+    | (Pick<AppState, 'activeSessionId' | 'activeFocus' | 'sessions' | 'archivedSessions' | 'sessionCwds' | 'projects'> &
+        Partial<Pick<AppState, 'activeGatewayId' | 'gatewayCount'>>)
     | {
         activeSessionId?: string;
+        activeGatewayId?: string;
+        gatewayCount?: number;
         activeFocus?: AppState['activeFocus'];
         sessions?: AppState['sessions'];
         archivedSessions?: AppState['archivedSessions'];
@@ -480,16 +498,20 @@ export function resolveActiveWorkspaceCwd(
   if (!activeSessionId) {
     return '';
   }
-  const recordedCwd = state?.sessionCwds?.[activeSessionId];
+  const activeGw = state?.activeFocus?.gatewayId || state?.activeGatewayId;
+  const scopedSessionId = resolveScopedEntityRuntimeKey(activeSessionId, activeGw, state?.gatewayCount ?? 1);
+  const recordedCwd = state?.sessionCwds?.[scopedSessionId] ?? state?.sessionCwds?.[activeSessionId];
   if (recordedCwd) {
     return normalizeWorkspacePath(recordedCwd);
   }
   const sessions = state?.sessions ?? [];
   const archivedSessions = state?.archivedSessions ?? [];
   const projects = state?.projects ?? [];
-  const activeSession =
-    sessions.find((s) => s.id === activeSessionId) ??
-    archivedSessions.find((s) => s.id === activeSessionId);
+  const matchSession = (list: typeof sessions) =>
+    (activeGw
+      ? list.find((s) => s.id === activeSessionId && (!s.gatewayId || s.gatewayId === activeGw))
+      : undefined) ?? list.find((s) => s.id === activeSessionId);
+  const activeSession = matchSession(sessions) ?? matchSession(archivedSessions);
   if (activeSession?.cwd) {
     return normalizeWorkspacePath(activeSession.cwd);
   }
@@ -504,5 +526,23 @@ export function resolveActiveWorkspaceCwd(
     return normalizeWorkspacePath(matchedProject.path);
   }
   return '';
+}
+
+/** 多网关共存时按 `gatewayId` 隔离实体运行/缓存键；单网关态保留裸 ID 以兼容现有键值空间。 */
+export function resolveScopedEntityRuntimeKey(
+  entityId: string,
+  gatewayId?: string,
+  gatewayCount = 1,
+): string {
+  return gatewayCount >= 2 && gatewayId ? scopedEntityKey(gatewayId, entityId) : entityId;
+}
+
+/** 多网关共存时按 `gatewayId` 隔离 Bot 运行/主工位键；单网关态保留裸名。 */
+export function resolveScopedBotRuntimeKey(
+  botName: string,
+  gatewayId?: string,
+  gatewayCount = 1,
+): string {
+  return gatewayCount >= 2 && gatewayId ? scopedBotKey(gatewayId, botName) : botName;
 }
 

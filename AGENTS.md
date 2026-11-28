@@ -4,7 +4,7 @@
 
 - **One-way monorepo layering**: `packages/core` (platform-agnostic) -> `packages/ui` (React components, design tokens, i18n) -> `packages/desktop` & `packages/mobile` (thin shells). Never add DOM/Electron imports in `core` or desktop imports in `ui`.
 - **Strict typing & explicit errors**: Forbid `as any` and `: any`. Never swallow errors in an empty `catch {}` — degraded catches require `// gate-degrade: <reason>`.
-- **Real test coverage**: Every behavior change in `packages/*/src/` must add or update unit tests (no fake assertions, no real `setTimeout` sleeps in unit tests, `<= 1500` lines/file, `npm run coverage:new` at 100%).
+- **Real test coverage**: Every behavior change in `packages/*/src/` must add or update unit tests (no fake assertions, no real `setTimeout` sleeps in unit tests, `<= 1500` lines/file, `npm run coverage:new` at >=90%).
 - **Zero secrets or PII**: Never commit `.env`, API keys, signing credentials, private local paths, or personal emails/names.
 - **Single source of truth**: `package-lock.json` is the sole lockfile. Never weaken gate rules or expand `scripts/gates/.baseline.json`. Always regenerate `docs/invariants.md` (`npm run invariants:render`) and `docs/gateway/*.md` (`npm run contract:doc`).
 

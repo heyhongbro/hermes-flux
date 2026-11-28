@@ -43,7 +43,7 @@ import {
   RailOrgContainerSection,
   buildDoneHoverAction,
 } from './RailOrgContainers.js';
-import { toSnippet, type LeftRailProfile } from './leftRailModel.js';
+import { buildEntityGatewayBadge, toSnippet, type LeftRailProfile } from './leftRailModel.js';
 import type { LeftRailProps } from './LeftRail.js';
 import type { GroupedLeftRailModel } from './groupedLeftRailModel.js';
 import type {
@@ -125,11 +125,13 @@ function GroupedSection({
 
 const GroupedBotRow = React.memo(function GroupedBotRow({
   row,
+  isMultiGateway = false,
   activityVariant,
   onSelect,
   onMenu,
 }: {
   row: MobileBotRowVM;
+  isMultiGateway?: boolean;
   activityVariant?: ActivityIndicatorVariant;
   onSelect: () => void;
   onMenu: (x: number, y: number) => void;
@@ -141,6 +143,7 @@ const GroupedBotRow = React.memo(function GroupedBotRow({
       avatar={<Avatar profile={row.profile} size={36} shape="circle" />}
       title={row.title}
       subtitle={row.subtitle || t('rail.defaultBotSnippet')}
+      gatewayBadge={buildEntityGatewayBadge(isMultiGateway, row.gatewayLabel, row.gatewayOffline)}
       timestamp={row.profile.timestamp}
       timeFallback={row.timeText}
       activityState={row.activityState}
@@ -158,15 +161,17 @@ const GroupedBotRow = React.memo(function GroupedBotRow({
       }}
       dataAttributes={{
         'data-profile': row.id,
+        ...(row.gatewayId ? { 'data-gateway-id': row.gatewayId } : {}),
       }}
     />
   );
-}, (prev, next) => prev.row === next.row && prev.activityVariant === next.activityVariant);
+}, (prev, next) => prev.row === next.row && prev.isMultiGateway === next.isMultiGateway && prev.activityVariant === next.activityVariant);
 
 const GroupedGroupRow = React.memo(function GroupedGroupRow({
   row,
   profiles,
   editing,
+  isMultiGateway = false,
   activityVariant,
   hoverAction,
   className,
@@ -178,6 +183,7 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
   row: MobileGroupRowVM;
   profiles: LeftRailProfile[];
   editing: boolean;
+  isMultiGateway?: boolean;
   activityVariant?: ActivityIndicatorVariant;
   hoverAction?: RailRowHoverAction;
   className?: string;
@@ -205,9 +211,10 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
     <RailEntityRow
       className={className ? `rail-group-item ${className}` : 'rail-group-item'}
       active={row.isActive}
-      avatar={<CollageAvatar members={row.members} profiles={profiles} size={36} />}
+      avatar={<CollageAvatar members={row.members} profiles={profiles} size={36} gatewayId={row.gatewayId} />}
       title={row.title}
       subtitle={row.subtitle || t('rail.groupsMembers', { count: String(row.members.length) })}
+      gatewayBadge={buildEntityGatewayBadge(isMultiGateway, row.gatewayLabel, row.gatewayOffline, row.crossGateway)}
       timestamp={row.group.updatedAt || row.group.createdAt}
       timeFallback={row.timeText}
       activityState={row.activityState}
@@ -225,6 +232,7 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
       }}
       dataAttributes={{
         'data-room-id': row.id,
+        ...(row.gatewayId ? { 'data-gateway-id': row.gatewayId } : {}),
       }}
     />
   );
@@ -232,12 +240,15 @@ const GroupedGroupRow = React.memo(function GroupedGroupRow({
   prev.row === next.row &&
   prev.profiles === next.profiles &&
   prev.editing === next.editing &&
+  prev.isMultiGateway === next.isMultiGateway &&
   prev.activityVariant === next.activityVariant &&
   prev.hoverAction?.label === next.hoverAction?.label &&
   prev.className === next.className);
 
 const GroupedSessionRow = React.memo(function GroupedSessionRow({
   row,
+  compact = false,
+  isMultiGateway = false,
   activityVariant,
   hoverAction,
   className,
@@ -245,6 +256,8 @@ const GroupedSessionRow = React.memo(function GroupedSessionRow({
   onMenu,
 }: {
   row: MobileSessionRowVM;
+  compact?: boolean;
+  isMultiGateway?: boolean;
   activityVariant?: ActivityIndicatorVariant;
   hoverAction?: RailRowHoverAction;
   className?: string;
@@ -255,6 +268,7 @@ const GroupedSessionRow = React.memo(function GroupedSessionRow({
     <RailEntityRow
       className={className ? `session-item ${className}` : 'session-item'}
       active={row.isActive}
+      compact={compact}
       avatar={
         <Avatar
           profile={{
@@ -268,6 +282,7 @@ const GroupedSessionRow = React.memo(function GroupedSessionRow({
       }
       title={row.title}
       subtitle={row.subtitle || toSnippet(row.title)}
+      gatewayBadge={buildEntityGatewayBadge(isMultiGateway, row.gatewayLabel, row.gatewayOffline)}
       timestamp={row.session.timestamp}
       timeFallback={row.timeText}
       activityState={row.activityState}
@@ -287,11 +302,14 @@ const GroupedSessionRow = React.memo(function GroupedSessionRow({
         'data-id': row.id,
         'data-title': row.title,
         'data-bot': row.ownerBotName,
+        ...(row.gatewayId ? { 'data-gateway-id': row.gatewayId } : {}),
       }}
     />
   );
+// Why: renderMixedEntry 已把 isDoneRow 编码进 React key 前缀（done-session- / session-），compact 不会在已挂载实例上原地翻转。
 }, (prev, next) =>
   prev.row === next.row &&
+  prev.isMultiGateway === next.isMultiGateway &&
   prev.activityVariant === next.activityVariant &&
   prev.hoverAction?.label === next.hoverAction?.label &&
   prev.className === next.className);
@@ -323,47 +341,53 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
     if (item.kind === 'group') {
       return (
         <GroupedGroupRow
-          key={`${isDoneRow ? 'done-' : ''}group-${item.id}`}
+          key={`${isDoneRow ? 'done-' : ''}group-${item.gatewayId || 'default'}-${item.id}`}
           row={item}
           profiles={props.groupAvatars || []}
-          editing={props.editingGroupRoomId === item.id}
+          editing={
+            props.editingGroupRoomId === item.id &&
+            (!props.editingGroupGatewayId || !item.gatewayId || props.editingGroupGatewayId === item.gatewayId)
+          }
+          isMultiGateway={groupedModel.isMultiGateway}
           activityVariant={props.activityVariant}
           className={rowClass}
           hoverAction={buildDoneHoverAction({
             isDone: isDoneRow,
             title: item.title,
             onRequestMarkDone: props.onRequestMarkDone
-              ? () => props.onRequestMarkDone?.('group', item.id, item.title)
+              ? () => props.onRequestMarkDone?.('group', item.id, item.title, undefined, item.gatewayId)
               : undefined,
             onRestoreDone: props.onRestoreDone
-              ? () => props.onRestoreDone?.('group', item.id)
+              ? () => props.onRestoreDone?.('group', item.id, undefined, item.gatewayId)
               : undefined,
           })}
-          onSelect={() => props.onSelectGroup(item.id)}
-          onMenu={(x, y) => props.onOpenGroupMenu(item.id, item.title, x, y)}
-          onConfirmRename={(name) => props.onConfirmGroupRename(item.id, name)}
+          onSelect={() => props.onSelectGroup(item.id, item.gatewayId)}
+          onMenu={(x, y) => props.onOpenGroupMenu(item.id, item.title, x, y, item.gatewayId)}
+          onConfirmRename={(name) => props.onConfirmGroupRename(item.id, name, item.gatewayId)}
           onCancelRename={props.onCancelGroupRename}
         />
       );
     }
     return (
       <GroupedSessionRow
-        key={`${isDoneRow ? 'done-' : ''}session-${item.ownerBotName || 'default'}-${item.id}`}
+        key={`${isDoneRow ? 'done-' : ''}session-${item.gatewayId || 'default'}-${item.ownerBotName || 'default'}-${item.id}`}
         row={item}
+        compact={isDoneRow}
+        isMultiGateway={groupedModel.isMultiGateway}
         activityVariant={props.activityVariant}
         className={rowClass}
         hoverAction={buildDoneHoverAction({
           isDone: isDoneRow,
           title: item.title,
           onRequestMarkDone: props.onRequestMarkDone
-            ? () => props.onRequestMarkDone?.('session', item.id, item.title, item.ownerBotName)
+            ? () => props.onRequestMarkDone?.('session', item.id, item.title, item.ownerBotName, item.gatewayId)
             : undefined,
           onRestoreDone: props.onRestoreDone
-            ? () => props.onRestoreDone?.('session', item.id, item.ownerBotName)
+            ? () => props.onRestoreDone?.('session', item.id, item.ownerBotName, item.gatewayId)
             : undefined,
         })}
-        onSelect={() => props.onSelectSession(item.id, item.ownerBotName)}
-        onMenu={(x, y) => props.onOpenSessionMenu(item.id, item.title, x, y, item.ownerBotName)}
+        onSelect={() => props.onSelectSession(item.id, item.ownerBotName, item.gatewayId)}
+        onMenu={(x, y) => props.onOpenSessionMenu(item.id, item.title, x, y, item.ownerBotName, item.gatewayId)}
       />
     );
   };
@@ -491,11 +515,12 @@ export function GroupedLeftRail(props: GroupedLeftRailProps): React.ReactElement
               ) : (
                 botsSection.items.map((row) => (
                   <GroupedBotRow
-                    key={`bot-${row.id}`}
+                    key={`bot-${row.gatewayId || 'default'}-${row.id}`}
                     row={row}
+                    isMultiGateway={groupedModel.isMultiGateway}
                     activityVariant={props.activityVariant}
-                    onSelect={() => props.onSelectBot(row.id)}
-                    onMenu={(x, y) => props.onOpenBotMenu(row.id, x, y)}
+                    onSelect={() => props.onSelectBot(row.id, row.gatewayId)}
+                    onMenu={(x, y) => props.onOpenBotMenu(row.id, x, y, row.gatewayId)}
                   />
                 ))
               )}

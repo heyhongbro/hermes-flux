@@ -438,7 +438,7 @@ test('createActiveViewSyncAdapters: 全视图适配回调与群轮询基线映�
     ['loadRoster', true],
     ['loadFileTree', true],
     ['loadFileTree', true],
-    ['ensureSettingsSectionData', 'connection', true],
+    ['ensureSettingsSectionData', 'gateway', true],
     ['ensureSettingsSectionData', 'agents', true],
     ['startAwaitReply', 'room-1', { knownCount: 2, lastSeq: 12, lastAssistantMessageId: 'g-a1' }],
     ['startAwaitReply', 'room-2', { knownCount: 0, lastSeq: 0, lastAssistantMessageId: null }],

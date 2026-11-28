@@ -26,8 +26,11 @@ import {
   DEFAULT_MOBILE_SECTIONS_COLLAPSED,
   buildMobileHomeModel,
   buildDeliverableListItems,
+  filterProfilesForGateway,
   inferMobileAppearanceFromTheme,
   mountMobileWorkspaceShell,
+  resolveDefaultBotName,
+  resolveInitialGatewayId,
   resolveMobileSkinId,
   resolveWorkspaceShellMode,
   t,
@@ -35,6 +38,7 @@ import {
   type ConversationOrgPrefs,
   type LeftRailProfile,
   type MediaLightboxItem,
+  type NewChatGatewayOption,
   type MobileActionSheetState,
   type MobileAppearancePreference,
   type MobileBotSubpage,
@@ -86,22 +90,28 @@ export interface MobileShellCoordinatorDeps {
     LeftRailController,
     'decorateRailProfiles' | 'decorateRailGroups' | 'decorateRailSessions'
   >;
-  resolveAgentAvatar: (name?: string) => string;
-  selectSession: (id: string, opts?: { botName?: string }) => Promise<void>;
-  openBotChat: (profile: string) => Promise<void>;
-  openGroupRoom: (roomId: string) => Promise<void>;
-  createNewSession: (opts?: { profile?: string; projectId?: string; containerId?: string; title?: string }) => Promise<string | null>;
-  renameSession: (id: string, currentTitle: string, nextTitleOverride: string) => Promise<void>;
-  pinSession: (id: string) => Promise<void>;
-  archiveSession: (id: string, explicitProfile?: string) => Promise<void>;
-  deleteSession: (id: string) => Promise<void>;
+  resolveAgentAvatar: (name?: string, gatewayId?: string) => string;
+  selectSession: (id: string, opts?: { botName?: string; gatewayId?: string }) => Promise<void>;
+  openBotChat: (profile: string, gatewayId?: string) => Promise<void>;
+  openGroupRoom: (roomId: string, gatewayId?: string) => Promise<void>;
+  createNewSession: (opts?: {
+    profile?: string;
+    projectId?: string;
+    containerId?: string;
+    title?: string;
+    gatewayId?: string;
+  }) => Promise<string | null>;
+  renameSession: (id: string, currentTitle: string, nextTitleOverride: string, gatewayId?: string) => Promise<void>;
+  pinSession: (id: string, gatewayId?: string) => Promise<void>;
+  archiveSession: (id: string, explicitProfile?: string, gatewayId?: string) => Promise<void>;
+  deleteSession: (id: string, gatewayId?: string) => Promise<void>;
   onToggleContainer?: (containerId: string) => void;
   onRetryDoneSection?: () => void;
   onSearchQueryChanged?: (query: string) => void;
-  markDoneConfirmed?: (kind: 'session' | 'group', id: string, profile?: string) => Promise<boolean>;
-  restoreDone?: (kind: 'session' | 'group', id: string, profile?: string) => Promise<boolean>;
-  moveEntityToFolder?: (kind: 'session' | 'group', id: string, containerId: string | null, profile?: string) => Promise<boolean>;
-  createFolder?: (name: string, moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string } | null) => Promise<string | null>;
+  markDoneConfirmed?: (kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string) => Promise<boolean>;
+  restoreDone?: (kind: 'session' | 'group', id: string, profile?: string, gatewayId?: string) => Promise<boolean>;
+  moveEntityToFolder?: (kind: 'session' | 'group', id: string, containerId: string | null, profile?: string, gatewayId?: string) => Promise<boolean>;
+  createFolder?: (name: string, moveTarget?: { kind: 'session' | 'group'; id: string; profile?: string; gatewayId?: string } | null) => Promise<string | null>;
   renameFolder?: (folderId: string, nextName: string) => Promise<boolean>;
   deleteFolder?: (folderId: string) => Promise<boolean>;
   assignNewEntityContainer?: (
@@ -113,9 +123,10 @@ export interface MobileShellCoordinatorDeps {
   createGroupRoom: (
     title: string,
     members: string[],
+    gatewayId?: string,
   ) => Promise<{ room_id?: string; room?: { room_id?: string } } | null | undefined>;
-  confirmGroupRename: (roomId: string, name: string) => Promise<void>;
-  disbandGroupRoom: (roomId: string) => Promise<void>;
+  confirmGroupRename: (roomId: string, name: string, gatewayId?: string) => Promise<void>;
+  disbandGroupRoom: (roomId: string, gatewayId?: string) => Promise<void>;
   fetchGroupRooms: () => Promise<void>;
   routeSend: (text: string) => Promise<void>;
   sendGroupMessage: (roomId: string, text: string) => Promise<void>;
@@ -252,6 +263,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
   let newChatGroupMembers: string[] = [];
   let newChatGroupName = '';
   let newChatProjectId: string | undefined = undefined;
+  let newChatGatewayId = '';
   let settingsSubpage: MobileSettingsSubpage = null;
   let botSubpage: MobileBotSubpage = null;
   let inspectorTab: MobileInspectorTab = 'artifacts';
@@ -341,7 +353,9 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       return focus.botName || state.profileName || 'default';
     }
     if (focus.type === 'session') {
-      const targetSession = state.sessions.find((s) => s.id === focus.sessionId);
+      const targetSession = state.sessions.find(
+        (s) => s.id === focus.sessionId && (!focus.gatewayId || !s.gatewayId || s.gatewayId === focus.gatewayId),
+      );
       if (targetSession?.botName) return targetSession.botName;
     }
     return state.profileName || 'default';
@@ -356,16 +370,22 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
   const resolveInspectorGroupMembers = (state: AppState): Array<{ name: string; displayName: string; avatar?: string }> => {
     const focus = state.activeFocus;
     if (focus.type !== 'group') return [];
-    const room = state.groupRooms.find((r) => r.roomId === focus.roomId);
+    const room =
+      state.groupRooms.find(
+        (r) => r.roomId === focus.roomId && (!focus.gatewayId || !r.gatewayId || r.gatewayId === focus.gatewayId),
+      ) || state.groupRooms.find((r) => r.roomId === focus.roomId);
     if (!room) return [];
+    const roomGw = room.gatewayId || focus.gatewayId || state.activeGatewayId;
     return room.members.map((memberName) => {
       const profile = state.profiles.find(
-        (p) => p.name.toLowerCase() === memberName.toLowerCase() || p.displayName?.toLowerCase() === memberName.toLowerCase(),
+        (p) =>
+          (!roomGw || !p.gatewayId || p.gatewayId === roomGw) &&
+          (p.name.toLowerCase() === memberName.toLowerCase() || p.displayName?.toLowerCase() === memberName.toLowerCase()),
       );
       return {
         name: profile?.name || memberName,
         displayName: profile?.displayName || memberName,
-        avatar: profile?.avatar || deps.resolveAgentAvatar(memberName),
+        avatar: profile?.avatar || deps.resolveAgentAvatar(memberName, roomGw),
       };
     });
   };
@@ -446,19 +466,23 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       doneError: state.doneError,
       profileName: state.profileName,
       searchQuery: state.sessionSearchQuery,
+      gatewayCount: state.gatewayCount,
       collapsed,
       profilesPhase: state.profilesPhase,
       sessionsPhase: state.sessionsPhase,
       nowMs,
     });
 
+    const focusedGw = state.activeFocus.gatewayId || state.activeGatewayId;
+    const matchGw = (p: LeftRailProfile): boolean => !focusedGw || !p.gatewayId || p.gatewayId === focusedGw;
     const activeProfile =
+      allProfiles.find((p) => matchGw(p) && p.name.toLowerCase() === (state.profileName || 'default').toLowerCase()) ||
       allProfiles.find((p) => p.name.toLowerCase() === (state.profileName || 'default').toLowerCase()) ||
       allProfiles.find((p) => p.isDefault);
     const inspectorBotProfile = resolveInspectorBotProfile(state);
-    const inspectorMatched = allProfiles.find(
-      (p) => p.name.toLowerCase() === inspectorBotProfile.toLowerCase(),
-    );
+    const inspectorMatched =
+      allProfiles.find((p) => matchGw(p) && p.name.toLowerCase() === inspectorBotProfile.toLowerCase()) ||
+      allProfiles.find((p) => p.name.toLowerCase() === inspectorBotProfile.toLowerCase());
 
     const modelDetails: MobileWorkspaceSnapshot['modelDetails'] =
       Array.isArray(state.modelCatalog) && state.modelCatalog.length > 0
@@ -485,6 +509,8 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       locale: state.lang === 'en' ? 'en' : 'zh',
       gatewayConnected: state.gatewayConnected,
       gatewayConnecting: state.gatewayConnecting,
+      gatewayCount: state.gatewayCount,
+      activeEntityGatewayOffline: Boolean(state.activeEntityGatewayOffline),
       connectionPhase: state.connectionPhase,
       connectionReconnectAttempt: state.connectionReconnectAttempt,
       connectionAuthError: state.connectionAuthError,
@@ -507,6 +533,12 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       newChatGroupMembers,
       newChatGroupName,
       newChatProjectId,
+      newChatGatewayId,
+      gateways: (state.gatewayHealthSummary?.slots ?? []).map((slot): NewChatGatewayOption => ({
+        id: slot.gatewayId,
+        label: slot.name || slot.shortLabel || slot.url,
+        connected: slot.connected,
+      })),
       newChatStats: resolveNewChatStats(state),
       settingsOpen: state.isSettingsOpen,
       settingsSubpage,
@@ -655,8 +687,10 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
         ensureBotHubData();
       }
       if (subpage === 'memory') {
+        const gwId = deps.getState().settingsGatewayId || undefined;
         void deps.loadLearningGraph?.({
           profile: resolveBotHubTargetProfile(deps.getState()),
+          ...(gwId ? { gatewayId: gwId } : {}),
           force: false,
         });
       }
@@ -677,22 +711,22 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       }
       deps.render();
     },
-    onSelectBot: (botName) => {
+    onSelectBot: (botName, gatewayId) => {
       stageComposerDraft = null;
       activePane = 'stage';
-      void deps.openBotChat(botName);
+      void deps.openBotChat(botName, gatewayId);
       deps.render();
     },
-    onSelectGroup: (roomId) => {
+    onSelectGroup: (roomId, gatewayId) => {
       stageComposerDraft = null;
       activePane = 'stage';
-      void deps.openGroupRoom(roomId);
+      void deps.openGroupRoom(roomId, gatewayId);
       deps.render();
     },
-    onSelectSession: (sessionId, botName) => {
+    onSelectSession: (sessionId, botName, gatewayId) => {
       stageComposerDraft = null;
       activePane = 'stage';
-      void deps.selectSession(sessionId, { botName });
+      void deps.selectSession(sessionId, { botName, gatewayId });
       deps.render();
     },
     onToggleSection: (section) => {
@@ -736,72 +770,86 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       if (sheet.kind === 'bot') {
         stageComposerDraft = null;
         activePane = 'stage';
-        void deps.openBotChat(sheet.id);
+        void deps.openBotChat(sheet.id, sheet.gatewayId);
       } else if (sheet.kind === 'group') {
         stageComposerDraft = null;
         activePane = 'stage';
-        void deps.openGroupRoom(sheet.id);
+        void deps.openGroupRoom(sheet.id, sheet.gatewayId);
       } else if (sheet.kind !== 'folder') {
         stageComposerDraft = null;
         activePane = 'stage';
         const curState = deps.getState();
         const targetProfile = sheet.botName ? normalizeOrgProfileName(sheet.botName) : null;
-        const matchSess = (s: { id: string; botName?: string }) =>
-          s.id === sheet.id && (!targetProfile || normalizeOrgProfileName(s.botName) === targetProfile);
+        const matchGw = (s: { gatewayId?: string }) =>
+          !sheet.gatewayId || !s.gatewayId || s.gatewayId === sheet.gatewayId;
+        const matchSess = (s: { id: string; botName?: string; gatewayId?: string }) =>
+          s.id === sheet.id &&
+          (!targetProfile || normalizeOrgProfileName(s.botName) === targetProfile) &&
+          matchGw(s);
         const targetSess =
           curState.sessions.find(matchSess) ||
           (curState.archivedSessions || []).find(matchSess) ||
-          curState.sessions.find((s) => s.id === sheet.id) ||
-          (curState.archivedSessions || []).find((s) => s.id === sheet.id);
+          curState.sessions.find((s) => s.id === sheet.id && matchGw(s)) ||
+          (curState.archivedSessions || []).find((s) => s.id === sheet.id && matchGw(s));
         const resolvedBot = sheet.botName || targetSess?.botName;
-        void deps.selectSession(sheet.id, resolvedBot ? { botName: resolvedBot } : undefined);
+        const resolvedGw = sheet.gatewayId || targetSess?.gatewayId;
+        const opts =
+          resolvedBot || resolvedGw
+            ? { ...(resolvedBot ? { botName: resolvedBot } : {}), ...(resolvedGw ? { gatewayId: resolvedGw } : {}) }
+            : undefined;
+        void deps.selectSession(sheet.id, opts);
       }
       deps.render();
     },
     onActionRename: (sheet, nextTitle) => {
       if (sheet.isProtected) return;
       if (sheet.kind === 'group') {
-        void deps.confirmGroupRename(sheet.id, nextTitle);
+        void deps.confirmGroupRename(sheet.id, nextTitle, sheet.gatewayId);
       } else if (sheet.kind === 'session') {
-        void deps.renameSession(sheet.id, sheet.title, nextTitle);
+        void deps.renameSession(sheet.id, sheet.title, nextTitle, sheet.gatewayId);
       }
     },
     onActionPin: (sheet) => {
       if (sheet.isProtected) return;
       if (sheet.kind === 'session') {
-        void deps.pinSession(sheet.id);
+        void deps.pinSession(sheet.id, sheet.gatewayId);
       }
     },
     onActionArchive: (sheet) => {
       if (sheet.isProtected) return;
       if (sheet.kind === 'session') {
-        void deps.archiveSession(sheet.id, sheet.botName);
+        void deps.archiveSession(sheet.id, sheet.botName, sheet.gatewayId);
       }
     },
     onActionMarkDone: (sheet) => {
       if (sheet.isProtected || (sheet.kind !== 'session' && sheet.kind !== 'group')) return;
       if (deps.markDoneConfirmed) {
-        void deps.markDoneConfirmed(sheet.kind, sheet.id, sheet.botName);
+        void deps.markDoneConfirmed(sheet.kind, sheet.id, sheet.botName, sheet.gatewayId);
       } else if (sheet.kind === 'session') {
-        void deps.archiveSession(sheet.id, sheet.botName);
+        void deps.archiveSession(sheet.id, sheet.botName, sheet.gatewayId);
       }
     },
     onActionRestoreDone: (sheet) => {
       if (sheet.isProtected || (sheet.kind !== 'session' && sheet.kind !== 'group')) return;
       if (deps.restoreDone) {
-        void deps.restoreDone(sheet.kind, sheet.id, sheet.botName);
+        void deps.restoreDone(sheet.kind, sheet.id, sheet.botName, sheet.gatewayId);
       } else if (sheet.kind === 'session') {
-        void deps.archiveSession(sheet.id, sheet.botName);
+        void deps.archiveSession(sheet.id, sheet.botName, sheet.gatewayId);
       }
     },
     onActionMoveToFolder: (sheet, containerId) => {
       if (sheet.isProtected || (sheet.kind !== 'session' && sheet.kind !== 'group')) return;
-      void deps.moveEntityToFolder?.(sheet.kind, sheet.id, containerId, sheet.botName);
+      void deps.moveEntityToFolder?.(sheet.kind, sheet.id, containerId, sheet.botName, sheet.gatewayId);
     },
     onActionCreateFolder: (name, moveTarget) => {
       const target =
         moveTarget && !moveTarget.isProtected && (moveTarget.kind === 'session' || moveTarget.kind === 'group')
-          ? { kind: moveTarget.kind, id: moveTarget.id, profile: moveTarget.botName }
+          ? {
+              kind: moveTarget.kind,
+              id: moveTarget.id,
+              profile: moveTarget.botName,
+              ...(moveTarget.gatewayId ? { gatewayId: moveTarget.gatewayId } : {}),
+            }
           : null;
       void deps.createFolder?.(name, target);
     },
@@ -815,7 +863,7 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       // 三态物理保护：Bot 终身主工位严禁触发删除
       if (sheet.isProtected) return;
       if (sheet.kind === 'session') {
-        void deps.deleteSession(sheet.id);
+        void deps.deleteSession(sheet.id, sheet.gatewayId);
       }
     },
     onActionDisband: (sheet) => {
@@ -823,8 +871,9 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       if (sheet.kind === 'group') {
         const currentFocus = deps.getState().activeFocus;
         const shouldLeaveToHome = (activePane === 'stage' || activePane === 'inspector')
-          && currentFocus.type === 'group' && currentFocus.roomId === sheet.id;
-        const promise = deps.disbandGroupRoom(sheet.id);
+          && currentFocus.type === 'group' && currentFocus.roomId === sheet.id
+          && (!sheet.gatewayId || !currentFocus.gatewayId || currentFocus.gatewayId === sheet.gatewayId);
+        const promise = deps.disbandGroupRoom(sheet.id, sheet.gatewayId);
         void Promise.resolve(promise).then(() => {
           if (shouldLeaveToHome) {
             activePane = 'home';
@@ -839,10 +888,24 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     },
     onOpenNewChat: () => {
       const state = deps.getState();
+      const gatewayOpts: NewChatGatewayOption[] = (state.gatewayHealthSummary?.slots ?? []).map((slot) => ({
+        id: slot.gatewayId,
+        label: slot.name || slot.shortLabel || slot.url,
+        connected: slot.connected,
+      }));
+      newChatGatewayId = resolveInitialGatewayId(
+        gatewayOpts,
+        state.activeFocus?.gatewayId || state.activeGatewayId,
+      );
+      const railProfiles = deps.leftRailController.decorateRailProfiles(deps.now ? deps.now() : Date.now());
+      const scopedProfiles = filterProfilesForGateway(
+        railProfiles,
+        gatewayOpts.length >= 2 ? newChatGatewayId : undefined,
+      );
       newChatOpen = true;
       newChatStep = 'compose';
       newChatTargetKind = 'bot';
-      newChatTargetBot = state.profileName || state.profiles.find((p) => p.isDefault)?.name || 'default';
+      newChatTargetBot = resolveDefaultBotName(scopedProfiles, state.profileName);
       newChatGroupMembers = [];
       newChatGroupName = '';
       newChatProjectId = undefined;
@@ -855,6 +918,25 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       newChatOpen = false;
       newChatStep = 'compose';
       newChatProjectId = undefined;
+      newChatGatewayId = '';
+      deps.render();
+    },
+    onSelectNewChatGateway: (gatewayId) => {
+      const state = deps.getState();
+      newChatGatewayId = gatewayId;
+      const railProfiles = deps.leftRailController.decorateRailProfiles(deps.now ? deps.now() : Date.now());
+      const scopedProfiles = filterProfilesForGateway(railProfiles, gatewayId || undefined);
+      newChatTargetBot = resolveDefaultBotName(scopedProfiles, newChatTargetBot);
+      const validMembers = new Set(scopedProfiles.map((p) => p.name.toLowerCase()));
+      newChatGroupMembers = newChatGroupMembers.filter((name) => validMembers.has(name.toLowerCase()));
+      if (
+        newChatProjectId &&
+        !(state.projects ?? []).some(
+          (p) => p.id === newChatProjectId && (!gatewayId || !p.gatewayId || p.gatewayId === gatewayId),
+        )
+      ) {
+        newChatProjectId = undefined;
+      }
       deps.render();
     },
     onSetNewChatStep: (step) => {
@@ -890,12 +972,14 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       const targetKind = newChatTargetKind;
       const targetBot = newChatTargetBot;
       const targetProjectId = newChatProjectId;
+      const targetGatewayId = newChatGatewayId || undefined;
       const members = [...newChatGroupMembers];
       const title = newChatGroupName.trim() || t('mobile.newChat.groupDefaultName');
 
       newChatOpen = false;
       newChatStep = 'compose';
       newChatProjectId = undefined;
+      newChatGatewayId = '';
       stageComposerDraft = null;
       activePane = 'stage';
       deps.render();
@@ -903,21 +987,25 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
       void (async () => {
         try {
           if (targetKind === 'group' && members.length >= 2) {
-            const created = await deps.createGroupRoom(title, members);
+            const created = await deps.createGroupRoom(title, members, targetGatewayId);
             const roomId = created?.room?.room_id || created?.room_id;
             await deps.fetchGroupRooms();
             if (roomId) {
               if (targetProjectId) {
                 await deps.assignNewEntityContainer?.('group', roomId, { projectId: targetProjectId });
               }
-              await deps.openGroupRoom(roomId);
+              await deps.openGroupRoom(roomId, targetGatewayId);
               if (trimmed || deps.getState().attachments.length > 0) {
                 await deps.sendGroupMessage(roomId, trimmed);
               }
             }
             return;
           }
-          const createdSessionId = await deps.createNewSession({ profile: targetBot, projectId: targetProjectId });
+          const createdSessionId = await deps.createNewSession({
+            profile: targetBot,
+            projectId: targetProjectId,
+            ...(targetGatewayId ? { gatewayId: targetGatewayId } : {}),
+          });
           if (!createdSessionId) return;
           await deps.routeSend(trimmed);
         } catch (err) {
@@ -1127,10 +1215,22 @@ export function createMobileShellCoordinator(deps: MobileShellCoordinatorDeps): 
     onRetryConnect: deps.onRetryConnect,
     settingsActions: {
       ...baseSettingsActions,
+      onSelectSettingsGateway: (gatewayId) => {
+        baseSettingsActions.onSelectSettingsGateway?.(gatewayId);
+        const state = deps.getState();
+        if (state.isSettingsOpen && (settingsSubpage === 'projects' || settingsSubpage === 'providers' || settingsSubpage === 'extensions')) {
+          deps.ensureSettingsSectionData(settingsSubpage, true);
+        }
+        if (homeTab === 'bots') {
+          ensureBotHubData();
+        }
+        deps.render();
+      },
       onSelectBotSettle: (botId) => {
         baseSettingsActions.onSelectBotSettle?.(botId);
         if (botSubpage === 'memory') {
-          void deps.loadLearningGraph?.({ profile: botId, force: false });
+          const gwId = deps.getState().settingsGatewayId || undefined;
+          void deps.loadLearningGraph?.({ profile: botId, ...(gwId ? { gatewayId: gwId } : {}), force: false });
         }
       },
     },

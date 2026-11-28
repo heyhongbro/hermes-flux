@@ -166,7 +166,7 @@ test('settings-center: 真实产物下的导航、换肤、语言与失败态（
   const navIds = await evaluate(
     'Array.from(document.querySelectorAll("[data-settings-section]")).map((node) => node.getAttribute("data-settings-section"))',
   );
-  assert.deepEqual(navIds, ['appearance', 'providers', 'agents', 'extensions', 'connection', 'about']);
+  assert.deepEqual(navIds, ['general', 'appearance', 'gateway', 'projects', 'providers', 'agents', 'extensions', 'about']);
 
   const navText = await evaluate(
     'document.querySelector("[data-settings-section]").closest("nav").textContent',
@@ -180,7 +180,7 @@ test('settings-center: 真实产物下的导航、换肤、语言与失败态（
   })()`);
   assert.equal(emojiFree, true, '导航图标不得是 emoji');
   const iconCount = await evaluate('document.querySelectorAll("[data-settings-section] svg").length');
-  assert.equal(iconCount, 6, '每个导航项必须有一个 lucide SVG 图标');
+  assert.equal(iconCount, 8, '每个导航项必须有一个 lucide SVG 图标');
 
   const settle = async () => {
     await evaluate('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
@@ -233,7 +233,9 @@ test('settings-center: 真实产物下的导航、换肤、语言与失败态（
   assert.equal(lightMetrics.trayBorderTop, '0px', 'ayu-light 下 SettingInset 不得再有外框线');
   assert.notEqual(lightMetrics.trayBg, lightMetrics.dialogBg, 'ayu-light 下 SettingInset 必须与浮层底色拉开层次');
 
-  // 语言：点 English 后导航文案必须真的变成英文
+  // 语言：切到通用页点 English 后导航文案必须真的变成英文
+  await evaluate('document.querySelector("[data-settings-section=general]").click()');
+  await waitFor('document.querySelector("[data-settings-anchor=language]") !== null', '通用页加载');
   await evaluate('document.querySelector("[data-segmented-value=en]").click()');
   await waitFor(
     'document.querySelector("[data-settings-section=appearance]").textContent.trim() === "Appearance"',
@@ -264,8 +266,8 @@ test('settings-center: 真实产物下的导航、换肤、语言与失败态（
   const providersPanel = await evaluate('document.body.textContent');
   assert.ok(!/jev|agnes-ai|magpie/i.test(providersPanel), '不得出现硬编码的假提供商');
 
-  // 连接页：表单与状态必须真实可见
-  await evaluate('document.querySelector("[data-settings-section=connection]").click()');
+  // 网关页：表单与状态必须真实可见
+  await evaluate('document.querySelector("[data-settings-section=gateway]").click()');
   await waitFor('Boolean(document.getElementById("settings-gateway-url"))', '连接表单出现');
 
   // 截图留证。headless 截图可能返回上一帧，必须先等两帧 rAF + 一次样式提交，
@@ -274,7 +276,7 @@ test('settings-center: 真实产物下的导航、换肤、语言与失败态（
   const navState = await evaluate(
     'Array.from(document.querySelectorAll("[data-settings-section]")).filter((n) => n.getAttribute("aria-current") === "page").map((n) => n.getAttribute("data-settings-section"))',
   );
-  assert.deepEqual(navState, ['connection'], '导航高亮必须与右侧面板同步，不能停在上一项');
+  assert.deepEqual(navState, ['gateway'], '导航高亮必须与右侧面板同步，不能停在上一项');
 
   const shot = await send('Page.captureScreenshot', { format: 'png', fromSurface: true });
   fs.writeFileSync(path.join(shotDir, 'settings-center-connection.png'), Buffer.from(shot.data, 'base64'));

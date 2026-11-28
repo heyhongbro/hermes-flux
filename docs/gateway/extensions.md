@@ -5,13 +5,13 @@
 
 | Method | Params (Contract) | Result (Contract) | Call Sites | Live Probe |
 | --- | --- | --- | --- | --- |
-| `mcp.catalog` | `profile` | `servers` | `packages/desktop/src/renderer/services/settingsDataService.ts:1238` | Skipped: MCP catalog lookup RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus core/desktop unit tests; run probe:gateway against a live gateway to record. |
-| `mcp.servers.add` | `profile` `name` `preset` `config` `bearer_token` | `ok` `name` `server` | `packages/desktop/src/renderer/services/settingsDataService.ts:1258` | Skipped: MCP server creation write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus parameter-construction unit tests; run probe:gateway against a live gateway to record. |
-| `mcp.servers.remove` | `profile` `name` | `ok` `removed` | `packages/desktop/src/renderer/services/settingsDataService.ts:1281` | Skipped: MCP server removal write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus controller unit tests; run probe:gateway against a live gateway to record. |
-| `mcp.servers.status` | `profile` | `servers` `checked_at` | `packages/desktop/src/renderer/services/settingsDataService.ts:424`<br>`packages/desktop/src/renderer/settingsController.ts:209` | ✅ 0.21.6 |
-| `mcp.servers.test` | `profile` `name` | `ok` `tools` `error` `prompts` `resources` `oauth_needed` `oauth_tokens_present` | `packages/desktop/src/renderer/services/settingsDataService.ts:1306` | Skipped: MCP server health-check RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus result-normalization unit tests; run probe:gateway against a live gateway to record. |
-| `skills.manage` | `profile` `action` `query` `page` `page_size` | `skills` `results` `installed` `name` `items` `page` `total_pages` `total` `info` | `packages/desktop/src/renderer/services/learningService.ts:280`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:1329`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:1336`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:1361`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:1400`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:378`<br>`packages/desktop/src/renderer/settingsController.ts:210` | ✅ 0.21.6 |
-| `skills.reload` | `session_id` `profile` | `output` `result` | `packages/desktop/src/renderer/services/settingsDataService.ts:1370`<br>`packages/desktop/src/renderer/settingsController.ts:257` | ✅ 0.21.6 |
+| `mcp.catalog` | `profile` | `servers` | `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:59` | Skipped: MCP catalog lookup RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus core/desktop unit tests; run probe:gateway against a live gateway to record. |
+| `mcp.servers.add` | `profile` `name` `preset` `config` `bearer_token` | `ok` `name` `server` | `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:80` | Skipped: MCP server creation write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus parameter-construction unit tests; run probe:gateway against a live gateway to record. |
+| `mcp.servers.remove` | `profile` `name` | `ok` `removed` | `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:104` | Skipped: MCP server removal write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus controller unit tests; run probe:gateway against a live gateway to record. |
+| `mcp.servers.status` | `profile` | `servers` `checked_at` | `packages/desktop/src/renderer/services/settingsDataService.ts:546`<br>`packages/desktop/src/renderer/settingsController.ts:217` | ✅ 0.21.6 |
+| `mcp.servers.test` | `profile` `name` | `ok` `tools` `error` `prompts` `resources` `oauth_needed` `oauth_tokens_present` | `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:130` | Skipped: MCP server health-check RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus result-normalization unit tests; run probe:gateway against a live gateway to record. |
+| `skills.manage` | `profile` `action` `query` `page` `page_size` | `skills` `results` `installed` `name` `items` `page` `total_pages` `total` `info` | `packages/desktop/src/renderer/services/learningService.ts:313`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:500`<br>`packages/desktop/src/renderer/services/settingsExtensionsActions.ts:154`<br>`packages/desktop/src/renderer/services/settingsExtensionsActions.ts:161`<br>`packages/desktop/src/renderer/services/settingsExtensionsActions.ts:189`<br>`packages/desktop/src/renderer/services/settingsExtensionsActions.ts:229`<br>`packages/desktop/src/renderer/settingsController.ts:218` | ✅ 0.21.6 |
+| `skills.reload` | `session_id` `profile` | `output` `result` | `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:198`<br>`packages/desktop/src/renderer/settingsController.ts:265` | ✅ 0.21.6 |
 
 ## Details
 
@@ -21,7 +21,7 @@
 - Result type: `McpCatalogResult`
 - Live probe: Skipped — MCP catalog lookup RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus core/desktop unit tests; run probe:gateway against a live gateway to record.
 - Call sites:
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1238`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:59`
 
 ### `mcp.servers.add`
 
@@ -29,7 +29,7 @@
 - Result type: `McpServersAddResult`
 - Live probe: Skipped — MCP server creation write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus parameter-construction unit tests; run probe:gateway against a live gateway to record.
 - Call sites:
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1258`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:80`
 
 ### `mcp.servers.remove`
 
@@ -37,7 +37,7 @@
 - Result type: `McpServersRemoveResult`
 - Live probe: Skipped — MCP server removal write operation is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus controller unit tests; run probe:gateway against a live gateway to record.
 - Call sites:
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1281`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:104`
 
 ### `mcp.servers.status`
 
@@ -46,8 +46,8 @@
 - Live probe: Passed (Gateway 0.21.6, recorded at 2026-11-08T13:18:53.038Z)
 - Note: Recorded against local loopback gateway; remaining main baseline entries recorded against 0.22.5.
 - Call sites:
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:424`
-  - `packages/desktop/src/renderer/settingsController.ts:209`
+  - `packages/desktop/src/renderer/services/settingsDataService.ts:546`
+  - `packages/desktop/src/renderer/settingsController.ts:217`
 
 ### `mcp.servers.test`
 
@@ -55,7 +55,7 @@
 - Result type: `McpServersTestResult`
 - Live probe: Skipped — MCP server health-check RPC is explicitly skipped in offline probes without .env and guarded by the contract allowlist plus result-normalization unit tests; run probe:gateway against a live gateway to record.
 - Call sites:
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1306`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:130`
 
 ### `skills.manage`
 
@@ -64,13 +64,13 @@
 - Live probe: Passed (Gateway 0.21.6, recorded at 2026-11-08T13:18:53.038Z)
 - Note: Recorded against local loopback gateway; remaining main baseline entries recorded against 0.22.5.
 - Call sites:
-  - `packages/desktop/src/renderer/services/learningService.ts:280`
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1329`
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1336`
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1361`
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1400`
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:378`
-  - `packages/desktop/src/renderer/settingsController.ts:210`
+  - `packages/desktop/src/renderer/services/learningService.ts:313`
+  - `packages/desktop/src/renderer/services/settingsDataService.ts:500`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:154`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:161`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:189`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:229`
+  - `packages/desktop/src/renderer/settingsController.ts:218`
 
 ### `skills.reload`
 
@@ -79,6 +79,6 @@
 - Live probe: Passed (Gateway 0.21.6, recorded at 2026-11-08T13:18:53.038Z)
 - Note: Recorded against local loopback gateway; remaining main baseline entries recorded against 0.22.5.
 - Call sites:
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1370`
-  - `packages/desktop/src/renderer/settingsController.ts:257`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:198`
+  - `packages/desktop/src/renderer/settingsController.ts:265`
 

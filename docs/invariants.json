@@ -72,6 +72,30 @@
       "failure": "Paginating by orderKey yields non-monotonic displaySeq and scrambles historical messages"
     },
     {
+      "id": "INV-CACHE-09",
+      "topic": "多网关 5 元组主键边界正交隔离（并行读写删截零串扰）",
+      "source": "packages/core/src/cache/ICacheStore.ts",
+      "symbol": "buildChannelBounds",
+      "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
+      "failure": "多网关相同 profile 与 sessionId 在同一 IndexedDB 仓库互相覆盖或跨网关误删历史消息"
+    },
+    {
+      "id": "INV-CACHE-10",
+      "topic": "多网关会话索引独立上限配额守恒（分桶裁剪互不挤出）",
+      "source": "packages/core/src/cache/CacheService.ts",
+      "symbol": "CacheService.writeSessions",
+      "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
+      "failure": "高活跃网关的新会话按全局时间截断将低频备用网关的历史会话索引挤出缓存"
+    },
+    {
+      "id": "INV-CACHE-11",
+      "topic": "群聊 __room__ 稳定哨兵归属与 authorityEpoch 单调防倒灌",
+      "source": "packages/core/src/cache/CacheService.ts",
+      "symbol": "CacheService.applyRemoteWindow",
+      "test": "packages/core/__tests__/formal/cache-fence-formal.test.mjs",
+      "failure": "跨机群聊切主后旧消息孤儿化消失，或失联降级旧主网关重连后用陈旧快照覆写最新群聊记录"
+    },
+    {
       "id": "INV-SESSION-01",
       "topic": "Stale writes across session or generation changes are discarded",
       "source": "packages/core/src/session/guardedRun.ts",
@@ -584,6 +608,14 @@
       "failure": "Cold-start retries stall indefinitely or tight-loop without delay"
     },
     {
+      "id": "INV-CONN-04",
+      "topic": "Aggregate multi-gateway connection phase converges when focused or any online",
+      "source": "packages/core/src/rpc/connectionPhase.ts",
+      "symbol": "resolveAggregateConnectionPhase",
+      "test": "packages/core/__tests__/formal/connection-phase-formal.test.mjs",
+      "failure": "Multi-gateway cold start stays stuck on connecting/reconnecting pill even after slots connect"
+    },
+    {
       "id": "INV-DELIV-01",
       "topic": "Deliverable extraction deduplicates idempotently and excludes non-assistant turns",
       "source": "packages/core/src/session/deliverables.ts",
@@ -662,6 +694,30 @@
       "symbol": "decideWatchdogProbeAction",
       "test": "packages/core/__tests__/formal/live-stream-sync-formal.test.mjs",
       "failure": "Silent >60s tool execution or deep thinking gets prematurely killed as idle"
+    },
+    {
+      "id": "INV-MULTIGW-01",
+      "topic": "多网关运行时 Slot 严格物理隔离，断连与状态清理绝不跨槽污染",
+      "source": "packages/core/src/gateway/GatewayConnectionPool.ts",
+      "symbol": "GatewayConnectionPool",
+      "test": "packages/core/__tests__/formal/multi-gateway-formal.test.mjs",
+      "failure": "关闭一台网关或清零断线状态时连带擦除另一台在线网关的活跃会话、liveId 映射或审批流"
+    },
+    {
+      "id": "INV-MULTIGW-02",
+      "topic": "跨网关群聊去重满足输入排列无关性与最高 authorityEpoch 胜出",
+      "source": "packages/core/src/gateway/MultiGatewayAggregator.ts",
+      "symbol": "aggregateMultiGatewaySnapshots",
+      "test": "packages/core/__tests__/formal/multi-gateway-formal.test.mjs",
+      "failure": "多机同步同一群聊时因网关响应先后随机翻转权威状态，或低代际陈旧群聊覆盖高代际副本"
+    },
+    {
+      "id": "INV-MULTIGW-03",
+      "topic": "Clone 碰撞（同 installId 异指纹）隔离保真，同源重复去重且顶栏健康归约单调",
+      "source": "packages/core/src/gateway/MultiGatewayAggregator.ts",
+      "symbol": "detectCloneCollisions",
+      "test": "packages/core/__tests__/formal/multi-gateway-formal.test.mjs",
+      "failure": "克隆虚拟机被误并入同库引发串台，或部分网关离线时顶栏仍误报全在线绿灯"
     },
     {
       "id": "INV-STREAM-07",

@@ -22,6 +22,19 @@ export const zhChrome = {
   'titlebar.switchProfile': '切换 BOT',
   'titlebar.restore': '向下还原',
   'titlebar.maximize': '最大化',
+  'titlebar.partialOffline': '部分网关离线',
+
+  // Gateway Health Popover & Multi-Gateway
+  'gateway.healthTitle': '网关连接健康',
+  'gateway.routeDirect': '直连',
+  'gateway.routeLan': '局域网',
+  'gateway.routeRelay': '中继',
+  'gateway.reconnect': '重连',
+  'gateway.disconnect': '断开',
+  'gateway.manageGateways': '管理网关',
+  'gateway.offlineReadOnlyNotice': '当前节点已离线，正在只读浏览本地缓存',
+  'gateway.emptyList': '未配置网关',
+  'gateway.localNode': '本地网关',
 
   // Left Rail
   'rail.newChat': '新建会话',
@@ -172,6 +185,19 @@ export const enChrome = {
   'titlebar.switchProfile': 'Switch BOT',
   'titlebar.restore': 'Restore down',
   'titlebar.maximize': 'Maximize',
+  'titlebar.partialOffline': 'Partially Offline',
+
+  // Gateway Health Popover & Multi-Gateway
+  'gateway.healthTitle': 'Gateway Health',
+  'gateway.routeDirect': 'Direct',
+  'gateway.routeLan': 'LAN',
+  'gateway.routeRelay': 'Relay',
+  'gateway.reconnect': 'Reconnect',
+  'gateway.disconnect': 'Disconnect',
+  'gateway.manageGateways': 'Manage Gateways',
+  'gateway.offlineReadOnlyNotice': 'Node offline — browsing cached history read-only',
+  'gateway.emptyList': 'No gateways configured',
+  'gateway.localNode': 'Local Gateway',
 
   'rail.newChat': 'New Session',
   'rail.newGroup': 'New Group',

@@ -184,14 +184,12 @@ test('设置中心关闭时必须渲染空 DOM（不保留隐藏壳）', () => {
 test('导航只有真实能力域：不出现竞品分组名，也不出现任何占位域', () => {
   setLocale('zh-CN');
   const html = render();
-  assert.equal(SETTINGS_SECTIONS.length, 7);
-  for (const section of SETTINGS_SECTIONS) {
-    assert.ok(html.includes(`data-settings-section="${section.id}"`), `缺少导航项 ${section.id}`);
-  }
+  assert.equal(SETTINGS_SECTIONS.length, 8);
+  for (const section of SETTINGS_SECTIONS) assert.ok(html.includes(`data-settings-section="${section.id}"`), `缺少导航项 ${section.id}`);
   for (const banned of ['OPENCHAMBER', 'tunnels', 'websearch', 'notifications', 'usage', 'keybindings']) {
     assert.equal(html.includes(banned), false, `导航不得残留竞品域 ${banned}`);
   }
-  assert.equal(html.includes(t('settings.sectionAppearance')), true);
+  assert.ok(html.includes(t('settings.sectionAppearance')) && html.includes(t('settings.sectionGeneral')) && html.includes(t('settings.sectionGateway')));
 });
 
 test('图标必须是 lucide 描边 SVG，不得出现任何 emoji', () => {
@@ -286,9 +284,9 @@ test('外观页的活动指示器：十八张变体卡互斥选中，且每张�
 });
 
 
-test('连接页表单值来自快照，且给出真实连接状态', () => {
+test('网关页表单值来自快照，且给出真实连接状态', () => {
   setLocale('zh-CN');
-  const html = render({ section: 'connection' });
+  const html = render({ section: 'gateway' });
   assert.ok(html.includes('id="settings-gateway-url"'));
   assert.ok(html.includes('http://127.0.0.1:9119'));
   assert.ok(html.includes(t('settings.gatewayConnected')));
@@ -1009,9 +1007,9 @@ test('BOT 横幅互斥：确认态存在时不得同时渲染错误横幅（避�
   assert.equal(html.includes('gateway 500'), false, '错误横幅与确认横幅不得同时出现');
 });
 
-test('BOT 状态位置：外观分区渲染两个选项，选中态与快照一致', () => {
+test('BOT 状态位置：通用分区渲染两个选项，选中态与快照一致', () => {
   setLocale('zh-CN');
-  const stageHtml = render({ section: 'appearance', presenceLayout: 'stage' });
+  const stageHtml = render({ section: 'general', presenceLayout: 'stage' });
 
   /**
    * 【为什么这里写死中文字面量而不是调 t()】
@@ -1026,7 +1024,7 @@ test('BOT 状态位置：外观分区渲染两个选项，选中态与快照一�
 
   // 【变异杀伤力】把 snapshot.presenceLayout 改成 dock 后，选中态必须跟着换，
   //   否则「切换不生效」这类缺陷会全绿通过。
-  const dockHtml = render({ section: 'appearance', presenceLayout: 'dock' });
+  const dockHtml = render({ section: 'general', presenceLayout: 'dock' });
   const pressedOf = (html, label) => {
     const match = new RegExp(`aria-pressed="(true|false)"[^>]*>${label}`).exec(html);
     return match?.[1] ?? null;
@@ -1077,16 +1075,16 @@ test('对话区宽度：外观分区渲染窄/较宽/全宽三档选项，选中
   assert.deepEqual(renderedModes('对话区宽度', wideHtml), [...CONVERSATION_WIDTH_MODES], 'zh 档位必须与真值表同序同集');
   assert.deepEqual(renderedModes('Conversation width', enHtml), [...CONVERSATION_WIDTH_MODES], 'en 档位必须与真值表同序同集');
 
-  // 左侧栏样式分段开关（双轨分栏 / 分组列表）
+  // 左侧栏样式分段开关（双轨分栏 / 分组列表，位于通用分区）
   setLocale('zh-CN');
-  const dualHtml = render({ section: 'appearance', locale: 'zh', leftRailLayout: 'dual-rail' });
+  const dualHtml = render({ section: 'general', locale: 'zh', leftRailLayout: 'dual-rail' });
   assert.ok(dualHtml.includes('左侧栏样式'));
   assert.equal(pressedOf(dualHtml, '双轨分栏'), 'true');
   assert.equal(pressedOf(dualHtml, '分组列表'), 'false');
   assert.deepEqual(renderedModes('左侧栏样式', dualHtml), [...LEFT_RAIL_LAYOUTS], 'zh 左侧栏档位必须与真值表同序同集');
 
   setLocale('en-US');
-  const groupedEnHtml = render({ section: 'appearance', locale: 'en', leftRailLayout: 'grouped' });
+  const groupedEnHtml = render({ section: 'general', locale: 'en', leftRailLayout: 'grouped' });
   assert.ok(groupedEnHtml.includes('Sidebar style'));
   assert.equal(pressedOf(groupedEnHtml, 'Dual Rail'), 'false');
   assert.equal(pressedOf(groupedEnHtml, 'Grouped'), 'true');
@@ -1121,16 +1119,17 @@ test('语言切换是真实生效的：同一份快照在两种 locale 下文案
   );
 });
 
-test('设置域注册表：未知 section 回落到第一个域，检索按当前语言过滤', () => {
+test('设置域注册表：未知 section 回落到第一个域，旧 connection 兼容映射到 gateway，检索按当前语言过滤', () => {
   assert.equal(resolveSettingsSection('providers'), 'providers');
-  assert.equal(resolveSettingsSection('tunnels'), 'appearance');
-  assert.equal(resolveSettingsSection(undefined), 'appearance');
+  assert.equal(resolveSettingsSection('connection'), 'gateway');
+  assert.equal(resolveSettingsSection('tunnels'), 'general');
+  assert.equal(resolveSettingsSection(undefined), 'general');
 
   setLocale('zh-CN');
   const translate = (key) => t(key);
-  assert.equal(filterSettingsSections(SETTINGS_SECTIONS, '', translate).length, 7);
+  assert.equal(filterSettingsSections(SETTINGS_SECTIONS, '', translate).length, 8);
   assert.deepEqual(
-    filterSettingsSections(SETTINGS_SECTIONS, '提供商', translate).map((section) => section.id),
+    filterSettingsSections(SETTINGS_SECTIONS, '提供方', translate).map((section) => section.id),
     ['providers'],
   );
   assert.deepEqual(filterSettingsSections(SETTINGS_SECTIONS, 'zzz', translate), []);
@@ -2558,15 +2557,13 @@ test('连接测试结论失效判定：四个字段任一变更即作废，未�
 
 test('连接表单草稿归属弹窗层：面板不得再自持 useState，测试指纹与草稿同生命周期', () => {
   const modal = readSettingsSource('SettingsModal.tsx');
+  const gwPanel = readSettingsSource('GatewaySettingsPanel.tsx');
   assert.ok(modal.includes('const [gatewayDraft, setGatewayDraft] = React.useState<GatewayDraft>'), '草稿必须提升到常驻的 SettingsModal');
   assert.ok(modal.includes('const [testedGatewayDraft, setTestedGatewayDraft]'), '测试指纹必须与草稿一起提升');
   assert.ok(modal.includes('testedDraft: testedGatewayDraft'), '测试指纹必须随绑定传入面板');
-  const panelStart = modal.indexOf('function ConnectionPanel(');
-  const panelEnd = modal.indexOf('function AboutPanel(');
-  assert.ok(panelStart > 0 && panelEnd > panelStart, '必须能定位 ConnectionPanel 实现');
-  const panel = modal.slice(panelStart, panelEnd);
-  assert.equal(/React\.useState<GatewayDraft>/.test(panel), false, 'ConnectionPanel 不得再自持草稿 state（切 Tab 会卸载并丢失）');
-  assert.ok(panel.includes('isGatewayTestStale(testedDraft, draft)'), '失效判定必须走纯函数，不能只留标识符');
+  assert.ok(gwPanel.includes('export function GatewaySettingsPanel('), '必须能定位 GatewaySettingsPanel 实现');
+  assert.equal(/React\.useState<GatewayDraft>/.test(gwPanel), false, 'GatewaySettingsPanel 单网关表单不得自持草稿 state');
+  assert.ok(gwPanel.includes('isGatewayTestStale(testedDraft, draft)'), '失效判定必须走纯函数，不能只留标识符');
 });
 
 test('设置项检索：真实配置项名可命中，且空查询不干扰导航', () => {
@@ -2617,6 +2614,8 @@ test('Select 必须使用单选语义：MenuRadioGroup + MenuRadioItem，禁止�
 test('检索索引与锚点双向一致：索引项都能跳到，面板锚点也都可被搜到', () => {
   const allSource = [
     readSettingsSource('SettingsModal.tsx'),
+    readSettingsSource('GeneralSettingsPanel.tsx'),
+    readSettingsSource('GatewaySettingsPanel.tsx'),
     readSettingsSource('BotManagerView.tsx'),
     readSettingsSource('ProvidersAdminPanel.tsx'),
     readSettingsSource('ModelPicker.tsx'),
@@ -3313,14 +3312,14 @@ test('Phase 2 桌面端纯哑光去框化与全局 4px 栅格锁定守卫', () =
 
 test('工作台与左轨展示归通用页，网关项目独立分组且互不串台', () => {
   setLocale('zh-CN');
-  const appearanceHtml = render({
-    section: 'appearance',
+  const generalHtml = render({
+    section: 'general',
     orgPrefs: { showDoneSection: true, autoReopenOnSend: false },
   });
-  assert.ok(appearanceHtml.includes('data-settings-anchor="show-done-section"'));
-  assert.ok(appearanceHtml.includes('data-settings-anchor="auto-reopen-on-send"'));
-  assert.ok(appearanceHtml.includes('工作台与左轨展示'));
-  assert.equal(appearanceHtml.includes('data-settings-anchor="projects-list"'), false);
+  assert.ok(generalHtml.includes('data-settings-anchor="show-done-section"'));
+  assert.ok(generalHtml.includes('data-settings-anchor="auto-reopen-on-send"'));
+  assert.ok(generalHtml.includes('工作台与左轨展示'));
+  assert.equal(generalHtml.includes('data-settings-anchor="projects-list"'), false);
 
   const projectsHtml = render({
     section: 'projects',

@@ -159,6 +159,8 @@ export const zhConversation = {
   'newChat.projectBoundHint': '新会话将绑定工作目录 {path}',
   'newChat.folderBoundHint': '创建后自动放入文件夹「{name}」',
   'newChat.groupProjectDefaultNote': '仅创建后自动放入「{name}」；群聊成员各自保持默认工作目录',
+  'newChat.gatewayLabel': '网关',
+  'newChat.gatewayOfflineHint': '所选网关当前离线，请重连或切换其他在线网关',
 };
 
 export const enConversation = {
@@ -312,4 +314,6 @@ export const enConversation = {
   'newChat.projectBoundHint': 'Session will bind working directory {path}',
   'newChat.folderBoundHint': 'Will be placed into folder "{name}"',
   'newChat.groupProjectDefaultNote': 'Places the room into "{name}"; group members keep their own workspace roots',
+  'newChat.gatewayLabel': 'Gateway',
+  'newChat.gatewayOfflineHint': 'Selected gateway is offline; reconnect or choose another online gateway',
 };

@@ -239,6 +239,7 @@ function buildModules(ctx) {
       cases: [
         { method: 'ping', params: () => ({}), assert: (r) => assertField(r, 'pong') },
         { method: 'gateway.capabilities', params: () => ({}) },
+        { method: 'client.capabilities', params: () => ({ server_requests: true }), allowCodes: [-32601, 4000] },
         { method: 'shell.exec', params: () => ({ command: 'pwd', profile }), assert: (r) => assertField(r, 'stdout') },
         { method: 'model.options', params: () => ({ profile }) },
         { method: 'config.get', params: () => ({ key: 'full', profile }) },
@@ -329,6 +330,12 @@ function buildModules(ctx) {
         { method: 'session.title', params: () => ({ session_id: ctx.sessionId, profile, title: `flux-probe-renamed-${stamp()}` }) },
         { method: 'session.set_hidden', params: () => ({ session_id: ctx.sessionId, profile, hidden: true }) },
         { method: 'session.archive', params: () => ({ session_id: ctx.sessionId, profile, archived: false }) },
+        {
+          method: 'session.events.since',
+          params: () => ({ session_id: ctx.sessionId, profile, last_seen: 0 }),
+          skip: () => (ctx.sessionId ? null : '没有可用会话'),
+          allowCodes: [-32601, 4000, 4001],
+        },
         { method: 'session.interrupt', params: () => ({ session_id: ctx.sessionId, profile }), allowCodes: [4001] },
         {
           method: 'session.branch_whole',

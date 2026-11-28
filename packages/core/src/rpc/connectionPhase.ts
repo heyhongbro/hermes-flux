@@ -30,7 +30,7 @@ export type GatewayConnectionPhase =
 
 export type ConnectionFailureKind = 'auth' | 'config' | 'transient';
 
-export type TitlebarConnectionStatus = 'connected' | 'reconnecting' | 'syncing' | 'offline';
+export type TitlebarConnectionStatus = 'connected' | 'partial' | 'reconnecting' | 'syncing' | 'offline';
 
 const COLD_START_BACKOFF_MS: readonly number[] = [1000, 2000, 4000, 8000, 15000];
 
@@ -118,11 +118,154 @@ export function resolveConnectionPhase(input: ResolveConnectionPhaseInput): Gate
 export function resolveTitlebarConnectionStatus(
   phase: GatewayConnectionPhase,
   gatewayConnected: boolean,
-): TitlebarConnectionStatus {
+): Exclude<TitlebarConnectionStatus, 'partial'> {
   if (phase === 'syncing') return 'syncing';
   if (phase === 'connecting' || phase === 'reconnecting') return 'reconnecting';
   if (phase === 'connected' || phase === 'synced') return 'connected';
   return gatewayConnected ? 'connected' : 'offline';
+}
+
+/**
+ * 多网关并发连接健康度归约：
+ * - 单网关退化保持与既有四态完全一致；
+ * - 多网关全在线为 connected（有 syncing 则为 syncing），部分离线为 partial，全离线优先 reconnecting。
+ */
+export function resolveAggregateTitlebarStatus(
+  slots: readonly { status: TitlebarConnectionStatus; connected: boolean }[],
+): TitlebarConnectionStatus {
+  if (slots.length === 0) return 'offline';
+  if (slots.length === 1) return slots[0].status;
+  let connectedCount = 0;
+  let hasSyncing = false;
+  let hasReconnecting = false;
+  for (const slot of slots) {
+    if (slot.connected) {
+      connectedCount += 1;
+    }
+    if (slot.status === 'syncing') hasSyncing = true;
+    if (slot.status === 'reconnecting') hasReconnecting = true;
+  }
+  if (connectedCount === slots.length) {
+    return hasSyncing ? 'syncing' : 'connected';
+  }
+  if (connectedCount > 0) {
+    return 'partial';
+  }
+  return hasReconnecting ? 'reconnecting' : 'offline';
+}
+
+/**
+ * 多网关聚合连接槽位输入。
+ */
+export interface AggregateConnectionSlotInput {
+  readonly gatewayId: string;
+  readonly connected: boolean;
+  readonly phase?: GatewayConnectionPhase;
+  readonly status: TitlebarConnectionStatus;
+  readonly authError?: boolean;
+  readonly reconnectAttempt?: number;
+}
+
+/**
+ * 多网关连接相位归约输入。
+ */
+export interface ResolveAggregateConnectionPhaseInput {
+  readonly slots: readonly AggregateConnectionSlotInput[];
+  readonly focusedGatewayId?: string;
+  readonly currentPhase?: GatewayConnectionPhase;
+}
+
+/**
+ * 多网关聚合连接状态元信息。
+ */
+export interface AggregateConnectionMeta {
+  readonly phase: GatewayConnectionPhase;
+  readonly gatewayConnecting: boolean;
+  readonly reconnectAttempt: number;
+  readonly authError: boolean;
+}
+
+function preserveOnlinePhase(currentPhase?: GatewayConnectionPhase): GatewayConnectionPhase {
+  return currentPhase === 'syncing' || currentPhase === 'synced' ? currentPhase : 'connected';
+}
+
+/**
+ * 根据多网关各槽位健康态与当前焦点网关，归约唯一权威的 UI 连接相位及辅助元数据。
+ */
+export function resolveAggregateConnectionMeta(
+  input: ResolveAggregateConnectionPhaseInput,
+): AggregateConnectionMeta {
+  const { slots, focusedGatewayId, currentPhase } = input;
+  if (slots.length === 0) {
+    return { phase: 'unconfigured', gatewayConnecting: false, reconnectAttempt: 0, authError: false };
+  }
+
+  const focused = focusedGatewayId
+    ? slots.find((s) => s.gatewayId === focusedGatewayId)
+    : undefined;
+  if (focused) {
+    if (focused.connected) {
+      return {
+        phase: preserveOnlinePhase(currentPhase),
+        gatewayConnecting: false,
+        reconnectAttempt: 0,
+        authError: false,
+      };
+    }
+    if (focused.authError) {
+      return {
+        phase: 'offline',
+        gatewayConnecting: false,
+        reconnectAttempt: focused.reconnectAttempt ?? 0,
+        authError: true,
+      };
+    }
+    const derivedPhase: GatewayConnectionPhase =
+      focused.phase && focused.phase !== 'connected' && focused.phase !== 'syncing' && focused.phase !== 'synced'
+        ? focused.phase
+        : focused.status === 'reconnecting'
+          ? 'reconnecting'
+          : 'offline';
+    return {
+      phase: derivedPhase,
+      gatewayConnecting: derivedPhase === 'connecting' || derivedPhase === 'reconnecting',
+      reconnectAttempt: focused.reconnectAttempt ?? 0,
+      authError: false,
+    };
+  }
+
+  if (slots.some((s) => s.connected)) {
+    return {
+      phase: preserveOnlinePhase(currentPhase),
+      gatewayConnecting: false,
+      reconnectAttempt: 0,
+      authError: false,
+    };
+  }
+
+  let phase: GatewayConnectionPhase = 'offline';
+  if (slots.some((s) => s.phase === 'reconnecting' || s.status === 'reconnecting')) {
+    phase = 'reconnecting';
+  } else if (slots.some((s) => s.phase === 'connecting')) {
+    phase = 'connecting';
+  }
+  const reconnectAttempt = slots.reduce((max, s) => Math.max(max, s.reconnectAttempt ?? 0), 0);
+  const authError = slots.every((s) => Boolean(s.authError));
+  return {
+    phase: authError ? 'offline' : phase,
+    gatewayConnecting: !authError && (phase === 'connecting' || phase === 'reconnecting'),
+    reconnectAttempt,
+    authError,
+  };
+}
+
+/**
+ * 归约多网关模式下的权威 UI 连接相位。
+ */
+export function resolveAggregateConnectionPhase(
+  input: ResolveAggregateConnectionPhaseInput,
+): GatewayConnectionPhase {
+  return resolveAggregateConnectionMeta(input).phase;
 }
 
 /**

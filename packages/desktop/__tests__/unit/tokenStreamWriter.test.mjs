@@ -449,3 +449,77 @@ test('TokenStreamWriter: 移动端流式思考直写显形 #msg-thought-* 并唤
   assert.equal(capsuleAttrs['data-mobile-trace-empty'], 'false');
   assert.equal(stackAttrs['data-mobile-trace-empty'], 'false');
 });
+
+test('TokenStreamWriter: 多网关场景按 ownerGatewayId 隔离前台流投影、会话预览、缓存与 Bot 活动', () => {
+  const botUpdates = [];
+  const state = {
+    gatewayCount: 2,
+    activeSessionId: 'sess-shared',
+    activeGatewayId: 'gw-b',
+    activeFocus: { type: 'session', sessionId: 'sess-shared', gatewayId: 'gw-a' },
+    messages: [{ id: 'm-a', role: 'assistant', content: 'A:', thought: '' }],
+    sessions: [
+      { id: 'sess-shared', gatewayId: 'gw-a', preview: 'init-a', timestamp: 1 },
+      { id: 'sess-shared', gatewayId: 'gw-b', preview: 'init-b', timestamp: 1 },
+    ],
+  };
+  const cache = new Map([
+    ['gw-a::sess-shared', [{ id: 'm-a', role: 'assistant', content: 'A:', thought: '' }]],
+  ]);
+  const botLookups = [];
+  const writer = createTokenStreamWriter({
+    getState: () => state,
+    sessionMessagesCache: cache,
+    botActivityStore: {
+      updateLatestActivity: (botName, content, ts, gatewayId) => {
+        botUpdates.push({ botName, content, ts, gatewayId });
+      },
+    },
+    getActiveStreamingStoredSessionId: () => 'sess-shared',
+    resolveSessionOwnerForMessage: (mid) => {
+      if (mid === 'm-a') return { sessionId: 'sess-shared', gatewayId: 'gw-a' };
+      if (mid === 'm-b') return { sessionId: 'sess-shared', gatewayId: 'gw-b' };
+      if (mid === 'm-c') return { sessionId: 'sess-shared' };
+      return null;
+    },
+    resolveBotNameForSession: (sid, gwId) => {
+      botLookups.push({ sid, gwId });
+      return `bot@${gwId || 'none'}`;
+    },
+    isStreamNearBottom: () => false,
+    markProgrammaticScroll: () => {},
+  });
+
+  // m-a belongs to active gw-a; m-b belongs to same sessionId on non-active gw-b
+  writer.writeFlushedTokens(new Map([
+    ['m-a', { content: '1' }],
+    ['m-b', { content: 'B-only' }],
+  ]));
+
+  assert.equal(state.messages.find((m) => m.id === 'm-a')?.content, 'A:1');
+  assert.equal(state.messages.some((m) => m.id === 'm-b'), false, '非激活网关 m-b 不得写入当前 state.messages');
+  assert.equal(cache.get('gw-a::sess-shared')?.[0]?.content, 'A:1');
+  assert.equal(cache.get('gw-b::sess-shared')?.[0]?.content, 'B-only');
+  assert.equal(state.sessions[0].preview, 'A:1', '仅 gw-a 会话预览应被更新');
+  assert.equal(state.sessions[1].preview, 'B-only', 'gw-b 会话预览应单独更新');
+  assert.deepEqual(botLookups, [
+    { sid: 'sess-shared', gwId: 'gw-a' },
+    { sid: 'sess-shared', gwId: 'gw-b' },
+  ]);
+  assert.deepEqual(
+    botUpdates.map((u) => ({ botName: u.botName, content: u.content, gatewayId: u.gatewayId })),
+    [
+      { botName: 'bot@gw-a', content: 'A:1', gatewayId: 'gw-a' },
+      { botName: 'bot@gw-b', content: 'B-only', gatewayId: 'gw-b' },
+    ],
+  );
+
+  // When activeFocus omits gatewayId, activeGatewayId ('gw-b') acts as fallback activeGw & ownerGatewayId
+  state.activeFocus = { type: 'session', sessionId: 'sess-shared' };
+  state.activeGatewayId = 'gw-b';
+  state.messages = [];
+  writer.writeFlushedTokens(new Map([['m-c', { content: 'C-fallback' }]]));
+  assert.equal(state.messages.some((m) => m.id === 'm-c' && m.content === 'C-fallback'), true);
+  assert.equal(state.sessions[1].preview, 'C-fallback');
+  assert.equal(state.sessions[0].preview, 'A:1', 'gw-a preview must remain unchanged');
+});

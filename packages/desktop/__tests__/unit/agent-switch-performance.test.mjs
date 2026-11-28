@@ -35,7 +35,7 @@ const leftRailSource = read('packages/ui/src/components-react/LeftRail.tsx');
 const buildSource = read('packages/desktop/scripts/build.mjs');
 
 test('Agent 切换 - 缓存命中路径不得重复全量 render', () => {
-  const start = rendererSource.indexOf('const cachedSessionId = botForeverChatCache.get(botProfile);');
+  const start = rendererSource.indexOf('const cachedSessionId = botForeverChatCache.get(botCacheKey);');
   assert.ok(start > -1, '未找到 openBotChat 的 Forever Chat 缓存分支');
   const end = rendererSource.indexOf('return;', start);
   const branch = rendererSource.slice(start, end + 8);
@@ -52,7 +52,7 @@ test('Agent 切换 - 主工位预取不得被头像提前 return 跳过', () => 
   const fetchProfilesCode = fetchProfilesSource.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
   assert.doesNotMatch(fetchProfilesCode, /if \(p\.avatar\) \{/, '头像分支不得提前 return 跳过主工位预取');
   assert.match(rendererSource, /void warmBotForeverChats\(list, client\);/, '必须对所有 profile 启动主工位预取');
-  assert.match(rendererSource, /if \(botForeverChatCache\.has\(p\.name\)\) continue;/, '已预取的主工位必须跳过重复探测');
+  assert.match(rendererSource, /if \(botForeverChatCache\.has\(cacheKey\)\) continue;/, '已预取的主工位必须跳过重复探测');
 });
 
 test('Agent 切换 - 消息列表必须按有界窗口挂载，且向下滚动耗尽后才请求服务端', () => {

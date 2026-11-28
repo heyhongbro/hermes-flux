@@ -4112,9 +4112,9 @@ details[open] > summary > .tool-row__expand {
 .conv-presence[data-presence="idle"] .conv-presence__halo { opacity: 0.4; }
 .conv-presence[data-presence="idle"] .conv-presence__ring { display: none; }
 
-/* 形变语言：按状态分化（不同状态用不同的动法，才是「生动」的来源） */
+/* idle：静态弱化停驻，消除闲置期 60fps 无限重绘（低频 data-blink 仍保留） */
 .conv-presence[data-presence="idle"] .conv-presence__face {
-  animation: convPresenceBreathe 2600ms ease-in-out infinite;
+  animation: none;
 }
 .conv-presence[data-presence="thinking"] .conv-presence__face {
   animation: convPresenceTilt var(--presence-beat) ease-in-out infinite;
@@ -11947,7 +11947,12 @@ html[data-app-hidden="true"] .conv-presence *::after {
 
 #react-conv-presence-host[data-replaced="true"]:not(.presence-host--dock) {
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
+}
+
+#react-conv-presence-host[data-replaced="true"]:not(.presence-host--dock) * {
+  animation-play-state: paused !important;
 }
 
 #react-conv-presence-host:not(.presence-host--dock):not([data-mobile-slot="true"]) > .conv-presence[data-layout="stage"] {
@@ -12055,17 +12060,8 @@ html[data-app-hidden="true"] .conv-presence *::after {
   inset: 0;
   border-radius: var(--radius-pill, 9999px);
   border: 1.5px solid currentColor;
-  transform: scale(0.68);
-  opacity: 0.85;
-  transition:
-    transform 600ms var(--ease-spring, cubic-bezier(0.16, 1, 0.3, 1)),
-    opacity 600ms ease;
-}
-
-.conn-pill[data-beat="1"] .conn-pill__ring,
-.conn-pill[data-beat="3"] .conn-pill__ring {
-  transform: scale(1.28);
-  opacity: 0.16;
+  transform: scale(1);
+  opacity: 0.55;
 }
 
 .conn-pill__wave {
@@ -12080,17 +12076,11 @@ html[data-app-hidden="true"] .conv-presence *::after {
   height: 10px;
   border-radius: 1px;
   background: currentColor;
-  transform: scaleY(0.45);
-  opacity: 0.55;
-  transition:
-    transform 300ms var(--ease-spring, cubic-bezier(0.16, 1, 0.3, 1)),
-    opacity 300ms ease;
+  transform: scaleY(0.75);
+  opacity: 0.85;
 }
 
-.conn-pill[data-beat="0"] .conn-pill__bar:nth-child(1),
-.conn-pill[data-beat="1"] .conn-pill__bar:nth-child(2),
-.conn-pill[data-beat="2"] .conn-pill__bar:nth-child(3),
-.conn-pill[data-beat="3"] .conn-pill__bar:nth-child(2) {
+.conn-pill__bar:nth-child(2) {
   transform: scaleY(1);
   opacity: 1;
 }
@@ -12207,22 +12197,10 @@ html[data-page-hidden="true"] .conn-pill *,
   animation: fluxSwiftGlide 2.8s ease-in-out 2;
 }
 
-/* 活跃加载飞行（仅在冷启动、网关连接中与加载骨架存在期间运行） */
+/* 活跃加载飞行（仅在冷启动、网关连接中与加载骨架存在期间运行；纯合成层滑翔，严禁动 SVG 内部子分组触发 Blink 全量 Layout） */
 .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__rotor {
   animation: fluxSwiftFly 2.4s ease-in-out infinite;
   will-change: transform;
-}
-
-.flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__wing-upper {
-  animation: fluxSwiftWingUpper 0.9s ease-in-out infinite;
-}
-
-.flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__wing-lower {
-  animation: fluxSwiftWingLower 0.9s ease-in-out infinite;
-}
-
-.flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__tail {
-  animation: fluxSwiftTail 2.4s ease-in-out infinite;
 }
 
 .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__shadow {
@@ -12253,33 +12231,6 @@ html[data-page-hidden="true"] .conn-pill *,
   }
   100% {
     transform: translate3d(-10px, 2px, 0) rotate(-3deg);
-  }
-}
-
-@keyframes fluxSwiftWingUpper {
-  0%, 100% {
-    transform: rotate(0deg) scaleY(1);
-  }
-  45% {
-    transform: rotate(-4.5deg) scaleY(0.92);
-  }
-}
-
-@keyframes fluxSwiftWingLower {
-  0%, 100% {
-    transform: rotate(0deg) scaleY(1);
-  }
-  45% {
-    transform: rotate(3.5deg) scaleY(0.95);
-  }
-}
-
-@keyframes fluxSwiftTail {
-  0%, 100% {
-    transform: rotate(0deg);
-  }
-  50% {
-    transform: rotate(-3deg);
   }
 }
 
@@ -12336,14 +12287,8 @@ html[data-page-hidden="true"] .conn-pill *,
 }
 
 :root[data-app-hidden="true"] .flux-brand-swift__rotor,
-:root[data-app-hidden="true"] .flux-brand-swift__wing-upper,
-:root[data-app-hidden="true"] .flux-brand-swift__wing-lower,
-:root[data-app-hidden="true"] .flux-brand-swift__tail,
 :root[data-app-hidden="true"] .flux-brand-swift__shadow,
 :root[data-page-hidden="true"] .flux-brand-swift__rotor,
-:root[data-page-hidden="true"] .flux-brand-swift__wing-upper,
-:root[data-page-hidden="true"] .flux-brand-swift__wing-lower,
-:root[data-page-hidden="true"] .flux-brand-swift__tail,
 :root[data-page-hidden="true"] .flux-brand-swift__shadow {
   animation-play-state: paused !important;
 }
@@ -12429,9 +12374,6 @@ html[data-page-hidden="true"] .conn-pill *,
   .flux-cloud-indicator--unread[data-transition="just-completed"] .flux-cloud-label--done,
   .flux-brand-swift[data-brand-motion="glide"] .flux-brand-swift__rotor,
   .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__rotor,
-  .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__wing-upper,
-  .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__wing-lower,
-  .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__tail,
   .flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__shadow {
     animation: none;
     will-change: auto;

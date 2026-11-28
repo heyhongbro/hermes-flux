@@ -59,6 +59,7 @@ export interface GroupedLeftRailModelInput {
   doneLoading?: boolean;
   doneError?: string;
   searchQuery: string;
+  gatewayCount?: number;
   isBotsGroupExpanded?: boolean;
   isGroupsGroupExpanded?: boolean;
   isSessionsGroupExpanded?: boolean;
@@ -81,6 +82,7 @@ export interface GroupedArchivedSessionVM {
 }
 
 export interface GroupedLeftRailModel {
+  isMultiGateway: boolean;
   searchQuery: string;
   isSearching: boolean;
   botsSection: MobileHomeSectionVM<MobileBotRowVM>;
@@ -124,6 +126,7 @@ export function buildGroupedLeftRailModel(input: GroupedLeftRailModelInput): Gro
     doneError: input.doneError,
     profileName: input.profileName,
     searchQuery: input.searchQuery,
+    gatewayCount: input.gatewayCount,
     collapsed: {
       bots: botsCollapsed,
       groups: groupsCollapsed,
@@ -176,6 +179,7 @@ export function buildGroupedLeftRailModel(input: GroupedLeftRailModelInput): Gro
     });
 
   return {
+    isMultiGateway: home.isMultiGateway,
     searchQuery: home.searchQuery,
     isSearching: home.isSearching,
     botsSection: { ...home.botsSection, titleKey: 'rail.sectionBots' },

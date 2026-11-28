@@ -39,7 +39,7 @@ export interface MediaStreamGatewayAuth {
 }
 
 export interface MediaStreamControllerDeps {
-  getGatewayAuth: () => MediaStreamGatewayAuth;
+  getGatewayAuth: (targetOrigin?: string) => MediaStreamGatewayAuth;
   getFallbackCwd: () => string;
   nonce?: string;
   fetchImpl?: typeof fetch;
@@ -312,7 +312,7 @@ export function createMediaStreamController(deps: MediaStreamControllerDeps): Me
     if (rangeHeader) {
       headers['Range'] = rangeHeader;
     }
-    const auth = deps.getGatewayAuth();
+    const auth = deps.getGatewayAuth(parsedBase.origin);
     if (auth.cookies && auth.origin && parsedBase.origin.toLowerCase() === auth.origin.toLowerCase()) {
       headers['Cookie'] = auth.cookies;
     }
@@ -323,6 +323,7 @@ export function createMediaStreamController(deps: MediaStreamControllerDeps): Me
       upstreamRes = await fetchImpl(primaryUrl, {
         method,
         headers,
+        redirect: 'manual',
         signal: request.signal,
       });
       if (upstreamRes.status === 404) {
@@ -331,8 +332,13 @@ export function createMediaStreamController(deps: MediaStreamControllerDeps): Me
         upstreamRes = await fetchImpl(fallbackUrl, {
           method,
           headers,
+          redirect: 'manual',
           signal: request.signal,
         });
+      }
+      if (upstreamRes.status >= 300 && upstreamRes.status < 400) {
+        await cancelBodySafely(upstreamRes);
+        return new Response(null, { status: 502 });
       }
     } catch (err) {
       console.warn('[mediaStreamProtocol] gateway stream request failed:', err);

@@ -1656,6 +1656,13 @@
       "reason": "Loading historical spawn trees by path relies on disk tree files; explicitly skipped in offline probes and guarded by normalized merge unit tests and formal invariants."
     },
     {
+      "module": "sessions",
+      "method": "session.events.since",
+      "ok": false,
+      "skipped": true,
+      "reason": "断点续传增量事件回放依赖活跃会话与 replay_epoch 游标上下文，离线基线显式跳过，由契约白名单与断线续传协议单测守护"
+    },
+    {
       "module": "interactive",
       "method": "client.capabilities",
       "ok": false,

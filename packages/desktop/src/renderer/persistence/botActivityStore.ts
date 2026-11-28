@@ -48,7 +48,7 @@ export interface BotActivityStore {
   /** 从存储恢复（启动时调用一次） */
   restore(): void;
   /** 原子更新指定 Bot 的最新交互状态并落盘 */
-  updateLatestActivity(botName: string, text: string, rawTimestamp: number | string): void;
+  updateLatestActivity(botName: string, text: string, rawTimestamp: number | string, gatewayId?: string): void;
   /** 只读快照（供测试与诊断） */
   snapshot(): ReadonlyMap<string, BotActivityRecord>;
   /**
@@ -110,7 +110,7 @@ export function createBotActivityStore(host: BotActivityHost): BotActivityStore 
    *   时间戳畸变、序号单调性这些性质已有形式化不变量守护（见 invariants.json），
    *   在渲染层重新实现一份只会让两套口径漂移。
    */
-  function updateLatestActivity(botName: string, text: string, rawTimestamp: number | string): void {
+  function updateLatestActivity(botName: string, text: string, rawTimestamp: number | string, gatewayId?: string): void {
     const res = applyBotActivity({
       profiles: [...host.profiles()],
       activityMap,
@@ -118,6 +118,7 @@ export function createBotActivityStore(host: BotActivityHost): BotActivityStore 
       text,
       timestamp: rawTimestamp,
       formatTime: host.formatTime,
+      gatewayId,
     });
     host.setProfiles(res.profiles);
     persist();

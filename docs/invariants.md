@@ -25,7 +25,7 @@ so uncovered logic can be computed systematically.
 | `source` is an existing source file path | FAIL on violation |
 | `source` + `symbol` pair is unique | FAIL on violation |
 
-## Overview (92 invariants across 20 areas)
+## Overview (99 invariants across 21 areas)
 
 ### ATTACH (5)
 
@@ -45,7 +45,7 @@ so uncovered logic can be computed systematically.
 | `INV-BOT-02` | Timestamp normalization handles seconds, milliseconds, and ISO strings uniformly | `packages/core/src/agent/agentPresence.ts` → `normalizeTimestamp` | `bot-activity-formal.test.mjs` | Mixed second/millisecond/ISO timestamps scramble sorting |
 | `INV-BOT-03` | Bot activity ordering remains monotonically non-increasing | `packages/core/src/agent/agentPresence.ts` → `applyBotActivity` | `bot-activity-formal.test.mjs` | Bot list order flickers unexpectedly |
 
-### CACHE (8)
+### CACHE (11)
 
 | ID | Topic | Source Anchor | Property Test | Failure Mode |
 |---|---|---|---|---|
@@ -57,14 +57,18 @@ so uncovered logic can be computed systematically.
 | `INV-CACHE-06` | In-flight displaySeq allocation never collides and stays monotonic | `packages/core/src/cache/cacheMerge.ts` → `mergeRemoteWindow#displaySeq` | `cache-fence-formal.test.mjs` | displaySeq assigned during fetch collides with remote rows and scrambles message order |
 | `INV-CACHE-07` | appendRows preserves stable displaySeq for existing keys | `packages/core/src/cache/cacheMerge.ts` → `appendRows` | `cache-fence-formal.test.mjs` | Re-appending the same batch recomputes displaySeq and causes rows to jump |
 | `INV-CACHE-08` | Older batch slicing maintains contiguous displaySeq order | `packages/core/src/cache/cacheMerge.ts` → `sortByDisplayAsc` | `cache-fence-formal.test.mjs` | Paginating by orderKey yields non-monotonic displaySeq and scrambles historical messages |
+| `INV-CACHE-09` | 多网关 5 元组主键边界正交隔离（并行读写删截零串扰） | `packages/core/src/cache/ICacheStore.ts` → `buildChannelBounds` | `cache-fence-formal.test.mjs` | 多网关相同 profile 与 sessionId 在同一 IndexedDB 仓库互相覆盖或跨网关误删历史消息 |
+| `INV-CACHE-10` | 多网关会话索引独立上限配额守恒（分桶裁剪互不挤出） | `packages/core/src/cache/CacheService.ts` → `CacheService.writeSessions` | `cache-fence-formal.test.mjs` | 高活跃网关的新会话按全局时间截断将低频备用网关的历史会话索引挤出缓存 |
+| `INV-CACHE-11` | 群聊 __room__ 稳定哨兵归属与 authorityEpoch 单调防倒灌 | `packages/core/src/cache/CacheService.ts` → `CacheService.applyRemoteWindow` | `cache-fence-formal.test.mjs` | 跨机群聊切主后旧消息孤儿化消失，或失联降级旧主网关重连后用陈旧快照覆写最新群聊记录 |
 
-### CONN (3)
+### CONN (4)
 
 | ID | Topic | Source Anchor | Property Test | Failure Mode |
 |---|---|---|---|---|
 | `INV-CONN-01` | Auth failure and manual disconnect strictly dominate transient reconnect states | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase#auth-dominance` | `connection-phase-formal.test.mjs` | After 401 auth failure or manual disconnect, UI loops on reconnect banners |
 | `INV-CONN-02` | Seven-state connection phase projection keeps sync precedence monotonic | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase` | `connection-phase-formal.test.mjs` | HANDSHAKING or RECONNECTING collapses to connected or offline, desyncing titlebar and dock |
 | `INV-CONN-03` | Cold-start retry backoff remains bounded and non-decreasing | `packages/core/src/rpc/connectionPhase.ts` → `computeColdStartRetryDelayMs` | `connection-phase-formal.test.mjs` | Cold-start retries stall indefinitely or tight-loop without delay |
+| `INV-CONN-04` | Aggregate multi-gateway connection phase converges when focused or any online | `packages/core/src/rpc/connectionPhase.ts` → `resolveAggregateConnectionPhase` | `connection-phase-formal.test.mjs` | Multi-gateway cold start stays stuck on connecting/reconnecting pill even after slots connect |
 
 ### DELIV (4)
 
@@ -114,6 +118,14 @@ so uncovered logic can be computed systematically.
 | ID | Topic | Source Anchor | Property Test | Failure Mode |
 |---|---|---|---|---|
 | `INV-MSG-01` | User message attachment parsing round-trips multimodal parts without loss or duplication | `packages/core/src/session/messageAttachments.ts` → `extractMessageAttachments` | `message-attachments-formal.test.mjs` | Sent images/files disappear from user bubbles or attachment-only messages get dropped |
+
+### MULTIGW (3)
+
+| ID | Topic | Source Anchor | Property Test | Failure Mode |
+|---|---|---|---|---|
+| `INV-MULTIGW-01` | 多网关运行时 Slot 严格物理隔离，断连与状态清理绝不跨槽污染 | `packages/core/src/gateway/GatewayConnectionPool.ts` → `GatewayConnectionPool` | `multi-gateway-formal.test.mjs` | 关闭一台网关或清零断线状态时连带擦除另一台在线网关的活跃会话、liveId 映射或审批流 |
+| `INV-MULTIGW-02` | 跨网关群聊去重满足输入排列无关性与最高 authorityEpoch 胜出 | `packages/core/src/gateway/MultiGatewayAggregator.ts` → `aggregateMultiGatewaySnapshots` | `multi-gateway-formal.test.mjs` | 多机同步同一群聊时因网关响应先后随机翻转权威状态，或低代际陈旧群聊覆盖高代际副本 |
+| `INV-MULTIGW-03` | Clone 碰撞（同 installId 异指纹）隔离保真，同源重复去重且顶栏健康归约单调 | `packages/core/src/gateway/MultiGatewayAggregator.ts` → `detectCloneCollisions` | `multi-gateway-formal.test.mjs` | 克隆虚拟机被误并入同库引发串台，或部分网关离线时顶栏仍误报全在线绿灯 |
 
 ### ORG (7)
 

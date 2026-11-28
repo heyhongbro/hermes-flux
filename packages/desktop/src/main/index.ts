@@ -14,6 +14,7 @@ import { HERMES_PREVIEW_SCHEME } from './previewProtocol';
 import { registerPowerEvents } from './powerEvents';
 import { HermesFluxTray } from './tray';
 import { initFileLogging } from './logFile';
+import { resolveRemoteDebuggingPort } from './debugPortPolicy';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -128,8 +129,16 @@ if (!gotTheLock) {
       : win.loadFile(indexPath));
   };
 
-  // Enable Remote Debugging Port for CDP testing & automation
-  app.commandLine.appendSwitch('remote-debugging-port', '9222');
+  const debugPort = resolveRemoteDebuggingPort({
+    isPackaged: app.isPackaged,
+    env: process.env,
+  });
+  if (debugPort) {
+    app.commandLine.appendSwitch('remote-debugging-port', debugPort);
+  }
+  if (process.platform === 'darwin') {
+    app.commandLine.appendSwitch('enable-features', 'MacWebContentsOcclusion');
+  }
 
   /**
    * 文件日志必须在创建窗口之前初始化：

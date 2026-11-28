@@ -20,11 +20,18 @@ import type { LeftRailFolder, LeftRailProfile } from '../components/LeftRail/typ
 
 export type NewChatMode = 'solo' | 'group';
 
+export interface NewChatGatewayOption {
+  readonly id: string;
+  readonly label: string;
+  readonly connected: boolean;
+}
+
 export interface NewChatProjectOption {
   id: string;
   name: string;
   path?: string;
   archived?: boolean;
+  gatewayId?: string;
 }
 
 export interface NewChatDialogSnapshot {
@@ -37,6 +44,8 @@ export interface NewChatDialogSnapshot {
   selectedProjectId?: string;
   selectedContainerId?: string;
   gatewayConnected: boolean;
+  gateways?: readonly NewChatGatewayOption[];
+  defaultGatewayId?: string;
 }
 
 export interface NewChatSubmitPayload {
@@ -46,6 +55,7 @@ export interface NewChatSubmitPayload {
   title: string;
   projectId?: string;
   containerId?: string;
+  gatewayId?: string;
   firstMessage: string;
 }
 
@@ -111,7 +121,41 @@ export interface NewChatDraftInput {
   title?: string;
   projectId?: string;
   containerId?: string;
+  gatewayId?: string;
   firstMessage?: string;
+}
+
+/** 解析新建会话弹窗初始归属网关：优先 defaultGatewayId -> 首台在线网关 -> 列表首项。 */
+export function resolveInitialGatewayId(
+  gateways?: readonly NewChatGatewayOption[],
+  defaultGatewayId?: string,
+): string {
+  if (!gateways || gateways.length === 0) return '';
+  const preferred = (defaultGatewayId || '').trim();
+  if (preferred && gateways.some((g) => g.id === preferred)) {
+    return preferred;
+  }
+  return gateways.find((g) => g.connected)?.id || gateways[0].id || '';
+}
+
+/** 按网关实例过滤可选智能体；未指定 gatewayId 时返回全量副本。 */
+export function filterProfilesForGateway(
+  profiles: readonly LeftRailProfile[],
+  gatewayId?: string,
+): LeftRailProfile[] {
+  const gw = (gatewayId || '').trim();
+  if (!gw) return [...profiles];
+  return profiles.filter((p) => !p.gatewayId || p.gatewayId === gw);
+}
+
+/** 按网关实例过滤可选项目；未指定 gatewayId 时返回全量副本。 */
+export function filterProjectsForGateway<T extends { gatewayId?: string }>(
+  projects: readonly T[],
+  gatewayId?: string,
+): T[] {
+  const gw = (gatewayId || '').trim();
+  if (!gw) return [...projects];
+  return projects.filter((p) => !p.gatewayId || p.gatewayId === gw);
 }
 
 export type NewChatBuildOutcome =
@@ -256,6 +300,7 @@ export function buildNewChatSubmitPayload(draft: NewChatDraftInput): NewChatBuil
   const projectId = (draft.projectId || '').trim() || undefined;
   const hasExplicitContainer = 'containerId' in draft && draft.containerId !== undefined;
   const containerId = (draft.containerId || '').trim();
+  const gatewayId = (draft.gatewayId || '').trim() || undefined;
   const agent = (draft.selectedBot || '').trim() || 'default';
 
   const seen = new Set<string>();
@@ -282,6 +327,7 @@ export function buildNewChatSubmitPayload(draft: NewChatDraftInput): NewChatBuil
       title,
       projectId,
       ...(hasExplicitContainer ? { containerId } : {}),
+      ...(gatewayId ? { gatewayId } : {}),
       firstMessage,
     },
   };

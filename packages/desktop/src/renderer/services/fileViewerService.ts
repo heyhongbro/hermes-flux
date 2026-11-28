@@ -49,6 +49,7 @@ import {
   resolveActiveWorkspaceCwd,
   type AppState,
 } from '../state/appState.js';
+import { resolveFocusedGatewayId } from '../gateway/multiGatewayCoordinator.js';
 import type { HermesDesktopBridge } from '../../preload/index.js';
 import { createPreviewAssetCoordinator, resolveEffectiveScopeRoot } from './previewAssetCoordinator.js';
 
@@ -57,6 +58,7 @@ export interface FileViewerServiceDeps {
   render: () => void;
   getDesktopApi: () => HermesDesktopBridge | undefined;
   getGatewayClient: () => HermesGatewayClient | null;
+  getGatewayUrl?: (gatewayId?: string) => string;
   resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   safeCopyText: (text: string) => Promise<boolean>;
   t: (key: I18nKey) => string;
@@ -122,6 +124,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
     render,
     getDesktopApi,
     getGatewayClient,
+    getGatewayUrl: deps.getGatewayUrl,
     resolveMediaUrl: deps.resolveMediaUrl,
     onOpenFilePreview: (nextPath) => handleOpenFilePreview(nextPath),
     onOpenMediaLightbox: deps.onOpenMediaLightbox,
@@ -130,15 +133,22 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
   const readEffectiveProfile = (s: AppState): string | undefined =>
     s.activeFocus?.type === 'group' ? undefined : s.profileName || undefined;
 
+  const resolveFocusedGatewayUrl = (s: AppState): string => {
+    const focusedGw = resolveFocusedGatewayId(s);
+    const resolved = deps.getGatewayUrl ? deps.getGatewayUrl(focusedGw) : '';
+    return resolved || s.gatewayUrl || '';
+  };
+
   /**
-   * 组合文件树缓存作用域键：CWD 相同但 profile / 激活会话（空 CWD）不同视为不同作用域。
+   * 组合文件树缓存作用域键：网关实例、CWD、profile 或激活会话不同均视为不同作用域。
    */
   const computeFileTreeScopeKey = (s: AppState, targetCwd: string): string => {
+    const gwKey = resolveFocusedGatewayId(s) || 'default';
     const normProfile = (readEffectiveProfile(s) || '').trim().toLowerCase();
     if (targetCwd) {
-      return `cwd:${targetCwd}|profile:${normProfile}`;
+      return `gw:${gwKey}|cwd:${targetCwd}|profile:${normProfile}`;
     }
-    return `empty|profile:${normProfile}|vp:${resolveActiveViewportKey(s)}`;
+    return `gw:${gwKey}|empty|profile:${normProfile}|vp:${resolveActiveViewportKey(s)}`;
   };
 
   const readPodMode = (s: AppState): RightPodMode =>
@@ -207,7 +217,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
 
     const res = await resolveWorkspaceDirectory(targetCwd, {
       platformBridge: desktopApi ?? null,
-      gatewayUrl: state.gatewayUrl,
+      gatewayUrl: resolveFocusedGatewayUrl(state),
       profile: effectiveProfile,
       completePath: rpc
         ? async (dir) => {
@@ -507,11 +517,12 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
         } else {
           const treeRoot = state.fileTreeState?.status === 'ready' ? state.fileTreeState.rootPath : '';
           const scopeRoot = resolveEffectiveScopeRoot(target, resolveActiveWorkspaceCwd(state) || treeRoot || '');
+          const focusedGatewayUrl = resolveFocusedGatewayUrl(state);
           const audioAsset = await resolvePreviewAsset(target, {
             workspaceRoot: scopeRoot || undefined,
             enforceWorkspaceScope: true,
             platformBridge: desktopApi,
-            gatewayUrl: state.gatewayUrl || undefined,
+            gatewayUrl: focusedGatewayUrl || undefined,
             profile: readEffectiveProfile(state),
             sessionId: state.activeSessionId || undefined,
             sourceHint: existingOpenFile?.source,
@@ -535,7 +546,7 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
         resolved = await resolveFileContent(target, {
           platformBridge: desktopApi,
           gatewayClient,
-          gatewayUrl: state.gatewayUrl,
+          gatewayUrl: resolveFocusedGatewayUrl(state),
           profile: readEffectiveProfile(state),
           sessionId: state.activeSessionId || undefined,
           knownSize: knownNode?.size,
@@ -875,11 +886,12 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
           !activeFile.content.trim() ||
           activeFile.content.includes(t('inspector.remoteNotice')),
       );
+    const focusedGatewayUrl = resolveFocusedGatewayUrl(state);
     const remoteUrl = isHttp
       ? activeFile.path
-      : isRemoteOrUnloaded && state.gatewayUrl
+      : isRemoteOrUnloaded && focusedGatewayUrl
         ? buildGatewayDownloadUrl(
-            state.gatewayUrl,
+            focusedGatewayUrl,
             activeFile.path,
             readEffectiveProfile(state),
             state.activeSessionId || undefined,
@@ -945,9 +957,10 @@ export function createFileViewerService(deps: FileViewerServiceDeps): FileViewer
       return;
     }
 
-    if (targetPath && state.gatewayUrl) {
+    const focusedGatewayUrl = resolveFocusedGatewayUrl(state);
+    if (targetPath && focusedGatewayUrl) {
       const remoteUrl = buildGatewayDownloadUrl(
-        state.gatewayUrl,
+        focusedGatewayUrl,
         targetPath,
         readEffectiveProfile(state),
         state.activeSessionId || undefined,

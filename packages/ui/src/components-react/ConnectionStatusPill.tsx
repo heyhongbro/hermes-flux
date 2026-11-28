@@ -49,60 +49,6 @@ const PILL_MOTION_OPTIONS: UseMotionPresenceOptions = {
   triggerProperty: 'opacity',
 };
 
-function isPillBeatPaused(): boolean {
-  if (typeof document !== 'undefined') {
-    if (document.hidden) return true;
-    const root = document.documentElement;
-    if (
-      root?.getAttribute('data-page-hidden') === 'true' ||
-      root?.getAttribute('data-app-hidden') === 'true'
-    ) {
-      return true;
-    }
-  }
-  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-    return true;
-  }
-  return false;
-}
-
-function useConnectionBeat(active: boolean): number {
-  const [beat, setBeat] = React.useState(0);
-  React.useEffect(() => {
-    if (!active) return;
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const stopTimer = (): void => {
-      if (timer !== null) {
-        clearInterval(timer);
-        timer = null;
-      }
-    };
-    const syncTimer = (): void => {
-      if (isPillBeatPaused()) {
-        stopTimer();
-        return;
-      }
-      if (timer === null) {
-        timer = setInterval(() => {
-          if (isPillBeatPaused()) {
-            stopTimer();
-            return;
-          }
-          setBeat((prev) => (prev + 1) % 4);
-        }, 650);
-      }
-    };
-    syncTimer();
-    const doc = typeof document !== 'undefined' ? document : null;
-    doc?.addEventListener?.('visibilitychange', syncTimer);
-    return () => {
-      doc?.removeEventListener?.('visibilitychange', syncTimer);
-      stopTimer();
-    };
-  }, [active]);
-  return beat;
-}
-
 function isVisibleConnectionPhase(
   phase: GatewayConnectionPhase,
 ): phase is VisiblePillSnapshot['phase'] {
@@ -172,10 +118,6 @@ export const ConnectionStatusPill: React.FC<ConnectionStatusPillProps> = ({
   }, []);
 
   const display = lastVisibleRef.current;
-  const beatActive =
-    isMounted &&
-    (display.phase === 'connecting' || display.phase === 'reconnecting' || display.phase === 'syncing');
-  const beat = useConnectionBeat(beatActive);
 
   if (!isMounted) {
     return null;
@@ -204,7 +146,7 @@ export const ConnectionStatusPill: React.FC<ConnectionStatusPillProps> = ({
       role="status"
       aria-live="polite"
       data-phase={display.phase}
-      data-beat={String(beat)}
+      data-beat="0"
       data-layout={layout}
       data-compact={compact ? 'true' : 'false'}
       data-auth-error={display.isAuthError ? 'true' : 'false'}

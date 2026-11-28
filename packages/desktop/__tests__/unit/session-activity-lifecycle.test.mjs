@@ -44,17 +44,17 @@ test('Session Activity Lifecycle & Handle Normalization Invariants', async (t) =
     );
     assert.match(
       rendererSource,
-      /function toStoredSessionId\(/,
+      /(?:function toStoredSessionId\(|const toStoredSessionId\s*=)/,
       '必须实现 toStoredSessionId 归一化纯函数'
     );
     assert.match(
       rendererSource,
-      /const completedTargetId = (?:deps\.)?toStoredSessionId\(/,
+      /const completedTargetId = [\s\S]{0,120}?(?:deps\.)?toStoredSessionId\(/,
       'turn-completed 必须调用 toStoredSessionId 归一化目标会话 ID'
     );
     assert.match(
       rendererSource,
-      /const failedTargetId = (?:deps\.)?toStoredSessionId\(/,
+      /const failedTargetId = [\s\S]{0,120}?(?:deps\.)?toStoredSessionId\(/,
       'turn-failed 必须调用 toStoredSessionId 归一化目标会话 ID'
     );
     assert.match(

@@ -5,19 +5,20 @@
 
 | Method | Params (Contract) | Result (Contract) | Call Sites | Live Probe |
 | --- | --- | --- | --- | --- |
-| `config.set` | `profile` `key` `value` `session_id` `scope` `confirm_expensive_model` | `key` `value` `warning` `confirm_required` `confirm_message` `scope` `deferred` `tool_progress` `cwd` `branch` `history_reset` `info` | `packages/desktop/src/renderer/services/sessionOperationService.ts:1055`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:1087`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:884`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:916` | ✅ 0.22.5 |
-| `session.archive` | `session_id` `session_key` `archived` `profile` | `archived` `session_key` | `packages/desktop/src/renderer/services/sessionOperationService.ts:599`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:602` | ✅ 0.22.5 |
+| `config.set` | `profile` `key` `value` `session_id` `scope` `confirm_expensive_model` | `key` `value` `warning` `confirm_required` `confirm_message` `scope` `deferred` `tool_progress` `cwd` `branch` `history_reset` `info` | `packages/desktop/src/renderer/services/sessionOperationService.ts:1001`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:1140`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:1172`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:969` | ✅ 0.22.5 |
+| `session.archive` | `session_id` `session_key` `archived` `profile` | `archived` `session_key` | `packages/desktop/src/renderer/services/sessionOperationService.ts:635`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:638` | ✅ 0.22.5 |
 | `session.branch_whole` | `session_id` `profile` `name` `idempotency_key` | `session_id` `stored_session_id` `title` `parent` `message_count` `messages_omitted` `info` | `packages/core/src/session/handoffService.ts:91` | ✅ 0.22.5 |
 | `session.close` | `session_id` `profile` | `closed` `messages` | `packages/core/src/session/SessionLifecycleService.ts:40` | ✅ 0.22.5 |
-| `session.compress` | `session_id` `profile` `focus_topic` | `status` `removed` `before_messages` `after_messages` `before_tokens` `after_tokens` `summary` `usage` `info` `messages` `compressed` `lock_held` `message` `turn_isolation` `host_ack` | `packages/core/src/rpc/client.ts:1404` | Skipped: Context compression persistently rewrites session history and compaction nodes; explicitly skipped in offline probes and guarded by idle-guard unit tests and the contract allowlist. |
-| `session.context_breakdown` | `session_id` `profile` | `categories` `context_max` `context_percent` `context_used` `estimated_total` `context_estimated` `context_source` `model` `context_files` | `packages/core/src/rpc/client.ts:1393` | Skipped: Context breakdown requires session state with an active model; explicitly skipped in offline probes and guarded by the contract allowlist, Core parser, and status-bar component unit tests. |
-| `session.create` | `profile` `cols` `source` `cwd` `cwd_explicit` `messages` `parent_session_id` `title` `model` `provider` `reasoning_effort` `fast` `service_tier` `close_on_disconnect` `hidden` `room_plumbing` `follow_profile_config` `idempotency_key` `request_id` `row_cwd` `base_url` `api_key` `toolsets` `reasoning` `max_turns` `ignore_rules` `yolo` `safe_mode` `ignore_user_config` `skills` `checkpoints` `accept_hooks` `pass_session_id` `editor` `run_budget` `verbose` `client_env` `client` | `session_id` `stored_session_id` `message_count` `messages` `info` | `packages/core/src/profile/profileService.ts:366`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:257`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:262`<br>`packages/desktop/src/renderer/services/sessionOperationService.ts:269` | ✅ 0.22.5 |
+| `session.compress` | `session_id` `profile` `focus_topic` | `status` `removed` `before_messages` `after_messages` `before_tokens` `after_tokens` `summary` `usage` `info` `messages` `compressed` `lock_held` `message` `turn_isolation` `host_ack` | `packages/core/src/rpc/client.ts:1172` | Skipped: Context compression persistently rewrites session history and compaction nodes; explicitly skipped in offline probes and guarded by idle-guard unit tests and the contract allowlist. |
+| `session.context_breakdown` | `session_id` `profile` | `categories` `context_max` `context_percent` `context_used` `estimated_total` `context_estimated` `context_source` `model` `context_files` | `packages/core/src/rpc/client.ts:1161` | Skipped: Context breakdown requires session state with an active model; explicitly skipped in offline probes and guarded by the contract allowlist, Core parser, and status-bar component unit tests. |
+| `session.create` | `profile` `cols` `source` `cwd` `cwd_explicit` `messages` `parent_session_id` `title` `model` `provider` `reasoning_effort` `fast` `service_tier` `close_on_disconnect` `hidden` `room_plumbing` `follow_profile_config` `idempotency_key` `request_id` `row_cwd` `base_url` `api_key` `toolsets` `reasoning` `max_turns` `ignore_rules` `yolo` `safe_mode` `ignore_user_config` `skills` `checkpoints` `accept_hooks` `pass_session_id` `editor` `run_budget` `verbose` `client_env` `client` | `session_id` `stored_session_id` `message_count` `messages` `info` | `packages/core/src/profile/profileService.ts:385`<br>`packages/desktop/src/renderer/services/sessionCreatePayload.ts:57`<br>`packages/desktop/src/renderer/services/sessionCreatePayload.ts:62`<br>`packages/desktop/src/renderer/services/sessionCreatePayload.ts:69` | ✅ 0.22.5 |
 | `session.delete` | `session_id` `profile` | `deleted` | `packages/core/src/session/SessionLifecycleService.ts:52` | ✅ 0.22.5 |
-| `session.interrupt` | `session_id` `profile` `expected_hosted_task_id` `execution_generation` | `status` `interrupted` `turn_isolation` | `packages/core/src/session/SessionLifecycleService.ts:45`<br>`packages/core/src/session/interactiveService.ts:196`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:831` | ✅ 0.22.5 |
-| `session.list` | `profile` `title` `limit` `include_hidden` `scope` `workspace` `picker` | `sessions` | `packages/core/src/profile/profileService.ts:336`<br>`packages/core/src/rpc/client.ts:1011` | ✅ 0.22.5 |
-| `session.resume` | `session_id` `profile` `cols` `source` `lazy` `defer_history` `omit_messages` `eager_build` `close_on_disconnect` `inline_images` `title` `latest` `workspace` `editor` `api_key` `display_projection` | `session_id` `message_count` `messages` `info` `stored_session_id` `resumed` `session_key` `messages_omitted` `hydrating` `running` `turn_started_at` `started_at` `status` `inflight` `queued` `pending_approval` `open_requests` `pending_connection` `todo_state` `auto_continue` | `packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:306`<br>`packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:315`<br>`packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:322`<br>`packages/desktop/src/renderer/index.ts:814`<br>`packages/desktop/src/renderer/index.ts:816`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:370`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:376`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:386`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:394`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:397`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:317`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:327`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:335` | ✅ 0.22.5 |
-| `session.set_hidden` | `session_id` `hidden` `profile` | `hidden` `session_key` | `packages/core/src/profile/profileService.ts:382`<br>`packages/core/src/session/SessionLifecycleService.ts:57` | ✅ 0.22.5 |
-| `session.title` | `session_id` `profile` `title` | `title` `session_key` `pending` | `packages/desktop/src/renderer/services/sessionOperationService.ts:503` | ✅ 0.22.5 |
+| `session.events.since` | `session_id` `profile` `last_seen` `replay_epoch` `last_sequence` | `events` `latest_seq` `truncated` `count` `epoch` `open_requests` | `packages/core/src/rpc/client.ts:1032` | Skipped: 断点续传增量事件回放依赖活跃会话与 replay_epoch 游标上下文，离线基线显式跳过，由契约白名单与断线续传协议单测守护 |
+| `session.interrupt` | `session_id` `profile` `expected_hosted_task_id` `execution_generation` | `status` `interrupted` `turn_isolation` | `packages/core/src/session/SessionLifecycleService.ts:45`<br>`packages/core/src/session/interactiveService.ts:196`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:909` | ✅ 0.22.5 |
+| `session.list` | `profile` `title` `limit` `include_hidden` `scope` `workspace` `picker` | `sessions` | `packages/core/src/profile/profileService.ts:355`<br>`packages/core/src/rpc/clientChannelHelpers.ts:137` | ✅ 0.22.5 |
+| `session.resume` | `session_id` `profile` `cols` `source` `lazy` `defer_history` `omit_messages` `eager_build` `close_on_disconnect` `inline_images` `title` `latest` `workspace` `editor` `api_key` `display_projection` | `session_id` `message_count` `messages` `info` `stored_session_id` `resumed` `session_key` `messages_omitted` `hydrating` `running` `turn_started_at` `started_at` `status` `inflight` `queued` `pending_approval` `open_requests` `pending_connection` `todo_state` `auto_continue` | `packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:445`<br>`packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:454`<br>`packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:461`<br>`packages/desktop/src/renderer/gateway/multiGatewayCoordinator.ts:584`<br>`packages/desktop/src/renderer/gateway/multiGatewayCoordinator.ts:590`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:435`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:441`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:451`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:459`<br>`packages/desktop/src/renderer/services/messageLoadingService.ts:462`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:356`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:366`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:374` | ✅ 0.22.5 |
+| `session.set_hidden` | `session_id` `hidden` `profile` | `hidden` `session_key` | `packages/core/src/profile/profileService.ts:401`<br>`packages/core/src/session/SessionLifecycleService.ts:57` | ✅ 0.22.5 |
+| `session.title` | `session_id` `profile` `title` | `title` `session_key` `pending` | `packages/desktop/src/renderer/services/sessionOperationService.ts:527` | ✅ 0.22.5 |
 
 ## Details
 
@@ -27,10 +28,10 @@
 - Result type: `ConfigSetResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:1055`
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:1087`
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:884`
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:916`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:1001`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:1140`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:1172`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:969`
 
 ### `session.archive`
 
@@ -38,8 +39,8 @@
 - Result type: `SessionArchiveResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:599`
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:602`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:635`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:638`
 
 ### `session.branch_whole`
 
@@ -64,7 +65,7 @@
 - Result type: `SessionCompressResult`
 - Live probe: Skipped — Context compression persistently rewrites session history and compaction nodes; explicitly skipped in offline probes and guarded by idle-guard unit tests and the contract allowlist.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1404`
+  - `packages/core/src/rpc/client.ts:1172`
 
 ### `session.context_breakdown`
 
@@ -72,7 +73,7 @@
 - Result type: `SessionContextBreakdownResult`
 - Live probe: Skipped — Context breakdown requires session state with an active model; explicitly skipped in offline probes and guarded by the contract allowlist, Core parser, and status-bar component unit tests.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1393`
+  - `packages/core/src/rpc/client.ts:1161`
 
 ### `session.create`
 
@@ -80,10 +81,10 @@
 - Result type: `SessionCreateResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/core/src/profile/profileService.ts:366`
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:257`
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:262`
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:269`
+  - `packages/core/src/profile/profileService.ts:385`
+  - `packages/desktop/src/renderer/services/sessionCreatePayload.ts:57`
+  - `packages/desktop/src/renderer/services/sessionCreatePayload.ts:62`
+  - `packages/desktop/src/renderer/services/sessionCreatePayload.ts:69`
 
 ### `session.delete`
 
@@ -94,6 +95,14 @@
 - Call sites:
   - `packages/core/src/session/SessionLifecycleService.ts:52`
 
+### `session.events.since`
+
+- Params type: `SessionEventsSinceParams`
+- Result type: `SessionEventsSinceResult`
+- Live probe: Skipped — 断点续传增量事件回放依赖活跃会话与 replay_epoch 游标上下文，离线基线显式跳过，由契约白名单与断线续传协议单测守护
+- Call sites:
+  - `packages/core/src/rpc/client.ts:1032`
+
 ### `session.interrupt`
 
 - Params type: `SessionInterruptParams`
@@ -102,7 +111,7 @@
 - Call sites:
   - `packages/core/src/session/SessionLifecycleService.ts:45`
   - `packages/core/src/session/interactiveService.ts:196`
-  - `packages/desktop/src/renderer/services/turnExecutionService.ts:831`
+  - `packages/desktop/src/renderer/services/turnExecutionService.ts:909`
 
 ### `session.list`
 
@@ -110,8 +119,8 @@
 - Result type: `SessionListResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/core/src/profile/profileService.ts:336`
-  - `packages/core/src/rpc/client.ts:1011`
+  - `packages/core/src/profile/profileService.ts:355`
+  - `packages/core/src/rpc/clientChannelHelpers.ts:137`
 
 ### `session.resume`
 
@@ -119,19 +128,19 @@
 - Result type: `SessionResumeResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:306`
-  - `packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:315`
-  - `packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:322`
-  - `packages/desktop/src/renderer/index.ts:814`
-  - `packages/desktop/src/renderer/index.ts:816`
-  - `packages/desktop/src/renderer/services/messageLoadingService.ts:370`
-  - `packages/desktop/src/renderer/services/messageLoadingService.ts:376`
-  - `packages/desktop/src/renderer/services/messageLoadingService.ts:386`
-  - `packages/desktop/src/renderer/services/messageLoadingService.ts:394`
-  - `packages/desktop/src/renderer/services/messageLoadingService.ts:397`
-  - `packages/desktop/src/renderer/services/turnExecutionService.ts:317`
-  - `packages/desktop/src/renderer/services/turnExecutionService.ts:327`
-  - `packages/desktop/src/renderer/services/turnExecutionService.ts:335`
+  - `packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:445`
+  - `packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:454`
+  - `packages/desktop/src/renderer/gateway/liveStreamCoordinator.ts:461`
+  - `packages/desktop/src/renderer/gateway/multiGatewayCoordinator.ts:584`
+  - `packages/desktop/src/renderer/gateway/multiGatewayCoordinator.ts:590`
+  - `packages/desktop/src/renderer/services/messageLoadingService.ts:435`
+  - `packages/desktop/src/renderer/services/messageLoadingService.ts:441`
+  - `packages/desktop/src/renderer/services/messageLoadingService.ts:451`
+  - `packages/desktop/src/renderer/services/messageLoadingService.ts:459`
+  - `packages/desktop/src/renderer/services/messageLoadingService.ts:462`
+  - `packages/desktop/src/renderer/services/turnExecutionService.ts:356`
+  - `packages/desktop/src/renderer/services/turnExecutionService.ts:366`
+  - `packages/desktop/src/renderer/services/turnExecutionService.ts:374`
 
 ### `session.set_hidden`
 
@@ -139,7 +148,7 @@
 - Result type: `SessionSetHiddenResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/core/src/profile/profileService.ts:382`
+  - `packages/core/src/profile/profileService.ts:401`
   - `packages/core/src/session/SessionLifecycleService.ts:57`
 
 ### `session.title`
@@ -148,5 +157,5 @@
 - Result type: `SessionTitleResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/desktop/src/renderer/services/sessionOperationService.ts:503`
+  - `packages/desktop/src/renderer/services/sessionOperationService.ts:527`
 

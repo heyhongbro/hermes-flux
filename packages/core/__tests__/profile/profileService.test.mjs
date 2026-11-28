@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ProfileService } from '../../dist/profile/profileService.js';
-import { defaultSessionHandleRegistry } from '../../dist/session/sessionRegistry.js';
+import { defaultSessionHandleRegistry, SessionHandleRegistry } from '../../dist/session/sessionRegistry.js';
+import {
+  botActivityKey,
+  applyBotActivity,
+  syncBotProfiles,
+  syncActiveSessionToBot,
+} from '../../dist/profile/botActivitySync.js';
 
 test('ProfileService - 专职 Bot 管理与 Forever Chat 终身主工位状态机', async (t) => {
   await t.test('1. listProfiles：获取专职 Bot 列表与内存缓存复用', async () => {
@@ -300,5 +306,180 @@ test('ProfileService - 专职 Bot 管理与 Forever Chat 终身主工位状态�
     assert.equal(service.canCommitLongTermMemory({}), false);
 
     service.clearCache();
+  });
+
+  await t.test('9. ProfileService({ handleRegistry })：多网关实例隔离注册表，不污染全局 defaultSessionHandleRegistry', async () => {
+    const isolatedRegistry = new SessionHandleRegistry();
+    const service = new ProfileService({ handleRegistry: isolatedRegistry });
+    const mockBridge = {
+      async request(method) {
+        if (method === 'session.list') {
+          return { sessions: [] };
+        }
+        if (method === 'session.create') {
+          return { session_id: 'live-iso-forever', stored_session_id: 'sess-iso-forever' };
+        }
+        if (method === 'session.set_hidden') {
+          return { success: true };
+        }
+        throw new Error(`Unexpected call: ${method}`);
+      },
+    };
+    const chat = await service.getOrCreateForeverChat('iso-bot', mockBridge);
+    assert.equal(chat.sessionId, 'sess-iso-forever');
+    assert.equal(isolatedRegistry.getRegisteredLiveId('sess-iso-forever'), 'live-iso-forever');
+    assert.equal(defaultSessionHandleRegistry.getRegisteredLiveId('sess-iso-forever'), null);
+  });
+
+  await t.test('10. botActivitySync：多网关 default Bot 物理隔离、Scoped 缓存与前缀剥离', () => {
+    assert.equal(botActivityKey('default'), 'default');
+    assert.equal(botActivityKey('default', 'gw-a'), 'gw-a:default');
+
+    const baseProfiles = [
+      { name: 'default', displayName: 'Master A', gatewayId: 'gw-a', description: 'desc-a' },
+      { name: 'default', displayName: 'Master B', gatewayId: 'gw-b', description: 'desc-b' },
+    ];
+    const activityMap = new Map();
+    const fmt = (ts) => `t:${ts}`;
+
+    const noopRes = applyBotActivity({
+      profiles: baseProfiles,
+      activityMap,
+      botName: '',
+      text: 'ignored',
+      timestamp: 1000,
+      formatTime: fmt,
+      gatewayId: 'gw-a',
+    });
+    assert.equal(noopRes.profiles.length, 2);
+
+    const appliedA = applyBotActivity({
+      profiles: baseProfiles,
+      activityMap,
+      botName: 'default',
+      text: '  hello node A  ',
+      timestamp: 1700000001000,
+      formatTime: fmt,
+      gatewayId: 'gw-a',
+    });
+    assert.equal(appliedA.updatedProfile?.gatewayId, 'gw-a');
+    assert.equal(appliedA.updatedProfile?.lastMessage, 'hello node A');
+    assert.equal(activityMap.get('gw-a:default')?.lastMessage, 'hello node A');
+    assert.equal(activityMap.get('gw-b:default'), undefined);
+    assert.equal(appliedA.profiles.find((p) => p.gatewayId === 'gw-b')?.lastMessage, undefined);
+
+    const appliedByDisplay = applyBotActivity({
+      profiles: baseProfiles,
+      activityMap: new Map(),
+      botName: 'Master A',
+      text: 'via display',
+      timestamp: 1700000001500,
+      formatTime: fmt,
+      gatewayId: 'gw-a',
+    });
+    assert.equal(appliedByDisplay.updatedProfile?.gatewayId, 'gw-a');
+    assert.equal(appliedByDisplay.updatedProfile?.lastMessage, 'via display');
+
+    const foreverChatCache = new Map([
+      ['gw-a:other', 'other-sid'],
+      ['gw-a:default', 'shared-forever'],
+      ['gw-b:default', 'shared-forever'],
+      ['gw-c:default', 'shared-forever'],
+      ['solo-plain', 'solo-fc'],
+    ]);
+    const sessionMessagesCache = new Map([
+      ['gw-a::shared-forever', [{ content: 'scoped A msg', timestamp: 1700000002000 }]],
+      ['gw-b::shared-forever', [{ content: 'scoped B msg', timestamp: 1700000003000 }]],
+      ['shared-forever', [{ content: 'unscoped collided msg', timestamp: 1700000009000 }]],
+      ['solo-fc', [{ content: 'solo fc msg', timestamp: 1700000009500 }]],
+    ]);
+
+    const syncedA = syncBotProfiles({
+      profiles: [
+        { name: 'default', displayName: 'Master A', gatewayId: 'gw-a' },
+        { name: 'default', displayName: 'Master C', gatewayId: 'gw-c' },
+        { name: 'solo-plain', displayName: 'Solo Plain' },
+      ],
+      activityMap: new Map(),
+      foreverChatCache,
+      sessionMessagesCache,
+      formatTime: fmt,
+    });
+    assert.equal(syncedA.find((p) => p.gatewayId === 'gw-a')?.lastMessage, 'scoped A msg');
+    assert.equal(syncedA.find((p) => p.gatewayId === 'gw-c')?.lastMessage, 'unscoped collided msg');
+    assert.equal(syncedA.find((p) => p.name === 'solo-plain')?.lastMessage, 'solo fc msg');
+
+    const syncedAct = syncBotProfiles({
+      profiles: [
+        ...baseProfiles,
+        { name: 'no-display-gw', gatewayId: 'gw-a', description: 'plain gw' },
+        { name: 'unscoped-alias', displayName: 'AliasOnly' },
+        { name: 'unscoped-plain', description: 'plain' },
+      ],
+      activityMap: new Map([
+        ['gw-b:Master B', { lastMessage: 'alias B act', timestamp: 1700000005000 }],
+        ['AliasOnly', { lastMessage: 'unscoped alias act', timestamp: 1700000004000 }],
+      ]),
+      foreverChatCache: new Map(),
+      sessionMessagesCache: new Map(),
+      formatTime: fmt,
+    });
+    assert.equal(syncedAct[0].gatewayId, 'gw-b');
+    assert.equal(syncedAct[0].lastMessage, 'alias B act');
+    assert.equal(syncedAct[1].lastMessage, 'unscoped alias act');
+    assert.equal(syncedAct.find((p) => p.name === 'no-display-gw')?.lastMessage, 'plain gw');
+    assert.equal(syncedAct.find((p) => p.name === 'unscoped-plain')?.lastMessage, 'plain');
+
+    // syncActiveSessionToBot strips gatewayId: prefix and isolates cross-gateway foreverChatId collision
+    const syncBMap = new Map();
+    const syncB = syncActiveSessionToBot({
+      sessionId: 'shared-forever',
+      messages: [{ content: 'fresh turn on B', rawTimestamp: 1700000006 }],
+      foreverChatCache,
+      profiles: baseProfiles,
+      activityMap: syncBMap,
+      formatTime: fmt,
+      gatewayId: 'gw-b',
+    });
+    assert.equal(syncB?.matchedBotName, 'default');
+    assert.equal(syncBMap.get('gw-b:default')?.lastMessage, 'fresh turn on B');
+    assert.equal(syncBMap.get('gw-a:default'), undefined);
+    assert.equal(syncB?.profiles.find((p) => p.gatewayId === 'gw-a')?.lastMessage, undefined);
+
+    // Unscoped key + fallback to activeFocusBotName + empty messages null guard
+    const soloMap = new Map();
+    const soloRes = syncActiveSessionToBot({
+      sessionId: 'solo-f',
+      messages: [{ content: 'solo msg', rawTimestamp: 1700000007000 }],
+      foreverChatCache: new Map([['default', 'solo-f']]),
+      profiles: [{ name: 'default', displayName: 'Solo' }],
+      activityMap: soloMap,
+      formatTime: fmt,
+    });
+    assert.equal(soloRes?.matchedBotName, 'default');
+    assert.equal(soloMap.get('default')?.lastMessage, 'solo msg');
+
+    const focusFallback = syncActiveSessionToBot({
+      sessionId: 'unknown-sid',
+      messages: [{ content: 'focus fallback', rawTimestamp: 1700000008000 }],
+      foreverChatCache: new Map(),
+      activeFocusBotName: 'default',
+      profiles: baseProfiles,
+      activityMap: new Map(),
+      formatTime: fmt,
+      gatewayId: 'gw-a',
+    });
+    assert.equal(focusFallback?.matchedBotName, 'default');
+    assert.equal(
+      syncActiveSessionToBot({
+        sessionId: 'x',
+        messages: [],
+        foreverChatCache,
+        profiles: baseProfiles,
+        activityMap: new Map(),
+        formatTime: fmt,
+      }),
+      null,
+    );
   });
 });

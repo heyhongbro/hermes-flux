@@ -25,10 +25,12 @@ import path from 'node:path';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const renderCoordPath = path.resolve(__dirname, '../../src/renderer/renderCoordinator.ts');
 const dropdownPath = path.resolve(__dirname, '../../src/renderer/dropdownKeybindController.ts');
+const multiGwCoordPath = path.resolve(__dirname, '../../src/renderer/gateway/multiGatewayCoordinator.ts');
 const rendererSource = [
   readFileSync(path.resolve(__dirname, '../../src/renderer/index.ts'), 'utf8'),
   existsSync(renderCoordPath) ? readFileSync(renderCoordPath, 'utf8') : '',
   existsSync(dropdownPath) ? readFileSync(dropdownPath, 'utf8') : '',
+  existsSync(multiGwCoordPath) ? readFileSync(multiGwCoordPath, 'utf8') : '',
 ].join('\n');
 
 test('模型目录接线源码守卫', async (t) => {
@@ -82,7 +84,7 @@ test('模型目录接线源码守卫', async (t) => {
   await t.test('3. 两个失败分支都必须同时清空目录与指纹（禁止陈旧目录静默存活）', () => {
     // 分支 A：未连接网关
     assert.ok(
-      /if \(!gatewayClient\)[\s\S]{0,400}?state\.modelCatalog = \[\];[\s\S]{0,200}?state\.modelCatalogHash = '';/.test(
+      /if \(!(?:gatewayClient|client)\)[\s\S]{0,400}?state\.modelCatalog = \[\];[\s\S]{0,200}?state\.modelCatalogHash = '';/.test(
         rendererSource,
       ),
       '!gatewayClient 分支必须清空 modelCatalog 与 modelCatalogHash',

@@ -35,6 +35,7 @@ export interface GatewayAuthResult {
   latency: number;
   ticket?: string;
   version?: string;
+  installId?: string;
 }
 
 export interface GatewayProcessStatus {
@@ -125,4 +126,9 @@ export interface IPlatformBridge {
   // Native Clipboard Operations
   clipboardWrite?(text: string): Promise<boolean>;
   clipboardRead?(): Promise<string>;
+
+  // OS Secure Credential Store (safeStorage / Keychain / Keystore)
+  setGatewaySecret?(key: string, value: string): Promise<boolean>;
+  getGatewaySecret?(key: string): Promise<string | null>;
+  deleteGatewaySecret?(key: string): Promise<boolean>;
 }

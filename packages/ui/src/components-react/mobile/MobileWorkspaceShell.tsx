@@ -393,6 +393,7 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
 
           <MobileConversationScreen
             gatewayConnected={snapshot.gatewayConnected}
+            activeEntityGatewayOffline={snapshot.activeEntityGatewayOffline}
             connectionPhase={snapshot.connectionPhase}
             connectionReconnectAttempt={snapshot.connectionReconnectAttempt}
             connectionAuthError={snapshot.connectionAuthError}
@@ -495,6 +496,8 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
         allProfiles={snapshot.allProfiles}
         projects={snapshot.projects}
         selectedProjectId={snapshot.newChatProjectId}
+        gateways={snapshot.gateways}
+        selectedGatewayId={snapshot.newChatGatewayId}
         stats={snapshot.newChatStats}
         gatewayConnected={snapshot.gatewayConnected}
         selectedModel={snapshot.selectedModel}
@@ -508,6 +511,7 @@ export function MobileWorkspaceShell({ snapshot, actions }: MobileWorkspaceShell
         onSetGroupMembers={actions.onSetNewChatGroupMembers}
         onSetGroupName={actions.onSetNewChatGroupName}
         onSelectProject={actions.onSelectNewChatProject}
+        onSelectGateway={actions.onSelectNewChatGateway}
         onSubmitFirstMessage={actions.onSubmitNewChatMessage}
         onSelectModel={actions.onSelectModel}
         onRefreshModels={actions.onRefreshModels}

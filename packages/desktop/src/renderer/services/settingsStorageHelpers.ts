@@ -12,12 +12,20 @@
  */
 
 import { safeSetItem, type I18nKey, type StorageWriteFailure } from '@hermes-flux/ui';
+import type { HermesDesktopBridge } from '../../preload/index.js';
+import {
+  buildGatewaySecretKey,
+  purgeLegacyPlaintextPasswords,
+} from '../persistence/secretMigration.js';
 import type { AppState } from '../state/appState.js';
 
 export interface SettingsStorageHelpersDeps {
   readonly bootLog: { warn(message: string, meta?: Record<string, unknown>): void };
   readonly showToast: (message: string, durationMs?: number) => void;
   readonly t: (key: I18nKey, params?: Record<string, string | number>) => string;
+  readonly getDesktopApi?: () =>
+    | Pick<HermesDesktopBridge, 'setGatewaySecret' | 'deleteGatewaySecret'>
+    | undefined;
 }
 
 /** 落盘失败的可观测降级策略（P-032）。 */
@@ -37,15 +45,14 @@ export function reportStorageFailure(
   }
 }
 
-/** 将网关连接表单草稿写入主/旧双前缀 8 个存储键（遇到 SecurityError 即短路）。 */
+/** 将网关连接表单草稿（不含密码）写入主/旧双前缀存储键，并将口令同步到 OS 安全密钥环。 */
 export function writeGatewayDraft(deps: SettingsStorageHelpersDeps, state: AppState): void {
+  purgeLegacyPlaintextPasswords();
   const entries: ReadonlyArray<readonly [string, string]> = [
     ['hermes_flux_gateway_url', state.gatewayUrl],
     ['hermes_aura_gateway_url', state.gatewayUrl],
     ['hermes_flux_username', state.username],
     ['hermes_aura_username', state.username],
-    ['hermes_flux_password', state.password],
-    ['hermes_aura_password', state.password],
     ['hermes_flux_profile', state.profileName],
     ['hermes_aura_profile', state.profileName],
   ];
@@ -57,6 +64,17 @@ export function writeGatewayDraft(deps: SettingsStorageHelpersDeps, state: AppSt
     if (result.reason === 'security') break;
   }
   reportStorageFailure(deps, 'gateway', failure);
+
+  const secretKey = buildGatewaySecretKey(state.gatewayUrl);
+  const desktopApi = deps.getDesktopApi?.();
+  if (secretKey && desktopApi) {
+    const syncOp = state.password
+      ? desktopApi.setGatewaySecret?.(secretKey, state.password)
+      : desktopApi.deleteGatewaySecret?.(secretKey);
+    void syncOp?.catch((err: unknown) => {
+      deps.bootLog.warn('gateway secret sync failed', { error: String(err) });
+    });
+  }
 }
 
 /** 从设置详情、花名册与大小写头像缓存三级来源解析指定 Bot 头像。 */

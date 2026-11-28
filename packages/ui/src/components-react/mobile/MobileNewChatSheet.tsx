@@ -16,7 +16,13 @@ import { Check, ChevronDown, ChevronLeft, ChevronRight, Folder, Users, X } from 
 import { t } from '../../i18n/index.js';
 import { renderBotAvatar, renderGroupCollageAvatar } from '../../utils/botAvatar.js';
 import type { LeftRailProfile, LeftRailProject } from '../leftRailModel.js';
-import { resolveActiveNewChatProjects } from '../newChatModel.js';
+import {
+  filterProfilesForGateway,
+  filterProjectsForGateway,
+  resolveActiveNewChatProjects,
+  resolveInitialGatewayId,
+  type NewChatGatewayOption,
+} from '../newChatModel.js';
 import type { InputAttachmentItem } from '../../components/InputDock/InputDock.js';
 import type { MobileNewChatStep } from './mobileShellModel.js';
 import type { MobileModelOption } from './types.js';
@@ -32,6 +38,8 @@ export interface MobileNewChatSheetProps {
   allProfiles: LeftRailProfile[];
   projects?: LeftRailProject[];
   selectedProjectId?: string;
+  gateways?: readonly NewChatGatewayOption[];
+  selectedGatewayId?: string;
   stats?: {
     pluginsCount: number;
     mcpCount: number;
@@ -49,6 +57,7 @@ export interface MobileNewChatSheetProps {
   onSetGroupMembers: (members: string[]) => void;
   onSetGroupName: (name: string) => void;
   onSelectProject?: (projectId?: string) => void;
+  onSelectGateway?: (gatewayId: string) => void;
   onSubmitFirstMessage: (text: string) => void;
   onSelectModel: (model: string, provider?: string) => void;
   onRefreshModels?: () => void;
@@ -71,6 +80,8 @@ export function MobileNewChatSheet({
   allProfiles,
   projects = [],
   selectedProjectId,
+  gateways = [],
+  selectedGatewayId,
   stats,
   gatewayConnected,
   selectedModel,
@@ -84,6 +95,7 @@ export function MobileNewChatSheet({
   onSetGroupMembers,
   onSetGroupName,
   onSelectProject,
+  onSelectGateway,
   onSubmitFirstMessage,
   onSelectModel,
   onRefreshModels,
@@ -118,13 +130,30 @@ export function MobileNewChatSheet({
 
   if (!open) return null;
 
-  const activeProjects = resolveActiveNewChatProjects(projects);
+  const isMultiGateway = gateways.length >= 2;
+  const effectiveGatewayId = isMultiGateway
+    ? resolveInitialGatewayId(gateways, selectedGatewayId)
+    : '';
+  const activeGateway = isMultiGateway
+    ? gateways.find((g) => g.id === effectiveGatewayId)
+    : undefined;
+  const effectiveGatewayConnected = activeGateway ? activeGateway.connected : gatewayConnected;
+  const scopedProfiles = filterProfilesForGateway(
+    allProfiles,
+    isMultiGateway ? effectiveGatewayId : undefined,
+  );
+  const scopedProjects = filterProjectsForGateway(
+    projects,
+    isMultiGateway ? effectiveGatewayId : undefined,
+  );
+
+  const activeProjects = resolveActiveNewChatProjects(scopedProjects);
   const selectedProject = activeProjects.find((p) => p.id === selectedProjectId);
 
   const activeProfile =
-    allProfiles.find((p) => p.name.toLowerCase() === targetBot.toLowerCase()) ||
-    allProfiles.find((p) => p.isDefault) ||
-    allProfiles[0] || {
+    scopedProfiles.find((p) => p.name.toLowerCase() === targetBot.toLowerCase()) ||
+    scopedProfiles.find((p) => p.isDefault) ||
+    scopedProfiles[0] || {
       name: targetBot || 'default',
       displayName: targetBot || t('rail.defaultAssistant'),
       avatar: '',
@@ -139,12 +168,38 @@ export function MobileNewChatSheet({
     : (activeProfile.description || '').trim() || t('mobile.newChat.noDescription');
 
   const smallAvatarHtml = isGroupMode
-    ? renderGroupCollageAvatar(groupMembers, allProfiles, 24)
+    ? renderGroupCollageAvatar(groupMembers, scopedProfiles, 24)
     : renderBotAvatar(activeProfile.name, activeProfile.displayName, activeProfile.avatar, 24, 'circle');
 
   const heroAvatarHtml = isGroupMode
-    ? renderGroupCollageAvatar(groupMembers, allProfiles, 78)
+    ? renderGroupCollageAvatar(groupMembers, scopedProfiles, 78)
     : renderBotAvatar(activeProfile.name, activeProfile.displayName, activeProfile.avatar, 78, 'circle');
+
+  const renderGatewaySelectRow = (testId: string): React.ReactNode => {
+    if (!isMultiGateway) return null;
+    return (
+      <label className="m-settings-field" style={{ paddingInline: '16px', marginBottom: '6px' }}>
+        <span className="m-settings-field__label">{t('mobile.newChat.gatewayLabel')}</span>
+        <select
+          className="m-matte-input"
+          data-testid={testId}
+          aria-label={t('mobile.newChat.gatewayLabel')}
+          value={effectiveGatewayId}
+          onChange={(e) => {
+            setPickerOpen(false);
+            setProjectPickerOpen(false);
+            onSelectGateway?.(e.target.value);
+          }}
+        >
+          {gateways.map((gw) => (
+            <option key={gw.id} value={gw.id}>
+              {gw.connected ? gw.label : `${gw.label} (${t('settings.gatewayDisconnected')})`}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  };
 
   const toggleMember = (name: string): void => {
     const exists = groupMembers.includes(name);
@@ -203,7 +258,7 @@ export function MobileNewChatSheet({
               <div className="m-target-dropdown" role="menu">
                 <div className="m-target-dropdown__title">{t('mobile.newChat.switchTarget')}</div>
                 <div className="m-target-dropdown__list">
-                  {allProfiles.map((profile) => {
+                  {scopedProfiles.map((profile) => {
                     const selected = !isGroupMode && profile.name === activeProfile.name;
                     return (
                       <button
@@ -237,7 +292,7 @@ export function MobileNewChatSheet({
                   onClick={() => {
                     setPickerOpen(false);
                     if (groupMembers.length === 0) {
-                      const seed = allProfiles.slice(0, 2).map((p) => p.name);
+                      const seed = scopedProfiles.slice(0, 2).map((p) => p.name);
                       onSetGroupMembers(seed);
                     }
                     onSetStep('group-members');
@@ -247,6 +302,17 @@ export function MobileNewChatSheet({
                   <span>{t('mobile.newChat.startGroup')}</span>
                   <ChevronRight size={15} aria-hidden="true" />
                 </button>
+              </div>
+            ) : null}
+
+            {renderGatewaySelectRow('mobile-new-chat-gateway-select')}
+            {!effectiveGatewayConnected ? (
+              <div
+                data-testid="mobile-new-chat-offline-hint"
+                className="m-newchat__hint"
+                style={{ paddingInline: '16px', color: 'var(--warning)' }}
+              >
+                {t('mobile.newChat.gatewayOfflineHint')}
               </div>
             ) : null}
 
@@ -355,7 +421,7 @@ export function MobileNewChatSheet({
             <div className="m-newchat__composer-wrap">
               <MobileMorphingComposer
                 placeholder={t('mobile.newChat.composerPlaceholder', { target: heroTitle })}
-                disabled={!gatewayConnected}
+                disabled={!effectiveGatewayConnected}
                 selectedModel={selectedModel}
                 currentProvider={currentProvider}
                 availableModels={availableModels}
@@ -391,6 +457,7 @@ export function MobileNewChatSheet({
             </header>
 
             <div className="m-newchat__group-body">
+              {renderGatewaySelectRow('mobile-new-chat-group-gateway-select')}
               <input
                 type="text"
                 className="m-matte-input"
@@ -401,7 +468,7 @@ export function MobileNewChatSheet({
               <p className="m-newchat__hint">{t('mobile.newChat.pickMembersHint')}</p>
 
               <div className="m-newchat__member-list">
-                {allProfiles.map((profile) => {
+                {scopedProfiles.map((profile) => {
                   const picked = groupMembers.includes(profile.name);
                   return (
                     <button

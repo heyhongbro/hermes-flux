@@ -272,4 +272,24 @@ test('LeftRailSnapshotManager 领域单测', async (t) => {
     assert.deepEqual(restoredDual.model.projectContainers.map((c) => c.id), ['p1', 'p2']);
     assert.deepEqual(restoredDual.model.projectContainers[0].items.map((i) => i.session.id), ['s-p1-in']);
   });
+
+  await t.test('7. getGatewayCount 可选回退：存在返回多网关，缺省回退单网关', () => {
+    const noGwHost = createMockLeftRailHost({
+      profiles: [{ name: 'bot-a', displayName: 'A', gatewayId: 'gw-a' }],
+      sessions: [{ id: 's-gw', title: 'S', botName: 'bot-a', gatewayId: 'gw-a', timestamp: 1000 }],
+      groupRooms: [{ roomId: 'g-gw', name: 'G', members: ['bot-a'], gatewayId: 'gw-a' }],
+    });
+    const noGwMgr = new LeftRailSnapshotManager(noGwHost);
+    assert.equal(noGwMgr.getSnapshot(1000).model.isMultiGateway, false);
+
+    let gwCount = 2;
+    const withGwHost = createMockLeftRailHost({
+      profiles: [{ name: 'bot-a', displayName: 'A', gatewayId: 'gw-a' }],
+      sessions: [{ id: 's-gw', title: 'S', botName: 'bot-a', gatewayId: 'gw-a', timestamp: 1000 }],
+      groupRooms: [{ roomId: 'g-gw', name: 'G', members: ['bot-a'], gatewayId: 'gw-a' }],
+    });
+    withGwHost.getGatewayCount = () => gwCount;
+    const withGwMgr = new LeftRailSnapshotManager(withGwHost);
+    assert.equal(withGwMgr.getSnapshot(1000).model.isMultiGateway, true);
+  });
 });

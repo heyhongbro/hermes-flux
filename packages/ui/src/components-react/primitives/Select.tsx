@@ -54,6 +54,8 @@ export interface SelectProps extends VariantProps<typeof selectTriggerVariants> 
   renderValue?: (value: string, current: SelectOption | null) => React.ReactNode;
   /** 下拉面板宽度类，默认 w-72。 */
   contentClassName?: string;
+  /** 可选测试标识，透传至触发器按钮。 */
+  'data-testid'?: string;
 }
 
 export function Select({
@@ -69,6 +71,7 @@ export function Select({
   renderOption,
   renderValue,
   contentClassName,
+  'data-testid': dataTestId,
 }: SelectProps): React.ReactElement {
   const options = React.useMemo(() => groups.flatMap((group) => group.options), [groups]);
   const current = options.find((option) => option.value === value) ?? null;
@@ -77,7 +80,14 @@ export function Select({
   return (
     <Menu>
       <MenuTrigger asChild>
-        <button type="button" id={id} aria-label={ariaLabel} disabled={disabled} className={cn(selectTriggerVariants({ size }), className)}>
+        <button
+          type="button"
+          id={id}
+          data-testid={dataTestId}
+          aria-label={ariaLabel}
+          disabled={disabled}
+          className={cn(selectTriggerVariants({ size }), className)}
+        >
           <span className="flex min-w-0 flex-1 items-center gap-2 truncate">
             {renderValue ? (
               renderValue(value, current)

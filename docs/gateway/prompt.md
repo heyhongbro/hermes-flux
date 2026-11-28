@@ -5,16 +5,16 @@
 
 | Method | Params (Contract) | Result (Contract) | Call Sites | Live Probe |
 | --- | --- | --- | --- | --- |
-| `command.dispatch` | `name` `arg` `session_id` `profile` | `type` `output` `target` `message` `notice` `display` `name` `status` | `packages/core/src/session/interactiveService.ts:308`<br>`packages/core/src/session/interactiveService.ts:338`<br>`packages/desktop/src/renderer/services/learningService.ts:285`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:1405` | Skipped: Command dispatch requires an active session and live command dispatcher (exec/send/skill/prefill); explicitly skipped in offline probes and guarded by the contract table and domain unit tests. |
+| `command.dispatch` | `name` `arg` `session_id` `profile` | `type` `output` `target` `message` `notice` `display` `name` `status` | `packages/core/src/session/interactiveService.ts:308`<br>`packages/core/src/session/interactiveService.ts:338`<br>`packages/desktop/src/renderer/services/learningService.ts:318`<br>`packages/desktop/src/renderer/services/settingsExtensionsActions.ts:234` | Skipped: Command dispatch requires an active session and live command dispatcher (exec/send/skill/prefill); explicitly skipped in offline probes and guarded by the contract table and domain unit tests. |
 | `complete.path` | `profile` `word` `cwd` `session_id` | `items` | `packages/core/src/session/interactiveService.ts:251` | Skipped: File path completion requires an active session cwd and live workspace filesystem traversal; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios. |
-| `complete.slash` | `text` `session_id` `profile` | `items` `replace_from` | `packages/core/src/session/interactiveService.ts:231`<br>`packages/desktop/src/renderer/services/learningService.ts:113`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:399` | Skipped: Live slash completion requires binding to an active session's profile and project skills context; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios. |
-| `file.attach` | `session_id` `profile` `path` `data_url` `name` `staged_upload` | `attached` `name` `path` `ref_path` `ref_text` `uploaded` | `packages/desktop/src/renderer/services/turnExecutionService.ts:1078` | Skipped: File attachment upload channel requires an active session staging area and live model context; explicitly skipped in offline probes and guarded by the contract table and send unit tests. |
-| `image.attach_bytes` | `session_id` `profile` `content_base64` `data` `filename` `ext` | `name` `width` `height` `token_estimate` `attached` `path` `count` `remainder` `text` `bytes` `message` | `packages/desktop/src/renderer/services/turnExecutionService.ts:1064` | Skipped: Binary image attachment channel requires an active session channel and vision-capable model; explicitly skipped in offline probes and guarded by the contract table and CDP tests. |
-| `prompt.background` | `session_id` `profile` `text` | `task_id` | `packages/desktop/src/renderer/services/turnExecutionService.ts:1279` | Skipped: Background subagent side-call requires an active session and cross-profile compute host with async event responses; explicitly skipped in offline probes and guarded by the contract table and routing unit tests. |
+| `complete.slash` | `text` `session_id` `profile` | `items` `replace_from` | `packages/core/src/session/interactiveService.ts:231`<br>`packages/desktop/src/renderer/services/learningService.ts:141`<br>`packages/desktop/src/renderer/services/settingsDataService.ts:521` | Skipped: Live slash completion requires binding to an active session's profile and project skills context; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios. |
+| `file.attach` | `session_id` `profile` `path` `data_url` `name` `staged_upload` | `attached` `name` `path` `ref_path` `ref_text` `uploaded` | `packages/desktop/src/renderer/services/turnExecutionService.ts:1177` | Skipped: File attachment upload channel requires an active session staging area and live model context; explicitly skipped in offline probes and guarded by the contract table and send unit tests. |
+| `image.attach_bytes` | `session_id` `profile` `content_base64` `data` `filename` `ext` | `name` `width` `height` `token_estimate` `attached` `path` `count` `remainder` `text` `bytes` `message` | `packages/desktop/src/renderer/services/turnExecutionService.ts:1163` | Skipped: Binary image attachment channel requires an active session channel and vision-capable model; explicitly skipped in offline probes and guarded by the contract table and CDP tests. |
+| `prompt.background` | `session_id` `profile` `text` | `task_id` | `packages/desktop/src/renderer/services/turnSideAgentHelper.ts:114` | Skipped: Background subagent side-call requires an active session and cross-profile compute host with async event responses; explicitly skipped in offline probes and guarded by the contract table and routing unit tests. |
 | `prompt.btw` | `session_id` `profile` `text` | `task_id` | `packages/core/src/session/handoffService.ts:58` | ✅ 0.22.5 |
 | `prompt.cancel` | `session_id` `admission_id` | `admission_id` `ref` `sequence` `status` `outcome` `authority_epoch` `execution_generation` | `packages/core/src/session/interactiveService.ts:377` | Skipped: Not verified against a live gateway: cancellation requires a queued admission (which exists only while a turn is in flight); offline probes cannot synthesize that state, and passing a real admission_id would cancel the user's queued message. Guarded by local parameter-construction unit tests and the contract table. |
 | `prompt.steer_queued` | `profile` `session_id` `admission_id` | `admission_id` `ref` `sequence` `status` `outcome` `authority_epoch` `execution_generation` | `packages/core/src/session/interactiveService.ts:403` | Skipped: Not verified against a live gateway: steer_queued requires a real queued admission and an in-flight turn, which offline probes cannot synthesize. Guarded by local parameter-construction unit tests and the contract table. |
-| `prompt.submit` | `session_id` `profile` `text` `display_kind` `interrupted` `queued` `surface` `voice_context` `voice_turn` `title_preview` `truncate_before_user_ordinal` `truncate_before_row_id` `truncate_before_message_id` `confirm_truncate` `confirm_empty_truncate` `confirm_deep_truncate` `rebind_survivor_row_ids` `submission_id` `input_id` `attachments` `finite` `unattended` `turn_author` `api_text` `model_override` `clarify_batch` | `status` `voice_stopped` `user_row_id` `survivor_user_row_ids` `survivor_row_id_map` `turn_isolation` `admission_id` `forwarded` | `packages/core/src/session/interactiveService.ts:110`<br>`packages/desktop/src/renderer/events/inputDockController.ts:245`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:1109` | ✅ 0.22.5 |
+| `prompt.submit` | `session_id` `profile` `text` `display_kind` `interrupted` `queued` `surface` `voice_context` `voice_turn` `title_preview` `truncate_before_user_ordinal` `truncate_before_row_id` `truncate_before_message_id` `confirm_truncate` `confirm_empty_truncate` `confirm_deep_truncate` `rebind_survivor_row_ids` `submission_id` `input_id` `attachments` `finite` `unattended` `turn_author` `api_text` `model_override` `clarify_batch` | `status` `voice_stopped` `user_row_id` `survivor_user_row_ids` `survivor_row_id_map` `turn_isolation` `admission_id` `forwarded` | `packages/core/src/session/interactiveService.ts:110`<br>`packages/desktop/src/renderer/events/inputDockController.ts:245`<br>`packages/desktop/src/renderer/services/turnExecutionService.ts:1208` | ✅ 0.22.5 |
 | `slash.exec` | `session_id` `command` `profile` | `output` `warning` `type` `target` `message` `notice` `display` `name` `status` | `packages/core/src/session/interactiveService.ts:292` | Skipped: Slash command execution requires an active session and live command dispatcher (exec/alias/send/prefill/skill); explicitly skipped in offline probes and guarded by the contract table and domain unit tests. |
 
 ## Details
@@ -27,8 +27,8 @@
 - Call sites:
   - `packages/core/src/session/interactiveService.ts:308`
   - `packages/core/src/session/interactiveService.ts:338`
-  - `packages/desktop/src/renderer/services/learningService.ts:285`
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:1405`
+  - `packages/desktop/src/renderer/services/learningService.ts:318`
+  - `packages/desktop/src/renderer/services/settingsExtensionsActions.ts:234`
 
 ### `complete.path`
 
@@ -45,8 +45,8 @@
 - Live probe: Skipped — Live slash completion requires binding to an active session's profile and project skills context; explicitly skipped in offline probes and guarded by the contract table and CDP scenarios.
 - Call sites:
   - `packages/core/src/session/interactiveService.ts:231`
-  - `packages/desktop/src/renderer/services/learningService.ts:113`
-  - `packages/desktop/src/renderer/services/settingsDataService.ts:399`
+  - `packages/desktop/src/renderer/services/learningService.ts:141`
+  - `packages/desktop/src/renderer/services/settingsDataService.ts:521`
 
 ### `file.attach`
 
@@ -54,7 +54,7 @@
 - Result type: `FileAttachResult`
 - Live probe: Skipped — File attachment upload channel requires an active session staging area and live model context; explicitly skipped in offline probes and guarded by the contract table and send unit tests.
 - Call sites:
-  - `packages/desktop/src/renderer/services/turnExecutionService.ts:1078`
+  - `packages/desktop/src/renderer/services/turnExecutionService.ts:1177`
 
 ### `image.attach_bytes`
 
@@ -62,7 +62,7 @@
 - Result type: `AttachedImageResult`
 - Live probe: Skipped — Binary image attachment channel requires an active session channel and vision-capable model; explicitly skipped in offline probes and guarded by the contract table and CDP tests.
 - Call sites:
-  - `packages/desktop/src/renderer/services/turnExecutionService.ts:1064`
+  - `packages/desktop/src/renderer/services/turnExecutionService.ts:1163`
 
 ### `prompt.background`
 
@@ -70,7 +70,7 @@
 - Result type: `TaskIdResult`
 - Live probe: Skipped — Background subagent side-call requires an active session and cross-profile compute host with async event responses; explicitly skipped in offline probes and guarded by the contract table and routing unit tests.
 - Call sites:
-  - `packages/desktop/src/renderer/services/turnExecutionService.ts:1279`
+  - `packages/desktop/src/renderer/services/turnSideAgentHelper.ts:114`
 
 ### `prompt.btw`
 
@@ -104,7 +104,7 @@
 - Call sites:
   - `packages/core/src/session/interactiveService.ts:110`
   - `packages/desktop/src/renderer/events/inputDockController.ts:245`
-  - `packages/desktop/src/renderer/services/turnExecutionService.ts:1109`
+  - `packages/desktop/src/renderer/services/turnExecutionService.ts:1208`
 
 ### `slash.exec`
 

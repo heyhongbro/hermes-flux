@@ -16,6 +16,7 @@ import type {
 } from '@hermes-flux/core';
 import type { InputAttachmentItem } from '../../components/InputDock/InputDock.js';
 import type { LeftRailActiveFocus, LeftRailFolder, LeftRailGroupRoom, LeftRailProfile, LeftRailProject } from '../leftRailModel.js';
+import type { NewChatGatewayOption } from '../newChatModel.js';
 import type { ConversationToolVM } from '../conversation/types.js';
 import type { MediaLightboxItem } from '../conversation/MediaLightbox.js';
 import type { SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
@@ -95,6 +96,7 @@ export interface MobileActionSheetState {
   id: string;
   title: string;
   botName?: string;
+  gatewayId?: string;
   isProtected?: boolean;
   isDone?: boolean;
   currentContainerId?: string | null;
@@ -110,6 +112,8 @@ export interface MobileWorkspaceSnapshot {
   locale: 'zh' | 'en';
   gatewayConnected: boolean;
   gatewayConnecting: boolean;
+  gatewayCount?: number;
+  activeEntityGatewayOffline?: boolean;
   connectionPhase?: GatewayConnectionPhase;
   connectionReconnectAttempt?: number;
   connectionAuthError?: boolean;
@@ -133,6 +137,8 @@ export interface MobileWorkspaceSnapshot {
   newChatGroupName: string;
   newChatProjectId?: string;
   newChatContainerId?: string;
+  newChatGatewayId?: string;
+  gateways?: readonly NewChatGatewayOption[];
   newChatStats?: {
     pluginsCount: number;
     mcpCount: number;
@@ -197,9 +203,9 @@ export interface MobileWorkspaceActions {
   onSelectHomeTab: (tab: MobileHomeTab) => void;
   onSelectBotSubpage: (subpage: MobileBotSubpage) => void;
   onOpenSettingsSubpage: (subpage: MobileSettingsSubpage) => void;
-  onSelectBot: (botName: string) => void;
-  onSelectGroup: (roomId: string) => void;
-  onSelectSession: (sessionId: string, botName?: string) => void;
+  onSelectBot: (botName: string, gatewayId?: string) => void;
+  onSelectGroup: (roomId: string, gatewayId?: string) => void;
+  onSelectSession: (sessionId: string, botName?: string, gatewayId?: string) => void;
   onToggleSection: (section: 'bots' | 'groups' | 'sessions') => void;
   onToggleContainer?: (containerId: string) => void;
   onToggleDoneSection?: () => void;
@@ -230,6 +236,7 @@ export interface MobileWorkspaceActions {
   onSetNewChatGroupMembers: (members: string[]) => void;
   onSetNewChatGroupName: (name: string) => void;
   onSelectNewChatProject?: (projectId?: string) => void;
+  onSelectNewChatGateway?: (gatewayId: string) => void;
   onSubmitNewChatMessage: (text: string) => void;
 
   onSendMessage: (text: string) => void;

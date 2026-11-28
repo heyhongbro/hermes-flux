@@ -1450,3 +1450,47 @@ test('Stryker 契约强化：learningRest 参数完整性、多行错误解析�
   await Promise.all([pLoadingDet, pLoadingGraph]);
   assert.equal(stInFlight.learningDetail.status, 'idle', '切回缓存 profile 后迟到的旧 detail 不得写入');
 });
+
+test('LearningService 多网关按 gatewayId 路由 REST/WS、隔离缓存与 edit/delete 刷新', async () => {
+  const proxyLog = [];
+  const mkClient = (tag) => ({
+    call: async () => ({ profile: 'arch', nodes: [{ id: `skill:${tag}`, kind: 'skill', label: tag, uses: 1 }], edges: [] }),
+  });
+  const clients = new Map([['default', mkClient('default')], ['gw-a', mkClient('gw-a')], ['gw-b', mkClient('gw-b')]]);
+  const st = {
+    gatewayUrl: 'http://127.0.0.1:8800',
+    activeGatewayId: 'gw-a',
+    activeFocus: { type: 'bot', botName: 'arch' },
+    profileName: 'arch',
+    profiles: [{ name: 'arch', displayName: 'Architect' }],
+    learningState: { status: 'idle' },
+    learningDetail: { status: 'idle' },
+  };
+  const svc = createLearningService({
+    getState: () => st,
+    render: () => {},
+    getGatewayClient: () => clients.get('default'),
+    getClientForGateway: (gw) => clients.get(gw || 'default') ?? null,
+    getUrlForGateway: (gw) => (gw === 'gw-a' ? 'http://127.0.0.1:8801' : gw === 'gw-b' ? 'http://127.0.0.1:8802' : ''),
+    getTicketForGateway: (gw) => `tk-${gw || 'none'}`,
+    getDesktopApi: () => ({
+      httpProxy: async (opts) => {
+        proxyLog.push({ baseUrl: opts.baseUrl, ticket: opts.ticket, path: opts.path, method: opts.method });
+        if (opts.path.includes('/node')) return { ok: true, id: 'skill:b', kind: 'skill', label: 'b', content: 'updated' };
+        const port = opts.baseUrl.endsWith('8801') ? 'gw-a' : 'gw-b';
+        return { profile: 'arch', nodes: [{ id: `skill:${port}`, kind: 'skill', label: port, uses: 1 }], edges: [] };
+      },
+    }),
+    t: (k) => k,
+    describeRpcError: (e) => String(e),
+  });
+  await svc.loadLearningGraph(false, 'arch');
+  assert.equal(proxyLog.at(-1)?.baseUrl, 'http://127.0.0.1:8801');
+  assert.equal(proxyLog.at(-1)?.ticket, 'tk-gw-a');
+  await svc.loadLearningGraph({ profile: 'arch', gatewayId: 'gw-b' });
+  assert.equal(proxyLog.at(-1)?.baseUrl, 'http://127.0.0.1:8802');
+  assert.equal(proxyLog.at(-1)?.ticket, 'tk-gw-b');
+  assert.equal((await svc.editLearningNode('skill:b', 'updated', 'arch', 'gw-b')).ok, true);
+  assert.equal((await svc.deleteLearningNode('skill:b', 'arch', 'gw-b')).ok, true);
+  assert.equal(proxyLog.filter((p) => p.baseUrl === 'http://127.0.0.1:8802').length >= 4, true);
+});

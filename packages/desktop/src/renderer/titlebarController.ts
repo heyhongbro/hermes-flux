@@ -70,6 +70,25 @@ export function createTitlebarController(deps: TitlebarControllerDeps): Titlebar
 
   function getTitlebarSnapshot(): TitlebarSnapshot {
     const state = getState();
+    const health = state.gatewayHealthSummary;
+    const resolvedConnected = health ? health.onlineCount > 0 : state.gatewayConnected;
+    const resolvedStatus = health
+      ? health.aggregateStatus
+      : resolveTitlebarConnectionStatus(state.connectionPhase, state.gatewayConnected);
+    const gateways = health
+      ? health.slots.map((slot) => ({
+          gatewayId: slot.gatewayId,
+          name: slot.name,
+          shortLabel: slot.shortLabel,
+          status: slot.status,
+          connected: slot.connected,
+          latencyMs: slot.latencyMs,
+          routeKind: slot.routeKind,
+          reconnectAttempt: slot.reconnectAttempt,
+          authError: slot.authError,
+          reason: slot.reason,
+        }))
+      : undefined;
     return createTitlebarSnapshot({
       platform: state.platform,
       title: resolveTitlebarTitle({
@@ -81,12 +100,13 @@ export function createTitlebarController(deps: TitlebarControllerDeps): Titlebar
         defaultTitle: t('titlebar.defaultTitle'),
         notConnectedTitle: t('titlebar.notConnected'),
         defaultRoomName: t('group.defaultRoomName'),
-        isConnected: state.gatewayConnected,
+        isConnected: resolvedConnected,
         profileName: state.profileName,
       }),
       isMaximized: state.isMaximized,
-      gatewayConnected: state.gatewayConnected,
-      connectionStatus: resolveTitlebarConnectionStatus(state.connectionPhase, state.gatewayConnected),
+      gatewayConnected: resolvedConnected,
+      connectionStatus: resolvedStatus,
+      ...(gateways ? { gateways } : {}),
       leftRailCollapsed: state.leftRailCollapsed,
       leftRailLayout: state.leftRailLayout,
       inspectorCollapsed: state.inspectorCollapsed,

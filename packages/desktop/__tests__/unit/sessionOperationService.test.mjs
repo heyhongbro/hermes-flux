@@ -1129,3 +1129,39 @@ test('SessionOperationService 变异消杀全边界：deleteSession 正常/缺�
   });
   await createSessionOperationService(deps5).selectSession('sess-next');
 });
+
+test('SessionOperationService 多网关场景：deleteSession 按网关隔离流状态重置与 selectSession 写入 gatewayId 焦点', async () => {
+  let resetCalls = 0;
+  const { deps, state } = createMockDeps({
+    state: {
+      gatewayCount: 2,
+      activeSessionId: 's-dup',
+      activeGatewayId: 'gw-a',
+      activeFocus: { type: 'session', sessionId: 's-dup', gatewayId: 'gw-a' },
+      sessions: [
+        { id: 's-dup', title: 'Alpha Dup', botName: 'bot-a', gatewayId: 'gw-a', isArchived: false },
+        { id: 's-dup', title: 'Beta Dup', botName: 'bot-b', gatewayId: 'gw-b', isArchived: false },
+        { id: 's-gw-b', title: 'Beta Next', botName: 'bot-b', gatewayId: 'gw-b', isArchived: false },
+      ],
+    },
+    getActiveStreamingStoredSessionId: () => 's-dup',
+    resetActiveStreamingState: () => { resetCalls += 1; },
+  });
+  const svc = createSessionOperationService(deps);
+
+  // Deleting Beta's s-dup while activeFocus is Alpha (gw-a) must NOT reset Alpha's active streaming state
+  await svc.deleteSession('s-dup', 'gw-b');
+  assert.equal(resetCalls, 0, '删除非活跃网关同名会话不得误重置当前网关流状态');
+  assert.equal(state.sessions.some((s) => s.id === 's-dup' && s.gatewayId === 'gw-a'), true);
+
+  // When activeFocus lacks gatewayId, activeGatewayId ('gw-a') is used -> deleting gw-a s-dup resets streaming
+  state.activeFocus = { type: 'session', sessionId: 's-dup' };
+  state.activeGatewayId = 'gw-a';
+  await svc.deleteSession('s-dup', 'gw-a');
+  assert.equal(resetCalls, 1, '命中当前网关 s-dup 删除必须重置流状态');
+
+  // selectSession with gatewayId sets activeFocus.gatewayId & activeGatewayId
+  await svc.selectSession('s-gw-b', { gatewayId: 'gw-b' });
+  assert.deepEqual(state.activeFocus, { type: 'session', sessionId: 's-gw-b', gatewayId: 'gw-b' });
+  assert.equal(state.activeGatewayId, 'gw-b');
+});

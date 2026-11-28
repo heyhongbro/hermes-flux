@@ -680,3 +680,102 @@ test('D6: turnSettlement - session-reclaimed/refresh-sessions/finalReplace/cache
     t.mock.timers.reset();
   }
 });
+
+test('D6: gatewayEventDispatcher 多网关场景按 sourceGatewayId 隔离 turn-completed / turn-failed / session-reclaimed / refresh-sessions', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
+  const persisted = [];
+  const refreshCalls = [];
+  let schedSessions = 0;
+  const regA = new LiveStreamRegistry();
+  const regB = new LiveStreamRegistry();
+  const botUpdates = [];
+  const { deps, state, activeStreamingContext } = createMockDispatcherDeps({
+    state: {
+      gatewayCount: 2,
+      gatewayConnected: true,
+      isStreaming: true,
+      activeSessionId: 'sess-dup',
+      activeGatewayId: 'gw-a',
+      activeFocus: { type: 'session', sessionId: 'sess-dup', gatewayId: 'gw-a' },
+      sessions: [
+        { id: 'sess-dup', gatewayId: 'gw-a', title: 'Alpha Dup', botName: 'alpha-bot', preview: 'a-old', timestamp: 100 },
+        { id: 'sess-dup', gatewayId: 'gw-b', title: 'Beta Dup', botName: 'beta-bot', preview: 'b-old', timestamp: 100 },
+      ],
+      messages: [{ id: 'ast-a', role: 'assistant', content: 'A live', timestamp: '10:00' }],
+    },
+    activeStreamingContext: {
+      activeStreamingMessageId: 'ast-a',
+      activeStreamingStoredSessionId: 'sess-dup',
+      activeStreamingLiveId: 'live-sess-dup',
+      activeStreamingBotName: 'alpha-bot',
+    },
+  });
+  deps.getLiveStreamRegistryForGateway = (gw) => (gw === 'gw-a' ? regA : gw === 'gw-b' ? regB : undefined);
+  deps.getSessionMessagesCache().set('gw-a::sess-dup', state.messages);
+  deps.getSessionMessagesCache().set('gw-b::sess-dup', [{ id: 'ast-b', role: 'assistant', content: 'Beta done', timestamp: '10:01' }]);
+  deps.persistTurnToCache = (sid, bot, msgs, gw) => { persisted.push({ sid, bot, count: msgs.length, gw }); };
+  deps.scheduleSessionsRefresh = () => { schedSessions += 1; };
+  deps.refreshActiveSession = async (opts) => { refreshCalls.push(opts); };
+  deps.getBotActivityStore = () => ({ updateLatestActivity: (bot, txt, _ts, gw) => botUpdates.push({ bot, txt, gw }) });
+
+  const dispatcher = createGatewayEventDispatcher(deps);
+  try {
+    // 1. turn-completed on non-active gw-b for same sessionId 'sess-dup' must ONLY update gw-b session/cache, NEVER clobber Alpha state.isStreaming or Alpha session preview
+    regB.registerStream({ storedSessionId: 'sess-dup', liveSessionId: 'live-b-1', messageId: 'ast-b', botName: 'beta-bot', origin: 'remote' });
+    dispatcher.applyTurnActions([{ type: 'turn-completed', sessionId: 'live-b-1', finalText: 'Beta done' }], 'gw-b');
+    assert.equal(state.isStreaming, true, '非激活网关 gw-b 收口不得误关激活 gw-a 流状态');
+    assert.equal(activeStreamingContext().activeStreamingMessageId, 'ast-a');
+    assert.equal(activeStreamingContext().activeStreamingBotName, 'alpha-bot');
+    assert.equal(state.sessions.find((s) => s.gatewayId === 'gw-b')?.preview, 'Beta done');
+    assert.equal(state.sessions.find((s) => s.gatewayId === 'gw-a')?.preview, 'a-old', 'gw-a 会话预览不得被 gw-b 覆盖');
+    assert.equal(persisted.some((p) => p.gw === 'gw-b' && p.bot === 'beta-bot'), true);
+    assert.deepEqual(botUpdates.slice(-1)[0], { bot: 'beta-bot', txt: 'Beta done', gw: 'gw-b' });
+
+    // 2. turn-failed from gw-b with missing stream entry for same sessionId 'sess-dup' must NOT fill Alpha's ast-a message or clear Alpha's bot ctx
+    state.messages[0].content = '';
+    dispatcher.applyTurnActions([{ type: 'turn-failed', sessionId: 'sess-dup', message: 'beta fail' }], 'gw-b');
+    assert.equal(state.messages[0].content, '', '非激活 gw-b fail 不得改写激活 gw-a 空消息');
+    assert.equal(activeStreamingContext().activeStreamingBotName, 'alpha-bot');
+    assert.equal(activeStreamingContext().activeStreamingMessageId, 'ast-a');
+
+    // Also test turn-failed on matching active gw-a via ctx fallback when stream is unregistered (hits L702 matched branch + L709 cache fallback)
+    state.messages[0].content = '';
+    dispatcher.applyTurnActions([{ type: 'turn-failed', sessionId: 'sess-dup', message: 'alpha fail' }], 'gw-a');
+    assert.equal(state.messages[0].content, 'chat.turnFailedPrefix');
+    assert.equal(state.isStreaming, false);
+
+    state.messages = [];
+    activeStreamingContext().activeStreamingMessageId = 'ast-a-cache';
+    activeStreamingContext().activeStreamingStoredSessionId = 'sess-dup';
+    deps.getSessionMessagesCache().set('gw-a::sess-dup', [{ id: 'ast-a-cache', role: 'assistant', content: '' }]);
+    dispatcher.applyTurnActions([{ type: 'turn-failed', sessionId: 'sess-dup', message: 'alpha cache fail' }], 'gw-a');
+    assert.equal(deps.getSessionMessagesCache().get('gw-a::sess-dup')?.[0]?.content, 'chat.turnFailedPrefix');
+
+    // 3. session-reclaimed from non-active gw-b must NOT trigger refreshActiveSession on Alpha's active session, whereas gw-a MUST
+    state.isStreaming = true;
+    activeStreamingContext().activeStreamingStoredSessionId = 'sess-dup';
+    refreshCalls.length = 0;
+    dispatcher.applyTurnActions([{ type: 'session-reclaimed', storedSessionId: 'sess-dup', sessionId: 'lv-reclaim' }], 'gw-b');
+    assert.equal(refreshCalls.length, 0, '非激活 gw-b reclaimed 不得刷新 gw-a');
+    assert.equal(state.isStreaming, true);
+
+    dispatcher.applyTurnActions([{ type: 'session-reclaimed', storedSessionId: 'sess-dup', sessionId: 'lv-reclaim-a' }], 'gw-a');
+    assert.equal(refreshCalls.length, 1, '匹配激活 gw-a 的 session-reclaimed 必须刷新激活会话');
+
+    // 4. refresh-sessions from gw-b must NOT scheduleActiveSessionIdleSync, whereas gw-a MUST
+    schedSessions = 0;
+    refreshCalls.length = 0;
+    state.isStreaming = false;
+    dispatcher.applyTurnActions([{ type: 'refresh-sessions' }], 'gw-b');
+    assert.equal(schedSessions, 1);
+    await advanceTimers(t, 200);
+    assert.equal(refreshCalls.length, 0, '非激活 gw-b refresh-sessions 不得拉起当前 gw-a idle sync');
+
+    dispatcher.applyTurnActions([{ type: 'refresh-sessions' }], 'gw-a');
+    await advanceTimers(t, 200);
+    assert.equal(refreshCalls.length, 1, '匹配激活 gw-a refresh-sessions 必须触发 idle sync');
+  } finally {
+    dispatcher.disconnect();
+    t.mock.timers.reset();
+  }
+});

@@ -26,13 +26,23 @@ const profileMgmtPath = path.resolve(__dirname, '../../src/renderer/services/pro
 const profileMgmtSource = existsSync(profileMgmtPath) ? readFileSync(profileMgmtPath, 'utf8') : '';
 const groupOpPath = path.resolve(__dirname, '../../src/renderer/services/groupOperationService.ts');
 const groupOpSource = existsSync(groupOpPath) ? readFileSync(groupOpPath, 'utf8') : '';
+const msgLoadPath = path.resolve(__dirname, '../../src/renderer/services/messageLoadingService.ts');
+const msgLoadSource = existsSync(msgLoadPath) ? readFileSync(msgLoadPath, 'utf8') : '';
+const multiGwCoordPath = path.resolve(__dirname, '../../src/renderer/gateway/multiGatewayCoordinator.ts');
+const multiGwCoordSource = existsSync(multiGwCoordPath) ? readFileSync(multiGwCoordPath, 'utf8') : '';
 
-/** 取函数体片段：从签名起到下一个顶层声明之前。 */
+/** 取函数体片段：从签名起到同缩进级别闭合花括号之前。 */
 function bodyOf(signatureMarker) {
   let fileSource = indexSource;
   let start = fileSource.indexOf(signatureMarker);
   const snippet = start >= 0 ? fileSource.slice(start, start + 300) : '';
-  if (start < 0 || snippet.includes('gatewayEventDispatcher.') || snippet.includes('profileManagementService.') || snippet.includes('groupOperationService.')) {
+  if (
+    start < 0 ||
+    snippet.includes('gatewayEventDispatcher.') ||
+    snippet.includes('profileManagementService.') ||
+    snippet.includes('groupOperationService.') ||
+    snippet.includes('messageLoadingService.')
+  ) {
     if (gatewayDispatchSource.includes(signatureMarker)) {
       fileSource = gatewayDispatchSource;
       start = fileSource.indexOf(signatureMarker);
@@ -42,12 +52,21 @@ function bodyOf(signatureMarker) {
     } else if (groupOpSource.includes(signatureMarker)) {
       fileSource = groupOpSource;
       start = fileSource.indexOf(signatureMarker);
+    } else if (msgLoadSource.includes(signatureMarker)) {
+      fileSource = msgLoadSource;
+      start = fileSource.indexOf(signatureMarker);
+    } else if (multiGwCoordSource.includes(signatureMarker)) {
+      fileSource = multiGwCoordSource;
+      start = fileSource.indexOf(signatureMarker);
     }
   }
   assert.ok(start >= 0, `找不到函数签名：${signatureMarker}`);
+  const lineStart = fileSource.lastIndexOf('\n', start) + 1;
+  const indent = fileSource.slice(lineStart, start).match(/^[ \t]*/)?.[0] ?? '';
   const rest = fileSource.slice(start + signatureMarker.length);
-  const boundary = rest.search(/\n(?:export )?(?:async function |function |const |let |interface |type )/);
-  return boundary < 0 ? rest : rest.slice(0, boundary);
+  const closeMarker = `\n${indent}}`;
+  const closeIdx = rest.indexOf(closeMarker);
+  return closeIdx < 0 ? rest : rest.slice(0, closeIdx + closeMarker.length);
 }
 
 function countOf(haystack, needle) {
@@ -68,10 +87,10 @@ test('会话域：对账落地后必须离开骨架相位', () => {
 });
 
 test('消息域：代际归属判定，旧代际不得提前收敛新代际的骨架', () => {
-  const body = bodyOf('async function loadMessages(');
-  assert.ok(body.includes('const expectedGeneration = activeLoadMessagesGeneration + 1;'), '必须预知本次代际');
+  const body = bodyOf('async loadMessages(');
+  assert.ok(body.includes('const expectedGeneration = this.activeLoadMessagesGeneration + 1;'), '必须预知本次代际');
   assert.ok(
-    body.includes('if (!sessionId || expectedGeneration === activeLoadMessagesGeneration) {')
+    body.includes('if (!sessionId || expectedGeneration === this.activeLoadMessagesGeneration) {')
       && body.includes("state.messagesPhase = 'ready';"),
     'finally 必须按代际收敛相位；只比 activeSessionId 会让同会话第二次加载丢失骨架'
   );
@@ -98,7 +117,7 @@ test('进入群聊：进入声明 loading，记录落地即收敛（各自恰好
 
 test('冷启动落点：三域可执行性必须先于封存，且兜底字面量不得当作用户选择', () => {
   const body = bodyOf('async function applyColdStartFocus(');
-  const guardIndex = body.indexOf('if (!gatewayClient || !getEffectiveUrl(state.gatewayUrl) || !state.gatewayConnected) return;');
+  const guardIndex = body.indexOf('if (!resolveActiveClient() || (!getEffectiveUrl(state.gatewayUrl) && (state.gatewayCount ?? 1) < 2) || !state.gatewayConnected) return;');
   const sealIndex = body.indexOf('coldStartFocusApplied = true;');
   assert.ok(guardIndex >= 0, '必须同时检查客户端对象、网关地址与传输连接态');
   assert.ok(sealIndex >= 0, '必须有封存标记');

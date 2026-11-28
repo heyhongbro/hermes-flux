@@ -64,43 +64,84 @@ export type {
 
 /** 设置中心的一级域。只允许真实存在的能力。 */
 export type SettingsSectionId =
+  | 'general'
   | 'appearance'
+  | 'gateway'
   | 'projects'
   | 'providers'
   | 'agents'
   | 'extensions'
-  | 'connection'
   | 'about';
 
 /** 图标以名字登记，组件层再映射到具体图标组件，保持本文件零 React 依赖。 */
-export type SettingsIconName = 'palette' | 'folder' | 'key' | 'bot' | 'blocks' | 'plug' | 'info';
+export type SettingsIconName = 'sliders' | 'palette' | 'folder' | 'key' | 'bot' | 'blocks' | 'plug' | 'info';
 
 export interface SettingsSectionDef {
   id: SettingsSectionId;
   icon: SettingsIconName;
   titleKey: I18nKey;
   descKey: I18nKey;
+  /** 仅按具体网关实例生效的配置域（多网关模式下在面板顶部呈现实例选择器）。 */
+  readonly gatewayScoped?: boolean;
 }
 
 /**
- * 设置中心导航树（唯一真值）。
- * 顺序即用户从"日常最常改"到"最少改"的心理距离：外观 → 项目 → 模型 → 员工 → 扩展 → 连接 → 关于。
+ * 设置中心平铺导航树（唯一真值，共 8 项，不做本机/网关分组）。
+ * 顺序：通用 → 外观 → 网关 → 项目 → 模型与提供方 → BOT → 扩展 → 关于。
  */
 export const SETTINGS_SECTIONS: readonly SettingsSectionDef[] = Object.freeze([
+  { id: 'general', icon: 'sliders', titleKey: 'settings.sectionGeneral', descKey: 'settings.sectionGeneralDesc' },
   { id: 'appearance', icon: 'palette', titleKey: 'settings.sectionAppearance', descKey: 'settings.sectionAppearanceDesc' },
-  { id: 'projects', icon: 'folder', titleKey: 'settings.sectionProjects', descKey: 'settings.sectionProjectsDesc' },
-  { id: 'providers', icon: 'key', titleKey: 'settings.sectionProviders', descKey: 'settings.sectionProvidersDesc' },
-  { id: 'agents', icon: 'bot', titleKey: 'settings.sectionAgents', descKey: 'settings.sectionAgentsDesc' },
-  { id: 'extensions', icon: 'blocks', titleKey: 'settings.sectionExtensions', descKey: 'settings.sectionExtensionsDesc' },
-  { id: 'connection', icon: 'plug', titleKey: 'settings.sectionConnection', descKey: 'settings.sectionConnectionDesc' },
+  { id: 'gateway', icon: 'plug', titleKey: 'settings.sectionGateway', descKey: 'settings.sectionGatewayDesc' },
+  { id: 'projects', icon: 'folder', titleKey: 'settings.sectionProjects', descKey: 'settings.sectionProjectsDesc', gatewayScoped: true },
+  { id: 'providers', icon: 'key', titleKey: 'settings.sectionProviders', descKey: 'settings.sectionProvidersDesc', gatewayScoped: true },
+  { id: 'agents', icon: 'bot', titleKey: 'settings.sectionAgents', descKey: 'settings.sectionAgentsDesc', gatewayScoped: true },
+  { id: 'extensions', icon: 'blocks', titleKey: 'settings.sectionExtensions', descKey: 'settings.sectionExtensionsDesc', gatewayScoped: true },
   { id: 'about', icon: 'info', titleKey: 'settings.sectionAbout', descKey: 'settings.sectionAboutDesc' },
 ] as const);
 
 const SECTION_IDS = new Set<string>(SETTINGS_SECTIONS.map((section) => section.id));
 
-/** 把任意输入收敛为合法 section，未知值回落到第一个域（绝不渲染空白面板）。 */
+/** 把任意输入收敛为合法 section；兼容旧值 `'connection' -> 'gateway'`，未知值回落到 `'general'`。 */
 export function resolveSettingsSection(value: string | undefined | null): SettingsSectionId {
-  return value && SECTION_IDS.has(value) ? (value as SettingsSectionId) : 'appearance';
+  if (value === 'connection') return 'gateway';
+  return value && SECTION_IDS.has(value) ? (value as SettingsSectionId) : 'general';
+}
+
+const SKILL_CATEGORY_KEYS: Readonly<Record<string, I18nKey>> = {
+  workspace: 'settings.skillsCategoryWorkspace',
+  project: 'settings.skillsCategoryWorkspace',
+  local: 'settings.skillsCategoryWorkspace',
+  builtin: 'settings.skillsCategoryBuiltin',
+  'built-in': 'settings.skillsCategoryBuiltin',
+  bundled: 'settings.skillsCategoryBuiltin',
+  system: 'settings.skillsCategoryBuiltin',
+  hub: 'settings.skillsCategoryHub',
+  skill_hub: 'settings.skillsCategoryHub',
+  'skill-hub': 'settings.skillsCategoryHub',
+  skillhub: 'settings.skillsCategoryHub',
+  community: 'settings.skillsCategoryHub',
+  installed: 'settings.skillsCategoryHub',
+  global: 'settings.skillsCategoryGlobal',
+  user: 'settings.skillsCategoryGlobal',
+  other: 'settings.skillsCategoryOther',
+};
+
+/** 将扩展技能分类原文映射为国际化词条键；未知分类返回 null 保留原值。 */
+export function resolveSkillCategoryLabelKey(category: string | undefined | null): I18nKey | null {
+  const normalized = (category ?? '').trim().toLowerCase();
+  if (!normalized) return 'settings.skillsCategoryOther';
+  return SKILL_CATEGORY_KEYS[normalized] ?? null;
+}
+
+/** 根据翻译器格式化技能分类标题，保留未知扩展分类名称。 */
+export function formatSkillCategoryLabel(
+  category: string | undefined | null,
+  translate: (key: I18nKey) => string,
+): string {
+  const key = resolveSkillCategoryLabelKey(category);
+  if (key) return translate(key);
+  return (category ?? '').trim();
 }
 
 /** 按 i18n 当前语言过滤导航项。空查询返回全量。 */
@@ -137,17 +178,17 @@ export interface SettingsSearchEntry {
 }
 
 export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = Object.freeze([
+  { id: 'language', sectionId: 'general', labelKey: 'settings.languageLabel' },
+  { id: 'show-done-section', sectionId: 'general', labelKey: 'settings.showDoneSection' },
+  { id: 'auto-reopen-on-send', sectionId: 'general', labelKey: 'settings.autoReopenOnSend' },
+  { id: 'left-rail-layout', sectionId: 'general', labelKey: 'settings.leftRailLayout' },
+  { id: 'presence-layout', sectionId: 'general', labelKey: 'settings.presenceLayout' },
   { id: 'theme', sectionId: 'appearance', labelKey: 'settings.themeTitle' },
   { id: 'activity', sectionId: 'appearance', labelKey: 'settings.activityTitle' },
   { id: 'ui-font', sectionId: 'appearance', labelKey: 'settings.uiFont' },
   { id: 'code-font', sectionId: 'appearance', labelKey: 'settings.codeFont' },
   { id: 'font-size', sectionId: 'appearance', labelKey: 'settings.textSize' },
   { id: 'conversation-width', sectionId: 'appearance', labelKey: 'settings.conversationWidth' },
-  { id: 'left-rail-layout', sectionId: 'appearance', labelKey: 'settings.leftRailLayout' },
-  { id: 'show-done-section', sectionId: 'appearance', labelKey: 'settings.showDoneSection' },
-  { id: 'auto-reopen-on-send', sectionId: 'appearance', labelKey: 'settings.autoReopenOnSend' },
-  { id: 'presence-layout', sectionId: 'appearance', labelKey: 'settings.presenceLayout' },
-  { id: 'language', sectionId: 'appearance', labelKey: 'settings.languageLabel' },
   { id: 'projects-list', sectionId: 'projects', labelKey: 'settings.sectionProjects' },
   { id: 'providers-list', sectionId: 'providers', labelKey: 'settings.sectionProviders' },
   { id: 'bot-id', sectionId: 'agents', labelKey: 'bot.idLabel' },
@@ -162,10 +203,10 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = Object.fr
   { id: 'bot-memory', sectionId: 'agents', labelKey: 'bot.memoryTitle' },
   { id: 'ext-mcp', sectionId: 'extensions', labelKey: 'settings.mcpTitle' },
   { id: 'ext-skills', sectionId: 'extensions', labelKey: 'settings.skillsTitle' },
-  { id: 'gateway-url', sectionId: 'connection', labelKey: 'settings.gatewayUrl' },
-  { id: 'gateway-username', sectionId: 'connection', labelKey: 'settings.gatewayUsername' },
-  { id: 'gateway-password', sectionId: 'connection', labelKey: 'settings.gatewayPassword' },
-  { id: 'gateway-profile', sectionId: 'connection', labelKey: 'settings.gatewayProfile' },
+  { id: 'gateway-url', sectionId: 'gateway', labelKey: 'settings.gatewayUrl' },
+  { id: 'gateway-username', sectionId: 'gateway', labelKey: 'settings.gatewayUsername' },
+  { id: 'gateway-password', sectionId: 'gateway', labelKey: 'settings.gatewayPassword' },
+  { id: 'gateway-profile', sectionId: 'gateway', labelKey: 'settings.gatewayProfile' },
   { id: 'about-version', sectionId: 'about', labelKey: 'settings.aboutVersion' },
   { id: 'about-platform', sectionId: 'about', labelKey: 'settings.aboutPlatform' },
   { id: 'about-protocol', sectionId: 'about', labelKey: 'settings.aboutProtocol' },
@@ -252,7 +293,34 @@ export interface BotWizardView {
 /** 离场拦截的待执行目标（纯数据；真正的动作闭包由壳层持有）。 */
 export type BotExitTarget =
   | { kind: 'close' }
-  | { kind: 'section'; section: SettingsSectionId };
+  | { kind: 'section'; section: SettingsSectionId }
+  | { kind: 'gateway'; gatewayId: string };
+
+export type SettingsGatewayStatus = 'connected' | 'connecting' | 'offline' | 'disabled' | 'auth_error';
+
+export interface SettingsGatewayItem {
+  id: string;
+  name: string;
+  url: string;
+  username?: string;
+  profileName?: string;
+  enabled: boolean;
+  status: SettingsGatewayStatus;
+  latencyMs?: number;
+  error?: string;
+  isDefault?: boolean;
+  hasStoredPassword?: boolean;
+}
+
+export interface GatewayInstanceDraft {
+  id?: string;
+  name: string;
+  url: string;
+  username: string;
+  password: string;
+  profileName: string;
+  enabled?: boolean;
+}
 
 export interface BotManagementView {
   /** 主状态机（来自 core 的判别联合）。 */
@@ -301,11 +369,16 @@ export interface SettingsProjectRow {
   icon?: string;
   color?: string;
   archived?: boolean;
+  gatewayId?: string;
 }
 
 export interface SettingsSnapshot {
   isOpen: boolean;
   section: SettingsSectionId;
+  /** 多网关模式下已配置的全部网关实例（供「网关」管理页与作用域下拉 selector 消费）。 */
+  gateways?: readonly SettingsGatewayItem[];
+  /** 当前在设置作用域中选中的网关实例 ID。 */
+  selectedGatewayId?: string;
   theme: SkinId;
   locale: 'zh' | 'en';
   fontPrefs: FontPreferences;
@@ -401,6 +474,18 @@ export function isGatewayTestStale(tested: GatewayDraft | null, draft: GatewayDr
     tested.password !== draft.password ||
     tested.profileName !== draft.profileName
   );
+}
+
+/** 根据快照中的网关集合与选中项判定当前设置域目标网关是否在线。 */
+export function isSelectedSettingsGatewayConnected(
+  snapshot: Pick<SettingsSnapshot, 'gateway' | 'gateways' | 'selectedGatewayId'>,
+): boolean {
+  const gateways = snapshot.gateways;
+  if (gateways && gateways.length >= 2) {
+    const selected = gateways.find((gw) => gw.id === snapshot.selectedGatewayId) ?? gateways[0];
+    return selected ? selected.status === 'connected' : false;
+  }
+  return snapshot.gateway.status === 'connected';
 }
 
 /** 模型下拉的分组输入（文案由调用方翻译，本函数零 i18n 依赖）。 */
@@ -626,6 +711,14 @@ export interface SettingsActions {
   onTestGateway: (draft: GatewayDraft) => void;
   onConnectGateway: (draft: GatewayDraft) => void;
   onDisconnectGateway: () => void;
+  onSelectSettingsGateway?: (gatewayId: string) => void;
+  onAddGateway?: (draft: GatewayInstanceDraft) => Promise<{ ok: boolean; message?: string; gatewayId?: string }>;
+  onUpdateGateway?: (gatewayId: string, draft: GatewayInstanceDraft) => Promise<{ ok: boolean; message?: string }>;
+  onRemoveGateway?: (gatewayId: string) => Promise<{ ok: boolean; message?: string }>;
+  onToggleGatewayEnabled?: (gatewayId: string, enabled: boolean) => Promise<void>;
+  onConnectGatewayInstance?: (gatewayId: string) => Promise<void>;
+  onDisconnectGatewayInstance?: (gatewayId: string) => void;
+  onTestGatewayInstance?: (draft: GatewayInstanceDraft) => Promise<{ ok: boolean; message?: string; latency?: number }>;
 
   /** 切换操作作用的 Agent（删除 / 设为默认 / 登录都作用于它）。 */
   onScopeProfileChange: (profile: string) => void;

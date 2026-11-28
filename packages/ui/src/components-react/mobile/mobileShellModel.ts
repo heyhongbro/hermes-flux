@@ -51,6 +51,7 @@ export type MobileAppearancePreference = 'dark' | 'light' | 'system';
 export type MobileSkinId = 'obsidian-gold' | 'jade-white';
 export type MobileNewChatStep = 'compose' | 'group-members';
 export type MobileSettingsSubpage =
+  | 'general'
   | 'appearance'
   | 'projects'
   | 'gateway'
@@ -143,6 +144,7 @@ export interface MobileHomeModelInput {
   doneError?: string;
   profileName: string;
   searchQuery: string;
+  gatewayCount?: number;
   collapsed: MobileSectionCollapsedState;
   profilesPhase?: DataPhase;
   sessionsPhase?: DataPhase;
@@ -160,6 +162,9 @@ export interface MobileBotRowVM {
   timeText: string;
   isDefault: boolean;
   isActive: boolean;
+  gatewayId?: string;
+  gatewayLabel?: string;
+  gatewayOffline?: boolean;
   activityState: ActivityState;
   waitingReason?: WaitingPromptReason;
   activityTransition: ActivityTransition;
@@ -178,6 +183,10 @@ export interface MobileGroupRowVM {
   isActive: boolean;
   isDone?: boolean;
   containerId?: string | null;
+  gatewayId?: string;
+  gatewayLabel?: string;
+  gatewayOffline?: boolean;
+  crossGateway?: boolean;
   activityState: ActivityState;
   waitingReason?: WaitingPromptReason;
   activityTransition: ActivityTransition;
@@ -200,6 +209,9 @@ export interface MobileSessionRowVM {
   isDone?: boolean;
   containerId?: string | null;
   hasCwdProjectMatch?: boolean;
+  gatewayId?: string;
+  gatewayLabel?: string;
+  gatewayOffline?: boolean;
   activityState: ActivityState;
   waitingReason?: WaitingPromptReason;
   activityTransition: ActivityTransition;
@@ -240,6 +252,7 @@ export interface MobileDoneSectionVM {
 }
 
 export interface MobileHomeModel {
+  isMultiGateway: boolean;
   searchQuery: string;
   isSearching: boolean;
   botsSection: MobileHomeSectionVM<MobileBotRowVM>;
@@ -312,14 +325,30 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
       ? { type: 'session', sessionId: input.activeSessionId }
       : { type: 'bot', botName: input.profileName || 'default' });
 
+  const isMultiGateway = (input.gatewayCount ?? 1) >= 2;
+  const scopedProfileMap = new Map<string, LeftRailProfile>();
   const profileMap = new Map<string, LeftRailProfile>();
   for (const p of input.profiles) {
-    profileMap.set(p.name.toLowerCase(), p);
-    if (p.displayName) {
+    const gwPrefix = p.gatewayId ? `${p.gatewayId.toLowerCase()}:` : '';
+    if (gwPrefix) {
+      scopedProfileMap.set(`${gwPrefix}${p.name.toLowerCase()}`, p);
+      if (p.displayName) scopedProfileMap.set(`${gwPrefix}${p.displayName.toLowerCase()}`, p);
+    }
+    if (!profileMap.has(p.name.toLowerCase())) profileMap.set(p.name.toLowerCase(), p);
+    if (p.displayName && !profileMap.has(p.displayName.toLowerCase())) {
       profileMap.set(p.displayName.toLowerCase(), p);
     }
   }
   const defaultProfile = input.profiles.find((p) => p.isDefault || p.name.toLowerCase() === 'default');
+  const resolveOwnerProfile = (botName: string | undefined, gatewayId?: string): LeftRailProfile | undefined => {
+    const ownerKey = (botName || 'default').toLowerCase();
+    if (gatewayId) {
+      const scoped = scopedProfileMap.get(`${gatewayId.toLowerCase()}:${ownerKey}`);
+      if (scoped) return scoped;
+    }
+    return profileMap.get(ownerKey) ?? defaultProfile;
+  };
+  const sameOptionalGateway = (a?: string, b?: string): boolean => !a || !b || a === b;
 
   // 1. 智能体主工位行（全量 Bot，default 置顶其余按最近活跃排序）
   const sortedProfiles = [...input.profiles].sort((a, b) => {
@@ -332,11 +361,13 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
   });
 
   const botRows: MobileBotRowVM[] = sortedProfiles
-    .filter((p) => matchesSearch(query, [p.displayName, p.name, p.description, p.lastMessage]))
+    .filter((p) => matchesSearch(query, [p.displayName, p.name, p.description, p.lastMessage, p.gatewayLabel]))
     .map((p) => {
       const activityState: ActivityState = p.activityState ?? 'read';
       const isActive =
-        currentFocus.type === 'bot' && currentFocus.botName.toLowerCase() === p.name.toLowerCase();
+        currentFocus.type === 'bot' &&
+        currentFocus.botName.toLowerCase() === p.name.toLowerCase() &&
+        sameOptionalGateway(currentFocus.gatewayId, p.gatewayId);
       return {
         kind: 'bot',
         id: p.name,
@@ -346,6 +377,9 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
         timeText: p.lastTime || formatLeftRailTime(p.timestamp, nowDate),
         isDefault: Boolean(p.isDefault || p.name.toLowerCase() === 'default'),
         isActive,
+        ...(p.gatewayId ? { gatewayId: p.gatewayId } : {}),
+        ...(p.gatewayLabel ? { gatewayLabel: p.gatewayLabel } : {}),
+        ...(p.gatewayOffline ? { gatewayOffline: true } : {}),
         activityState,
         waitingReason: p.waitingReason,
         activityTransition: p.activityTransition ?? 'none',
@@ -367,14 +401,17 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
     containerCollapsed: input.containerCollapsed,
     hiddenProjectIds: input.hiddenProjectIds,
     searchQuery: input.searchQuery,
-    matchesGroupSearch: (g, q) => matchesSearch(q, [g.name, g.lastMessage, ...(g.members || [])]),
+    matchesGroupSearch: (g, q) => matchesSearch(q, [g.name, g.lastMessage, g.gatewayLabel, ...(g.members || [])]),
     matchesSessionSearch: (s, q) => {
-      const owner = profileMap.get((s.botName || 'default').toLowerCase()) ?? defaultProfile;
-      return matchesSearch(q, [s.title, s.preview, s.botDisplayName, owner?.displayName, s.botName]);
+      const owner = resolveOwnerProfile(s.botName, s.gatewayId);
+      return matchesSearch(q, [s.title, s.preview, s.botDisplayName, owner?.displayName, s.botName, s.gatewayLabel]);
     },
     mapGroup: (g, meta) => {
       const activityState: ActivityState = g.activityState ?? 'read';
-      const isActive = currentFocus.type === 'group' && currentFocus.roomId === g.roomId;
+      const isActive =
+        currentFocus.type === 'group' &&
+        currentFocus.roomId === g.roomId &&
+        sameOptionalGateway(currentFocus.gatewayId, g.gatewayId);
       const roomTs = g.updatedAt || g.createdAt || 0;
       return {
         kind: 'group',
@@ -386,6 +423,10 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
         isActive,
         isDone: meta.isDone,
         containerId: meta.containerId,
+        ...(g.gatewayId ? { gatewayId: g.gatewayId } : {}),
+        ...(g.gatewayLabel ? { gatewayLabel: g.gatewayLabel } : {}),
+        ...(g.gatewayOffline ? { gatewayOffline: true } : {}),
+        ...(g.crossGateway ? { crossGateway: true } : {}),
         activityState,
         waitingReason: g.waitingReason,
         activityTransition: g.activityTransition ?? 'none',
@@ -397,13 +438,15 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
       };
     },
     mapSession: (s, meta) => {
-      const ownerKey = (s.botName || 'default').toLowerCase();
-      const owner = profileMap.get(ownerKey) ?? defaultProfile;
+      const owner = resolveOwnerProfile(s.botName, s.gatewayId);
       const ownerBotName = owner?.name || s.botName || 'default';
       const ownerBotDisplayName = owner?.displayName || s.botDisplayName || ownerBotName;
       const ownerAvatarUrl = owner?.avatar || s.botAvatar || undefined;
       const activityState: ActivityState = s.activityState ?? 'read';
-      const isActive = currentFocus.type === 'session' && currentFocus.sessionId === s.id;
+      const isActive =
+        currentFocus.type === 'session' &&
+        currentFocus.sessionId === s.id &&
+        sameOptionalGateway(currentFocus.gatewayId, s.gatewayId);
       return {
         kind: 'session',
         id: s.id,
@@ -418,6 +461,9 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
         isDone: meta.isDone,
         containerId: meta.containerId,
         hasCwdProjectMatch: meta.hasCwdProjectMatch,
+        ...(s.gatewayId ? { gatewayId: s.gatewayId } : {}),
+        ...(s.gatewayLabel ? { gatewayLabel: s.gatewayLabel } : {}),
+        ...(s.gatewayOffline ? { gatewayOffline: true } : {}),
         activityState,
         waitingReason: s.waitingReason,
         activityTransition: s.activityTransition ?? 'none',
@@ -447,6 +493,7 @@ export function buildMobileHomeModel(input: MobileHomeModelInput): MobileHomeMod
   const hasDoneHits = showDoneSection && partitioned.doneItems.length > 0;
 
   return {
+    isMultiGateway,
     searchQuery: input.searchQuery || '',
     isSearching,
     botsSection: {

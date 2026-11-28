@@ -36,7 +36,10 @@ import {
   buildAutoGroupTitle,
   buildNewChatSubmitPayload,
   createNewChatSubmitGate,
+  filterProfilesForGateway,
+  filterProjectsForGateway,
   resolveActiveNewChatProjects,
+  resolveInitialGatewayId,
   resolveValidProjectId,
   toggleGroupMember,
   type NewChatDialogActions,
@@ -59,9 +62,34 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
     selectedProjectId,
     selectedContainerId,
     gatewayConnected,
+    gateways = [],
+    defaultGatewayId,
   } = snapshot;
 
-  const activeProjects = React.useMemo(() => resolveActiveNewChatProjects(projects), [projects]);
+  const isMultiGateway = gateways.length >= 2;
+  const [selectedGatewayId, setSelectedGatewayId] = React.useState<string>(() =>
+    isMultiGateway ? resolveInitialGatewayId(gateways, defaultGatewayId) : '',
+  );
+  const effectiveGatewayId = isMultiGateway
+    ? gateways.some((g) => g.id === selectedGatewayId)
+      ? selectedGatewayId
+      : resolveInitialGatewayId(gateways, defaultGatewayId)
+    : '';
+  const selectedGateway = isMultiGateway
+    ? gateways.find((g) => g.id === effectiveGatewayId)
+    : undefined;
+  const effectiveGatewayConnected = selectedGateway ? selectedGateway.connected : gatewayConnected;
+
+  const scopedProfiles = React.useMemo(
+    () => filterProfilesForGateway(profiles, effectiveGatewayId || undefined),
+    [profiles, effectiveGatewayId],
+  );
+  const scopedProjects = React.useMemo(
+    () => filterProjectsForGateway(projects, effectiveGatewayId || undefined),
+    [projects, effectiveGatewayId],
+  );
+
+  const activeProjects = React.useMemo(() => resolveActiveNewChatProjects(scopedProjects), [scopedProjects]);
   const initialProjectFromContainer = selectedContainerId
     ? extractProjectIdFromContainer(selectedContainerId)
     : null;
@@ -99,9 +127,19 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
     }
   }, [activeProjects, initialProjectFromContainer, selectedProjectId, projectId]);
 
+  const handleGatewayChange = (nextGatewayId: string): void => {
+    setSelectedGatewayId(nextGatewayId);
+    setSubmitError(null);
+    const nextProfiles = filterProfilesForGateway(profiles, nextGatewayId);
+    const validMemberSet = new Set(nextProfiles.map((p) => p.name.toLowerCase()));
+    setSelectedMembers((prev) => prev.filter((name) => validMemberSet.has(name.toLowerCase())));
+    const nextProjects = resolveActiveNewChatProjects(filterProjectsForGateway(projects, nextGatewayId));
+    setProjectId((prev) => resolveValidProjectId(nextProjects, prev));
+  };
+
   const displayProfiles: LeftRailProfile[] =
-    profiles.length > 0
-      ? profiles
+    scopedProfiles.length > 0
+      ? scopedProfiles
       : [
           {
             name: 'default',
@@ -112,7 +150,7 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
         ];
 
   const isGroup = mode === 'group';
-  const canSubmitGroup = gatewayConnected && selectedMembers.length >= 2;
+  const canSubmitGroup = effectiveGatewayConnected && selectedMembers.length >= 2;
   const resolvedGroupName = buildAutoGroupTitle(
     selectedMembers,
     displayProfiles,
@@ -149,7 +187,7 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
   };
 
   const handleSelectAgent = async (botName: string): Promise<void> => {
-    if (!gatewayConnected || submitGateRef.current.isBusy()) return;
+    if (!effectiveGatewayConnected || submitGateRef.current.isBusy()) return;
     const outcome = buildNewChatSubmitPayload({
       mode: 'solo',
       selectedBot: botName,
@@ -157,6 +195,7 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
       title: '',
       projectId,
       containerId: selectedContainerId ? containerId : undefined,
+      gatewayId: effectiveGatewayId || undefined,
       firstMessage: '',
     });
     if (!outcome.ok) return;
@@ -172,10 +211,50 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
       title: resolvedGroupName,
       projectId,
       containerId: selectedContainerId ? containerId : undefined,
+      gatewayId: effectiveGatewayId || undefined,
       firstMessage: '',
     });
     if (!outcome.ok) return;
     await runSubmit(outcome.payload);
+  };
+
+  const gatewayGroups = isMultiGateway
+    ? [
+        {
+          label: '',
+          options: gateways.map((g) => ({
+            value: g.id,
+            label: g.connected ? g.label : `${g.label} (${t('settings.gatewayDisconnected')})`,
+          })),
+        },
+      ]
+    : [];
+
+  const renderGatewaySelector = (forGroup: boolean): React.ReactNode => {
+    if (!isMultiGateway) return null;
+    return (
+      <div className="flex items-center gap-2 px-1">
+        <label
+          htmlFor={forGroup ? 'new-chat-group-gateway-select' : 'new-chat-gateway-select'}
+          className="shrink-0 text-caption font-medium text-muted-foreground"
+        >
+          {t('newChat.gatewayLabel')}
+        </label>
+        <div className="min-w-0 flex-1">
+          <Select
+            id={forGroup ? 'new-chat-group-gateway-select' : 'new-chat-gateway-select'}
+            data-testid={forGroup ? 'new-chat-group-gateway-select' : 'new-chat-gateway-select'}
+            size="sm"
+            disabled={submitting}
+            value={effectiveGatewayId}
+            groups={gatewayGroups}
+            ariaLabel={t('newChat.gatewayLabel')}
+            contentClassName="w-menu-trigger"
+            onChange={handleGatewayChange}
+          />
+        </div>
+      </div>
+    );
   };
 
   const selectedProject = activeProjects.find((p) => p.id === projectId);
@@ -304,11 +383,13 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
                 </div>
               ) : null}
 
-              {!gatewayConnected ? (
-                <div className="mx-2 rounded-panel bg-input px-3 py-2 text-caption text-warning">
-                  {t('newChat.offlineHint')}
+              {!effectiveGatewayConnected ? (
+                <div data-testid="new-chat-offline-hint" className="mx-2 rounded-panel bg-input px-3 py-2 text-caption text-warning">
+                  {selectedGateway ? t('newChat.gatewayOfflineHint') : t('newChat.offlineHint')}
                 </div>
               ) : null}
+
+              {renderGatewaySelector(false)}
 
               {renderProjectSelector(false)}
 
@@ -325,7 +406,7 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
                     key={profile.name}
                     type="button"
                     data-new-chat-bot={profile.name}
-                    disabled={!gatewayConnected || submitting}
+                    disabled={!effectiveGatewayConnected || submitting}
                     onClick={() => void handleSelectAgent(profile.name)}
                     className="group flex min-h-12 w-full items-center gap-3 rounded-window px-3 py-2 text-left transition-colors hover:bg-card-hover active:bg-card-active disabled:pointer-events-none disabled:opacity-50"
                   >
@@ -435,6 +516,8 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
                 </span>
               </div>
 
+              {renderGatewaySelector(true)}
+
               {renderProjectSelector(true)}
 
               <div
@@ -491,8 +574,10 @@ function NewChatDialogBody({ snapshot, actions }: NewChatDialogProps): React.Rea
             </div>
 
             <footer className="flex items-center justify-between gap-3 px-4 pb-4 pt-2">
-              {!gatewayConnected ? (
-                <span className="truncate text-caption text-warning">{t('newChat.offlineHint')}</span>
+              {!effectiveGatewayConnected ? (
+                <span data-testid="new-chat-offline-hint" className="truncate text-caption text-warning">
+                  {selectedGateway ? t('newChat.gatewayOfflineHint') : t('newChat.offlineHint')}
+                </span>
               ) : (
                 <span />
               )}

@@ -86,7 +86,7 @@ import { createPostCommitPinObservers } from './viewport/postCommitPinObservers.
  * 判断桌面端断连期间是否应保留当前对话舞台与禁用态输入舱（避免切回 Gateway Onboarding 卡片导致内容与上下文丢失）。
  */
 export function shouldPreserveConversationShell(state: AppState): boolean {
-  if (state.gatewayConnected) return true;
+  if (state.gatewayConnected || state.activeEntityGatewayOffline) return true;
   if (!state.connectionPhase || state.connectionPhase === 'unconfigured') return false;
   return (
     state.messages.length > 0 ||
@@ -142,6 +142,9 @@ export interface RenderCoordinatorDeps {
   onMaximizeWindow?: () => Promise<void>;
   onCloseWindow?: () => void;
   onToggleInspector?: () => void;
+  onReconnectGateway?: (gatewayId: string) => void;
+  onDisconnectGateway?: (gatewayId: string) => void;
+  onManageGateways?: () => void;
 
   // 右侧状态栏与检查舱
   getRightPodSnapshot?: () => RightPodSnapshot;
@@ -755,6 +758,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
         Array.isArray(railProfiles) && railProfiles.length > 0
           ? railProfiles
           : (state.profiles ?? []).map((p) => ({ ...p, displayName: p.displayName || p.name }));
+      const gatewaySlots = state.gatewayHealthSummary?.slots ?? [];
       return {
         isOpen: Boolean(state.isNewTaskModalOpen),
         initialMode: state.newTaskModalTab === 'group' ? 'group' : 'solo',
@@ -765,6 +769,16 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
         selectedProjectId: state.selectedNewTaskProjectId,
         selectedContainerId: state.selectedNewTaskContainerId,
         gatewayConnected: Boolean(state.gatewayConnected),
+        ...(gatewaySlots.length > 0
+          ? {
+              gateways: gatewaySlots.map((slot) => ({
+                id: slot.gatewayId,
+                label: slot.name || slot.shortLabel || slot.url,
+                connected: slot.connected,
+              })),
+              defaultGatewayId: state.activeFocus?.gatewayId || state.activeGatewayId || undefined,
+            }
+          : {}),
       };
     };
     if (!updateReactNewChat || reactNewChatHost !== host) {
@@ -816,6 +830,9 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
           render();
         },
         onOpenSettings: openDesktopSettings,
+        onReconnectGateway: deps.onReconnectGateway,
+        onDisconnectGateway: deps.onDisconnectGateway,
+        onManageGateways: deps.onManageGateways ?? openDesktopSettings,
       });
     }
 
@@ -961,15 +978,18 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
     };
 
     const isStreamingCurrent = deps.isStreamingActiveForCurrentSession();
+    const dockDisabled = !state.gatewayConnected || Boolean(state.activeEntityGatewayOffline);
+    const effectiveDockNotice =
+      state.dockNotice || (state.activeEntityGatewayOffline ? t('gateway.offlineReadOnlyNotice') : '');
     const currentDockSnapshot: RenderInputDockSnapshot = {
       selectedModel: state.selectedModel,
       currentProvider: state.currentProvider,
       reasoningLevel: state.reasoningLevel,
       approvalMode: state.approvalMode,
       isStreaming: isStreamingCurrent,
-      disabled: !state.gatewayConnected,
+      disabled: dockDisabled,
       modelMenuOpen: state.modelMenuOpen,
-      notice: state.dockNotice,
+      notice: effectiveDockNotice,
       modelCount: state.availableModels.length,
       modelCatalogHash: state.modelCatalogHash,
       modelSearchQuery: state.modelSearchQuery,
@@ -1094,9 +1114,9 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
                   approvalMode: state.approvalMode,
                   isStreaming: deps.isStreamingActiveForCurrentSession(),
                   hasDraft: Boolean(draftText.trim()) || state.attachments.length > 0,
-                  disabled: !state.gatewayConnected,
+                  disabled: dockDisabled,
                   modelMenuOpen: state.modelMenuOpen,
-                  notice: state.dockNotice,
+                  notice: effectiveDockNotice,
                   attachments: state.attachments,
                   queuedMessages: state.queuedMessages,
                   slashPopperOpen: state.slashPopperOpen,
@@ -1216,9 +1236,9 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
             approvalMode: state.approvalMode,
             isStreaming: isStreamingCurrent,
             hasDraft: Boolean(draftText.trim()) || state.attachments.length > 0,
-            disabled: !state.gatewayConnected,
+            disabled: dockDisabled,
             modelMenuOpen: state.modelMenuOpen,
-            notice: state.dockNotice,
+            notice: effectiveDockNotice,
             attachments: state.attachments,
             queuedMessages: state.queuedMessages,
             slashPopperOpen: state.slashPopperOpen,

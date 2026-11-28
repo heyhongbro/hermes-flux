@@ -136,7 +136,7 @@ function normalizeHtmlForParity(html, idPrefix) {
   return html
     .replace(/\s+/g, ' ')
     .replace(/&#x27;/g, "'")
-    .replace(/<(stop|feDropShadow|rect|polygon)\b([^>]*?)\s*\/>/g, '<$1$2></$1>')
+    .replace(/<(stop|rect|polygon)\b([^>]*?)\s*\/>/g, '<$1$2></$1>')
     .replace(new RegExp(idPrefix, 'g'), 'PID')
     .replace(/style="([^"]*)"/g, (_, s) => `style="${s.replace(/:\s+/g, ':').replace(/;\s+/g, ';').replace(/;\s*$/, '').trim()}"`)
     .trim();
@@ -174,7 +174,9 @@ test('BrandSwiftMark：默认参数与三变体精确分流 (icon 无字 / badge
   assert.ok(badgeHtml.includes('role="img"'));
   assert.ok(badgeHtml.includes('aria-label="Hermes Flux Brand"'));
   assert.ok(badgeHtml.includes('FLUX</text>'), 'badge (Variant B) 必须包含 FLUX 字标');
-  assert.ok(badgeHtml.includes('id="custom-badge-shadow"'), '传入 idPrefix 时必须沿用该前缀');
+  assert.ok(badgeHtml.includes('id="custom-badge-lowerWing"'), '传入 idPrefix 时必须沿用该前缀');
+  assert.ok(!badgeHtml.includes('<feDropShadow'), 'React BrandSwiftMark 禁止嵌套SVG <feDropShadow> 滤镜击穿合成层');
+  assert.ok(!badgeHtml.includes('filter="url(#'), 'React BrandSwiftMark 禁止滤镜包装');
   assert.ok(!badgeHtml.includes('flux-brand-swift__shadow"'), 'glide 不应渲染飞行地面投影条');
 
   const staticHtml = renderToStaticMarkup(React.createElement(BrandSwiftMark, { variant: 'mark', motion: 'static' }));
@@ -194,8 +196,8 @@ test('BrandSwiftMark 与 renderBrandSwiftHtml：边界输入防御（空/脏 idP
       decorative: false,
     }),
   );
-  const shadowMatch = dirtyReact.match(/id="([^"]+-shadow)"/);
-  assert.ok(shadowMatch && shadowMatch[1] !== '-shadow', '纯非法 idPrefix 必须回退至非空唯一前缀，禁止产生活塞碰撞 id="-shadow"');
+  const gradMatch = dirtyReact.match(/id="([^"]+-lowerWing)"/);
+  assert.ok(gradMatch && gradMatch[1] !== '-lowerWing', '纯非法 idPrefix 必须回退至非空唯一前缀，禁止产生活塞碰撞 id="-lowerWing"');
   assert.ok(dirtyReact.includes('width:64px;height:64px'), '负数 size 必须回退至 64px');
   assert.ok(dirtyReact.includes('aria-label="Hermes Flux"'), 'decorative=false 缺省 label 时必须使用 "Hermes Flux"');
 
@@ -226,8 +228,10 @@ test('BrandSwiftMark 与 renderBrandSwiftHtml：边界输入防御（空/脏 idP
     label: 'Flight & <Badge>',
     idPrefix: '   !!!   ',
   });
-  assert.ok(dirtyHtml.includes('id="hf-swift-shadow"'), '空或全非法 idPrefix 必须回退为 hf-swift');
-  assert.ok(!dirtyHtml.includes('id="-shadow"'), '禁止产生空前缀 id="-shadow"');
+  assert.ok(dirtyHtml.includes('id="hf-swift-lowerWing"'), '空或全非法 idPrefix 必须回退为 hf-swift');
+  assert.ok(!dirtyHtml.includes('id="-lowerWing"'), '禁止产生空前缀 id="-lowerWing"');
+  assert.ok(!dirtyHtml.includes('<feDropShadow'), 'HTML renderBrandSwiftHtml 禁止输出 <feDropShadow>');
+  assert.ok(!dirtyHtml.includes('filter="url(#'), 'HTML renderBrandSwiftHtml 禁止滤镜包装');
   assert.ok(dirtyHtml.includes('width: 64px; height: 64px;'), 'size=0 必须回退 64px');
   assert.ok(dirtyHtml.includes('class="flux-brand-swift__shadow"'), 'HTML motion="fly" 必须渲染飞行地面投影条');
   assert.ok(dirtyHtml.includes('class="flux-brand-swift cls-&quot;bad&quot;&lt;tag&gt;"'), 'className 必须严格执行属性转义');
@@ -299,9 +303,9 @@ test('renderBrandSwiftHtml 与 BrandSwiftMark：全三态 (icon / badge / mark) 
       React.createElement(BrandSwiftMark, { variant: 'badge', motion: 'static', size: 72 }),
     ),
   );
-  const shadowIds = [...twoInstances.matchAll(/id="([^"]+-shadow)"/g)].map((m) => m[1]);
-  assert.equal(shadowIds.length, 2);
-  assert.notEqual(shadowIds[0], shadowIds[1]);
+  const gradIds = [...twoInstances.matchAll(/id="([^"]+-lowerWing)"/g)].map((m) => m[1]);
+  assert.equal(gradIds.length, 2);
+  assert.notEqual(gradIds[0], gradIds[1]);
 });
 
 test('业务场景集成与变异杀伤：全分支覆盖 Conversation / MiddlePod / SettingsModal', () => {
@@ -393,7 +397,7 @@ test('业务场景集成与变异杀伤：全分支覆盖 Conversation / MiddleP
     messagesPhase: 'loading',
   });
   assert.ok(tplLoadingPriority.includes('id="react-message-list-host"'), 'loading 相位优先级必须高于 gatewayConnecting');
-  assert.ok(!tplLoadingPriority.includes('flux-conn-shadow'));
+  assert.ok(!tplLoadingPriority.includes('flux-conn-lowerWing'));
 
   const tplConn = renderConversationCanvas({ gatewayConnecting: true, messages: [] });
   assert.ok(tplConn.includes('data-brand-variant="mark"'), 'MiddlePod 连接中必须为无框 mark');
@@ -402,7 +406,7 @@ test('业务场景集成与变异杀伤：全分支覆盖 Conversation / MiddleP
   assert.ok(!tplConn.includes('⚡'));
 
   const tplOnboard = renderConversationCanvas({ gatewayConnected: false, messages: [] });
-  assert.ok(tplOnboard.includes('id="flux-onboard-shadow"'));
+  assert.ok(tplOnboard.includes('id="flux-onboard-lowerWing"'));
   assert.ok(tplOnboard.includes('data-brand-variant="badge"'));
   assert.ok(tplOnboard.includes('data-brand-motion="static"'), '引导卡必须使用 static 静置态');
   assert.ok(tplOnboard.includes('FLUX</text>'));
@@ -417,7 +421,7 @@ test('业务场景集成与变异杀伤：全分支覆盖 Conversation / MiddleP
     messages: [{ id: 'h1', role: 'user', content: 'hidden', displayKind: 'hidden' }],
     messagesPhase: 'ready',
   });
-  assert.ok(tplAllHidden.includes('id="flux-welcome-shadow"') && tplAllHidden.includes('data-brand-variant="badge"'));
+  assert.ok(tplAllHidden.includes('id="flux-welcome-lowerWing"') && tplAllHidden.includes('data-brand-variant="badge"'));
 
   // 5. SettingsModal About：标题旁已有 Hermes Flux 字样，故使用 Variant A (icon，无文字)
   const aboutHtml = renderToStaticMarkup(
@@ -464,4 +468,19 @@ test('样式表守卫：隐屏暂停 + 合成层释放 (will-change: auto)、唯
   assert.ok(splashRule.includes('min-height: 100%;'));
   assert.ok(!splashRule.includes('min-height: 100vh;'), '.flux-boot-splash 禁止写死 100vh');
   assert.ok(splashRule.includes('env(safe-area-inset-top, 0px)'), '.flux-boot-splash 必须声明 safe-area 内边距避让');
+
+  // 5. macOS 合成器护栏：禁止雨燕内部 SVG 子分组动画、闲置呼吸与替换占位动画泄漏
+  assert.ok(
+    !convCss.includes('.flux-brand-swift[data-brand-motion="fly"] .flux-brand-swift__wing-upper'),
+    '禁止对 SVG 子分组 .flux-brand-swift__wing-upper 挂接关键帧动画触发 Blink 全量 Layout',
+  );
+  assert.ok(
+    !convCss.includes('animation: convPresenceBreathe 2600ms ease-in-out infinite'),
+    'AgentPresence idle 态禁止常驻 2600ms infinite 呼吸动画',
+  );
+  assert.ok(
+    /#react-conv-presence-host\[data-replaced="true"\]:not\(\.presence-host--dock\)\s*\{\s*opacity:\s*0;\s*visibility:\s*hidden;/.test(convCss) &&
+      /#react-conv-presence-host\[data-replaced="true"\]:not\(\.presence-host--dock\) \*\s*\{\s*animation-play-state:\s*paused\s*!important;/.test(convCss),
+    '顶部被胶囊顶替的 AgentPresence 必须暂停全部子树动画并设 visibility: hidden',
+  );
 });

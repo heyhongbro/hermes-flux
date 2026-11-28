@@ -45,6 +45,8 @@ export interface MediaResolverDeps {
   getState: () => AppState;
   getDesktopApi: () => HermesDesktopBridge | undefined;
   getGatewayClient: () => HermesGatewayClient | null;
+  getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
+  getGatewayUrlForGateway?: (gatewayId?: string) => string;
 }
 
 export interface MediaResolver {
@@ -68,8 +70,13 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
     if (DIRECT_RENDERABLE_RE.test(clean)) return clean;
 
     const state = deps.getState();
-    const gwOrigin = (state.gatewayUrl || '')
-      .trim()
+    const targetGatewayId = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const targetGatewayUrl = (
+      deps.getGatewayUrlForGateway?.(targetGatewayId) ||
+      state.gatewayUrl ||
+      ''
+    ).trim();
+    const gwOrigin = targetGatewayUrl
       .replace(/^ws/i, 'http')
       .replace(/\/+$/, '')
       .toLowerCase();
@@ -78,7 +85,8 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
       return clean;
     }
 
-    const cacheKey = `${state.gatewayUrl}|${state.profileName}|${state.activeSessionId}|${clean}`;
+    const scopeAnchor = targetGatewayId || targetGatewayUrl || '';
+    const cacheKey = `${scopeAnchor}|${state.profileName}|${state.activeSessionId}|${clean}`;
     const hit = cache.get(cacheKey);
     if (hit) {
       cache.delete(cacheKey);
@@ -97,7 +105,7 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
         if (detectedMime && detectedMime.startsWith('audio/')) {
           const audioRes = await resolvePreviewAsset(clean, {
             platformBridge: deps.getDesktopApi() ?? null,
-            gatewayUrl: state.gatewayUrl,
+            gatewayUrl: targetGatewayUrl,
             profile: state.profileName || undefined,
             sessionId: state.activeSessionId || undefined,
             workspaceRoot: resolveActiveWorkspaceCwd(state) || undefined,
@@ -107,8 +115,10 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
         } else {
           const resolved = await resolveFileContent(clean, {
             platformBridge: deps.getDesktopApi() ?? null,
-            gatewayClient: deps.getGatewayClient(),
-            gatewayUrl: state.gatewayUrl,
+            gatewayClient: deps.getClientForGateway
+              ? deps.getClientForGateway(targetGatewayId)
+              : deps.getGatewayClient(),
+            gatewayUrl: targetGatewayUrl,
             profile: state.profileName || undefined,
             sessionId: state.activeSessionId || undefined,
             messages: state.messages,
@@ -226,6 +236,7 @@ export function createSessionKnownFilesResolver(
 export interface SessionDeliverableCoordinatorDeps {
   getState: () => AppState;
   getDesktopApi: () => HermesDesktopBridge | undefined;
+  getGatewayUrlForGateway?: (gatewayId?: string) => string;
   getSubagentWrittenPaths?: () => readonly string[];
   onVerifiedPathsUpdated: () => void;
 }
@@ -266,7 +277,7 @@ export function createSessionDeliverableCoordinator(
   let cachedDeliverables: DeliverableItem[] = [];
 
   function computeScopeKey(state: AppState): string {
-    return `${state.gatewayUrl || ''}|${state.profileName || ''}|${resolveActiveViewportKey(state)}`;
+    return `${state.activeGatewayId || state.gatewayUrl || ''}|${state.profileName || ''}|${resolveActiveViewportKey(state)}`;
   }
 
   function syncScope(state: AppState): string {
@@ -367,7 +378,8 @@ export function createSessionDeliverableCoordinator(
       if (k) probedKeys.add(k);
     }
 
-    const gw = state.gatewayUrl;
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const gw = deps.getGatewayUrlForGateway?.(activeGw) || state.gatewayUrl;
     const profile = state.profileName || undefined;
 
     void verifier

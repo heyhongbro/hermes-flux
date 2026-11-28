@@ -9,7 +9,7 @@
 | Contract source | `apps/shared/src/gateway-contract.generated.ts` (generated from gateway Pydantic models) |
 | Contract fingerprint | `e3cf16a3d9832437…` |
 | Synced at | 2026-11-12T09:29:35.736Z |
-| Total contract methods | 290 (84 used in this repo; only used methods are documented) |
+| Total contract methods | 290 (85 used in this repo; only used methods are documented) |
 | Total contract events | 74 |
 | Probed gateway version | 0.22.5 |
 | Probe recorded at | 2026-11-01T01:59:35.303Z |
@@ -20,7 +20,7 @@
 | --- | --- | --- | --- |
 | System & Capabilities | 5 | 3 | [system.md](./system.md) |
 | Bot Profiles & Assets | 6 | 6 | [profiles.md](./profiles.md) |
-| Session Lifecycle | 13 | 11 | [sessions.md](./sessions.md) |
+| Session Lifecycle | 14 | 11 | [sessions.md](./sessions.md) |
 | Multi-Agent Group Rooms | 7 | 7 | [groups.md](./groups.md) |
 | Projects & Workspaces | 9 | 9 | [projects.md](./projects.md) |
 | Workspace Rollback | 3 | 3 | [rollback.md](./rollback.md) |

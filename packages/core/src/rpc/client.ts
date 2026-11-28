@@ -7,7 +7,6 @@ import {
   JsonRpcResponse,
   JsonRpcNotification,
   NormalizedSession,
-  ModelDetail,
   AgentProfile,
   SessionUsageResult,
   SessionContextBreakdownResult,
@@ -19,8 +18,6 @@ import {
 } from './types.js';
 import { WebSocketFsm, FsmState } from './fsm.js';
 import { isLegacyRpcMethodError } from './connectionPhase.js';
-import { normalizeSessionsResult, extractAvailableModels, extractModelDetails } from '../models/types.js';
-import { buildModelCatalogView, type ModelCatalogEntry } from '../models/modelCatalog.js';
 import { createLogger } from '../log/logger.js';
 import { redactInteractivePayload } from '../log/redact.js';
 import { CONTRACT_METHODS } from './contracts/contractTable.generated.js';
@@ -29,7 +26,48 @@ import type {
   ClientCapabilitiesResult,
 } from './contracts/gateway-contract.generated.js';
 import { EXTRA_METHODS } from './contracts/extraMethods.js';
-import { normalizeAgentProfile } from './profileNormalize.js';
+import {
+  RPC_SOCKET_READY_STATE,
+  createBrowserRpcSocket,
+  type IRpcSocket,
+  type RpcSocketFactory,
+  type RpcSocketMessageEvent,
+} from './socket.js';
+import {
+  DEFAULT_GATEWAY_READY_STATE,
+  buildSessionEventsSinceParams,
+  executeServerRequestFrame,
+  normalizeSessionEventsSinceResult,
+  parseGatewayReadyParams,
+  type DefaultServerRequestHandler,
+  type GatewayMethodRequestHandler,
+  type GatewayReadyState,
+  type SessionEventsSinceNormalizedResult,
+  type SessionEventsSinceQuery,
+} from './gatewayProtocol.js';
+import {
+  describeRpcClientError as describeError,
+  fetchGatewayConfigWithFallback,
+  fetchLastMessageWithFallback,
+  getModelCatalogWithFallback,
+  listArchivedSessionsWithFallback,
+  listProfilesWithFallback,
+  listSessionsWithFallback,
+  type ClientChannelTransport,
+  type ModelCatalog,
+  type RestFallbackHandler,
+  type SessionListOutcome,
+  type SessionMessageRecord,
+  type SessionMessagesOutcome,
+} from './clientChannelHelpers.js';
+export type {
+  ModelCatalog,
+  RestFallbackHandler,
+  RestFallbackOptions,
+  SessionListOutcome,
+  SessionMessageRecord,
+  SessionMessagesOutcome,
+} from './clientChannelHelpers.js';
 import {
   buildJsonRpcErrorFrame,
   buildJsonRpcResultFrame,
@@ -103,6 +141,8 @@ export class ContractViolationError extends Error {
 
 export interface RpcClientOptions {
   url: string;
+  /** 可选传输工厂；省略时默认走浏览器/宿主原生 WebSocket（阶段二可注入 E2EE 环回传输） */
+  socketFactory?: RpcSocketFactory;
   /**
    * 每次断线重连或唤醒重连前调用，用于刷新一次性凭证（如 ws-ticket）并生成最新 WS URL。
    * 首次 connect() 直接使用 url；自第二次连接（重连）起优先调用本回调。
@@ -124,70 +164,11 @@ export interface RpcClientOptions {
   clientCapabilities?: ClientCapabilitiesParams;
 }
 
-export interface RestFallbackOptions {
-  method?: string;
-  params?: Record<string, unknown>;
-  body?: unknown;
-  headers?: Record<string, string>;
-}
-
-export type RestFallbackHandler = (path: string, options?: RestFallbackOptions) => Promise<unknown>;
-
 export type ProbeOrWakeResult = 'alive' | 'reconnecting' | 'disconnected';
-
-/** Result of a session listing attempt, including why it failed when it did. */
-export interface SessionListOutcome {
-  sessions: NormalizedSession[];
-  ok: boolean;
-  error?: string;
-}
-
-export type SessionMessagesOutcome =
-  | { status: 'success'; messages: SessionMessageRecord[]; pagination?: { returned?: number; total?: number } }
-  | { status: 'error'; error: string };
-
-export interface SessionMessageRecord {
-  [key: string]: unknown;
-}
-
-/** Models plus the provider that owns the currently active one. */
-export interface ModelCatalog {
-  models: string[];
-  details: ModelDetail[];
-  /**
-   * 归一化后的完整目录：扁平、带可读显示名与价格/能力元数据。
-   *
-   * 【设计意图 (Why)】
-   *   `models` / `details` 是历史契约（只给 ID 与粗粒度详情），前端渲染时仍要自己拼字符串。
-   *   `entries` 是新的权威视图：前端选择器、输入舱标签、设置页统一消费它，显示名不再各处漂移。
-   *
-   * 【规则 (Rules)】
-   *   `entries` 是 `models` 的子集来源：`models` = entries 去重 id + （若不在其中）根层当前模型。
-   *   当前模型可能因网关目录截断而缺失于 `providers[].models[]`，必须保留在 `models` 里，
-   *   但**不为它伪造 entry**（无 provider 归属与价格，不能造可渲染条目）。
-   */
-  entries: ModelCatalogEntry[];
-  currentModel: string;
-  currentProvider: string;
-  ok: boolean;
-  error?: string;
-}
-
-function describeError(error: unknown): string {
-  if (error && typeof error === 'object') {
-    const candidate = error as { message?: unknown; code?: unknown; data?: unknown };
-    if (typeof candidate.message === 'string' && candidate.message.trim()) {
-      return candidate.message;
-    }
-    if (typeof candidate.code !== 'undefined') {
-      return `RPC 错误 ${String(candidate.code)}`;
-    }
-  }
-  return typeof error === 'string' ? error : '未知错误';
-}
 
 export class HermesGatewayClient {
   private url: string;
+  private socketFactory?: RpcSocketFactory;
   private resolveUrl?: () => Promise<string | null>;
   private initialUrlConsumed = false;
   private isResolvingUrl = false;
@@ -195,7 +176,7 @@ export class HermesGatewayClient {
   private candidateUrls: string[] = [];
   private currentCandidateIndex = 0;
   private timeoutMs: number;
-  private ws: WebSocket | null = null;
+  private ws: IRpcSocket | null = null;
   private nextId = 1;
   private restFallbackHandler: RestFallbackHandler | null = null;
   private pendingRequests = new Map<
@@ -207,6 +188,10 @@ export class HermesGatewayClient {
     }
   >();
   private notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
+  private serverRequestHandlers = new Map<string, GatewayMethodRequestHandler>();
+  private defaultServerRequestHandler: DefaultServerRequestHandler | null = null;
+  private gatewayReadyState: GatewayReadyState = { ...DEFAULT_GATEWAY_READY_STATE };
+  private gatewayInstallId: string | undefined = undefined;
   private serverRequestListeners = new Set<ServerRequestHandler>();
   private socketClosedListeners = new Set<(closedGeneration: number) => void>();
   private socketGeneration = 0;
@@ -232,6 +217,7 @@ export class HermesGatewayClient {
 
   constructor(options: RpcClientOptions) {
     this.url = options.url;
+    this.socketFactory = options.socketFactory;
     this.resolveUrl = options.resolveUrl;
     this.candidateUrls = options.candidateUrls && options.candidateUrls.length > 0
       ? [...options.candidateUrls]
@@ -259,8 +245,33 @@ export class HermesGatewayClient {
     this.restFallbackHandler = handler;
   }
 
-  public getRawWebSocket(): WebSocket | null {
+  public getSocket(): IRpcSocket | null {
     return this.ws;
+  }
+
+  public getRawWebSocket(): IRpcSocket | null {
+    return this.ws;
+  }
+
+  public getGatewayReadyState(): GatewayReadyState {
+    return { ...this.gatewayReadyState };
+  }
+
+  public isSessionAuthority(): boolean {
+    return this.gatewayReadyState.sessionAuthority;
+  }
+
+  public getReplayEpoch(): string | null {
+    return this.gatewayReadyState.replayEpoch;
+  }
+
+  public getInstallId(): string | undefined {
+    return this.gatewayInstallId;
+  }
+
+  public setInstallId(installId: string | undefined): void {
+    const trimmed = typeof installId === 'string' ? installId.trim() : '';
+    this.gatewayInstallId = trimmed || undefined;
   }
 
   public getFsm(): WebSocketFsm {
@@ -279,10 +290,28 @@ export class HermesGatewayClient {
     return this.negotiatedCapabilities ? { ...this.negotiatedCapabilities } : null;
   }
 
-  public onServerRequest(handler: ServerRequestHandler): () => void {
-    this.serverRequestListeners.add(handler);
+  public onServerRequest(handler: ServerRequestHandler): () => void;
+  /** 注册服务端反向请求的单播处理器；返回注销闭包。 */
+  public onServerRequest<TParams = unknown, TResult = unknown>(
+    method: string,
+    handler: GatewayMethodRequestHandler<TParams, TResult>,
+  ): () => void;
+  public onServerRequest<TParams = unknown, TResult = unknown>(
+    methodOrHandler: string | ServerRequestHandler,
+    maybeHandler?: GatewayMethodRequestHandler<TParams, TResult>,
+  ): () => void {
+    if (typeof methodOrHandler === 'function') {
+      this.serverRequestListeners.add(methodOrHandler);
+      return () => {
+        this.serverRequestListeners.delete(methodOrHandler);
+      };
+    }
+    const typedHandler = maybeHandler as GatewayMethodRequestHandler;
+    this.serverRequestHandlers.set(methodOrHandler, typedHandler);
     return () => {
-      this.serverRequestListeners.delete(handler);
+      if (this.serverRequestHandlers.get(methodOrHandler) === typedHandler) {
+        this.serverRequestHandlers.delete(methodOrHandler);
+      }
     };
   }
 
@@ -299,7 +328,7 @@ export class HermesGatewayClient {
     expectedSocketGeneration?: number,
     methodForRedaction?: string,
   ): boolean {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (!this.ws || this.ws.readyState !== RPC_SOCKET_READY_STATE.OPEN) return false;
     if (expectedSocketGeneration !== undefined && expectedSocketGeneration !== this.socketGeneration) {
       log.warn('dropping stale server response across socket generation', { id, expectedSocketGeneration, currentSocketGeneration: this.socketGeneration });
       return false;
@@ -315,7 +344,7 @@ export class HermesGatewayClient {
   }
 
   public sendServerError(id: JsonRpcId, code: number, message: string, data?: unknown, expectedSocketGeneration?: number): boolean {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (!this.ws || this.ws.readyState !== RPC_SOCKET_READY_STATE.OPEN) return false;
     if (expectedSocketGeneration !== undefined && expectedSocketGeneration !== this.socketGeneration) return false;
     try {
       this.ws.send(buildJsonRpcErrorFrame(id, code, message, data));
@@ -486,7 +515,7 @@ export class HermesGatewayClient {
       if (this.activeProbePromise) {
         return this.activeProbePromise;
       }
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== RPC_SOCKET_READY_STATE.OPEN) {
         this.teardownDeadSocket(`Socket not open on probe (${reason})`);
         this.fsm.transitionTo('RECONNECTING');
         this.wakeImmediately(reason);
@@ -563,7 +592,7 @@ export class HermesGatewayClient {
     if (!this.enableHeartbeat) return;
 
     this.heartbeatTimer = setInterval(() => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.fsm.getState() !== 'CONNECTED') {
+      if (!this.ws || this.ws.readyState !== RPC_SOCKET_READY_STATE.OPEN || this.fsm.getState() !== 'CONNECTED') {
         return;
       }
 
@@ -635,12 +664,16 @@ export class HermesGatewayClient {
    *   - 任何时候调用 `disconnect()` 均递增 `connectEpoch`，彻底废止在途异步回调。
    */
   public connect(): void {
-    if (typeof WebSocket === 'undefined') {
+    if (!this.socketFactory && typeof WebSocket === 'undefined') {
       console.warn('[HermesGatewayClient] WebSocket runtime is unavailable');
       return;
     }
 
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+    if (
+      this.ws &&
+      (this.ws.readyState === RPC_SOCKET_READY_STATE.OPEN ||
+        this.ws.readyState === RPC_SOCKET_READY_STATE.CONNECTING)
+    ) {
       return;
     }
 
@@ -686,7 +719,7 @@ export class HermesGatewayClient {
     }
   }
 
-  private completeHandshake(socket: WebSocket): void {
+  private completeHandshake(socket: IRpcSocket): void {
     if (this.intentionalClose || this.ws !== socket) return;
     log.info('handshake ok, connected');
     // ping 确认连通即立即完成握手晋升 CONNECTED，能力协商随后异步并发执行，
@@ -710,7 +743,9 @@ export class HermesGatewayClient {
     this.socketGeneration += 1;
     this.negotiatedCapabilities = null;
     try {
-      const socket = new WebSocket(targetUrl);
+      const socket = this.socketFactory
+        ? this.socketFactory(targetUrl)
+        : createBrowserRpcSocket(targetUrl);
       this.ws = socket;
 
       socket.onopen = () => {
@@ -748,7 +783,7 @@ export class HermesGatewayClient {
           });
       };
 
-      socket.onmessage = (event: MessageEvent) => {
+      socket.onmessage = (event: RpcSocketMessageEvent) => {
         if (this.intentionalClose || this.ws !== socket) return;
         this.handleMessage(event.data);
       };
@@ -801,6 +836,7 @@ export class HermesGatewayClient {
       this.ws.close();
       this.ws = null;
     }
+    this.gatewayReadyState = { ...DEFAULT_GATEWAY_READY_STATE };
     this.bumpSocketGeneration();
     this.fsm.transitionTo('DISCONNECTED');
   }
@@ -915,7 +951,7 @@ export class HermesGatewayClient {
     const effectiveTimeout = timeoutMs ?? HermesGatewayClient.LONG_RUNNING_METHOD_TIMEOUT_MS[method] ?? this.timeoutMs;
 
     return new Promise<T>((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== RPC_SOCKET_READY_STATE.OPEN) {
         log.warn('rpc call rejected: socket not open', { method, state: this.fsm.getState() });
         return reject(new Error(`WebSocket is not connected (current state: ${this.fsm.getState()})`));
       }
@@ -964,142 +1000,74 @@ export class HermesGatewayClient {
     };
   }
 
-  /**
-   * Resilient dual-channel session listing that keeps the failure reason.
-   *
-   * "No sessions" and "the gateway refused to list them" are different facts; the
-   * rail must be able to tell them apart instead of rendering an empty list for
-   * both.
-   *
-   * 【设计意图 (Why)】
-   *   左侧栏的排序依据是"会话最后一条消息时间"。经真实网关实测：
-   *   - WS `session.list` 只返回 `started_at`（会话创建时间），**没有 last_active**；
-   *   - REST `/api/sessions`（同一份数据的持久化视图）额外返回 `last_active`、`unread`、
-   *     `last_read_at`、`hidden`、`pinned`，且返回条数更全（实测 56 条 vs WS 54 条）。
-   *   因此 REST 是"顺序与时间正确"的权威通道，必须优先。
-   *
-   * 【防范的历史坑 (Pitfall)】
-   *   曾以 WS 为主通道：列表退化为"按创建时间排序"，前缀时间邻接的会话看起来顺序
-   *   与真实最后活跃不符（实测 local-ec166a 从末位跳到第二位），用户直觉就是"顺序不对"。
-   *
-   * 【约束与规则 (Rules)】
-   *   - 有 REST 通道时优先 REST；REST 失败或为空才回落 WS，保证弱网可用；
-   *   - 两条通道都失败时返回 ok:false 并带上错误原因（失败 ≠ 空）；
-   *   - REST limit 实测上限 100，超出返回 422，调用方传入的 limit 需收敛到 [1,100]。
-   */
-  public async listSessions(profile = 'default', limit = 50): Promise<SessionListOutcome> {
-    let lastError: string | undefined;
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit) || 50));
-
-    if (this.restFallbackHandler) {
-      try {
-        const restResult = await this.restFallbackHandler('/api/sessions', {
-          method: 'GET',
-          params: { profile, limit: safeLimit },
-        });
-        const sessions = normalizeSessionsResult(restResult);
-        // REST 是权威持久化视图：即便为空也代表"该 Profile 确实没有会话"
-        return { sessions, ok: true };
-      } catch (restErr) {
-        lastError = describeError(restErr);
-        console.warn('[HermesGatewayClient] REST session.list failed, trying WS fallback:', lastError);
+  /** 注册或替换兜底服务端反向请求处理器；返回注销闭包。 */
+  public setDefaultServerRequestHandler(handler: DefaultServerRequestHandler | null): () => void {
+    this.defaultServerRequestHandler = handler;
+    return () => {
+      if (this.defaultServerRequestHandler === handler) {
+        this.defaultServerRequestHandler = null;
       }
-    }
-
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        const wsResult = await this.call<unknown>('session.list', { profile, limit: safeLimit });
-        const sessions = normalizeSessionsResult(wsResult);
-        return { sessions, ok: true };
-      } catch (wsErr) {
-        lastError = describeError(wsErr);
-        console.warn('[HermesGatewayClient] WS session.list also failed:', lastError);
-      }
-    } else if (!lastError) {
-      lastError = `WebSocket 未连接 (当前状态: ${this.fsm.getState()})`;
-    }
-
-    return { sessions: [], ok: false, error: lastError ?? '网关未返回会话列表' };
+    };
   }
 
-  /**
-   * Session listing without diagnostics. Prefer `listSessions` when the caller
-   * needs to distinguish an empty result from a failed one.
-   */
+  /** 向网关声明客户端能力（如支持双向反向请求），返回网关协商结果。 */
+  public negotiateCapabilities(params: ClientCapabilitiesParams): Promise<ClientCapabilitiesResult> {
+    return this.call<ClientCapabilitiesResult>('client.capabilities', params);
+  }
+
+  /** 按 `session_authority` 语义拉取断线期间遗漏的会话增量事件并归一化结果。 */
+  public async fetchSessionEventsSince(
+    query: Omit<SessionEventsSinceQuery, 'sessionAuthority'> & { sessionAuthority?: boolean },
+  ): Promise<SessionEventsSinceNormalizedResult> {
+    const params = buildSessionEventsSinceParams({
+      sessionId: query.sessionId,
+      profile: query.profile,
+      cursor: query.cursor,
+      replayEpoch:
+        query.replayEpoch !== undefined
+          ? query.replayEpoch
+          : (this.gatewayReadyState.replayEpoch ?? undefined),
+      sessionAuthority: query.sessionAuthority ?? this.gatewayReadyState.sessionAuthority,
+    });
+    const raw = await this.call<unknown>('session.events.since', params);
+    return normalizeSessionEventsSinceResult(raw);
+  }
+
+  private dispatchServerRequest(id: string | number, method: string, params: unknown): void {
+    const specificHandler = this.serverRequestHandlers.get(method);
+    const defaultHandler = this.defaultServerRequestHandler;
+    void executeServerRequestFrame({ id, method, params }, specificHandler, defaultHandler).then(
+      (frame) => {
+        if (this.ws && this.ws.readyState === RPC_SOCKET_READY_STATE.OPEN) {
+          this.ws.send(frame);
+        }
+      },
+    );
+  }
+
+  private get channelTransport(): ClientChannelTransport {
+    return {
+      call: <T = unknown>(method: string, params?: unknown, timeoutMs?: number) =>
+        this.call<T>(method, params, timeoutMs),
+      isSocketOpen: () => Boolean(this.ws && this.ws.readyState === RPC_SOCKET_READY_STATE.OPEN),
+      getFsmState: () => this.fsm.getState(),
+      getRestFallback: () => this.restFallbackHandler,
+    };
+  }
+
+  public async listSessions(profile = 'default', limit = 50): Promise<SessionListOutcome> {
+    return listSessionsWithFallback(this.channelTransport, profile, limit);
+  }
+
   public async listSessionsSafe(profile = 'default', limit = 50): Promise<NormalizedSession[]> {
     const outcome = await this.listSessions(profile, limit);
     return outcome.sessions;
   }
 
-  /**
-   * 独立拉取已归档（已完成）会话列表（与活跃列表查询解耦，避免争抢 REST limit=100 配额）。
-   *
-   * 【设计意图 (Why)】
-   *   WS `session.list` 无归档过滤入参且不返回 `archived` 标记；
-   *   仅 REST `/api/sessions` 支持查询归档记录。拆分独立查询确保活跃主列表不被历史归档挤占。
-   * 【防范的历史坑 (Pitfall)】
-   *   网关 Pydantic 对 `archived` 查询参数严格校验为 `'exclude' | 'only' | 'include'` 三选一，
-   *   且不识别 `include_archived`；曾传 `archived: 'true'` 导致真机实测稳定报错 `HTTP 400: Bad Request`。
-   * 【约束与规则 (Rules)】
-   *   - 必须传 `archived: 'only'` 精准拉取已归档会话；
-   *   - REST 不可用（WS-only 模式）时显式返回 `{ ok: false, error }`，严禁静默伪装为空列表（Failure Is Not Empty）。
-   */
   public async listArchivedSessions(profile = 'default', limit = 50): Promise<SessionListOutcome> {
-    if (!this.restFallbackHandler) {
-      return {
-        sessions: [],
-        ok: false,
-        error: 'WS-only 模式暂不支持拉取历史归档会话',
-      };
-    }
-    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit) || 50));
-    try {
-      const restResult = await this.restFallbackHandler('/api/sessions', {
-        method: 'GET',
-        params: { profile, limit: safeLimit, archived: 'only' },
-      });
-      if (typeof restResult === 'string') {
-        return { sessions: [], ok: false, error: '网关返回非 JSON 已归档会话响应' };
-      }
-      if (restResult && typeof restResult === 'object' && !Array.isArray(restResult)) {
-        const record = restResult as Record<string, unknown>;
-        if (record.ok === false || typeof record.detail === 'string' || typeof record.error === 'string') {
-          const msg =
-            (typeof record.detail === 'string' && record.detail.trim()) ||
-            (typeof record.error === 'string' && record.error.trim()) ||
-            '网关拒绝返回已归档会话列表';
-          return { sessions: [], ok: false, error: msg };
-        }
-        if (!Array.isArray(record.sessions) && !Array.isArray(record.data)) {
-          return { sessions: [], ok: false, error: '网关未返回合法的已归档会话列表' };
-        }
-      } else if (!Array.isArray(restResult)) {
-        return { sessions: [], ok: false, error: '网关未返回合法的已归档会话列表' };
-      }
-      const sessions = normalizeSessionsResult(restResult).map((s) => ({ ...s, isArchived: true }));
-      return { sessions, ok: true };
-    } catch (err) {
-      const errorMsg = describeError(err);
-      log.warn('REST /api/sessions archived query failed:', errorMsg);
-      return { sessions: [], ok: false, error: errorMsg };
-    }
+    return listArchivedSessionsWithFallback(this.channelTransport, profile, limit);
   }
 
-  /**
-   * Resilient session messages pagination via official high-speed REST channel.
-   * 
-   * 【设计意图 (Why)】
-   * 遵循 Hermes Agent 官方协议矩阵（docs/architecture/gateway-api-and-features-matrix.md）。
-   * 网关 session.resume 在超大会话下无分页且耗时高达 6~7 秒，官方专门开放了高速 REST 消息游标/分页接口。
-   * 
-   * 【防范的历史坑 (Pitfall)】
-   * 1. 严禁上层业务直接用浏览器裸 fetch 跨层调用（file:// 协议会剥离 Cookie 导致 401）；
-   * 2. 严禁传 order='newest' 或 order='desc'（网关 Pydantic 校验严格，非法值直接返回 400）；
-   * 3. 必须通过 restFallbackHandler 转接宿主代理通道，统一注入鉴权凭证。
-   * 
-   * 【规则 (Rules)】
-   * order 只能取 'latest' 或 'oldest'；首屏必须限制在 50 条以内实现 30ms 极速加载。
-   */
   public async fetchSessionMessages(
     sessionId: string,
     options: {
@@ -1107,24 +1075,12 @@ export class HermesGatewayClient {
       offset?: number;
       order?: 'latest' | 'oldest';
       profile?: string;
-      /**
-       * 是否包含被上下文压缩（compaction）归档的原始消息。
-       *
-       * 【设计意图 (Why)】
-       *   网关在上下文超限时会把旧消息标记 `compacted=1` 并在活动表插入一条压缩摘要节点。
-       *   默认 `false` 只返回活动表，用户向上翻页到摘要节点就"到底了"，
-       *   而原始历史其实完好保存在库中。翻页与首屏必须传 `true` 才能连续回溯。
-       *
-       * 【约束与规则 (Rules)】
-       *   首屏与翻页必须使用同一个取值，否则 offset 基数错位会导致跳条或重复。
-       */
       includeCompacted?: boolean;
-    } = {}
+    } = {},
   ): Promise<SessionMessagesOutcome> {
     if (!this.restFallbackHandler) {
       return { status: 'error', error: '未注入 REST 通信代理处理器' };
     }
-
     try {
       const res = await this.restFallbackHandler(
         `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
@@ -1137,246 +1093,58 @@ export class HermesGatewayClient {
             ...(options.profile ? { profile: options.profile } : {}),
             ...(options.includeCompacted ? { include_compacted: true } : {}),
           },
-        }
+        },
       );
-
-      const resObj = res && typeof res === 'object' ? res as { messages?: unknown; pagination?: unknown } : null;
+      const resObj = res && typeof res === 'object' ? (res as { messages?: unknown; pagination?: unknown }) : null;
       if (!resObj || !Array.isArray(resObj.messages)) return { status: 'error', error: '消息响应格式无效' };
       const messages = resObj.messages.filter((message): message is SessionMessageRecord => Boolean(message && typeof message === 'object'));
       if (messages.length !== resObj.messages.length) return { status: 'error', error: '消息记录格式无效' };
+      const pag = resObj.pagination && typeof resObj.pagination === 'object'
+        ? (resObj.pagination as { returned?: unknown; total?: unknown })
+        : null;
       return {
         status: 'success',
         messages,
-        ...(resObj.pagination && typeof resObj.pagination === 'object' ? { pagination: normalizeSessionPagination(resObj.pagination) } : {}),
+        ...(pag
+          ? {
+              pagination: {
+                ...(typeof pag.returned === 'number' ? { returned: pag.returned } : {}),
+                ...(typeof pag.total === 'number' ? { total: pag.total } : {}),
+              },
+            }
+          : {}),
       };
     } catch (err) {
-      const errorMsg = describeError(err);
-      return { status: 'error', error: errorMsg };
+      return { status: 'error', error: describeError(err) };
     }
   }
 
-  /**
-   * 取某会话的"真实最后一条消息"。
-   *
-   * 【设计意图 (Why)】
-   *   左侧栏副标题必须对得上会话真实最后一条消息。网关 REST `/api/sessions` 的
-   *   `preview` 字段实测是"最后一条**用户**消息"，而最后一条通常是 AI 回复，
-   *   两者内容不同 —— 直接拿 preview 当副标题就会"对不上"。
-   *   真实最后一条必须从 `/api/sessions/:id/messages?limit=1&order=latest` 取。
-   *
-   * 【约束与规则 (Rules)】
-   *   - 只取 1 条，避免拉全量历史；
-   *   - 无 REST 通道或请求失败时返回 null，由调用方决定降级策略（失败 ≠ 空字符串）；
-   *   - 返回文本统一压平换行，便于直接做副标题。
-   */
   public async fetchLastMessage(
     sessionId: string,
-    options?: { profile?: string }
+    options?: { profile?: string },
   ): Promise<{ text: string; timestamp: number; role: string } | null> {
-    if (!this.restFallbackHandler || !sessionId) return null;
-    try {
-      const res = await this.restFallbackHandler(
-        `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        {
-          method: 'GET',
-          params: {
-            limit: 1,
-            offset: 0,
-            order: 'latest',
-            ...(options?.profile ? { profile: options.profile } : {}),
-          },
-        }
-      );
-      const resObj = res && typeof res === 'object' ? (res as Record<string, unknown>) : null;
-      const messages = Array.isArray(resObj?.messages) ? resObj!.messages as Array<Record<string, unknown>> : [];
-      const last = messages[0];
-      if (!last) return null;
-      const rawText = typeof last.content === 'string' ? last.content : typeof last.text === 'string' ? last.text : '';
-      const rawTs = typeof last.timestamp === 'number' ? last.timestamp : 0;
-      const ts = rawTs > 1e11 ? rawTs : rawTs > 0 ? rawTs * 1000 : 0;
-      return {
-        text: rawText.replace(/\s+/g, ' ').trim(),
-        timestamp: ts,
-        role: typeof last.role === 'string' ? last.role : '',
-      };
-    // gate-degrade: 单条消息取失败时降级为"保留既有副标题"，不阻断列表主流程
-    } catch (err) {
-      // 失败不可静默为"空消息"：返回 null 让调用方保留既有副标题
-      console.warn('[HermesGatewayClient] fetchLastMessage failed:', describeError(err), { sessionId });
-      return null;
-    }
-  }
-
-  /**
-   * Resilient model catalog extraction.
-   *
-   * `model.options` answers `{ model, provider, providers: [{ slug, models }] }`.
-   * Both the flattened model list and the provider that owns the active model are
-   * kept, because `config.set` rejects a model id that several providers declare.
-   *
-   * 【设计意图 (Why)】
-   *   一次读取同时产出三份视图：`entries`（带可读显示名与价格/能力的权威扁平视图）、
-   *   `models`（纯 ID，兼容既有调用方）、`details`（历史粗粒度详情）。
-   *   三者同源，避免前端各自解析原始 payload 造成显示名漂移。
-   *
-   * 【防范的历史坑 (Pitfall)】
-   *   1. REST 兜底曾打 `/api/models`——该路由在网关上**不存在**（只有 `/api/model/options`、
-   *      `/api/model/info`、`/v1/models`）。WS 一断，兜底必然 404，等于没有兜底。
-   *   2. **漏传 `explicit_only`**：不传时网关会把它机器上"环境里恰好存在的凭据"
-   *      （如残留的 Nous 会话、CLI 借来的 token）也当成 provider 行返回。用户没买 Nous，
-   *      选择器里却挂着整行 72 个一模一样的模型，一选就失败。官方桌面端
-   *      `requestModelOptions` 的默认值就是 `explicitOnly = true`，注释写得很明确：
-   *      "Chat pickers default to true so only explicitly configured providers are listed (#56974)"。
-   *
-   * 【约束与规则 (Rules)】
-   *   - WS 与 REST 两条通道都必须携带 `explicit_only`，否则同一用户在不同网络条件下
-   *     会看到两套不同的 provider 列表；
-   *   - REST 用 `1` 而非 `true`：官方 `api/models.ts` 用 `explicit_only=1`，FastAPI 的
-   *     bool 解析两者都接受，但沿用官方拼法可避免某些代理对 `true` 字符串的兼容差异；
-   *   - 读取失败必须返回 `ok: false` 并携带 `error`，严禁用虚构模型列表填坑（Failure Is Not Empty）。
-   */
-  private legacyModelDetails(payload: unknown): ModelDetail[] {
-    // 【规则】`extractModelDetails` 会把探针占位符 `<more:N>` 也当成模型，
-    // 导致 details 里出现不可选的伪条目，与 entries 视图不一致。这里统一剔除。
-    return extractModelDetails(payload).filter(
-      (detail) => !detail.id.startsWith('<') && !detail.id.endsWith('>'),
-    );
+    return fetchLastMessageWithFallback(this.channelTransport, sessionId, options);
   }
 
   public async getModelCatalog(profile = 'default', fallbackModels: string[] = []): Promise<ModelCatalog> {
-    let lastError: string | undefined;
-
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        const res = await this.call<Record<string, unknown>>('model.options', { profile, explicit_only: true });
-        const view = buildModelCatalogView(res);
-        if (view.ok) {
-          return {
-            models: view.models,
-            details: this.legacyModelDetails(res),
-            entries: view.entries,
-            currentModel: view.currentModel,
-            currentProvider: view.currentProvider,
-            ok: true,
-          };
-        }
-        lastError = view.error;
-      } catch (wsErr) {
-        lastError = describeError(wsErr);
-        console.warn('[HermesGatewayClient] WS model.options failed, trying REST fallback:', lastError);
-      }
-    } else {
-      lastError = `WebSocket 未连接 (当前状态: ${this.fsm.getState()})`;
-    }
-
-    if (this.restFallbackHandler) {
-      try {
-        const restResult = await this.restFallbackHandler('/api/model/options', {
-          method: 'GET',
-          params: { profile, explicit_only: 1 },
-        });
-        const view = buildModelCatalogView(restResult);
-        if (view.ok) {
-          return {
-            models: view.models,
-            details: this.legacyModelDetails(restResult),
-            entries: view.entries,
-            currentModel: view.currentModel,
-            currentProvider: view.currentProvider,
-            ok: true,
-          };
-        }
-        lastError = view.error ?? 'REST 模型接口返回为空';
-      } catch (restErr) {
-        lastError = describeError(restErr);
-        console.warn('[HermesGatewayClient] REST model fallback also failed:', lastError);
-      }
-    }
-
-    return {
-      models: extractAvailableModels(null, fallbackModels),
-      details: [],
-      entries: [],
-      currentModel: '',
-      currentProvider: '',
-      ok: false,
-      error: lastError ?? '网关未返回模型列表',
-    };
+    return getModelCatalogWithFallback(this.channelTransport, profile, fallbackModels);
   }
 
-  /**
-   * Model list without diagnostics. Prefer `getModelCatalog` when the caller needs
-   * the active provider or the failure reason.
-   */
   public async getModelOptionsSafe(profile = 'default', fallbackModels: string[] = []): Promise<string[]> {
     const catalog = await this.getModelCatalog(profile, fallbackModels);
     return catalog.models;
   }
 
-  /**
-   * Fetches agent profiles configured on the gateway.
-   */
   public async listProfiles(): Promise<AgentProfile[]> {
-    try {
-      const res = await this.call<Record<string, unknown> | unknown[]>('profiles.list', {});
-      const list = Array.isArray(res)
-        ? res
-        : Array.isArray((res as Record<string, unknown>)?.profiles)
-          ? ((res as Record<string, unknown>).profiles as unknown[])
-          : [];
-      return list.map((item: unknown) => normalizeAgentProfile(item));
-    } catch (e) {
-      console.warn('[HermesGatewayClient] profiles.list failed, returning default profile:', e);
-      return [
-        { name: 'default', displayName: '通用助手 (Default)', description: '默认通用智能体', isDefault: true },
-      ];
+    const { profiles, installId } = await listProfilesWithFallback(this.channelTransport);
+    if (installId) {
+      this.gatewayInstallId = installId;
     }
+    return profiles;
   }
 
-  /**
-   * 拉取网关全局配置快照（自动压缩阈值等）。
-   *
-   * 【设计意图 (Why)】REST `/api/config` 直接返回顶层配置字典，而 WS `config.get`
-   * 必须传 `{ key: 'full' }` 且配置字典被包裹在 `res.config` 内；统一在此解包收敛。
-   */
   public async fetchGatewayConfig(profile?: string): Promise<Record<string, unknown>> {
-    let lastError: unknown;
-    if (this.restFallbackHandler) {
-      try {
-        const rest = await this.restFallbackHandler('/api/config', {
-          method: 'GET',
-          ...(profile ? { params: { profile } } : {}),
-        });
-        if (rest && typeof rest === 'object' && !Array.isArray(rest)) {
-          const obj = rest as Record<string, unknown>;
-          return obj.config && typeof obj.config === 'object' && !Array.isArray(obj.config)
-            ? (obj.config as Record<string, unknown>)
-            : obj;
-        }
-      } catch (err) {
-        lastError = err;
-        log.warn('REST /api/config failed, trying config.get WS fallback', err);
-      }
-    }
-
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      const wsRes = await this.call<Record<string, unknown>>('config.get', {
-        key: 'full',
-        ...(profile ? { profile } : {}),
-      });
-      if (wsRes && typeof wsRes === 'object') {
-        const cfg = (wsRes as { config?: unknown }).config;
-        if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
-          return cfg as Record<string, unknown>;
-        }
-        return wsRes;
-      }
-    }
-
-    if (lastError) {
-      throw lastError instanceof Error ? lastError : new Error(describeError(lastError));
-    }
-    throw new Error('网关未连接且无法读取配置');
+    return fetchGatewayConfigWithFallback(this.channelTransport, profile);
   }
 
   public async getSessionUsage(liveSessionId: string, profile?: string): Promise<SessionUsageResult> {
@@ -1455,9 +1223,12 @@ export class HermesGatewayClient {
             log.warn('server request listener threw', { id: frame.id, method: frame.method, listenerErr });
           }
         }
-        if (!claimed) {
-          this.sendServerError(frame.id, -32601, `Unhandled server request: ${frame.method}`, undefined, this.socketGeneration);
+        if (claimed) return;
+        if (this.serverRequestHandlers.has(frame.method) || this.defaultServerRequestHandler) {
+          this.dispatchServerRequest(frame.id, frame.method, frame.params);
+          return;
         }
+        this.sendServerError(frame.id, -32601, `Unhandled server request: ${frame.method}`, undefined, this.socketGeneration);
         return;
       }
       if (frame.kind === 'response') {
@@ -1473,6 +1244,9 @@ export class HermesGatewayClient {
         return;
       }
       if (frame.kind === 'notification') {
+        if (frame.method === 'gateway.ready') {
+          this.gatewayReadyState = parseGatewayReadyParams(frame.params);
+        }
         const handlers = this.notificationHandlers.get(frame.method);
         if (handlers) {
           handlers.forEach((fn) => fn(frame.params));
@@ -1482,12 +1256,4 @@ export class HermesGatewayClient {
       console.warn('[HermesGatewayClient] JSON parse error on message:', e);
     }
   }
-}
-
-function normalizeSessionPagination(value: object): { returned?: number; total?: number } {
-  const pagination = value as { returned?: unknown; total?: unknown };
-  return {
-    ...(typeof pagination.returned === 'number' ? { returned: pagination.returned } : {}),
-    ...(typeof pagination.total === 'number' ? { total: pagination.total } : {}),
-  };
 }

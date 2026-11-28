@@ -254,7 +254,7 @@ test('ConnectionStatusPill: 渲染七态相位、双语文案、紧凑模式与�
   setLocale('zh-CN');
 });
 
-test('ConnectionStatusPill: 节拍计时器同步、visibility/reducedMotion 暂停与稳定 onMountedChange', () => {
+test('ConnectionStatusPill: 零 setInterval 常驻帧泵、退场快照保活与稳定 onMountedChange', () => {
   const prevWin = globalThis.window;
   const prevDoc = globalThis.document;
   const prevSetTimeout = globalThis.setTimeout;
@@ -263,33 +263,11 @@ test('ConnectionStatusPill: 节拍计时器同步、visibility/reducedMotion 暂
   const prevClearInterval = globalThis.clearInterval;
   const timeouts = [];
   const intervals = [];
-  const visibilityHandlers = new Set();
   const mountedLog = [];
   let retryClicks = 0;
-  let reducedMotion = false;
-  let docHidden = false;
-  let pageHiddenAttr = null;
-  let appHiddenAttr = null;
 
-  globalThis.document = {
-    get hidden() {
-      return docHidden;
-    },
-    addEventListener(type, fn) {
-      if (type === 'visibilitychange') visibilityHandlers.add(fn);
-    },
-    removeEventListener(type, fn) {
-      if (type === 'visibilitychange') visibilityHandlers.delete(fn);
-    },
-    documentElement: {
-      getAttribute(name) {
-        if (name === 'data-page-hidden') return pageHiddenAttr;
-        if (name === 'data-app-hidden') return appHiddenAttr;
-        return null;
-      },
-    },
-  };
-  globalThis.window = { matchMedia: () => ({ matches: reducedMotion }) };
+  globalThis.document = { hidden: false };
+  globalThis.window = {};
   globalThis.setTimeout = (fn) => {
     const id = timeouts.length + 1;
     timeouts.push({ id, fn, cleared: false });
@@ -310,8 +288,8 @@ test('ConnectionStatusPill: 节拍计时器同步、visibility/reducedMotion 暂
   };
 
   try {
-    let phase = 'reconnecting';
-    let attempt = 3;
+    let phase = 'connecting';
+    let attempt = 0;
     const driver = createReactHookDriver();
     const view = driver.mount(() =>
       React.createElement(ConnectionStatusPill, {
@@ -326,60 +304,31 @@ test('ConnectionStatusPill: 节拍计时器同步、visibility/reducedMotion 暂
     );
 
     assert.deepEqual(mountedLog, [true]);
-    assert.equal(intervals.length, 1);
+    assert.equal(intervals.length, 0, 'connecting 相位严禁启动高频 setInterval 脉冲');
+    assert.equal(findAll(view.tree, (n) => n.props?.role === 'status')[0].props['data-beat'], '0');
+
+    phase = 'reconnecting';
+    attempt = 3;
+    view.rerender();
+    assert.equal(intervals.length, 0, 'reconnecting 相位严禁启动高频 setInterval 脉冲');
     const retryBtn = findAll(view.tree, (n) => n.props?.className?.includes('conn-pill__action'))[0];
     retryBtn.props.onClick();
     assert.equal(retryClicks, 1);
 
-    // 节拍推进 data-beat: 0 -> 1
-    assert.equal(findAll(view.tree, (n) => n.props?.role === 'status')[0].props['data-beat'], '0');
-    intervals[0].fn();
+    phase = 'syncing';
+    attempt = 0;
     view.rerender();
-    assert.equal(findAll(view.tree, (n) => n.props?.role === 'status')[0].props['data-beat'], '1');
-    // 即使 onMountedChange 使用内联新闭包也不触发误震荡
+    assert.equal(intervals.length, 0, 'syncing 相位严禁启动高频 setInterval 脉冲');
     assert.deepEqual(mountedLog, [true]);
 
-    // visibilitychange 生命周期：可见态重复触发不重复建timer；隐藏即清除 timer；回到前台恢复新 timer
-    for (const h of visibilityHandlers) h();
-    assert.equal(intervals.length, 1);
-
-    docHidden = true;
-    for (const h of visibilityHandlers) h();
-    assert.equal(intervals[0].cleared, true);
-    for (const h of visibilityHandlers) h();
-
-    docHidden = false;
-    for (const h of visibilityHandlers) h();
-    assert.equal(intervals.length, 2);
-    intervals[1].fn();
-    view.rerender();
-    assert.equal(findAll(view.tree, (n) => n.props?.role === 'status')[0].props['data-beat'], '2');
-
-    // data-page-hidden="true" 下时钟回调自停并清掉当前 timer，恢复后重建第 3 个 timer 验证 reducedMotion/appHidden
-    pageHiddenAttr = 'true';
-    intervals[1].fn();
-    assert.equal(intervals[1].cleared, true);
-    pageHiddenAttr = null;
-    for (const h of visibilityHandlers) h();
-    assert.equal(intervals.length, 3);
-    appHiddenAttr = 'true';
-    intervals[2].fn();
-    appHiddenAttr = null;
-    for (const h of visibilityHandlers) h();
-    reducedMotion = true;
-    intervals[3].fn();
-    reducedMotion = false;
-    for (const h of visibilityHandlers) h();
-
-    // synced -> connected 时进入 exiting，但继续展示已同步文案避免退场前闪烁 offline
+    // synced -> connected 时进入 exiting，但继续展示已同步文案避免退场前闪烁
     phase = 'synced';
-    attempt = 0;
     view.rerender();
     phase = 'connected';
     view.rerender();
     view.rerender();
 
-    let pillEl = findAll(view.tree, (n) => n.props?.role === 'status')[0];
+    const pillEl = findAll(view.tree, (n) => n.props?.role === 'status')[0];
     assert.ok(pillEl, 'exiting 期间必须保活');
     assert.equal(pillEl.props['data-phase'], 'synced');
     assert.equal(pillEl.props['data-motion-state'], 'exiting');
@@ -389,32 +338,6 @@ test('ConnectionStatusPill: 节拍计时器同步、visibility/reducedMotion 暂
     view.rerender();
     assert.equal(view.tree, null);
     assert.equal(mountedLog[mountedLog.length - 1], false);
-
-    // reducedMotion 初始即开启时根本不启动 interval；无 listeners 与无 window/document 兜底也可挂载卸载
-    reducedMotion = true;
-    const beforeReducedCount = intervals.length;
-    const dReduced = createReactHookDriver();
-    const vReduced = dReduced.mount(() =>
-      React.createElement(ConnectionStatusPill, { phase: 'connecting', layout: 'stage' }),
-    );
-    assert.equal(intervals.length, beforeReducedCount);
-    vReduced.unmount();
-    reducedMotion = false;
-
-    globalThis.document = { hidden: false };
-    const dNoListeners = createReactHookDriver();
-    const vNoListeners = dNoListeners.mount(() =>
-      React.createElement(ConnectionStatusPill, { phase: 'connecting', layout: 'stage' }),
-    );
-    vNoListeners.unmount();
-
-    globalThis.window = undefined;
-    globalThis.document = undefined;
-    const dBare = createReactHookDriver();
-    const vBare = dBare.mount(() =>
-      React.createElement(ConnectionStatusPill, { phase: 'connecting', layout: 'stage' }),
-    );
-    vBare.unmount();
 
     // 卸载清理再次确保归还 false
     view.unmount();

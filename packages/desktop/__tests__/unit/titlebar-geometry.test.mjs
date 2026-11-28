@@ -468,3 +468,20 @@ test('平台标识：data-platform 必须由 render 路径写入且带同值跳�
   assert.match(coord, /dataset\.platform|setAttribute\(['"]data-platform['"]/, '必须写入 data-platform');
   assert.match(coord, /data-platform['"]\s*\)?\s*!==\s*state\.platform/, '写入前必须比对旧值，避免高频 render 反复触发样式重算');
 });
+
+test('顶栏右簇：移动端必须同样保持 16px 间距，防止健康开关与检查舱热区重叠', () => {
+  const css = read('packages/desktop/src/renderer/styles.css');
+  const start = css.indexOf('@media (max-width: 768px)');
+  assert.ok(start > 0, '移动端媒体查询块必须存在');
+  const block = css.slice(start);
+  assert.match(
+    block,
+    /(?:\.titlebar-left,\s*)?\.titlebar-right\s*\{[^}]*gap:\s*16px/,
+    '移动端 .titlebar-right 必须设置 gap: 16px，避免双 .icon-btn 的 ::after(-8px) 碰撞重叠',
+  );
+  assert.match(
+    css,
+    /\.flux-titlebar\s+\.icon-btn:focus-visible\s*\{[^}]*var\(--ring\)/,
+    '顶栏图标按钮必须使用 --ring 声明 :focus-visible 焦点环',
+  );
+});

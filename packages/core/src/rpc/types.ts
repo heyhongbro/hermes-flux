@@ -214,6 +214,11 @@ export interface AgentProfile {
   uiMeta?: ProfileUiMeta;
   /** 网关逐键乐观锁修订号（来自 profiles.list 的 ui_meta_revisions） */
   uiMetaRevisions?: Record<string, number>;
+  /** 多网关归属实例标识与短标签（单网关缺省） */
+  gatewayId?: string;
+  gatewayLabel?: string;
+  gatewayOffline?: boolean;
+  gatewayRouteLabel?: string;
 }
 
 /** profile.ui_meta 的已知子结构（保留未知键，网关可能扩展） */
@@ -270,6 +275,10 @@ export interface NormalizedSession {
   parentSessionId?: string;
   source?: string;
   isSubagent?: boolean;
+  /** 多网关归属实例标识与短标签（单网关缺省） */
+  gatewayId?: string;
+  gatewayLabel?: string;
+  gatewayOffline?: boolean;
 }
 
 /**
@@ -489,6 +498,8 @@ export interface AgentProfileDetail extends AgentProfile {
 
 export interface ProfilesListResult {
   profiles: AgentProfile[];
+  bot_mode_protocol?: boolean;
+  install_id?: string;
 }
 
 export interface ProfilesDescribeParams {
@@ -669,6 +680,12 @@ export interface GroupRoomSummary {
   updatedAt: number;
   lastMessagePreview?: string;
   isDisbanded?: boolean;
+  gatewayId?: string;
+  gatewayLabel?: string;
+  gatewayOffline?: boolean;
+  authorityGatewayId?: string;
+  authorityEpoch?: number;
+  crossGateway?: boolean;
 }
 
 export interface GroupMessageEntry {

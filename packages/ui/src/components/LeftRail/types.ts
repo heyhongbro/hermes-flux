@@ -13,6 +13,12 @@ export type { ActivityState, WaitingPromptReason };
 /** 完成瞬态跃迁标记：用于列表行或状态点在刚完成时播放一次收敛动画 */
 export type ActivityTransition = 'none' | 'just-completed';
 
+export interface RailEntityGatewayBadge {
+  label: string;
+  offline?: boolean;
+  crossGateway?: boolean;
+}
+
 export interface LeftRailSession {
   id: string;
   title: string;
@@ -28,6 +34,9 @@ export interface LeftRailSession {
   botName?: string;
   botDisplayName?: string;
   botAvatar?: string;
+  gatewayId?: string;
+  gatewayLabel?: string;
+  gatewayOffline?: boolean;
   activityState?: ActivityState;
   waitingReason?: WaitingPromptReason;
   pendingPromptCount?: number;
@@ -43,6 +52,10 @@ export interface LeftRailGroupRoom {
   updatedAt?: number;
   createdAt?: number;
   isDone?: boolean;
+  gatewayId?: string;
+  gatewayLabel?: string;
+  gatewayOffline?: boolean;
+  crossGateway?: boolean;
   activityState?: ActivityState;
   waitingReason?: WaitingPromptReason;
   pendingPromptCount?: number;
@@ -59,6 +72,8 @@ export interface LeftRailProject {
   icon?: string;
   color?: string;
   archived?: boolean;
+  gatewayId?: string;
+  gatewayLabel?: string;
 }
 
 export interface LeftRailFolder {
@@ -77,6 +92,10 @@ export interface LeftRailProfile {
   lastTime?: string;
   timestamp?: number;
   isDefault?: boolean;
+  gatewayId?: string;
+  gatewayLabel?: string;
+  gatewayRouteLabel?: string;
+  gatewayOffline?: boolean;
   activityState?: ActivityState;
   waitingReason?: WaitingPromptReason;
   pendingPromptCount?: number;
@@ -86,6 +105,6 @@ export interface LeftRailProfile {
 }
 
 export type LeftRailActiveFocus =
-  | { type: 'bot'; botName: string }
-  | { type: 'session'; sessionId: string }
-  | { type: 'group'; roomId: string };
+  | { type: 'bot'; botName: string; gatewayId?: string }
+  | { type: 'session'; sessionId: string; gatewayId?: string }
+  | { type: 'group'; roomId: string; gatewayId?: string };

@@ -94,6 +94,12 @@ export interface HermesDesktopBridge extends IPlatformBridge {
   onPowerEvent?: (callback: (kind: 'suspend' | 'resume' | 'unlock') => void) => () => void;
   /** 移动端查询当前原生网络接口连通状态 */
   getNetworkStatus?: () => Promise<{ connected: boolean; connectionType: string }>;
+  /** 安全密钥库：按网关 origin 键加密写入口令 */
+  setGatewaySecret: (key: string, value: string) => Promise<boolean>;
+  /** 安全密钥库：按网关 origin 键解密读取口令 */
+  getGatewaySecret: (key: string) => Promise<string | null>;
+  /** 安全密钥库：按网关 origin 键删除口令 */
+  deleteGatewaySecret: (key: string) => Promise<boolean>;
 }
 
 const bridge: HermesDesktopBridge = {
@@ -144,6 +150,9 @@ const bridge: HermesDesktopBridge = {
     }
   },
   getLogDir: () => ipcRenderer.invoke('log:get-dir'),
+  setGatewaySecret: (key: string, value: string) => ipcRenderer.invoke('secret:set', key, value),
+  getGatewaySecret: (key: string) => ipcRenderer.invoke('secret:get', key),
+  deleteGatewaySecret: (key: string) => ipcRenderer.invoke('secret:delete', key),
 };
 
 contextBridge.exposeInMainWorld('hermesDesktop', bridge);

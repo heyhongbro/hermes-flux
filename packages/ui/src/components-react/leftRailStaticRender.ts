@@ -21,6 +21,7 @@ export interface LeftRailHtmlSnapshot extends LeftRailModelInput {
   layout?: LeftRailLayoutMode;
   isBotsGroupExpanded?: boolean;
   editingGroupRoomId?: string;
+  editingGroupGatewayId?: string;
   /** 活动指示器变体；缺省时组件回落到 cloud，与客户端挂载的默认值一致。 */
   activityVariant?: ActivityIndicatorVariant;
 }
@@ -52,6 +53,7 @@ export function renderLeftRailHtml(snapshot: LeftRailHtmlSnapshot): string {
           doneLoading: snapshot.doneLoading,
           doneError: snapshot.doneError,
           searchQuery: snapshot.searchQuery,
+          gatewayCount: snapshot.gatewayCount,
           isBotsGroupExpanded: snapshot.isBotsGroupExpanded,
           isGroupsGroupExpanded: snapshot.isGroupsGroupExpanded,
           isSessionsGroupExpanded: snapshot.isSessionsGroupExpanded,
@@ -67,6 +69,7 @@ export function renderLeftRailHtml(snapshot: LeftRailHtmlSnapshot): string {
     collapsed: snapshot.collapsed,
     searchQuery: snapshot.searchQuery,
     editingGroupRoomId: snapshot.editingGroupRoomId,
+    editingGroupGatewayId: snapshot.editingGroupGatewayId,
     groupAvatars: snapshot.profiles,
     activityVariant: snapshot.activityVariant,
     onSelectSession: noop,

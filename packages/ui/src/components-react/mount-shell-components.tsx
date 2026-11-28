@@ -14,8 +14,8 @@ export type { RightPodActions, RightPodSnapshot };
 export type InteractivePromptHostSnapshot = InteractivePromptHostProps;
 export type InteractiveTopPillSnapshot = BackgroundPromptTopPillProps;
 export type StatusBarSnapshot = Omit<StatusBarProps, 'onClickStatus'>;
-export type TitlebarSnapshot = Omit<TitlebarProps, 'onMinimize' | 'onMaximize' | 'onClose' | 'onToggleLeftRail' | 'onToggleInspector' | 'onOpenSettings'>;
-export type ShellActions = Pick<TitlebarProps, 'onMinimize' | 'onMaximize' | 'onClose' | 'onToggleLeftRail' | 'onToggleInspector' | 'onOpenSettings'>;
+export type TitlebarSnapshot = Omit<TitlebarProps, 'onMinimize' | 'onMaximize' | 'onClose' | 'onToggleLeftRail' | 'onToggleInspector' | 'onOpenSettings' | 'onReconnectGateway' | 'onDisconnectGateway' | 'onManageGateways'>;
+export type ShellActions = Pick<TitlebarProps, 'onMinimize' | 'onMaximize' | 'onClose' | 'onToggleLeftRail' | 'onToggleInspector' | 'onOpenSettings' | 'onReconnectGateway' | 'onDisconnectGateway' | 'onManageGateways'>;
 export type LeftRailSnapshot = Omit<LeftRailProps, 'onSelectSession' | 'onSelectBot' | 'onSelectGroup' | 'onOpenSessionMenu' | 'onOpenBotMenu' | 'onOpenGroupMenu' | 'onSearchChange' | 'onNewChat' | 'onToggleBots' | 'onToggleSessions' | 'onToggleGroups' | 'onStartGroupRename' | 'onConfirmGroupRename' | 'onCancelGroupRename' | 'onResizeStart' | 'onToggleContainer' | 'onToggleDoneSection' | 'onRetryDoneSection' | 'onRequestMarkDone' | 'onRestoreDone' | 'onOpenFolderMenu' | 'onOpenRailMenu' | 'onNewChatInContainer'>;
 export type LeftRailActions = Pick<LeftRailProps, 'onSelectSession' | 'onSelectBot' | 'onSelectGroup' | 'onOpenSessionMenu' | 'onOpenBotMenu' | 'onOpenGroupMenu' | 'onSearchChange' | 'onNewChat' | 'onToggleBots' | 'onToggleSessions' | 'onToggleGroups' | 'onStartGroupRename' | 'onConfirmGroupRename' | 'onCancelGroupRename' | 'onResizeStart' | 'onToggleContainer' | 'onToggleDoneSection' | 'onRetryDoneSection' | 'onRequestMarkDone' | 'onRestoreDone' | 'onOpenFolderMenu' | 'onOpenRailMenu' | 'onNewChatInContainer'>;
 

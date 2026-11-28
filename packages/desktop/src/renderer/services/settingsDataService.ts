@@ -29,18 +29,18 @@
 import type { AppState } from '../state/appState.js';
 import type { HermesDesktopBridge } from '../../preload/index.js';
 import {
+  DEFAULT_CACHE_GATEWAY_ID,
+  type BotDraftState,
   type CompleteSlashResult,
+  type GatewayInstanceConfig,
+  type GatewayPoolHealthSummary,
+  type GatewayRuntimeSlot,
   type HermesGatewayClient,
-  type McpServerAddRpcParams,
   type ProfilesConfigureParams,
   ProfileService,
   formatModelDisplayName,
   projectBotRoster,
   normalizeEndpointId,
-  normalizeMcpCatalog,
-  normalizeMcpTestResult,
-  normalizeSkillInspectResult,
-  normalizeSkillSearchResults,
   planBindingToggle,
   planProviderRemoval,
   draftForBindingAttach,
@@ -54,6 +54,7 @@ import {
   type SettingsActions,
   type BotExitTarget,
   type GatewayDraft,
+  type StorageWriteFailure,
   type ToggleProviderAgentResult,
   type I18nKey,
   type FontPreferences,
@@ -81,8 +82,11 @@ import { createProviderAdminController, planDeleteTarget } from '../providerAdmi
 import { createSettingsController, resolveGatewayPassword } from '../settingsController.js';
 import { createBotManagementController, createBotWizardController } from '../botManagementController.js';
 import { loadProviderCatalog } from '../providerCatalog.js';
+import { loadGatewayConfigs, saveGatewayConfigs } from '../gateway/gatewayRegistryStore.js';
 import { createProjectDirectoryActions } from './projectDirectoryActions.js';
 import { createMcpOAuthActions } from './mcpOAuthService.js';
+import { createSettingsGatewayController } from './settingsGatewayActions.js';
+import { createSettingsExtensionsActions } from './settingsExtensionsActions.js';
 import type { LearningService } from './learningService.js';
 
 export interface GatewayConnectionTestResult {
@@ -95,6 +99,22 @@ export interface GatewayConnectionTestResult {
 export interface SettingsDataDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
+  readonly getGatewaySlot?: (gatewayId?: string) => GatewayRuntimeSlot | undefined;
+  readonly getGatewayUrlForGateway?: (gatewayId?: string) => string;
+  readonly getTicketForGateway?: (gatewayId?: string) => string | null;
+  readonly isGatewayConnected?: (gatewayId?: string) => boolean;
+  readonly getHealthSummary?: () => GatewayPoolHealthSummary | undefined;
+  readonly getGatewayConfigs?: () => GatewayInstanceConfig[];
+  readonly saveGatewayConfigs?: (configs: readonly GatewayInstanceConfig[]) => StorageWriteFailure;
+  readonly syncConfiguredGateways?: (options?: {
+    configs?: readonly GatewayInstanceConfig[];
+    connectIds?: readonly string[];
+    disconnectIds?: readonly string[];
+  }) => Promise<void>;
+  readonly connectGatewayInstance?: (gatewayId: string) => Promise<boolean>;
+  readonly disconnectGatewayInstance?: (gatewayId: string) => boolean;
+  readonly refreshGatewaySlot?: (gatewayId: string) => Promise<void>;
   readonly getDesktopApi?: () => HermesDesktopBridge | undefined;
   readonly getCurrentTicket: () => string | null;
   readonly getEffectiveUrl: (url: string) => string;
@@ -121,13 +141,17 @@ export interface SettingsDataDeps {
   readonly profileAvatarCache: Map<string, string>;
   readonly persistAvatarCache: () => void;
   readonly persistAgentsToCache?: (profiles: AppState['profiles']) => void;
-  readonly fetchProjects?: () => Promise<void>;
-  readonly createProject?: (params: { name: string; path: string }) => Promise<{ ok: boolean; message?: string }>;
+  readonly fetchProjects?: (gatewayId?: string) => Promise<void>;
+  readonly createProject?: (
+    params: { name: string; path: string },
+    gatewayId?: string,
+  ) => Promise<{ ok: boolean; message?: string }>;
   readonly updateProject?: (
     projectId: string,
     patch: { name?: string; path?: string; boardSlug?: string },
+    gatewayId?: string,
   ) => Promise<{ ok: boolean; message?: string }>;
-  readonly deleteProject?: (projectId: string) => Promise<{ ok: boolean; message?: string }>;
+  readonly deleteProject?: (projectId: string, gatewayId?: string) => Promise<{ ok: boolean; message?: string }>;
   readonly onOrgPrefsChange?: (patch: Partial<ConversationOrgPrefs>) => void;
   readonly learningService?: LearningService;
 }
@@ -137,7 +161,7 @@ export interface SettingsDataService {
   subscriptionProfileName(): string;
   botRoster(): Array<{ profile: string; displayName: string; avatar?: string }>;
   reloadProviderCatalog(): Promise<void>;
-  openBotSettings(botId: string, options?: { tab?: BotDetailTab }): void;
+  openBotSettings(botId: string, options?: { tab?: BotDetailTab; gatewayId?: string }): void;
   getBotManagementSnapshot(): SettingsSnapshot['botManagement'];
   hasUnsavedBotDrafts(): boolean;
   getSettingsSnapshot(): SettingsSnapshot;
@@ -187,19 +211,130 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     { signature: string; promise: Promise<BindingFlightResult> }
   >();
 
+  const botDraftsByGateway = new Map<string, Record<string, BotDraftState>>();
+  const getGatewayConfigsFn = (): GatewayInstanceConfig[] =>
+    deps.getGatewayConfigs ? deps.getGatewayConfigs() : loadGatewayConfigs();
+  const saveGatewayConfigsFn = (configs: readonly GatewayInstanceConfig[]): StorageWriteFailure =>
+    deps.saveGatewayConfigs ? deps.saveGatewayConfigs(configs) : saveGatewayConfigs(configs);
+
+  const applyGatewayDraft = (draft: GatewayDraft): void => {
+    const state = deps.getState();
+    applyGatewayDraftToState(deps, state, draft, resolveGatewayPassword(draft.password, state.password));
+  };
+
+  const gatewayController = createSettingsGatewayController({
+    getState: deps.getState,
+    getGatewayConfigs: getGatewayConfigsFn,
+    saveGatewayConfigs: saveGatewayConfigsFn,
+    getGatewaySlot: deps.getGatewaySlot,
+    getHealthSummary: deps.getHealthSummary,
+    getDesktopApi: deps.getDesktopApi,
+    testConnection: deps.testConnection,
+    connect: deps.connect,
+    disconnect: deps.disconnect,
+    syncConfiguredGateways: deps.syncConfiguredGateways,
+    connectGatewayInstance: deps.connectGatewayInstance,
+    disconnectGatewayInstance: deps.disconnectGatewayInstance,
+    render: deps.render,
+    t: deps.t,
+    bootLog: deps.bootLog,
+    showToast: deps.showToast,
+    runBusy: (task) => getSettingsController().runBusy(task),
+    applyLegacyGatewayDraft: applyGatewayDraft,
+  });
+
+  const resolveSelectedGatewayId = (): string => gatewayController.getSelectedGatewayId();
+  const resolveGatewayBucketKey = (gatewayId?: string): string => gatewayId || DEFAULT_CACHE_GATEWAY_ID;
+
+  const isMultiGatewayConfigMode = (): boolean => {
+    const state = deps.getState();
+    return getGatewayConfigsFn().length >= 2 || (state.gatewayCount ?? 1) >= 2;
+  };
+
+  function resolveSettingsClient(): HermesGatewayClient | null {
+    const gwId = resolveSelectedGatewayId();
+    if (gwId && deps.getClientForGateway && (getGatewayConfigsFn().length >= 2 || Boolean(deps.getGatewaySlot?.(gwId)))) {
+      return deps.getClientForGateway(gwId);
+    }
+    return deps.getGatewayClient();
+  }
+
+  function resolveSettingsGatewayUrl(): string {
+    const state = deps.getState();
+    const gwId = resolveSelectedGatewayId();
+    if (gwId) {
+      const fromSlot = deps.getGatewayUrlForGateway?.(gwId) || getGatewayConfigsFn().find((c) => c.id === gwId)?.url;
+      if (fromSlot) return fromSlot;
+    }
+    return state.gatewayUrl;
+  }
+
+  function resolveSettingsTicket(): string {
+    const gwId = resolveSelectedGatewayId();
+    if (gwId && deps.getTicketForGateway && getGatewayConfigsFn().length >= 2) {
+      return deps.getTicketForGateway(gwId) ?? '';
+    }
+    return deps.getCurrentTicket() ?? '';
+  }
+
+  function isSettingsGatewayConnected(): boolean {
+    const state = deps.getState();
+    const gwId = resolveSelectedGatewayId();
+    if (gwId && deps.isGatewayConnected && getGatewayConfigsFn().length >= 2) {
+      return deps.isGatewayConnected(gwId);
+    }
+    if (gwId && getGatewayConfigsFn().length >= 2 && deps.getGatewaySlot?.(gwId)) {
+      return Boolean(deps.getGatewaySlot(gwId)?.connected);
+    }
+    return Boolean(resolveSettingsClient()) && state.gatewayConnected;
+  }
+
   const resolveProfileAvatar = (botId: string): string | undefined =>
     resolveProfileAvatarFromState(deps.getState(), deps.profileAvatarCache, botId);
 
   const scopedProfileName = (): string => {
     const state = deps.getState();
-    return state.settingsScopedProfile || state.profileName || 'default';
+    const roster = botRoster();
+    const scoped = state.settingsScopedProfile;
+    if (scoped && (!isMultiGatewayConfigMode() || roster.some((b) => b.profile === scoped))) {
+      return scoped;
+    }
+    if (!isMultiGatewayConfigMode() && state.profileName) {
+      return state.profileName;
+    }
+    if (state.profileName && roster.some((b) => b.profile === state.profileName)) {
+      return state.profileName;
+    }
+    return roster[0]?.profile || gatewayController.getProfileNameForGateway(resolveSelectedGatewayId());
   };
 
-  const botRoster = () => resolveBotRoster(deps.getState());
+  const botRoster = () => {
+    const state = deps.getState();
+    if (!isMultiGatewayConfigMode()) {
+      return resolveBotRoster(state);
+    }
+    const gwId = resolveSelectedGatewayId();
+    const scopedProfiles = state.profiles.filter((item) => !gwId || item.gatewayId === gwId);
+    if (scopedProfiles.length > 0) {
+      return scopedProfiles.map((profile) => ({
+        profile: profile.name,
+        displayName: profile.displayName || profile.name,
+        avatar: profile.avatar,
+      }));
+    }
+    if (state.settingsProfiles.status === 'ready' && state.settingsProfiles.data.length > 0) {
+      return state.settingsProfiles.data.map((row) => ({
+        profile: row.name,
+        displayName: row.displayName || row.name,
+        avatar: row.avatar,
+      }));
+    }
+    const fallbackProfile = gatewayController.getProfileNameForGateway(gwId);
+    return [{ profile: fallbackProfile, displayName: fallbackProfile }];
+  };
 
   function subscriptionProfileName(): string {
-    const state = deps.getState();
-    return botRoster()[0]?.profile || state.profileName || 'default';
+    return botRoster()[0]?.profile || deps.getState().profileName || 'default';
   }
 
   function syncLocale(): void {
@@ -211,8 +346,8 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     if (providerAdminController) return providerAdminController;
     const desktopApi = deps.getDesktopApi?.();
     const rest = createProviderAdminRest({
-      baseUrl: () => deps.getEffectiveUrl(deps.getState().gatewayUrl),
-      ticket: () => deps.getCurrentTicket() ?? '',
+      baseUrl: () => deps.getEffectiveUrl(resolveSettingsGatewayUrl()),
+      ticket: () => resolveSettingsTicket(),
       proxy: (options) => {
         if (!desktopApi?.httpProxy) throw new Error('Desktop REST proxy is unavailable');
         return desktopApi.httpProxy(options);
@@ -234,43 +369,27 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     return providerAdminController;
   }
 
-  /**
-   * 刷新模型与提供商聚合视图（Stale-While-Revalidate + 代际竞态防护）。
-   *
-   * 【设计意图 (Why)】
-   *   从 BOT 配置页修改默认模型或增删提供商后切回设置页，必须拉回最新 `providerViews`，
-   *   同时在已有 `ready` 快照时避免重绘加载骨架，防止切换默认模型或列表跳闪。
-   *
-   * 【防范的历史坑 (Pitfall)】
-   *   1. 若同步触发 `deps.render()` 位于 `try` 块外部，一旦渲染异常就会把 `providerCatalogInFlight`
-   *      永久锁死在 `true`，导致后续所有切页自动刷新全部失效；
-   *   2. 乱序慢响应曾在后发先至之后回写，用过时 `active` 状态覆盖最新目录。
-   *
-   * 【约束与规则 (Rules)】
-   *   1. 递增 `providerCatalogGen` 并把所有写状态与首次渲染收进同一 `try/finally`，确保在途标记必清；
-   *   2. `try` 与 `catch` 回写前必须校验 `gen === providerCatalogGen`，丢弃任何迟到的旧响应。
-   */
   async function reloadProviderCatalog(): Promise<void> {
     const state = deps.getState();
+    const requestGwId = resolveSelectedGatewayId();
     const agents = botRoster();
     const gen = ++providerCatalogGen;
     providerCatalogInFlight = true;
     try {
-      // 已有就绪数据时做静默后台刷新，避免切页或保存 BOT 后闪烁空骨架或瞬时清空 BOT 面板模型目录。
       if (state.settingsProviderViews.status !== 'ready') {
         state.settingsProviderViews = { status: 'loading' };
         deps.render();
       }
       const desktopApi = deps.getDesktopApi?.();
       const rest = createProviderAdminRest({
-        baseUrl: () => deps.getEffectiveUrl(state.gatewayUrl),
-        ticket: () => deps.getCurrentTicket() ?? '',
+        baseUrl: () => deps.getEffectiveUrl(resolveSettingsGatewayUrl()),
+        ticket: () => resolveSettingsTicket(),
         proxy: (options) => {
           if (!desktopApi?.httpProxy) throw new Error('Desktop REST proxy is unavailable');
           return desktopApi.httpProxy(options);
         },
       });
-      const gatewayClient = deps.getGatewayClient();
+      const gatewayClient = resolveSettingsClient();
       const result = await loadProviderCatalog({
         agents,
         rest,
@@ -282,7 +401,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         },
         describeError: (error) => deps.describeRpcError(error),
       });
-      if (gen !== providerCatalogGen) return;
+      if (gen !== providerCatalogGen || requestGwId !== resolveSelectedGatewayId()) return;
       state.settingsProviderViews = { status: 'ready', data: result.views };
       state.settingsProviderFailures = result.failed;
       state.settingsCustomEndpoints = { status: 'ready', data: result.endpoints.map((entry) => entry.row) };
@@ -294,7 +413,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         ? { status: 'ready', data: result.subscriptions }
         : { status: 'error', message: result.subscriptionsError || deps.t('settings.loadFailed') };
     } catch (error) {
-      if (gen !== providerCatalogGen) return;
+      if (gen !== providerCatalogGen || requestGwId !== resolveSelectedGatewayId()) return;
       state.settingsProviderViews = { status: 'error', message: deps.describeRpcError(error) };
       state.settingsProviderFailures = [];
       state.settingsCustomEndpoints = { status: 'error', message: deps.describeRpcError(error) };
@@ -311,10 +430,10 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     if (settingsController) return settingsController;
     const state = deps.getState();
     settingsController = createSettingsController({
-      isConnected: () => Boolean(deps.getGatewayClient()) && state.gatewayConnected,
-      profileName: () => state.profileName || 'default',
+      isConnected: () => isSettingsGatewayConnected(),
+      profileName: () => gatewayController.getProfileNameForGateway(resolveSelectedGatewayId()),
       call: <T,>(method: string, params?: Record<string, unknown>) => {
-        const client = deps.getGatewayClient();
+        const client = resolveSettingsClient();
         if (!client) return Promise.reject(new Error(deps.t('settings.loadFailed'))) as Promise<T>;
         return client.call<T>(method, params);
       },
@@ -340,7 +459,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     const state = deps.getState();
 
     botManagementController = createBotManagementController({
-      isConnected: () => Boolean(deps.getGatewayClient()) && state.gatewayConnected,
+      isConnected: () => isSettingsGatewayConnected(),
       loadProfiles: () => getSettingsController().loadProfiles(),
       getProfiles: () => state.settingsProfiles,
       getState: () => ({
@@ -356,13 +475,16 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         if (patch.status !== undefined) state.botManagementStatus = patch.status;
         if (patch.activeBotId !== undefined) state.botManagementActiveBotId = patch.activeBotId;
         if ('activeDetail' in patch) state.botManagementDetail = patch.activeDetail;
-        if (patch.drafts !== undefined) state.botDrafts = patch.drafts;
+        if (patch.drafts !== undefined) {
+          state.botDrafts = patch.drafts;
+          botDraftsByGateway.set(resolveGatewayBucketKey(resolveSelectedGatewayId()), patch.drafts);
+        }
         if ('errorBanner' in patch) state.botManagementError = patch.errorBanner;
         if ('confirmPending' in patch) state.botManagementConfirm = patch.confirmPending;
         if (patch.isBusy !== undefined) state.botManagementBusy = patch.isBusy;
       },
       describeBot: (botId, hint) => {
-        const client = deps.getGatewayClient();
+        const client = resolveSettingsClient();
         if (!client) return Promise.reject(new Error(deps.t('settings.notConnected')));
         const resolvedAvatar = resolveProfileAvatar(botId) || hint.avatar;
         return profileService.describeBot(
@@ -372,7 +494,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         );
       },
       fetchSkillInventory: async (botId) => {
-        const client = deps.getGatewayClient();
+        const client = resolveSettingsClient();
         if (!client) return null;
         try {
           const result = await client.request<{ skills?: Record<string, string[]> | null }>(
@@ -393,7 +515,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         }
       },
       fetchSkillDescriptions: async (botId) => {
-        const client = deps.getGatewayClient();
+        const client = resolveSettingsClient();
         if (!client) return null;
         try {
           const result = await client.request<CompleteSlashResult>('complete.slash', {
@@ -418,7 +540,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         }
       },
       fetchMcpStatus: async (botId) => {
-        const client = deps.getGatewayClient();
+        const client = resolveSettingsClient();
         if (!client) return null;
         try {
           const result = await client.request<{
@@ -439,12 +561,12 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         }
       },
       configureBot: (params: ProfilesConfigureParams) => {
-        const client = deps.getGatewayClient();
+        const client = resolveSettingsClient();
         if (!client) return Promise.reject(new Error(deps.t('settings.notConnected')));
         return profileService.configureBot(params, client);
       },
       setAsset: (botId, dataUrl, clear) => {
-        const client = deps.getGatewayClient();
+        const client = resolveSettingsClient();
         if (!client) return Promise.reject(new Error(deps.t('settings.notConnected')));
         return profileService.setAsset(botId, 'avatar', dataUrl, client, { clear });
       },
@@ -503,20 +625,35 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
   }
 
   const botWizardController = createBotWizardController({
-    isConnected: () => deps.getState().gatewayConnected,
-    getDefaultCloneFrom: () => deps.getState().botManagementActiveBotId || deps.getState().profiles[0]?.name || 'default',
-    getExistingBotIds: () => deps.getState().profiles.map((p) => p.name),
+    isConnected: () => isSettingsGatewayConnected(),
+    getDefaultCloneFrom: () => {
+      const st = deps.getState();
+      return (
+        st.botManagementActiveBotId ||
+        (isMultiGatewayConfigMode() ? botRoster()[0]?.profile : st.profiles[0]?.name) ||
+        'default'
+      );
+    },
+    getExistingBotIds: () =>
+      isMultiGatewayConfigMode()
+        ? botRoster().map((p) => p.profile)
+        : deps.getState().profiles.map((p) => p.name),
     createProfile: (params) => {
-      const client = deps.getGatewayClient();
+      const client = resolveSettingsClient();
       if (!client) throw new Error(deps.t('settings.notConnected'));
       return profileService.createProfile(params, client);
     },
     configureDisplayName: async (botId, displayName) => {
-      const client = deps.getGatewayClient();
+      const client = resolveSettingsClient();
       return client ? profileService.configureProfile(botId, { displayName }, client) : false;
     },
     onCreated: async (botId) => {
-      await deps.fetchProfiles({ refresh: true });
+      const gwId = resolveSelectedGatewayId();
+      if (gwId && deps.refreshGatewaySlot) {
+        await deps.refreshGatewaySlot(gwId);
+      } else {
+        await deps.fetchProfiles({ refresh: true });
+      }
       await getBotManagementController().loadRoster(true);
       getBotManagementController().selectBot(botId, { immediate: true });
     },
@@ -526,14 +663,44 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     describeError: deps.describeRpcError,
   });
 
-  /**
-   * 离场请求的唯一入口：切导航、关闭弹窗、Esc 全部经过这里。
-   *
-   * 【规则】
-   *   1. 只有当前停在 agents 域时才询问脏稿——离开其它域不可能丢 BOT 草稿；
-   *   2. 命中脏稿时只挂起目标、不改任何导航状态，等确认框裁决；
-   *   3. 用户取消必须清空挂起目标，否则下一次请求会复用过期目标。
-   */
+  const loadedGatewayBySection = new Map<string, string>();
+
+  function applySettingsGatewaySwitch(nextGatewayId: string): void {
+    loadedGatewayBySection.clear();
+    const state = deps.getState();
+    const prevKey = resolveGatewayBucketKey(state.settingsGatewayId);
+    if (Object.keys(state.botDrafts).length > 0) {
+      botDraftsByGateway.set(prevKey, state.botDrafts);
+    } else {
+      botDraftsByGateway.delete(prevKey);
+    }
+    state.settingsGatewayId = nextGatewayId;
+    const nextKey = resolveGatewayBucketKey(nextGatewayId);
+    state.botDrafts = botDraftsByGateway.get(nextKey) ?? {};
+    providerCatalogGen += 1;
+    providerCatalogInFlight = false;
+    state.settingsScopedProfile = '';
+    state.settingsProjects = { status: 'idle' };
+    state.settingsProfiles = { status: 'idle' };
+    state.settingsProviderViews = { status: 'idle' };
+    state.settingsProviderFailures = [];
+    state.settingsCustomEndpoints = { status: 'idle' };
+    state.settingsEndpointProfiles = {};
+    state.settingsEndpointFailures = [];
+    state.settingsSubscriptionCatalog = { status: 'idle' };
+    state.settingsMcp = { status: 'idle' };
+    state.settingsSkills = { status: 'idle' };
+    state.botManagementStatus = { status: 'uninitialized' };
+    state.botManagementActiveBotId = '';
+    state.botManagementDetail = undefined;
+    state.botManagementError = undefined;
+    state.botManagementConfirm = undefined;
+    state.learningState = { status: 'idle' };
+    state.learningDetail = { status: 'idle' };
+    lastSettingsSnapshotJson = '';
+    ensureSettingsSectionData(state.settingsSection, true);
+  }
+
   function requestSettingsExit(target: BotExitTarget = { kind: 'close' }): void {
     const state = deps.getState();
     if (state.settingsSection === 'agents' && hasUnsavedBotDrafts()) {
@@ -544,16 +711,13 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     performSettingsExit(target);
   }
 
-  /**
-   * 是否存在未保存的 BOT 草稿（跨全池，不只看当前选中的那个）。
-   *
-   * 【为什么必须看全池】草稿池是 `Record<botId, BotDraftState>`，切换 BOT 不会清理上一个；
-   *   只看 active bot 会出现「改 A → 切到 B → 关设置」完全无提示，A 的修改被悄悄留在本地。
-   * 【规则】面板注册的守卫作为补充信号（表单本地未落池的改动），任一为真即视为脏。
-   */
   function hasUnsavedBotDrafts(): boolean {
     const state = deps.getState();
-    return botDirtyGuard?.() === true || Object.keys(state.botDrafts).length > 0;
+    if (botDirtyGuard?.() === true || Object.keys(state.botDrafts).length > 0) return true;
+    for (const drafts of botDraftsByGateway.values()) {
+      if (Object.keys(drafts).length > 0) return true;
+    }
+    return false;
   }
 
   function performSettingsExit(target: BotExitTarget): void {
@@ -562,6 +726,8 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     if (target.kind === 'close') {
       state.isSettingsOpen = false;
       requestedBotTab = null;
+    } else if (target.kind === 'gateway') {
+      applySettingsGatewaySwitch(target.gatewayId);
     } else {
       state.settingsSection = target.section;
       ensureSettingsSectionData(target.section);
@@ -569,12 +735,14 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     deps.render();
   }
 
-  function openBotSettings(botId: string, options?: { tab?: BotDetailTab }): void {
+  function openBotSettings(botId: string, options?: { tab?: BotDetailTab; gatewayId?: string }): void {
     const state = deps.getState();
-    // 显式打开某个 BOT 是一次新的入场：上一轮挂起的离场目标不得残留。
     pendingBotExit = null;
     state.isSettingsOpen = true;
     state.settingsSection = 'agents';
+    if (options?.gatewayId && options.gatewayId !== resolveSelectedGatewayId()) {
+      applySettingsGatewaySwitch(options.gatewayId);
+    }
     state.botManagementActiveBotId = botId;
     if (options?.tab) {
       botTabRequestSeq += 1;
@@ -588,8 +756,10 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
       getBotManagementController().selectBot(botId, { immediate: true });
     }
     if (options?.tab === 'constellation') {
+      const targetGw = isMultiGatewayConfigMode() ? resolveSelectedGatewayId() : '';
       void deps.learningService?.loadLearningGraph({
         profile: botId || state.profileName || 'default',
+        ...(targetGw ? { gatewayId: targetGw } : {}),
         force: false,
       });
     }
@@ -658,12 +828,43 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
 
   function getSettingsSnapshot(): SettingsSnapshot {
     const state = deps.getState();
-    // 兜底：任何路径把设置页关掉（含未来新增的入口）后，挂起的离场目标都必须失效，
-    // 否则下一次打开会凭空弹出上一轮的确认框。
     if (!state.isSettingsOpen) pendingBotExit = null;
+    const gateways = gatewayController.getItems();
+    const selectedGatewayId = resolveSelectedGatewayId();
+    const selectedGw = gateways.find((gw) => gw.id === selectedGatewayId) ?? gateways[0];
+    const gatewayView =
+      selectedGw && gateways.length >= 2
+        ? {
+            url: selectedGw.url,
+            username: selectedGw.username || '',
+            hasStoredPassword: Boolean(selectedGw.hasStoredPassword),
+            profileName: selectedGw.profileName || botRoster()[0]?.profile || state.profileName,
+            status: (
+              selectedGw.status === 'connected'
+                ? 'connected'
+                : selectedGw.status === 'connecting'
+                  ? 'connecting'
+                  : 'disconnected'
+            ) as 'connected' | 'connecting' | 'disconnected',
+            latencyMs: selectedGw.latencyMs ?? 0,
+            test: state.testStatus,
+          }
+        : {
+            url: state.gatewayUrl,
+            username: state.username,
+            hasStoredPassword: Boolean(state.password),
+            profileName: state.profileName,
+            status: (
+              state.gatewayConnected ? 'connected' : state.gatewayConnecting ? 'connecting' : 'disconnected'
+            ) as 'connected' | 'connecting' | 'disconnected',
+            latencyMs: state.gatewayLatencyMs,
+            test: state.testStatus,
+          };
     return {
       isOpen: state.isSettingsOpen,
       section: state.settingsSection,
+      ...(gateways.length > 0 ? { gateways } : {}),
+      ...(selectedGatewayId ? { selectedGatewayId } : {}),
       theme: state.theme,
       locale: state.lang === 'en' ? 'en' : 'zh',
       fontPrefs: deps.getFontPreferences(),
@@ -687,15 +888,7 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
       providerAdminBusy: state.settingsProviderAdminBusy,
       mcp: state.settingsMcp,
       skills: state.settingsSkills,
-      gateway: {
-        url: state.gatewayUrl,
-        username: state.username,
-        hasStoredPassword: Boolean(state.password),
-        profileName: state.profileName,
-        status: state.gatewayConnected ? 'connected' : state.gatewayConnecting ? 'connecting' : 'disconnected',
-        latencyMs: state.gatewayLatencyMs,
-        test: state.testStatus,
-      },
+      gateway: gatewayView,
       appVersion: state.appVersion,
       platform: state.platform,
       busy: state.settingsBusy,
@@ -703,46 +896,39 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
     };
   }
 
-  /**
-   * 按需加载设置分区数据，并在切入提供商页时触发后台静默对齐。
-   *
-   * 【设计意图 (Why)】
-   *   即使用户先去 `BOT 配置` 改过默认模型（使 `settingsProviderViews.status` 已为 `ready`），
-   *   切回 `providers` 页也必须再向网关校准一次，消除旧状态残留导致的"切了默认还关不掉"。
-   *
-   * 【防范的历史坑 (Pitfall)】
-   *   曾因 `status === 'ready'` 就跳过刷新，造成页面持续展示改模型前的过时 `active` 状态；
-   *   若不检查 `!providerCatalogInFlight`，连续重绘会放大出重复目录请求。
-   *
-   * 【约束与规则 (Rules)】
-   *   1. `agents` 域仅在 `force` 或 `idle` 时预拉提供商目录，避免阻塞 BOT 配置页；
-   *   2. `providers` 域只要 `!providerCatalogInFlight && status !== 'loading'` 均静默校准。
-   */
   function ensureSettingsSectionData(section: SettingsSectionId, force = false): void {
     const state = deps.getState();
+    const gwId = resolveSelectedGatewayId() || undefined;
+    const gwKey = gwId ?? '';
+    const gatewayChanged = isMultiGatewayConfigMode() && loadedGatewayBySection.get(section) !== gwKey;
+    const effectiveForce = force || gatewayChanged;
+    if (isMultiGatewayConfigMode() && isSettingsGatewayConnected()) {
+      loadedGatewayBySection.set(section, gwKey);
+    }
     if (section === 'projects') {
-      if (force || state.settingsProjects.status === 'idle') void deps.fetchProjects?.();
+      if (gatewayChanged) state.settingsProjects = { status: 'idle' };
+      if (effectiveForce || state.settingsProjects.status === 'idle') void deps.fetchProjects?.(gwId);
       return;
     }
     if (section === 'agents') {
-      getBotManagementController().ensureLoaded(force);
-      if (force || state.settingsProviderViews.status === 'idle') {
-        void reloadProviderCatalog();
+      if (gatewayChanged) {
+        state.botManagementStatus = { status: 'uninitialized' };
+        state.botManagementActiveBotId = '';
+        state.botManagementDetail = undefined;
       }
+      getBotManagementController().ensureLoaded(effectiveForce);
+      if (effectiveForce || state.settingsProviderViews.status === 'idle') void reloadProviderCatalog();
       return;
     }
-    getSettingsController().ensureSection(section, force);
+    getSettingsController().ensureSection(section, effectiveForce);
     if (section !== 'providers') return;
-    if (state.profiles.length === 0) void getSettingsController().loadProfiles();
-    if (force || (!providerCatalogInFlight && state.settingsProviderViews.status !== 'loading')) {
+    if (effectiveForce || state.profiles.length === 0 || (isMultiGatewayConfigMode() && state.settingsProfiles.status !== 'ready')) {
+      void getSettingsController().loadProfiles();
+    }
+    if (effectiveForce || (!providerCatalogInFlight && state.settingsProviderViews.status !== 'loading')) {
       void reloadProviderCatalog();
     }
   }
-
-  const applyGatewayDraft = (draft: GatewayDraft): void => {
-    const state = deps.getState();
-    applyGatewayDraftToState(deps, state, draft, resolveGatewayPassword(draft.password, state.password));
-  };
 
   function createSettingsActions(): SettingsActions {
     const state = deps.getState();
@@ -751,9 +937,12 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         requestSettingsExit({ kind: 'close' });
       },
       onSelectSection: (section) => {
-        // 点当前项不构成离场，不做脏检查，避免误弹确认框。
         if (deps.getState().settingsSection === section) return;
         requestSettingsExit({ kind: 'section', section });
+      },
+      onSelectSettingsGateway: (gatewayId) => {
+        if (gatewayId === resolveSelectedGatewayId()) return;
+        requestSettingsExit({ kind: 'gateway', gatewayId });
       },
       onThemeChange: (theme) => {
         state.theme = deps.resolveSkinId(theme);
@@ -802,13 +991,15 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         deps.render();
       },
       onConversationOrgPrefsChange: (patch) => deps.onOrgPrefsChange?.(patch),
-      onRefreshProjects: () => { void deps.fetchProjects?.(); },
-      onCreateProject: deps.createProject ? (p) => deps.createProject!(p) : undefined,
-      onUpdateProject: deps.updateProject ? (id, patch) => deps.updateProject!(id, patch) : undefined,
-      onDeleteProject: deps.deleteProject ? (id) => deps.deleteProject!(id) : undefined,
+      onRefreshProjects: () => { void deps.fetchProjects?.(resolveSelectedGatewayId() || undefined); },
+      onCreateProject: deps.createProject ? (p) => deps.createProject!(p, resolveSelectedGatewayId() || undefined) : undefined,
+      onUpdateProject: deps.updateProject ? (id, patch) => deps.updateProject!(id, patch, resolveSelectedGatewayId() || undefined) : undefined,
+      onDeleteProject: deps.deleteProject ? (id) => deps.deleteProject!(id, resolveSelectedGatewayId() || undefined) : undefined,
       ...createProjectDirectoryActions({
         getState: deps.getState,
-        getGatewayClient: deps.getGatewayClient,
+        getGatewayClient: resolveSettingsClient,
+        getGatewayUrl: resolveSettingsGatewayUrl,
+        isGatewayConnected: isSettingsGatewayConnected,
         getDesktopApi: deps.getDesktopApi,
         getEffectiveUrl: deps.getEffectiveUrl,
       }),
@@ -1206,13 +1397,12 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         const target = pendingBotExit;
         if (!target) return;
         if (choice === 'discard') {
-          // 放弃修改必须清空整个草稿池：只清 active bot 会把其它 BOT 的未保存修改留在本地，
-          // 而用户刚刚确认的是"放弃这些编辑"。
           const ids = Object.keys(deps.getState().botDrafts);
           if (ids.length > 0) {
             const controller = getBotManagementController();
             for (const id of ids) controller.resetDraft(id);
           }
+          botDraftsByGateway.clear();
         }
         performSettingsExit(target);
       },
@@ -1224,232 +1414,45 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         botDirtyGuard = guard;
       },
       onOpenAgent: (name) => {
-        openBotSettings(name);
+        openBotSettings(name, { gatewayId: resolveSelectedGatewayId() || undefined });
       },
       onRefreshExtensions: () => { void getSettingsController().loadExtensions(); },
       onReloadSkills: () => getSettingsController().reloadSkills(),
-      onFetchMcpCatalog: async (profile) => {
-        const client = deps.getGatewayClient();
-        if (!client || !state.gatewayConnected) {
-          return { ok: false, items: [], message: deps.t('settings.notConnected') };
-        }
-        const targetProfile = profile || state.profileName || 'default';
-        try {
-          const result = await client.request('mcp.catalog', { profile: targetProfile });
-          return { ok: true, items: normalizeMcpCatalog(result) };
-        } catch (error) {
-          return { ok: false, items: [], message: deps.describeRpcError(error) };
-        }
-      },
-      onAddMcpServer: async (profile, params) => {
-        const client = deps.getGatewayClient();
-        if (!client || !state.gatewayConnected) {
-          return { ok: false, message: deps.t('settings.notConnected') };
-        }
-        const targetProfile = profile || state.profileName || 'default';
-        const rpcParams: McpServerAddRpcParams = {
-          profile: targetProfile,
-          name: params.name,
-        };
-        if (params.preset) rpcParams.preset = params.preset;
-        if (params.config) rpcParams.config = params.config;
-        if (params.bearer_token) rpcParams.bearer_token = params.bearer_token;
-        try {
-          const result = await client.request<{ ok?: boolean; name?: string }>('mcp.servers.add', rpcParams);
-          if (result && result.ok === false) {
-            return { ok: false, message: deps.t('settings.malformedResponse') };
-          }
-          const serverName = (typeof result?.name === 'string' && result.name) || params.name;
-          await Promise.all([
-            getBotManagementController().refreshActiveCapabilities(targetProfile, { addedMcpName: serverName }),
-            state.settingsMcp.status === 'ready' || state.settingsSection === 'extensions'
-              ? getSettingsController().loadExtensions()
-              : Promise.resolve(),
-          ]);
-          return { ok: true, name: serverName };
-        } catch (error) {
-          return { ok: false, message: deps.describeRpcError(error) };
-        }
-      },
-      onRemoveMcpServer: async (profile, name) => {
-        const client = deps.getGatewayClient();
-        if (!client || !state.gatewayConnected) {
-          return { ok: false, message: deps.t('settings.notConnected') };
-        }
-        const targetProfile = profile || state.profileName || 'default';
-        try {
-          const result = await client.request<{ ok?: boolean }>('mcp.servers.remove', {
-            profile: targetProfile,
-            name,
-          });
-          if (result && result.ok === false) {
-            return { ok: false, message: deps.t('settings.malformedResponse') };
-          }
-          await Promise.all([
-            getBotManagementController().refreshActiveCapabilities(targetProfile, { removedMcpName: name }),
-            state.settingsMcp.status === 'ready' || state.settingsSection === 'extensions'
-              ? getSettingsController().loadExtensions()
-              : Promise.resolve(),
-          ]);
-          return { ok: true };
-        } catch (error) {
-          return { ok: false, message: deps.describeRpcError(error) };
-        }
-      },
-      onTestMcpServer: async (profile, name) => {
-        const client = deps.getGatewayClient();
-        if (!client || !state.gatewayConnected) {
-          return { ok: false, tools: [], oauthNeeded: false, error: deps.t('settings.notConnected') };
-        }
-        const targetProfile = profile || state.profileName || 'default';
-        try {
-          const result = await client.request('mcp.servers.test', {
-            profile: targetProfile,
-            name,
-          });
-          return normalizeMcpTestResult(result);
-        } catch (error) {
-          return {
-            ok: false,
-            tools: [],
-            oauthNeeded: false,
-            error: deps.describeRpcError(error),
-          };
-        }
-      },
-      onSearchSkillsHub: async (profile, query, page = 1) => {
-        const client = deps.getGatewayClient();
-        if (!client || !state.gatewayConnected) {
-          return { ok: false, message: deps.t('settings.notConnected') };
-        }
-        const targetProfile = profile || state.profileName || 'default';
-        const trimmed = query.trim();
-        try {
-          const result = trimmed
-            ? await client.request('skills.manage', {
-                profile: targetProfile,
-                action: 'search',
-                query: trimmed,
-                page,
-                page_size: 20,
-              })
-            : await client.request('skills.manage', {
-                profile: targetProfile,
-                action: 'browse',
-                page,
-                page_size: 20,
-              });
-          const installed = new Set<string>();
-          if (state.botManagementDetail?.id === targetProfile) {
-            for (const row of state.botManagementDetail.skills.rows) installed.add(row.id);
-          }
-          if (state.settingsSkills.status === 'ready') {
-            for (const row of state.settingsSkills.data) installed.add(row.name);
-          }
-          return { ok: true, data: normalizeSkillSearchResults(result, installed) };
-        } catch (error) {
-          return { ok: false, message: deps.describeRpcError(error) };
-        }
-      },
-      onInstallSkill: async (profile, name) => {
-        const client = deps.getGatewayClient();
-        if (!client || !state.gatewayConnected) {
-          return { ok: false, message: deps.t('settings.notConnected') };
-        }
-        const targetProfile = profile || state.profileName || 'default';
-        try {
-          const result = await client.request<{ installed?: boolean | null }>('skills.manage', {
-            profile: targetProfile,
-            action: 'install',
-            query: name,
-          });
-          if (result && result.installed === false) {
-            return { ok: false, message: deps.t('settings.malformedResponse') };
-          }
-          try {
-            await client.request('skills.reload', { profile: targetProfile });
-          // gate-degrade: 技能已写入磁盘但自动重载失败；记观测日志并允许用户后续手动刷新，不推翻安装成功结局。
-          } catch (reloadErr) {
-            deps.bootLog.warn('skills.reload after install failed', {
-              profile: targetProfile,
-              error: deps.describeRpcError(reloadErr),
-            });
-          }
-          await Promise.all([
-            getBotManagementController().refreshActiveCapabilities(targetProfile),
-            state.settingsSkills.status === 'ready' || state.settingsSection === 'extensions'
-              ? getSettingsController().loadExtensions()
-              : Promise.resolve(),
-          ]);
-          return { ok: true };
-        } catch (error) {
-          return { ok: false, message: deps.describeRpcError(error) };
-        }
-      },
-      onInspectSkill: async (profile, skillName, fallbackDescription) => {
-        const client = deps.getGatewayClient();
-        if (!client || !state.gatewayConnected) {
-          return { ok: false, message: deps.t('settings.notConnected') };
-        }
-        const targetProfile = profile || state.profileName || 'default';
-        const trimmedName = skillName.trim();
-        if (!trimmedName) {
-          return { ok: false, message: deps.t('settings.malformedResponse') };
-        }
-        const [inspectRes, dispatchRes] = await Promise.allSettled([
-          client.request('skills.manage', {
-            profile: targetProfile,
-            action: 'inspect',
-            query: trimmedName,
-          }),
-          client.request('command.dispatch', {
-            name: trimmedName,
-            profile: targetProfile,
-          }),
-        ]);
-        if (inspectRes.status === 'rejected' && dispatchRes.status === 'rejected') {
-          return { ok: false, message: deps.describeRpcError(inspectRes.reason) };
-        }
-        return {
-          ok: true,
-          data: normalizeSkillInspectResult(trimmedName, {
-            inspectPayload: inspectRes.status === 'fulfilled' ? inspectRes.value : undefined,
-            dispatchPayload: dispatchRes.status === 'fulfilled' ? dispatchRes.value : undefined,
-            fallbackDescription,
-          }),
-        };
-      },
+      ...createSettingsExtensionsActions({
+        getGatewayClient: resolveSettingsClient,
+        isConnected: isSettingsGatewayConnected,
+        getFallbackProfile: () => gatewayController.getProfileNameForGateway(resolveSelectedGatewayId()),
+        getActiveBotDetail: () => state.botManagementDetail,
+        getSettingsSkills: () => state.settingsSkills,
+        getMcpStatus: () => state.settingsMcp.status,
+        getSkillsStatus: () => state.settingsSkills.status,
+        getSection: () => state.settingsSection,
+        refreshActiveCapabilities: (targetProfile, opts) => getBotManagementController().refreshActiveCapabilities(targetProfile, opts),
+        loadExtensions: () => getSettingsController().loadExtensions(),
+        t: deps.t,
+        describeRpcError: deps.describeRpcError,
+        bootLog: deps.bootLog,
+      }),
       onLoadLearningGraph: (profile, force) => {
-        void deps.learningService?.loadLearningGraph({ profile, force: Boolean(force) });
+        const gatewayId = isMultiGatewayConfigMode() ? resolveSelectedGatewayId() : '';
+        void deps.learningService?.loadLearningGraph({ profile, ...(gatewayId ? { gatewayId } : {}), force: Boolean(force) });
       },
       onLoadLearningDetail: (id, profile) => {
-        void deps.learningService?.loadLearningDetail(id, profile);
+        const gw = isMultiGatewayConfigMode() ? resolveSelectedGatewayId() : '';
+        void (gw ? deps.learningService?.loadLearningDetail(id, profile, gw) : deps.learningService?.loadLearningDetail(id, profile));
       },
-      onEditLearningNode: (id, content, profile) =>
-        deps.learningService
-          ? deps.learningService.editLearningNode(id, content, profile)
-          : Promise.resolve({ ok: false, message: deps.t('settings.notConnected') }),
-      onDeleteLearningNode: (id, profile) =>
-        deps.learningService
-          ? deps.learningService.deleteLearningNode(id, profile)
-          : Promise.resolve({ ok: false, message: deps.t('settings.notConnected') }),
-      onTestGateway: (draft) => {
-        applyGatewayDraft(draft);
-        void getSettingsController().runBusy(async () => {
-          state.testStatus = await deps.testConnection(state.gatewayUrl, state.username, state.password);
-        });
+      onEditLearningNode: (id, content, profile) => {
+        if (!deps.learningService) return Promise.resolve({ ok: false, message: deps.t('settings.notConnected') });
+        const gw = isMultiGatewayConfigMode() ? resolveSelectedGatewayId() : '';
+        return gw ? deps.learningService.editLearningNode(id, content, profile, gw) : deps.learningService.editLearningNode(id, content, profile);
       },
-      onConnectGateway: (draft) => {
-        applyGatewayDraft(draft);
-        if (!state.gatewayUrl) {
-          state.testStatus = { ok: false, message: deps.t('gateway.urlRequired'), latency: 0 };
-          deps.render();
-          return;
-        }
-        void deps.connect();
+      onDeleteLearningNode: (id, profile) => {
+        if (!deps.learningService) return Promise.resolve({ ok: false, message: deps.t('settings.notConnected') });
+        const gw = isMultiGatewayConfigMode() ? resolveSelectedGatewayId() : '';
+        return gw ? deps.learningService.deleteLearningNode(id, profile, gw) : deps.learningService.deleteLearningNode(id, profile);
       },
-      onDisconnectGateway: () => { deps.disconnect(); },
-      ...createMcpOAuthActions({ getState: () => state, getGatewayClient: deps.getGatewayClient, getDesktopApi: deps.getDesktopApi, describeRpcError: deps.describeRpcError, t: deps.t, onNotify: (msg) => deps.showToast(msg), onExtensionsChanged: () => { void getSettingsController().loadExtensions(); } }),
+      ...gatewayController.actions,
+      ...createMcpOAuthActions({ getState: () => state, getGatewayClient: resolveSettingsClient, isGatewayConnected: isSettingsGatewayConnected, getDesktopApi: deps.getDesktopApi, describeRpcError: deps.describeRpcError, t: deps.t, onNotify: (msg) => deps.showToast(msg), onExtensionsChanged: () => { void getSettingsController().loadExtensions(); } }),
     };
   }
 

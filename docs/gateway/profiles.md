@@ -5,12 +5,12 @@
 
 | Method | Params (Contract) | Result (Contract) | Call Sites | Live Probe |
 | --- | --- | --- | --- | --- |
-| `profiles.configure` | `profile` `name` `ui_meta` `ui_meta_expected_revisions` `soul` `description` `model` `provider` `confirm_expensive_model` `disabled_skills` `enabled_toolsets` `enabled_mcp_servers` | `ok` `applied` `confirm_required` `confirm_message` | `packages/core/src/organization/profileMetaAdapter.ts:130`<br>`packages/core/src/organization/profileMetaAdapter.ts:184`<br>`packages/core/src/profile/profileService.ts:255` | ✅ 0.22.5 |
-| `profiles.create` | `profile` `name` `description` `clone_from` `clone_all` `clone_channels` `no_skills` `no_alias` `soul` `model` `provider` `share_auth` `mirror_credentials` | `ok` `name` `path` `soul_written` `model_set` `mirrored` `warnings` | `packages/core/src/profile/profileService.ts:196` | ✅ 0.22.5 |
-| `profiles.describe` | `profile` `name` | `name` `description` `soul` `model` `skills` `toolsets` `toolsets_pinned` `mcp_servers` | `packages/core/src/profile/profileService.ts:109`<br>`packages/core/src/profile/profileService.ts:165`<br>`packages/desktop/src/renderer/services/learningService.ts:111` | ✅ 0.22.5 |
-| `profiles.get_asset` | `profile` `name` `asset` | `found` `mime` `size` `data` | `packages/core/src/profile/profileService.ts:280` | ✅ 0.22.5 |
-| `profiles.list` | `profile` `include_sessions` | `profiles` `bot_mode_protocol` `install_id` | `packages/core/src/organization/profileMetaAdapter.ts:111`<br>`packages/core/src/profile/profileService.ts:82`<br>`packages/core/src/rpc/client.ts:1321`<br>`packages/desktop/src/renderer/settingsController.ts:162` | ✅ 0.22.5 |
-| `profiles.set_asset` | `profile` `name` `asset` `data` `clear` | `ok` `asset` `size` `removed` | `packages/core/src/profile/profileService.ts:305` | ✅ 0.22.5 |
+| `profiles.configure` | `profile` `name` `ui_meta` `ui_meta_expected_revisions` `soul` `description` `model` `provider` `confirm_expensive_model` `disabled_skills` `enabled_toolsets` `enabled_mcp_servers` | `ok` `applied` `confirm_required` `confirm_message` | `packages/core/src/organization/profileMetaAdapter.ts:130`<br>`packages/core/src/organization/profileMetaAdapter.ts:184`<br>`packages/core/src/profile/profileService.ts:274` | ✅ 0.22.5 |
+| `profiles.create` | `profile` `name` `description` `clone_from` `clone_all` `clone_channels` `no_skills` `no_alias` `soul` `model` `provider` `share_auth` `mirror_credentials` | `ok` `name` `path` `soul_written` `model_set` `mirrored` `warnings` | `packages/core/src/profile/profileService.ts:215` | ✅ 0.22.5 |
+| `profiles.describe` | `profile` `name` | `name` `description` `soul` `model` `skills` `toolsets` `toolsets_pinned` `mcp_servers` | `packages/core/src/profile/profileService.ts:128`<br>`packages/core/src/profile/profileService.ts:184`<br>`packages/desktop/src/renderer/services/learningService.ts:139` | ✅ 0.22.5 |
+| `profiles.get_asset` | `profile` `name` `asset` | `found` `mime` `size` `data` | `packages/core/src/profile/profileService.ts:299` | ✅ 0.22.5 |
+| `profiles.list` | `profile` `include_sessions` | `profiles` `bot_mode_protocol` `install_id` | `packages/core/src/organization/profileMetaAdapter.ts:111`<br>`packages/core/src/profile/profileService.ts:96`<br>`packages/core/src/rpc/clientChannelHelpers.ts:310`<br>`packages/desktop/src/renderer/settingsController.ts:170` | ✅ 0.22.5 |
+| `profiles.set_asset` | `profile` `name` `asset` `data` `clear` | `ok` `asset` `size` `removed` | `packages/core/src/profile/profileService.ts:324` | ✅ 0.22.5 |
 
 ## Details
 
@@ -22,7 +22,7 @@
 - Call sites:
   - `packages/core/src/organization/profileMetaAdapter.ts:130`
   - `packages/core/src/organization/profileMetaAdapter.ts:184`
-  - `packages/core/src/profile/profileService.ts:255`
+  - `packages/core/src/profile/profileService.ts:274`
 
 ### `profiles.create`
 
@@ -31,7 +31,7 @@
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Expected guard branch exercised: error code `4062` (expected behavior, not a failure)
 - Call sites:
-  - `packages/core/src/profile/profileService.ts:196`
+  - `packages/core/src/profile/profileService.ts:215`
 
 ### `profiles.describe`
 
@@ -39,9 +39,9 @@
 - Result type: `ProfilesDescribeResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/core/src/profile/profileService.ts:109`
-  - `packages/core/src/profile/profileService.ts:165`
-  - `packages/desktop/src/renderer/services/learningService.ts:111`
+  - `packages/core/src/profile/profileService.ts:128`
+  - `packages/core/src/profile/profileService.ts:184`
+  - `packages/desktop/src/renderer/services/learningService.ts:139`
 
 ### `profiles.get_asset`
 
@@ -49,7 +49,7 @@
 - Result type: `ProfilesGetAssetResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/core/src/profile/profileService.ts:280`
+  - `packages/core/src/profile/profileService.ts:299`
 
 ### `profiles.list`
 
@@ -58,9 +58,9 @@
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
   - `packages/core/src/organization/profileMetaAdapter.ts:111`
-  - `packages/core/src/profile/profileService.ts:82`
-  - `packages/core/src/rpc/client.ts:1321`
-  - `packages/desktop/src/renderer/settingsController.ts:162`
+  - `packages/core/src/profile/profileService.ts:96`
+  - `packages/core/src/rpc/clientChannelHelpers.ts:310`
+  - `packages/desktop/src/renderer/settingsController.ts:170`
 
 ### `profiles.set_asset`
 
@@ -68,5 +68,5 @@
 - Result type: `ProfilesSetAssetResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/core/src/profile/profileService.ts:305`
+  - `packages/core/src/profile/profileService.ts:324`
 

@@ -119,7 +119,7 @@ test('历史翻页与 Profile 透传接线守卫', async (t) => {
     const fastRest = start >= 0 ? rendererSource.slice(start, start + 1200) : '';
     assert.ok(fastRest.includes('countLocalCoveredRows(merged, sessionId)'), '首屏必须把本地覆盖行数并入 sessionServerOffset 下界');
     assert.ok(
-      /const currentKnown = Math\.max\(\s*(?:this\.)?sessionServerOffset\.get\(sessionId\)/.test(fastRest),
+      /const currentKnown = Math\.max\(\s*(?:this\.)?sessionServerOffset\.get\((?:sessionId|cacheKey)\)/.test(fastRest),
       '游标只能取各来源最大值；改成 Math.min 会让首屏把已确认游标倒退回更小值'
     );
   });

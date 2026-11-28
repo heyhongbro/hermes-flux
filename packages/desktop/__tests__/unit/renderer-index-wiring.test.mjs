@@ -73,12 +73,13 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
   );
   // 【多流同步与唤醒接线守卫】校验 index.ts 将 LiveStreamRegistry、重连/watchdog 恢复与前台同步回调准确接入各服务
   assert.match(source, /const liveStreamRegistry = new LiveStreamRegistry\(\);/);
-  assert.match(source, /resolveSessionIdForMessage: \(mid\) => liveStreamRegistry\.getSessionIdForMessage\(mid\), resolveBotNameForSession/);
-  assert.match(source, /onActiveTurnDiscovered: \(p\) => gatewayEventDispatcher\.attachLiveTurnFromResume\(p\)/);
-  assert.match(source, /onReenterSameSession: \(\) => \{ void messageLoadingService\.refreshActiveSession\(\{ checkLiveTurn: true \}\); \}, onSyncFocusedStream: \(sid\) => gatewayEventDispatcher\.syncFocusedStreamingProjection\(sid\)/);
-  assert.match(source, /onWatchdogTurnStillRunning: \(sid, r\) => gatewayEventDispatcher\.reconcileActiveTurnFromResume\(sid, r\)/);
-  assert.match(source, /onWatchdogTurnCompleted: \(sid\) => \{ if \(sid === state\.activeSessionId\) void messageLoadingService\.refreshActiveSession\(\{ forceRefreshAfterReconnect: true, checkLiveTurn: true \}\); \}/);
-  assert.match(source, /onQueuedSubmitRace: \(sid\) => \{ if \(sid === state\.activeSessionId\) return messageLoadingService\.refreshActiveSession\(\{ forceRefreshAfterReconnect: true, checkLiveTurn: true \}\); \}/);
+  assert.match(source, /resolveSessionIdForMessage: \(mid\) => resolveMessageSessionIdAcrossRegistries\(/);
+  assert.match(source, /resolveBotNameForSession/);
+  assert.match(source, /onActiveTurnDiscovered: [\s\S]{0,80}?gatewayEventDispatcher\.attachLiveTurnFromResume/);
+  assert.match(source, /onReenterSameSession: \(\) => \{ void messageLoadingService\.refreshActiveSession\(\{ checkLiveTurn: true \}\); \},\s*onSyncFocusedStream: \(sid\) => gatewayEventDispatcher\.syncFocusedStreamingProjection\(sid/);
+  assert.match(source, /onWatchdogTurnStillRunning: \(sid, r\) => gatewayEventDispatcher\.reconcileActiveTurnFromResume\(sid, r/);
+  assert.match(source, /onWatchdogTurnCompleted: \(sid, gw\) => \{ if \(isFocusedGatewaySession\(state, sid, gw\)\) void messageLoadingService\.refreshActiveSession\(\{ forceRefreshAfterReconnect: true, checkLiveTurn: true \}\); \}/);
+  assert.match(source, /onQueuedSubmitRace: \(sid, gw\) => \{ if \(isFocusedGatewaySession\(state, sid, gw\)\) return messageLoadingService\.refreshActiveSession\(\{ forceRefreshAfterReconnect: true, checkLiveTurn: true \}\); \}/);
   assert.match(source, /getTurnStartedSessionId: \(\) => turnStartedSessionId/);
   assert.match(source, /onEnterStage: \(\) => \{ void messageLoadingService\.refreshActiveSession\(\{ checkLiveTurn: true \}\); \}/);
   assert.match(source, /resetActiveStreamingState:[\s\S]*?turnExecutionService\.disarmTurnWatchdog\(\)/);
@@ -198,6 +199,9 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
       const prevSessions = globalThis.window.__fluxState.sessions;
       const prevConfirmModal = globalThis.window.__fluxState.confirmModal;
       const prevRollbackArmed = globalThis.window.__fluxState.rollbackArmed;
+      const prevProfileName = globalThis.window.__fluxState.profileName;
+      const prevGatewayCount = globalThis.window.__fluxState.gatewayCount;
+      const prevOffline = globalThis.window.__fluxState.activeEntityGatewayOffline;
       const prevWs = globalThis.WebSocket;
       const prevFetch = globalThis.fetch;
       const prevQsa = globalThis.document.querySelectorAll;
@@ -229,6 +233,7 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
         globalThis.window.__fluxState.rollbackArmed = null;
 
         let latestWs = null;
+        let flipMultiOnProfiles = false;
         class MockWiringWs {
           static CONNECTING = 0;
           static OPEN = 1;
@@ -249,12 +254,18 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
           }
           send(raw) {
             const parsed = JSON.parse(String(raw));
+            if (flipMultiOnProfiles && parsed.method === 'profiles.list') {
+              flipMultiOnProfiles = false;
+              globalThis.window.__fluxState.gatewayCount = 2;
+            }
             const result =
               parsed.method === 'session.resume'
                 ? { session_id: 'lv-wire', stored_session_id: 's-wire' }
                 : parsed.method === 'session.fork' || parsed.method === 'session.branch'
                   ? { session_id: 'lv-forked', stored_session_id: 's-forked' }
-                  : parsed.method === 'session.delete' || parsed.method === 'sessions.delete'
+                  : parsed.method === 'session.create'
+                    ? { session_id: 'lv-created', stored_session_id: 's-created' }
+                    : parsed.method === 'session.delete' || parsed.method === 'sessions.delete'
                     ? { ok: true, deleted: true }
                     : parsed.method === 'sessions.list'
                       ? { sessions: [] }
@@ -277,7 +288,14 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
           json: async () => ({ ticket: 'tk-wire' }),
         });
         await globalThis.window.__fluxConnect?.('http://127.0.0.1:8080');
-        for (let i = 0; i < 6; i++) await Promise.resolve();
+        for (let i = 0; i < 24; i++) await Promise.resolve();
+        globalThis.window.__fluxState.gatewayUrl = '';
+        await globalThis.window.__fluxConnect?.();
+        flipMultiOnProfiles = true;
+        await globalThis.window.__fluxConnect?.('http://127.0.0.1:8080');
+        for (let i = 0; i < 24; i++) await Promise.resolve();
+        assert.equal(flipMultiOnProfiles, false);
+        globalThis.window.__fluxState.gatewayCount = 1;
         globalThis.window.__fluxState.platform = 'win32';
         globalThis.window.__fluxState.activeFocus = { type: 'session', sessionId: 's-wire' };
         globalThis.window.__fluxState.activeSessionId = 's-wire';
@@ -336,6 +354,7 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
           closest: () => null,
         };
         const sendBtnStub = { onclick: null, disabled: false, dataset: {}, closest: () => null };
+        const submitTaskBtnStub = { onclick: null, disabled: false, dataset: {}, closest: () => null };
         const confirmOkBtnStub = { onclick: null, dataset: {}, focus() {}, closest: () => null };
         const deleteSessionBtnStub = { dataset: { id: 's-wire' }, onclick: null, closest: () => null };
         const prevInnerGetById = globalThis.document.getElementById;
@@ -343,6 +362,7 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
           if (id === 'flux-app-root') return rootStub;
           if (id === 'dock-prompt-input') return promptInputStub;
           if (id === 'dock-send-btn') return sendBtnStub;
+          if (id === 'btn-submit-task-modal') return submitTaskBtnStub;
           if (id === 'btn-confirm-modal-ok') return confirmOkBtnStub;
           if (typeof id === 'string' && id.startsWith('msg-tools-')) return toolSlotStub;
           return null;
@@ -355,16 +375,37 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
         globalThis.window.__fluxState.activeFocus = { type: 'session', sessionId: 's-wire' };
         globalThis.window.__fluxState.activeSessionId = 's-wire';
         globalThis.window.__fluxState.isStreaming = false;
+        globalThis.window.__fluxState.profileName = 'coder';
         globalThis.window.__fluxRender?.();
         assert.equal(typeof sendBtnStub.onclick, 'function');
         assert.equal(typeof deleteSessionBtnStub.onclick, 'function');
+        assert.equal(typeof submitTaskBtnStub.onclick, 'function');
+        await submitTaskBtnStub.onclick();
+        assert.equal(globalThis.window.__fluxState.activeSessionId, 's-created');
+        globalThis.window.__fluxState.sessions = [
+          { id: 's-wire', title: 'Wire', botName: 'default' },
+          { id: 's-keep', title: 'Keep', botName: 'default' },
+        ];
+        globalThis.window.__fluxState.activeFocus = { type: 'session', sessionId: 's-wire' };
+        globalThis.window.__fluxState.activeSessionId = 's-wire';
+        globalThis.window.__fluxState.activeLiveSessionId = 'lv-wire';
+        globalThis.window.__fluxState.isStreaming = false;
+        promptInputStub.value = 'trigger stream';
+        globalThis.window.__fluxState.activeEntityGatewayOffline = true;
+        sendBtnStub.onclick();
+        for (let i = 0; i < 2; i++) await Promise.resolve();
+        assert.equal(globalThis.window.__fluxState.isStreaming, false);
+        globalThis.window.__fluxState.activeEntityGatewayOffline = false;
+        promptInputStub.value = 'trigger stream';
+        globalThis.window.__fluxRender?.();
         sendBtnStub.onclick();
         for (let i = 0; i < 4; i++) await Promise.resolve();
         assert.equal(globalThis.window.__fluxState.isStreaming, true);
         deleteSessionBtnStub.onclick({ stopPropagation() {} });
         assert.equal(typeof confirmOkBtnStub.onclick, 'function');
+        globalThis.window.__fluxState.profileName = '';
         confirmOkBtnStub.onclick({ stopPropagation() {} });
-        for (let i = 0; i < 8; i++) await Promise.resolve();
+        for (let i = 0; i < 32; i++) await Promise.resolve();
         assert.equal(globalThis.window.__fluxState.isStreaming, false);
         globalThis.document.getElementById = prevInnerGetById;
       } finally {
@@ -372,6 +413,7 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
           globalThis.window.__fluxState.gatewayUrl = '';
         }
         await globalThis.window.__fluxConnect?.();
+        await globalThis.window.__fluxSelectSession?.('s-keep');
         for (const cb of windowListeners.get('offline') || []) {
           try { cb(); } catch {}
         }
@@ -386,6 +428,9 @@ test('renderer index 顶层装配：入口必须真实构造视口管理器与�
         globalThis.window.__fluxState.sessions = prevSessions;
         globalThis.window.__fluxState.confirmModal = prevConfirmModal;
         globalThis.window.__fluxState.rollbackArmed = prevRollbackArmed;
+        globalThis.window.__fluxState.profileName = prevProfileName;
+        globalThis.window.__fluxState.gatewayCount = prevGatewayCount;
+        globalThis.window.__fluxState.activeEntityGatewayOffline = prevOffline;
       }
     } finally {
       for (const cb of windowListeners.get('beforeunload') || []) {

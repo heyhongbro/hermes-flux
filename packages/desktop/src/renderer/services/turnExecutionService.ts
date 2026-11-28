@@ -20,7 +20,11 @@
  *   3. 零文本写死：所有面向用户的提示与错误通知均经由 deps.t 国际化输出。
  */
 
-import type { AppState } from '../state/appState.js';
+import {
+  resolveScopedBotRuntimeKey,
+  resolveScopedEntityRuntimeKey,
+  type AppState,
+} from '../state/appState.js';
 import {
   type HermesGatewayClient,
   type IRpcCaller,
@@ -50,20 +54,22 @@ import {
   applyTurnFailed,
   settleTurnTermination,
   resolveCutIndexByAnchor,
+  scopedEntityKey,
+  scopedBotKey,
   SlidingActiveWatchdog,
 } from '@hermes-flux/core';
+import { isFocusedGatewaySession } from '../gateway/multiGatewayCoordinator.js';
+import {
+  armSideAgentCapsuleTimers,
+  collectKnownSendProfiles,
+  describeRpcError,
+  executeAskSideAgent,
+  safeUnrefTimer as safeUnref,
+} from './turnSideAgentHelper.js';
+export { describeRpcError };
 import type { I18nKey, MessageViewModel } from '@hermes-flux/ui';
 import type { SessionDraftStore } from '../persistence/sessionDrafts.js';
 import type { BotActivityStore } from '../persistence/botActivityStore.js';
-
-export function describeRpcError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === 'object') {
-    if ('message' in error && typeof error.message === 'string') return error.message;
-    if ('code' in error && typeof error.code === 'number') return `RPC error ${error.code}`;
-  }
-  return String(error);
-}
 
 function padZero(n: number): string {
   return n < 10 ? `0${n}` : String(n);
@@ -103,6 +109,7 @@ export type TurnWatchdogTimeoutMs = number;
 export interface TurnExecutionDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
   readonly getRpcCaller: () => IRpcCaller;
   readonly getInteractiveService: () => InteractiveService;
   readonly getCacheService: () => CacheService;
@@ -110,6 +117,7 @@ export interface TurnExecutionDeps {
   readonly getActivityTransitionTracker: () => ActivityTransitionTracker;
   readonly getTokenCoalescer: () => TokenCoalescer;
   readonly getSessionHandleRegistry: () => SessionHandleRegistry;
+  readonly getSessionHandleRegistryForGateway?: (gatewayId?: string) => SessionHandleRegistry;
   readonly getSessionMessagesCache: () => Map<string, MessageViewModel[]>;
   readonly getSessionDrafts: () => SessionDraftStore;
   readonly getBotActivityStore: () => BotActivityStore;
@@ -134,7 +142,8 @@ export interface TurnExecutionDeps {
   readonly getTurnStartedSessionId: () => string | null;
   readonly setTurnStartedSessionId: (id: string | null) => void;
   readonly getLiveStreamRegistry?: () => LiveStreamRegistry;
-  readonly resolveBotNameForSession?: (storedSessionId: string) => string | null;
+  readonly getLiveStreamRegistryForGateway?: (gatewayId?: string) => LiveStreamRegistry | undefined;
+  readonly resolveBotNameForSession?: (storedSessionId: string, gatewayId?: string) => string | null;
   readonly onWatchdogTurnStillRunning?: (storedSessionId: string, resumeResult: Record<string, unknown>) => void;
   readonly hasPendingInteractivePrompt?: (storedSessionId: string, liveSessionId?: string | null) => boolean;
   readonly onCaptureInteractiveFence?: () => number;
@@ -146,12 +155,12 @@ export interface TurnExecutionDeps {
     resume: Record<string, unknown>;
     fence: number;
   }) => void;
-  readonly onWatchdogTurnCompleted?: (storedSessionId: string) => Promise<void> | void;
-  readonly onQueuedSubmitRace?: (storedSessionId: string) => Promise<void> | void;
+  readonly onWatchdogTurnCompleted?: (storedSessionId: string, gatewayId?: string) => Promise<void> | void;
+  readonly onQueuedSubmitRace?: (storedSessionId: string, gatewayId?: string) => Promise<void> | void;
   readonly watchdogHardLimitMs?: number;
 
   readonly getSessionHistoryTrust: () => Map<string, 'server-priority' | 'client-priority'>;
-  readonly forgetOlderCursorState: (sessionId: string) => void;
+  readonly forgetOlderCursorState: (sessionId: string, gatewayId?: string) => void;
   readonly createNewSession: () => Promise<void>;
   readonly ensureLiveSessionId: () => Promise<string | null>;
   readonly setMessageContent: (messageId: string, content: string) => void;
@@ -207,12 +216,6 @@ export interface TurnExecutionService {
   armCapsuleTimers(taskId: string): void;
 }
 
-function safeUnref(timer: unknown): void {
-  if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
-    (timer as { unref: () => void }).unref();
-  }
-}
-
 export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecutionService {
   const PRESENCE_TERMINAL_TTL_MS = 8_000;
   const GROUP_THREAD_GAP_MS = 15 * 60 * 1000;
@@ -225,18 +228,47 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   let nextTurnSeq = 0;
   const sessionTurnOwner = new Map<string, string>();
   const botTurnOwner = new Map<string, string>();
+  const groupRoomGatewayMap = new Map<string, string>();
+
+  const resolveTargetClient = (gatewayId?: string): HermesGatewayClient | null =>
+    deps.getClientForGateway ? deps.getClientForGateway(gatewayId) : deps.getGatewayClient();
+
+  const resolveStreamReg = (gatewayId?: string): LiveStreamRegistry | undefined =>
+    deps.getLiveStreamRegistryForGateway?.(gatewayId) ?? deps.getLiveStreamRegistry?.();
+
+  const resolveHandleReg = (gatewayId?: string): SessionHandleRegistry =>
+    deps.getSessionHandleRegistryForGateway?.(gatewayId) ?? deps.getSessionHandleRegistry();
+
+  const resolveTargetRpcCaller = (client: HermesGatewayClient): IRpcCaller =>
+    client === deps.getGatewayClient()
+      ? deps.getRpcCaller()
+      : {
+          request: <TResult = unknown, TParams = unknown>(
+            method: string,
+            params?: TParams,
+            timeoutMs?: number,
+          ): Promise<TResult> => client.call<TResult>(method, params, timeoutMs),
+        };
+
+  const resolveGroupGatewayId = (roomId: string): string | undefined => {
+    const state = deps.getState();
+    if (state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId && state.activeFocus.gatewayId) {
+      return state.activeFocus.gatewayId;
+    }
+    return groupRoomGatewayMap.get(roomId) || state.groupRooms.find((r) => r.roomId === roomId)?.gatewayId || state.activeGatewayId;
+  };
 
   const releaseTurnOwnership = (
     msgId: string | null | undefined,
-    sessionId: string | null | undefined,
-    botName: string | null | undefined,
+    _sessionId?: string | null,
+    _botName?: string | null,
   ): void => {
     if (!msgId) return;
-    if (sessionId && sessionTurnOwner.get(sessionId) === msgId) {
-      sessionTurnOwner.delete(sessionId);
+    for (const [key, owner] of sessionTurnOwner) {
+      if (owner === msgId) sessionTurnOwner.delete(key);
     }
-    if (botName && botTurnOwner.get(botName) === msgId) {
-      botTurnOwner.delete(botName);
+    for (const [key, owner] of botTurnOwner) {
+      if (owner === msgId) botTurnOwner.delete(key);
     }
   };
 
@@ -246,8 +278,9 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
   function settleWatchdogTimeout(targetSessionOverride?: string | null): void {
     const state = deps.getState();
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
     const ctx = deps.getActiveStreamingContext();
-    const streamRegistry = deps.getLiveStreamRegistry?.();
+    const streamRegistry = resolveStreamReg(activeGw);
     const timedOutSessionId = targetSessionOverride ?? ctx.activeStreamingStoredSessionId;
     const streamEntry = timedOutSessionId ? streamRegistry?.getBySession(timedOutSessionId) : undefined;
     const timedOutBotName =
@@ -264,11 +297,17 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     if (timedOutSessionId && timedOutSessionId === state.activeSessionId && wasNearBottomBeforeTimeout) {
       deps.setPendingScrollToBottom(true);
     }
+    const scopedSessionId = timedOutSessionId
+      ? resolveScopedEntityRuntimeKey(timedOutSessionId, activeGw, state.gatewayCount)
+      : null;
+    const scopedBotName = timedOutBotName
+      ? resolveScopedBotRuntimeKey(timedOutBotName, activeGw, state.gatewayCount)
+      : null;
     settleTurnTermination({
       runningSessionIds: deps.getActiveRunningSessionIds(),
       runningBotNames: deps.getActiveRunningBotNames(),
-      sessionId: timedOutSessionId,
-      botName: timedOutBotName,
+      sessionId: scopedSessionId,
+      botName: scopedBotName,
     });
     const timedOutMsgId =
       streamEntry?.messageId ??
@@ -278,8 +317,8 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       streamRegistry?.removeSession(timedOutSessionId);
     }
     const tracker = deps.getActivityTransitionTracker();
-    if (timedOutSessionId) tracker.clear('session', timedOutSessionId);
-    if (timedOutBotName) tracker.clear('bot', timedOutBotName);
+    if (scopedSessionId) tracker.clear('session', scopedSessionId);
+    if (scopedBotName) tracker.clear('bot', scopedBotName);
 
     const remainingStreams = streamRegistry?.listSessionIds() ?? [];
     if (!timedOutSessionId || timedOutSessionId === ctx.activeStreamingStoredSessionId) {
@@ -340,15 +379,16 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   }
 
   async function probeWatchdogAuthority(probeGen: number, targetStoredId: string): Promise<void> {
-    const client = deps.getGatewayClient();
     const state = deps.getState();
-    const streamBotName = deps.getLiveStreamRegistry?.().getBySession(targetStoredId)?.botName;
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const client = resolveTargetClient(activeGw);
+    const streamBotName = resolveStreamReg(activeGw)?.getBySession(targetStoredId)?.botName;
     const resolvedProfile =
       streamBotName ||
       (state.activeFocus.type === 'bot' && state.activeSessionId === targetStoredId
         ? state.activeFocus.botName
-        : state.sessions.find((s) => s.id === targetStoredId)?.botName) ||
-      deps.resolveBotNameForSession?.(targetStoredId) ||
+        : (state.sessions.find((s) => s.id === targetStoredId && (!activeGw || !s.gatewayId || s.gatewayId === activeGw)) ?? state.sessions.find((s) => s.id === targetStoredId))?.botName) ||
+      deps.resolveBotNameForSession?.(targetStoredId, activeGw) ||
       state.profileName ||
       'default';
 
@@ -376,10 +416,12 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
     if (probeGen !== watchdogProbeGeneration) return;
 
+    const latestState = deps.getState();
+    const latestGw = latestState.activeFocus?.gatewayId || latestState.activeGatewayId;
     const inflight = extractResumeInflightState(resumeRes);
     const decision = decideWatchdogProbeAction({
       reason: 'inactivity',
-      isGatewayConnected: Boolean(deps.getGatewayClient()) && deps.getState().gatewayConnected !== false,
+      isGatewayConnected: Boolean(resolveTargetClient(latestGw)) && latestState.gatewayConnected !== false,
       probeResult: resumeRes ? { isRunning: inflight.isRunning } : null,
       probeError,
       consecutiveProbeFailures,
@@ -400,12 +442,13 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     consecutiveProbeFailures = 0;
     settleWatchdogTimeout(targetStoredId);
     if (decision === 'settle-completed') {
-      void deps.onWatchdogTurnCompleted?.(targetStoredId);
+      void deps.onWatchdogTurnCompleted?.(targetStoredId, latestGw);
     }
   }
 
   function pickLeastRecentlyActiveStreamId(): string | null {
-    const streamRegistry = deps.getLiveStreamRegistry?.();
+    const state = deps.getState();
+    const streamRegistry = resolveStreamReg(state.activeFocus?.gatewayId || state.activeGatewayId);
     if (!streamRegistry) return null;
     let oldestSid: string | null = null;
     let oldestAt = Infinity;
@@ -421,7 +464,8 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
   function handleWatchdogTimeout(reason: WatchdogTimeoutReason): void {
     const state = deps.getState();
-    const streamIds = deps.getLiveStreamRegistry?.().listSessionIds() ?? [];
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const streamIds = resolveStreamReg(activeGw)?.listSessionIds() ?? [];
     if (!state.isStreaming && streamIds.length === 0) return;
 
     const ctx = deps.getActiveStreamingContext();
@@ -431,7 +475,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       (state.isStreaming ? state.activeSessionId : null) ||
       streamIds[0] ||
       null;
-    const client = deps.getGatewayClient();
+    const client = resolveTargetClient(state.activeFocus?.gatewayId || state.activeGatewayId);
     const probeGen = ++watchdogProbeGeneration;
 
     if (reason === 'hard-limit' || !targetStoredId) {
@@ -486,7 +530,9 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   function disarmTurnWatchdog(force = false): void {
     // 【多流并发守卫 (Why)】删除/中断某个会话时若 LiveStreamRegistry 中仍有其他后台活跃流，
     // 不得误关共享看门狗，否则后台流永久丧失探活与兜底能力；仅在无活跃流或显式 force 时撤防。
-    if (!force && (deps.getLiveStreamRegistry?.().size() ?? 0) > 0) {
+    const state = deps.getState();
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    if (!force && (resolveStreamReg(activeGw)?.size() ?? 0) > 0) {
       return;
     }
     watchdogProbeGeneration += 1;
@@ -497,15 +543,12 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   function isStreamingActiveForCurrentSession(): boolean {
     const state = deps.getState();
     if (!state.activeSessionId) return false;
-    if (deps.getLiveStreamRegistry?.().hasSession(state.activeSessionId)) {
-      return true;
-    }
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    if (resolveStreamReg(activeGw)?.hasSession(state.activeSessionId)) return true;
     const ctx = deps.getActiveStreamingContext();
-    return Boolean(
-      ctx.activeStreamingStoredSessionId &&
-      ctx.activeStreamingStoredSessionId === state.activeSessionId &&
-      state.isStreaming
-    );
+    if (ctx.activeStreamingStoredSessionId !== state.activeSessionId || !state.isStreaming) return false;
+    if ((state.gatewayCount ?? 1) < 2 || !activeGw || !ctx.activeStreamingMessageId) return true;
+    return sessionTurnOwner.get(scopedEntityKey(activeGw, state.activeSessionId)) === ctx.activeStreamingMessageId;
   }
 
   function clearPresenceTerminal(): void {
@@ -569,15 +612,18 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   function syncGroupRoomLogsToState(roomId: string, logs: readonly GroupMessageEntry[]): void {
     if (!logs || logs.length === 0) return;
     const state = deps.getState();
+    const activeGw = state.activeFocus.type === 'group' ? state.activeFocus.gatewayId : state.activeGatewayId;
+    const matchesTargetRoom = (r: AppState['groupRooms'][number]): boolean =>
+      r.roomId === roomId && (!activeGw || !r.gatewayId || r.gatewayId === activeGw);
     const lastEntry = logs[logs.length - 1];
-    const targetRoom = state.groupRooms.find((r) => r.roomId === roomId);
+    const targetRoom = state.groupRooms.find(matchesTargetRoom) || state.groupRooms.find((r) => r.roomId === roomId);
     if (targetRoom && lastEntry) {
       targetRoom.lastMessage = lastEntry.text;
       const rawEntryTs = lastEntry.timestamp || Date.now();
       targetRoom.updatedAt = typeof rawEntryTs === 'number'
         ? (rawEntryTs > 1e11 ? rawEntryTs : rawEntryTs * 1000)
         : Date.now();
-      state.groupRooms = [targetRoom, ...state.groupRooms.filter((r) => r.roomId !== roomId)];
+      state.groupRooms = [targetRoom, ...state.groupRooms.filter((r) => !matchesTargetRoom(r))];
     }
     if (state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId) {
       state.messages = logs.map((entry, idx) => {
@@ -604,7 +650,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
   const groupPollerManager = new GroupLogPollerManager<GroupMessageEntry>({
     fetchLogs: (roomId) => {
-      const client = deps.getGatewayClient();
+      const client = resolveTargetClient(resolveGroupGatewayId(roomId));
       if (!client) {
         return Promise.reject(new Error('Gateway not connected'));
       }
@@ -619,12 +665,16 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       syncGroupRoomLogsToState(roomId, logs);
     },
     onCompleted: (roomId, focused) => {
-      deps.completeEntityTurn('group', deps.getActiveRunningGroupRoomIds(), deps.getUnreadGroupRoomIds(), roomId, focused);
+      const state = deps.getState();
+      const scopedRoomId = resolveScopedEntityRuntimeKey(roomId, resolveGroupGatewayId(roomId), state.gatewayCount);
+      deps.completeEntityTurn('group', deps.getActiveRunningGroupRoomIds(), deps.getUnreadGroupRoomIds(), scopedRoomId, focused);
       deps.render();
     },
     onFailed: (roomId) => {
-      applyTurnFailed(deps.getActiveRunningGroupRoomIds(), roomId);
-      deps.getActivityTransitionTracker().clear('group', roomId);
+      const state = deps.getState();
+      const scopedRoomId = resolveScopedEntityRuntimeKey(roomId, resolveGroupGatewayId(roomId), state.gatewayCount);
+      applyTurnFailed(deps.getActiveRunningGroupRoomIds(), scopedRoomId);
+      deps.getActivityTransitionTracker().clear('group', scopedRoomId);
       deps.render();
     },
     maxRounds: 60,
@@ -633,7 +683,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   });
 
   async function refreshGroupRoomLog(roomId: string): Promise<number> {
-    const client = deps.getGatewayClient();
+    const client = resolveTargetClient(resolveGroupGatewayId(roomId));
     if (!client) return 0;
     try {
       const logs = await deps.getGroupRoomStore().fetchLogs(roomId, client);
@@ -660,10 +710,23 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   }
 
   async function sendGroupMessage(roomId: string, text: string): Promise<void> {
-    const client = deps.getGatewayClient();
-    if (!client) return;
-
     const state = deps.getState();
+    if (state.activeEntityGatewayOffline) {
+      setTimedDockNotice(deps.t('gateway.offlineReadOnlyNotice'));
+      deps.render();
+      return;
+    }
+    const targetGw =
+      state.activeFocus.type === 'group' && state.activeFocus.roomId === roomId
+        ? (state.activeFocus.gatewayId || state.activeGatewayId)
+        : resolveGroupGatewayId(roomId);
+    if (targetGw) {
+      groupRoomGatewayMap.set(roomId, targetGw);
+    }
+    const client = resolveTargetClient(targetGw);
+    if (!client) return;
+    const scopedRoomKey = resolveScopedEntityRuntimeKey(roomId, targetGw, state.gatewayCount);
+
     deps.onBeforeSendEntity?.('group', roomId);
     const currentAttachments = [...state.attachments];
     state.attachments = [];
@@ -691,15 +754,17 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     deps.setPendingScrollToBottom(true);
 
     // 即时更新该群聊最新消息副标题与时间戳，并排在列表最前
-    const targetRoom = state.groupRooms.find((r) => r.roomId === roomId);
+    const matchesTargetRoom = (r: AppState['groupRooms'][number]): boolean =>
+      r.roomId === roomId && (!targetGw || !r.gatewayId || r.gatewayId === targetGw);
+    const targetRoom = state.groupRooms.find(matchesTargetRoom) || state.groupRooms.find((r) => r.roomId === roomId);
     if (targetRoom) {
       targetRoom.lastMessage = previewText;
       targetRoom.updatedAt = now;
-      state.groupRooms = [targetRoom, ...state.groupRooms.filter((r) => r.roomId !== roomId)];
+      state.groupRooms = [targetRoom, ...state.groupRooms.filter((r) => !matchesTargetRoom(r))];
     }
-    applyTurnStarted(deps.getActiveRunningGroupRoomIds(), deps.getUnreadGroupRoomIds(), roomId);
+    applyTurnStarted(deps.getActiveRunningGroupRoomIds(), deps.getUnreadGroupRoomIds(), scopedRoomKey);
     deps.syncActiveGroupSpeakerFromMessages();
-    deps.getActivityTransitionTracker().clear('group', roomId);
+    deps.getActivityTransitionTracker().clear('group', scopedRoomKey);
 
     deps.render();
     deps.scrollStreamToBottom('group message sent');
@@ -712,8 +777,8 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       void refreshGroupRoomLog(roomId);
       groupPollerManager.startAwaitReply(roomId, baseline);
     } catch (err) {
-      applyTurnFailed(deps.getActiveRunningGroupRoomIds(), roomId);
-      deps.getActivityTransitionTracker().clear('group', roomId);
+      applyTurnFailed(deps.getActiveRunningGroupRoomIds(), scopedRoomKey);
+      deps.getActivityTransitionTracker().clear('group', scopedRoomKey);
       console.error('[Flux] groups.send failed:', err);
       setTimedDockNotice(deps.t('group.sendFailed', { error: describeRpcError(err) }));
       deps.render();
@@ -722,9 +787,13 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
   async function interruptTurn(): Promise<void> {
     const state = deps.getState();
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
     const ctx = deps.getActiveStreamingContext();
     const targetLiveId = ctx.activeStreamingLiveId || state.activeLiveSessionId;
     const targetStoredId = ctx.activeStreamingStoredSessionId || state.activeSessionId;
+    const scopedStoredId = targetStoredId
+      ? resolveScopedEntityRuntimeKey(targetStoredId, activeGw, state.gatewayCount)
+      : '';
 
     // 【贴底意图必须在 flush / setMessageContent 改写 DOM 之前捕获 (Why)】
     //   避免冲刷残留 token 或追加中断文案撑高容器后误判为非贴底，同时清理未执行的工具补丁队列与计时器。
@@ -744,8 +813,8 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
         }
         deps.setMessageContent(ctx.activeStreamingMessageId, target.content);
       }
-    } else if (targetStoredId && ctx.activeStreamingMessageId) {
-      const cached = deps.getSessionMessagesCache().get(targetStoredId);
+    } else if (scopedStoredId && ctx.activeStreamingMessageId) {
+      const cached = deps.getSessionMessagesCache().get(scopedStoredId);
       const target = cached?.find((m) => m.id === ctx.activeStreamingMessageId);
       if (target) {
         target.content = target.content ? target.content + deps.t('chat.interruptedSuffix') : deps.t('chat.interruptedEmpty');
@@ -770,8 +839,8 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     if (isCurrent) {
       settleRunningTools(state.messages);
     }
-    if (targetStoredId) {
-      const cached = deps.getSessionMessagesCache().get(targetStoredId);
+    if (scopedStoredId) {
+      const cached = deps.getSessionMessagesCache().get(scopedStoredId);
       if (cached && cached !== state.messages) {
         settleRunningTools(cached);
       }
@@ -787,26 +856,35 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       !interruptedSessionId && !interruptedBotName && state.activeFocus.type === 'group'
         ? state.activeFocus.roomId
         : null;
+    const interruptedSessionKey = interruptedSessionId
+      ? resolveScopedEntityRuntimeKey(interruptedSessionId, activeGw, state.gatewayCount)
+      : null;
+    const interruptedBotKey = interruptedBotName
+      ? resolveScopedBotRuntimeKey(interruptedBotName, activeGw, state.gatewayCount)
+      : null;
+    const interruptedGroupKey = interruptedGroupRoomId
+      ? resolveScopedEntityRuntimeKey(interruptedGroupRoomId, activeGw, state.gatewayCount)
+      : null;
 
     settleTurnTermination({
       runningSessionIds: deps.getActiveRunningSessionIds(),
       runningBotNames: deps.getActiveRunningBotNames(),
       runningGroupRoomIds: deps.getActiveRunningGroupRoomIds(),
-      sessionId: interruptedSessionId,
-      botName: interruptedBotName,
-      groupRoomId: interruptedGroupRoomId,
+      sessionId: interruptedSessionKey,
+      botName: interruptedBotKey,
+      groupRoomId: interruptedGroupKey,
     });
     releaseTurnOwnership(ctx.activeStreamingMessageId, interruptedSessionId, interruptedBotName);
     if (interruptedSessionId) {
-      deps.getLiveStreamRegistry?.().removeSession(interruptedSessionId);
+      resolveStreamReg(activeGw)?.removeSession(interruptedSessionId);
     }
     disarmTurnWatchdog();
     const tracker = deps.getActivityTransitionTracker();
-    if (interruptedSessionId) tracker.clear('session', interruptedSessionId);
-    if (interruptedBotName) tracker.clear('bot', interruptedBotName);
+    if (interruptedSessionKey) tracker.clear('session', interruptedSessionKey);
+    if (interruptedBotKey) tracker.clear('bot', interruptedBotKey);
     if (interruptedGroupRoomId) {
       groupPollerManager.stop(interruptedGroupRoomId);
-      tracker.clear('group', interruptedGroupRoomId);
+      if (interruptedGroupKey) tracker.clear('group', interruptedGroupKey);
     }
 
     state.isStreaming = false;
@@ -825,7 +903,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     setTimedDockNotice(deps.t('chat.turnInterruptedNotice'));
 
     // 2. Notify remote gateway
-    const client = deps.getGatewayClient();
+    const client = resolveTargetClient(state.activeFocus?.gatewayId || state.activeGatewayId);
     if (client && targetLiveId) {
       try {
         await client.call('session.interrupt', { session_id: targetLiveId });
@@ -840,7 +918,14 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     const trimmed = text.trim();
     if (!trimmed && state.attachments.length === 0) return;
 
-    const client = deps.getGatewayClient();
+    if (state.activeEntityGatewayOffline) {
+      setTimedDockNotice(deps.t('gateway.offlineReadOnlyNotice'));
+      deps.render();
+      return;
+    }
+
+    const turnGatewayId = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const client = resolveTargetClient(turnGatewayId);
     if (!client) {
       setTimedDockNotice(deps.t('chat.sendGatewayNotConnected'));
       deps.render();
@@ -867,7 +952,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     }
 
     const liveId = await deps.ensureLiveSessionId();
-    if (deps.getGatewayClient() !== client) {
+    if (resolveTargetClient(turnGatewayId) !== client) {
       return;
     }
     if (!liveId) {
@@ -902,9 +987,11 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     const previewText = trimmed || currentAttachments.map((a) => a.name).join(', ');
     const sentAttachments = toMessageAttachments(currentAttachments);
 
-    if (state.activeSessionId) {
-      const sessionDrafts = deps.getSessionDrafts();
-      sessionDrafts.delete(state.activeSessionId);
+    const scopedSessionKey = state.activeSessionId
+      ? resolveScopedEntityRuntimeKey(state.activeSessionId, turnGatewayId, state.gatewayCount)
+      : '';
+    if (scopedSessionKey) {
+      deps.getSessionDrafts().delete(scopedSessionKey);
     }
 
     const turnSeq = ++nextTurnSeq;
@@ -927,32 +1014,41 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       activeStreamingLiveId: liveId,
     });
     if (liveId && state.activeSessionId) {
-      deps.getSessionHandleRegistry().register({ liveId, storedId: state.activeSessionId });
+      resolveHandleReg(turnGatewayId).register({ liveId, storedId: state.activeSessionId });
     }
+    const ownerSessionKey = state.activeSessionId
+      ? scopedEntityKey(turnGatewayId, state.activeSessionId)
+      : '';
+    const activeSess = state.activeSessionId
+      ? state.sessions.find(
+          (s) => s.id === state.activeSessionId && (!turnGatewayId || !s.gatewayId || s.gatewayId === turnGatewayId),
+        ) || state.sessions.find((s) => s.id === state.activeSessionId)
+      : undefined;
     if (state.activeSessionId) {
-      sessionTurnOwner.set(state.activeSessionId, assistantMsgId);
-      applyTurnStarted(deps.getActiveRunningSessionIds(), deps.getUnreadSessionIds(), state.activeSessionId);
-      deps.getActivityTransitionTracker().clear('session', state.activeSessionId);
-      const activeSess = state.sessions.find((s) => s.id === state.activeSessionId);
+      sessionTurnOwner.set(ownerSessionKey, assistantMsgId);
+      applyTurnStarted(deps.getActiveRunningSessionIds(), deps.getUnreadSessionIds(), scopedSessionKey);
+      deps.getActivityTransitionTracker().clear('session', scopedSessionKey);
       if (activeSess) {
         activeSess.preview = previewText;
         activeSess.timestamp = Date.now();
         activeSess.time = formatTimestamp(Date.now());
-        state.sessions = [activeSess, ...state.sessions.filter((s) => s.id !== activeSess.id)];
+        state.sessions = [activeSess, ...state.sessions.filter((s) => s !== activeSess)];
       }
     }
 
     const currentFocus = state.activeFocus;
     const focusBotName = currentFocus.type === 'bot' ? currentFocus.botName : null;
-    const submittedSessionBot = state.sessions.find((s) => s.id === targetStoredSessionId)?.botName || '';
+    const ownerBotKey = focusBotName ? scopedBotKey(turnGatewayId, focusBotName) : '';
+    const scopedBotKeyVal = focusBotName ? resolveScopedBotRuntimeKey(focusBotName, turnGatewayId, state.gatewayCount) : '';
+    const submittedSessionBot = activeSess?.botName || '';
     const submittedProfile = focusBotName || submittedSessionBot || state.profileName || '';
     const submittedProfileName = submittedProfile || 'default';
     deps.setActiveStreamingContext({ activeStreamingBotName: focusBotName });
     if (currentFocus.type === 'bot') {
-      botTurnOwner.set(currentFocus.botName, assistantMsgId);
-      applyTurnStarted(deps.getActiveRunningBotNames(), deps.getUnreadBotNames(), currentFocus.botName);
-      deps.getActivityTransitionTracker().clear('bot', currentFocus.botName);
-      deps.getBotActivityStore().updateLatestActivity(currentFocus.botName, previewText, Date.now());
+      botTurnOwner.set(ownerBotKey, assistantMsgId);
+      applyTurnStarted(deps.getActiveRunningBotNames(), deps.getUnreadBotNames(), scopedBotKeyVal);
+      deps.getActivityTransitionTracker().clear('bot', scopedBotKeyVal);
+      deps.getBotActivityStore().updateLatestActivity(currentFocus.botName, previewText, Date.now(), turnGatewayId);
     }
 
     const assistantMsg: MessageViewModel = {
@@ -964,7 +1060,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
     };
     state.messages.push(assistantMsg);
 
-    deps.getLiveStreamRegistry?.().registerStream({
+    resolveStreamReg(turnGatewayId)?.registerStream({
       storedSessionId: targetStoredSessionId,
       liveSessionId: liveId,
       messageId: assistantMsgId,
@@ -975,7 +1071,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       nowMs,
     });
 
-    deps.getSessionMessagesCache().set(state.activeSessionId, [...state.messages]);
+    deps.getSessionMessagesCache().set(scopedSessionKey, [...state.messages]);
 
     // 【主动意图对齐 (Why)】用户发出新 Prompt，明确要求观察最新回合。
     //   解除历史回溯冻结并强制将窗口对齐到尾部，保证新消息在 DOM 中存在，流式直写锚点可用。
@@ -996,20 +1092,22 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
     const getOwnedSessionId = (): string =>
       targetStoredSessionId &&
-      sessionTurnOwner.get(targetStoredSessionId) === assistantMsgId &&
-      deps.getActiveRunningSessionIds().has(targetStoredSessionId)
+      ownerSessionKey &&
+      sessionTurnOwner.get(ownerSessionKey) === assistantMsgId &&
+      deps.getActiveRunningSessionIds().has(scopedSessionKey)
         ? targetStoredSessionId
         : '';
 
     const getOwnedBotName = (): string =>
       focusBotName &&
-      botTurnOwner.get(focusBotName) === assistantMsgId &&
-      deps.getActiveRunningBotNames().has(focusBotName)
+      ownerBotKey &&
+      botTurnOwner.get(ownerBotKey) === assistantMsgId &&
+      deps.getActiveRunningBotNames().has(scopedBotKeyVal)
         ? focusBotName
         : '';
 
     const failSubmittedTurn = (assistantContent: string, terminalReason: string, rollbackReason: string): void => {
-      if (deps.getGatewayClient() !== client) return;
+      if (resolveTargetClient(turnGatewayId) !== client) return;
       const ctxNow = deps.getActiveStreamingContext();
       const ownsStreamCtx = ctxNow.activeStreamingMessageId === assistantMsgId;
       const ownedSessionId = getOwnedSessionId();
@@ -1017,12 +1115,13 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
       if (!ownsStreamCtx && !ownedSessionId && !ownedBotName) return;
 
       assistantMsg.content = assistantContent;
-      const isFocused = state.activeSessionId === targetStoredSessionId;
+      const focusCheckState = state.activeSessionId ? state : { ...state, activeSessionId: '__draft__' };
+      const isFocused = isFocusedGatewaySession(focusCheckState, targetStoredSessionId || '__draft__', turnGatewayId);
       if (ownedSessionId) {
-        sessionTurnOwner.delete(ownedSessionId);
-        deps.getLiveStreamRegistry?.().removeSession(ownedSessionId);
-        applyTurnFailed(deps.getActiveRunningSessionIds(), ownedSessionId);
-        deps.getActivityTransitionTracker().clear('session', ownedSessionId);
+        sessionTurnOwner.delete(ownerSessionKey);
+        resolveStreamReg(turnGatewayId)?.removeSession(ownedSessionId);
+        applyTurnFailed(deps.getActiveRunningSessionIds(), scopedSessionKey);
+        deps.getActivityTransitionTracker().clear('session', scopedSessionKey);
       }
       if (ownsStreamCtx) {
         if (isFocused) {
@@ -1038,13 +1137,13 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
         disarmTurnWatchdog();
       }
       if (ownedBotName) {
-        botTurnOwner.delete(ownedBotName);
-        applyTurnFailed(deps.getActiveRunningBotNames(), ownedBotName);
-        deps.getActivityTransitionTracker().clear('bot', ownedBotName);
+        botTurnOwner.delete(ownerBotKey);
+        applyTurnFailed(deps.getActiveRunningBotNames(), scopedBotKeyVal);
+        deps.getActivityTransitionTracker().clear('bot', scopedBotKeyVal);
       }
       if (armedSnapshotForRestore && (ownsStreamCtx || ownedSessionId)) {
-        if (targetStoredSessionId) {
-          deps.getSessionMessagesCache().set(targetStoredSessionId, [...armedSnapshotForRestore]);
+        if (scopedSessionKey) {
+          deps.getSessionMessagesCache().set(scopedSessionKey, [...armedSnapshotForRestore]);
         }
         if (isFocused) {
           state.messages = armedSnapshotForRestore;
@@ -1087,7 +1186,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
         }
       }
 
-      if (deps.getGatewayClient() !== client) {
+      if (resolveTargetClient(turnGatewayId) !== client) {
         return;
       }
       const ctxAfterUpload = deps.getActiveStreamingContext();
@@ -1100,7 +1199,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
       let submitResult: PromptSubmitResult;
       if (armedRowId !== null) {
-        submitResult = await deps.getInteractiveService().truncateAndSubmit(deps.getRpcCaller(), {
+        submitResult = await deps.getInteractiveService().truncateAndSubmit(resolveTargetRpcCaller(client), {
           sessionId: liveId,
           text: finalText,
           rowId: armedRowId,
@@ -1112,7 +1211,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
         });
       }
 
-      if (deps.getGatewayClient() !== client) {
+      if (resolveTargetClient(turnGatewayId) !== client) {
         return;
       }
 
@@ -1129,8 +1228,8 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
       if (typeof submitResult?.user_row_id === 'number' && submitResult.user_row_id > 0) {
         userMsg.rowId = submitResult.user_row_id;
-        if (targetStoredSessionId) {
-          const cached = deps.getSessionMessagesCache().get(targetStoredSessionId);
+        if (scopedSessionKey) {
+          const cached = deps.getSessionMessagesCache().get(scopedSessionKey);
           const cachedUser = cached?.find((m) => m.id === userMsg.id);
           if (cachedUser) cachedUser.rowId = submitResult.user_row_id;
         }
@@ -1143,23 +1242,24 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
         targetStoredSessionId
       ) {
         const isQueuedRace = submitResult.status === 'queued';
+        const isRaceFocused = isFocusedGatewaySession(state, targetStoredSessionId, turnGatewayId);
         const stripIds = isQueuedRace ? new Set([userMsgId, assistantMsgId]) : new Set([assistantMsgId]);
-        state.messages = state.messages.filter((m) => !stripIds.has(m.id));
-        const cached = deps.getSessionMessagesCache().get(targetStoredSessionId);
+        if (isRaceFocused) state.messages = state.messages.filter((m) => !stripIds.has(m.id));
+        const cached = deps.getSessionMessagesCache().get(scopedSessionKey);
         if (cached && cached !== state.messages) {
           deps.getSessionMessagesCache().set(
-            targetStoredSessionId,
+            scopedSessionKey,
             cached.filter((m) => !stripIds.has(m.id)),
           );
         }
         releaseTurnOwnership(assistantMsgId, targetStoredSessionId, focusBotName);
-        const registry = deps.getLiveStreamRegistry?.();
+        const registry = resolveStreamReg(turnGatewayId);
         if (registry?.getBySession(targetStoredSessionId)?.messageId === assistantMsgId) {
           registry.removeSession(targetStoredSessionId);
         }
         if (focusBotName && !registry?.hasSession(targetStoredSessionId)) {
-          deps.getActiveRunningBotNames().delete(focusBotName);
-          deps.getActivityTransitionTracker().clear('bot', focusBotName);
+          deps.getActiveRunningBotNames().delete(scopedBotKeyVal);
+          deps.getActivityTransitionTracker().clear('bot', scopedBotKeyVal);
         }
         if (deps.getActiveStreamingContext().activeStreamingMessageId === assistantMsgId) {
           deps.setActiveStreamingContext({
@@ -1170,14 +1270,14 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
           });
         }
         if (!registry?.hasSession(targetStoredSessionId)) {
-          if (state.activeSessionId === targetStoredSessionId) {
+          if (isRaceFocused) {
             state.isStreaming = false;
             state.turnStartedAt = undefined;
             deps.setTurnStartedSessionId(null);
           }
           disarmTurnWatchdog();
         }
-        if (isQueuedRace) {
+        if (isQueuedRace && isRaceFocused) {
           const admissionId = submitResult.admission_id || `queued-${nowMs}-${turnSeq}`;
           const existingQueue = Array.isArray(state.queuedMessages) ? state.queuedMessages : [];
           if (!existingQueue.some((q) => q.admissionId === admissionId)) {
@@ -1185,16 +1285,14 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
           }
         }
         deps.render();
-        void deps.onQueuedSubmitRace?.(targetStoredSessionId);
+        void deps.onQueuedSubmitRace?.(targetStoredSessionId, turnGatewayId);
         return;
       }
 
       if (armedRowId !== null && targetStoredSessionId) {
-        deps.getSessionHistoryTrust().set(targetStoredSessionId, 'server-priority');
-        deps.forgetOlderCursorState(targetStoredSessionId);
-        if (state.activeSessionId === targetStoredSessionId) {
-          state.hasOlderMessages = false;
-        }
+        deps.getSessionHistoryTrust().set(scopedSessionKey, 'server-priority');
+        deps.forgetOlderCursorState(targetStoredSessionId, turnGatewayId);
+        if (isFocusedGatewaySession(state, targetStoredSessionId, turnGatewayId)) state.hasOlderMessages = false;
 
         let survivorMap: Map<number, number | null> | null = null;
         if (submitResult?.survivor_row_id_map && typeof submitResult.survivor_row_id_map === 'object') {
@@ -1207,6 +1305,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
           }
         }
         const truncateCacheRef: CacheChannelRef = {
+          ...(turnGatewayId ? { gatewayId: turnGatewayId } : {}),
           profile: submittedProfileName,
           channel: 'session',
           channelId: targetStoredSessionId,
@@ -1228,115 +1327,38 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
   }
 
   function armCapsuleTimers(taskId: string): void {
-    const state = deps.getState();
-    const cap = state.sideAgentCapsules.find((c) => c.id === taskId);
-    if (!cap) return;
-    cap.hintTimer = setTimeout(() => {
-      const c = state.sideAgentCapsules.find((x) => x.id === taskId);
-      if (c && c.status === 'pending') {
-        c.notice = deps.t('capsule.slowHint');
-        deps.render();
-      }
-    }, 15000);
-    safeUnref(cap.hintTimer);
-    cap.expireTimer = setTimeout(() => {
-      const c = state.sideAgentCapsules.find((x) => x.id === taskId);
-      if (c && c.status === 'pending') {
-        c.status = 'expired';
-        deps.render();
-      }
-    }, 600000);
-    safeUnref(cap.expireTimer);
+    armSideAgentCapsuleTimers({
+      taskId,
+      getState: deps.getState,
+      render: deps.render,
+      t: deps.t,
+    });
   }
 
   async function askSideAgent(
     kind: 'btw' | 'delegation',
     targetProfile: string,
-    question: string
+    question: string,
   ): Promise<void> {
-    const client = deps.getGatewayClient();
-    if (!client) {
-      setTimedDockNotice(deps.t('chat.gatewayNotConnected'));
-      return;
-    }
-    const liveId = await deps.ensureLiveSessionId();
-    if (!liveId) {
-      setTimedDockNotice(deps.t('chat.forkNoLive'));
-      deps.render();
-      return;
-    }
-
-    const state = deps.getState();
-    const resolved =
-      state.profiles.find((p) => p.name === targetProfile || p.displayName === targetProfile)?.name || targetProfile;
-
-    try {
-      let taskId: string;
-      if (kind === 'btw') {
-        const res = await deps.getHandoffService().sendBtw(liveId, question, resolved, deps.getRpcCaller());
-        taskId = res.task_id;
-      } else {
-        const res = await client.call<{ task_id?: string }>('prompt.background', {
-          session_id: liveId,
-          text: question,
-          profile: resolved,
-        });
-        if (!res?.task_id) throw new Error('prompt.background missing task_id');
-        taskId = res.task_id;
-      }
-
-      state.sideAgentCapsules = [
-        ...state.sideAgentCapsules,
-        {
-          id: taskId,
-          kind,
-          profile: resolved,
-          question,
-          status: 'pending',
-          startedAt: Date.now(),
-        },
-      ];
-      armCapsuleTimers(taskId);
-      deps.render();
-    } catch (err) {
-      state.sideAgentCapsules = [
-        ...state.sideAgentCapsules,
-        {
-          id: `failed-${Date.now()}`,
-          kind,
-          profile: resolved,
-          question,
-          status: 'failed',
-          startedAt: Date.now(),
-          notice: describeRpcError(err),
-        },
-      ];
-      deps.render();
-    }
+    await executeAskSideAgent({
+      kind,
+      targetProfile,
+      question,
+      getState: deps.getState,
+      resolveTargetClient,
+      resolveTargetRpcCaller,
+      ensureLiveSessionId: deps.ensureLiveSessionId,
+      getHandoffService: deps.getHandoffService,
+      setTimedDockNotice,
+      render: deps.render,
+      t: deps.t,
+    });
   }
 
   async function routeSend(text: string): Promise<void> {
     const state = deps.getState();
     const sessionKind = deriveSessionKind(state.activeFocus);
-    const knownProfiles = state.profiles.map((p) => p.name);
-    for (const p of state.profiles) {
-      if (p.displayName) knownProfiles.push(p.displayName);
-    }
-    // 群聊研讨室：将当前房间入驻成员与广播全员 token ('all') 纳入已知候选，保证 @ 路由精准收敛
-    const focus = state.activeFocus;
-    if (focus.type === 'group' && focus.roomId) {
-      const room = state.groupRooms.find((r) => r.roomId === focus.roomId);
-      if (room && Array.isArray(room.members)) {
-        for (const m of room.members) {
-          if (typeof m === 'string' && m && !knownProfiles.includes(m)) {
-            knownProfiles.push(m);
-          }
-        }
-      }
-      if (!knownProfiles.includes('all')) {
-        knownProfiles.push('all');
-      }
-    }
+    const knownProfiles = collectKnownSendProfiles(state);
     const route = planSendRoute({
       text,
       sessionKind,
@@ -1347,7 +1369,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
 
     switch (route.kind) {
       case 'plain':
-        if (route.text.startsWith('/') && deps.getGatewayClient()) {
+        if (route.text.startsWith('/') && resolveTargetClient(state.activeFocus.gatewayId || state.activeGatewayId)) {
           await deps.runSlashCommand(route.text);
           return;
         }

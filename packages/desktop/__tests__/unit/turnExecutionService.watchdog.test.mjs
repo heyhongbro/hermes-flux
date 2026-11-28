@@ -173,6 +173,141 @@ test('D4-watchdog: turnExecutionService - 看门狗超时在 flush 前捕获贴�
   }
 });
 
+test('D5-stryker: turnExecutionWatchdog - activeFocus 缺失、activeGatewayId 为空、交互挂起与离线守卫边界', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
+  let service;
+  const mkReg = (rows = []) => {
+    const map = new Map(rows.map((r) => [r.storedSessionId, {
+      liveSessionId: r.liveSessionId || r.storedSessionId,
+      messageId: r.messageId || 'ast-1',
+      origin: 'local',
+      startedAt: 1_700_000_000_000,
+      lastActivityAt: r.lastActivityAt ?? 1_700_000_000_000,
+      ...r,
+    }]));
+    return {
+      hasSession: (sid) => map.has(sid),
+      getBySession: (sid) => map.get(sid),
+      listSessionIds: () => Array.from(map.keys()),
+      touchActivity: (sid, ts = Date.now()) => {
+        const x = map.get(sid);
+        if (!x) return false;
+        x.lastActivityAt = ts;
+        return true;
+      },
+      removeSession: (sid) => {
+        const x = map.get(sid);
+        map.delete(sid);
+        return x;
+      },
+      size: () => map.size,
+    };
+  };
+
+  try {
+    const callsA = [];
+    const callsB = [];
+    let nextResA = { running: true, inflight: { streaming: true } };
+    let pendingPrompt = false;
+    const regA = mkReg([{ storedSessionId: 'sess-no-focus', messageId: 'ast-nf', botName: 'bot-a' }]);
+    const regB = mkReg([{ storedSessionId: 'sess-dup', messageId: 'ast-b', botName: null }]);
+
+    const clientA = {
+      call: async (m, p) => {
+        callsA.push({ m, p });
+        return nextResA;
+      },
+    };
+    const clientB = {
+      call: async (m, p) => {
+        callsB.push({ m, p });
+        return { running: true, inflight: { streaming: true } };
+      },
+    };
+
+    const { deps, state } = createMockTurnDeps({
+      state: {
+        gatewayCount: 2,
+        gatewayConnected: true,
+        activeSessionId: 'sess-no-focus',
+        activeLiveSessionId: 'sess-no-focus',
+        activeGatewayId: 'gw-a',
+        activeFocus: undefined,
+        isStreaming: true,
+        sessions: [
+          { id: 'sess-dup', gatewayId: 'gw-a', botName: 'bot-a', title: 'A', preview: '', timestamp: 10 },
+          { id: 'sess-dup', gatewayId: 'gw-b', botName: 'bot-b', title: 'B', preview: '', timestamp: 20 },
+        ],
+      },
+      activeStreamingContext: {
+        activeStreamingMessageId: 'ast-nf',
+        activeStreamingStoredSessionId: 'sess-no-focus',
+        activeStreamingLiveId: 'sess-no-focus',
+        activeStreamingBotName: null,
+      },
+    });
+    deps.watchdogIdleTimeoutMs = 20;
+    deps.getLiveStreamRegistry = () => regA;
+    deps.getLiveStreamRegistryForGateway = (gw) => (gw === 'gw-a' ? regA : gw === 'gw-b' ? regB : undefined);
+    deps.getClientForGateway = (gw) => (gw === 'gw-a' ? clientA : gw === 'gw-b' ? clientB : null);
+    deps.hasPendingInteractivePrompt = () => pendingPrompt;
+
+    service = createTurnExecutionService(deps);
+
+    // 1. activeFocus=undefined 回退 activeGatewayId='gw-a'，cover arm/feed/probe/disarm/isStreamingActive
+    assert.equal(service.isStreamingActiveForCurrentSession(), true);
+    service.armTurnWatchdog();
+    service.feedTurnWatchdog();
+    await advanceTimers(t, 20);
+    assert.equal(callsA.length, 1);
+    assert.equal(state.isStreaming, true);
+
+    // 2. hasPendingInteractivePrompt=true 时，即使 resume 返回 running:false 也不得判超时结束
+    nextResA = { running: false };
+    pendingPrompt = true;
+    await advanceTimers(t, 20);
+    assert.equal(state.isStreaming, true);
+    pendingPrompt = false;
+
+    // 3. gatewayConnected=false 但 client 非空时，连续离线延后 maxProbeFailures(2) 次后第 3 次收敛且不触发 RPC
+    state.gatewayConnected = false;
+    const beforeOfflineCalls = callsA.length;
+    await advanceTimers(t, 20);
+    assert.equal(state.isStreaming, true);
+    await advanceTimers(t, 20);
+    assert.equal(state.isStreaming, true);
+    await advanceTimers(t, 20);
+    assert.equal(callsA.length, beforeOfflineCalls);
+    assert.equal(state.isStreaming, false);
+
+    // 4. activeFocus.gatewayId='gw-b' 且 activeGatewayId='' -> 按 gw-b 查 bot-b 与 clientB
+    state.gatewayConnected = true;
+    state.isStreaming = true;
+    state.activeGatewayId = '';
+    state.activeSessionId = 'sess-dup';
+    state.activeFocus = { type: 'session', sessionId: 'sess-dup', gatewayId: 'gw-b' };
+    regA.removeSession('sess-no-focus');
+    deps.setActiveStreamingContext({
+      activeStreamingMessageId: 'ast-b',
+      activeStreamingStoredSessionId: 'sess-dup',
+      activeStreamingLiveId: 'sess-dup',
+      activeStreamingBotName: null,
+    });
+    service.armTurnWatchdog();
+    await advanceTimers(t, 20);
+    assert.equal(callsB.at(-1)?.p?.profile, 'bot-b');
+
+    // 5. 多网关下 activeFocus 切到 gw-a（regA 无流而 regB 有流），isStreamingActiveForCurrentSession 返回 false；若 activeGw 为空则回退 legacy 流态返回 true
+    state.activeFocus = { type: 'session', sessionId: 'sess-dup', gatewayId: 'gw-a' };
+    assert.equal(service.isStreamingActiveForCurrentSession(), false);
+    state.activeFocus = { type: 'session', sessionId: 'sess-dup' };
+    assert.equal(service.isStreamingActiveForCurrentSession(), true);
+  } finally {
+    service?.disarmTurnWatchdog(true);
+    t.mock.timers.reset();
+  }
+});
+
 test('D5: turnExecutionService - handleWatchdogTimeout 后台与未注入 isStreamNearBottom 安全收口', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
   let service;
@@ -1136,6 +1271,90 @@ test('TurnExecutionService 看门狗探活正确传递 onCaptureInteractiveFence
   } finally {
     svc1.disarmTurnWatchdog(true);
     svc2.disarmTurnWatchdog(true);
+    t.mock.timers.reset();
+  }
+});
+
+test('TurnExecutionService 多网关场景：看门狗探活路由、session 表按 activeGw 匹配 Bot 与流所有权隔离', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_700_000_000_000 });
+  const callsA = [];
+  const callsB = [];
+  const clientA = {
+    call: async (method, params) => {
+      callsA.push({ method, params });
+      if (method === 'session.resume') return { running: true };
+      return {};
+    },
+  };
+  const clientB = {
+    call: async (method, params) => {
+      callsB.push({ method, params });
+      if (method === 'prompt.submit') return { status: 'streaming', user_row_id: 9 };
+      if (method === 'session.resume') return { running: true };
+      return {};
+    },
+  };
+  const regA = new LiveStreamRegistry();
+  regA.registerStream({ storedSessionId: 'sess-bg-only', liveSessionId: 'lv-a', messageId: 'm-a', origin: 'remote' });
+  const regB = new LiveStreamRegistry();
+  const { deps, state, activeStreamingContext } = createMockTurnDeps({
+    state: {
+      gatewayCount: 2,
+      gatewayConnected: true,
+      activeSessionId: 'sess-dup',
+      activeGatewayId: 'gw-b',
+      activeFocus: { type: 'session', sessionId: 'sess-dup', gatewayId: 'gw-b' },
+      sessions: [
+        { id: 'sess-dup', gatewayId: 'gw-a', botName: 'alpha-bot', title: 'A', preview: '', timestamp: 1000 },
+        { id: 'sess-dup', gatewayId: 'gw-b', botName: 'beta-bot', title: 'B', preview: '', timestamp: 2000 },
+      ],
+    },
+  });
+  deps.watchdogIdleTimeoutMs = 25;
+  deps.watchdogHardLimitMs = 500;
+  deps.getClientForGateway = (gw) => (gw === 'gw-a' ? clientA : gw === 'gw-b' ? clientB : null);
+  deps.getLiveStreamRegistryForGateway = (gw) => (gw === 'gw-a' ? regA : gw === 'gw-b' ? regB : undefined);
+
+  const svc = createTurnExecutionService(deps);
+  try {
+    // 1. Before any owned message on gw-b, mismatched or unowned ctx must report false when gatewayCount >= 2
+    state.isStreaming = true;
+    activeStreamingContext().activeStreamingStoredSessionId = 'sess-dup';
+    activeStreamingContext().activeStreamingMessageId = 'stale-other-msg';
+    assert.equal(svc.isStreamingActiveForCurrentSession(), false, '多网关未匹配 sessionTurnOwner 不得误判正在流式');
+
+    // Clear stale regB entry after sendMessage owns gw-b::sess-dup so ctx fallback exercises L550-551 & L390
+    state.isStreaming = false;
+    await svc.sendMessage('probe multi gw');
+    regB.removeSession('sess-dup');
+    assert.equal(svc.isStreamingActiveForCurrentSession(), true, 'gw-b 拥有当前回合时应判定正在流式');
+
+    // activeFocus omits gatewayId -> falls back to activeGatewayId ('gw-b')
+    state.activeFocus = { type: 'session', sessionId: 'sess-dup' };
+    state.activeGatewayId = 'gw-b';
+    assert.equal(svc.isStreamingActiveForCurrentSession(), true);
+
+    // Switch to gw-a while activeStreamingContext still points to gw-b's assistant message
+    state.activeGatewayId = 'gw-a';
+    assert.equal(svc.isStreamingActiveForCurrentSession(), false, '切到 gw-a 时不得命中 gw-b 的流归属');
+
+    // Disarming on gw-b (regB empty) works even though regA still has background stream!
+    state.activeFocus = { type: 'session', sessionId: 'sess-dup', gatewayId: 'gw-b' };
+    state.activeGatewayId = 'gw-b';
+    await advanceTimers(t, 25);
+    assert.equal(callsB.filter((c) => c.method === 'session.resume').length, 1, '探活必须发往 activeFocus 所属的 gw-b');
+    assert.equal(callsA.filter((c) => c.method === 'session.resume').length, 0, '不得误探活 gw-a');
+    assert.equal(callsB.find((c) => c.method === 'session.resume')?.params?.profile, 'beta-bot', '必须匹配 gw-b 会话的 beta-bot 而非列表首项 alpha-bot');
+
+    // Now test activeFocus omitting gatewayId falling back to activeGatewayId = 'gw-a' for probe routing
+    regA.removeSession('sess-bg-only');
+    state.activeFocus = { type: 'session', sessionId: 'sess-dup' };
+    state.activeGatewayId = 'gw-a';
+    svc.armTurnWatchdog();
+    await advanceTimers(t, 25);
+    assert.equal(callsA.find((c) => c.method === 'session.resume')?.params?.profile, 'alpha-bot', '无 activeFocus.gatewayId 时应回退 activeGatewayId=gw-a 与 alpha-bot');
+  } finally {
+    svc.disarmTurnWatchdog(true);
     t.mock.timers.reset();
   }
 });

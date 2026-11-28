@@ -64,10 +64,11 @@ export interface RpcConfirmRequestOptions {
 export interface InteractivePromptServiceDeps {
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
   readonly getSessionHandleRegistry: () => SessionHandleRegistry;
-  readonly toStoredSessionId: (id?: string | null) => string | null;
+  readonly toStoredSessionId: (id?: string | null, gatewayId?: string) => string | null;
   readonly resolveBotForeverSessionMap: () => ReadonlyMap<string, string>;
-  readonly resolveBotNameForSession: (storedSessionId: string) => string | null;
+  readonly resolveBotNameForSession: (storedSessionId: string, gatewayId?: string) => string | null;
   readonly describeRpcError: (err: unknown) => string;
   readonly t?: (key: I18nKey, params?: Record<string, string | number>) => string;
   readonly openExternalUrl?: (url: string) => void | Promise<void>;
@@ -104,11 +105,13 @@ export interface InteractivePromptService {
   captureSyncFence(): number;
   getProtocolForSession(storedOrLiveId: string | null | undefined): 'classic' | 'canonical';
   getGatewayProtocol(): 'classic' | 'canonical';
-  handleServerRequest(frame: ServerRequestFrame, client: HermesGatewayClient): boolean;
-  handleSocketClosed(closedGeneration?: number): void;
+  handleServerRequest(frame: ServerRequestFrame, client: HermesGatewayClient, gatewayId?: string): boolean;
+  handleSocketClosed(closedGeneration?: number, gatewayId?: string): void;
   resetOnDisconnect(): void;
-  bindSessionHandle(storedSessionId: string, liveSessionId: string): void;
+  bindSessionHandle(storedSessionId: string, liveSessionId: string, gatewayId?: string): void;
   reconcileSessionResume(input: {
+    client?: HermesGatewayClient;
+    gatewayId?: string;
     storedSessionId: string;
     liveSessionId: string | null;
     profile?: string;
@@ -166,6 +169,8 @@ export function createInteractivePromptService(
     { resolve: (outcome: 'confirm' | 'confirm_always' | 'cancel') => void }
   >();
   const clarifyLockInFlight = new Set<string>();
+  const promptClients = new Map<string, { gatewayId?: string; client: HermesGatewayClient }>();
+  const sessionGatewayIds = new Map<string, string>();
   const tr = deps.t ?? uiTranslate;
 
   const nowMs = (): number => deps.now?.() ?? Date.now();
@@ -204,17 +209,38 @@ export function createInteractivePromptService(
     return gatewayProtocol;
   };
 
-  const resolveProfileHint = (storedSessionId: string | null, rawProfile?: string): string | undefined => {
+  const resolveProfileHint = (
+    storedSessionId: string | null,
+    rawProfile?: string,
+    gatewayId?: string,
+  ): string | undefined => {
     if (rawProfile) return rawProfile;
     if (storedSessionId) {
-      const bot = deps.resolveBotNameForSession(storedSessionId);
+      const bot = deps.resolveBotNameForSession(storedSessionId, gatewayId);
       if (bot) return bot;
     }
     const profile = deps.getState().profileName;
     return profile || undefined;
   };
 
-  const handleServerRequest = (frame: ServerRequestFrame, client: HermesGatewayClient): boolean => {
+  const resolveClientForPrompt = (prompt: InteractivePrompt): HermesGatewayClient | null => {
+    const origin = promptClients.get(prompt.canonicalKey);
+    const scopeSessionId =
+      prompt.scope.kind === 'session'
+        ? prompt.scope.storedSessionId || prompt.scope.liveSessionId || ''
+        : '';
+    const gatewayId = origin?.gatewayId || (scopeSessionId ? sessionGatewayIds.get(scopeSessionId) : undefined);
+    if (gatewayId && deps.getClientForGateway) {
+      return deps.getClientForGateway(gatewayId);
+    }
+    return deps.getGatewayClient();
+  };
+
+  const handleServerRequest = (
+    frame: ServerRequestFrame,
+    client: HermesGatewayClient,
+    gatewayId?: string,
+  ): boolean => {
     const unsupported = resolveUnsupportedServerRequestResponse(
       frame.method,
       client.getNegotiatedCapabilities(),
@@ -240,8 +266,8 @@ export function createInteractivePromptService(
     }
     const rawLiveId =
       asOptionalString(frame.params.session_id) ?? asOptionalString(frame.params.gateway_session_id);
-    const storedSessionId = rawLiveId ? deps.toStoredSessionId(rawLiveId) : null;
-    const profile = resolveProfileHint(storedSessionId, asOptionalString(frame.params.profile));
+    const storedSessionId = rawLiveId ? deps.toStoredSessionId(rawLiveId, gatewayId) : null;
+    const profile = resolveProfileHint(storedSessionId, asOptionalString(frame.params.profile), gatewayId);
     const protocol = getProtocolForSession(storedSessionId || rawLiveId);
 
     const prompt = coordinator.upsertServerRequest({
@@ -259,10 +285,17 @@ export function createInteractivePromptService(
       return false;
     }
 
+    promptClients.set(prompt.canonicalKey, { gatewayId, client });
+    if (gatewayId) {
+      if (storedSessionId) sessionGatewayIds.set(storedSessionId, gatewayId);
+      if (rawLiveId) sessionGatewayIds.set(rawLiveId, gatewayId);
+    }
+
     deps.logDebug?.('received interactive server request', {
       method: frame.method,
       rpcId: frame.id,
       canonicalKey: prompt.canonicalKey,
+      ...(gatewayId ? { gatewayId } : {}),
       params: redactInteractivePayload(frame.method, frame.params),
     });
 
@@ -270,8 +303,13 @@ export function createInteractivePromptService(
     return true;
   };
 
-  const handleSocketClosed = (closedGeneration?: number): void => {
-    coordinator.onSocketClosed(closedGeneration);
+  const handleSocketClosed = (closedGeneration?: number, gatewayId?: string): void => {
+    coordinator.onSocketClosed(
+      closedGeneration,
+      gatewayId
+        ? (prompt) => promptClients.get(prompt.canonicalKey)?.gatewayId === gatewayId
+        : undefined,
+    );
     notify();
   };
 
@@ -281,14 +319,52 @@ export function createInteractivePromptService(
       rpcConfirmResolvers.delete(key);
       waiter.resolve('cancel');
     }
+    promptClients.clear();
+    sessionGatewayIds.clear();
     gatewayProtocol = 'classic';
     sessionProtocols.clear();
     notify();
   };
 
-  const bindSessionHandle = (storedSessionId: string, liveSessionId: string): void => {
+  const bindSessionHandle = (
+    storedSessionId: string,
+    liveSessionId: string,
+    gatewayId?: string,
+  ): void => {
     if (!storedSessionId || !liveSessionId) return;
+    const priorMatches = coordinator
+      .listUnresolvedPrompts()
+      .filter(
+        (p) =>
+          p.scope.kind === 'session' &&
+          (p.scope.liveSessionId === liveSessionId || p.scope.storedSessionId === storedSessionId),
+      )
+      .map((p) => ({
+        requestId: p.requestId,
+        kind: p.kind,
+        origin: promptClients.get(p.canonicalKey),
+      }))
+      .filter((entry): entry is { requestId: string; kind: InteractivePrompt['kind']; origin: { gatewayId?: string; client: HermesGatewayClient } } => Boolean(entry.origin));
+
     coordinator.bindSessionHandle(storedSessionId, liveSessionId);
+
+    const resolvedGw = gatewayId || sessionGatewayIds.get(liveSessionId) || sessionGatewayIds.get(storedSessionId);
+    if (resolvedGw) {
+      sessionGatewayIds.set(storedSessionId, resolvedGw);
+      sessionGatewayIds.set(liveSessionId, resolvedGw);
+    }
+    for (const p of coordinator.listUnresolvedPrompts()) {
+      if (
+        p.scope.kind === 'session' &&
+        (p.scope.storedSessionId === storedSessionId || p.scope.liveSessionId === liveSessionId)
+      ) {
+        const hit = priorMatches.find((m) => m.requestId === p.requestId && m.kind === p.kind);
+        if (hit && !promptClients.has(p.canonicalKey)) {
+          promptClients.set(p.canonicalKey, hit.origin);
+        }
+      }
+    }
+
     const proto = sessionProtocols.get(liveSessionId) ?? sessionProtocols.get(storedSessionId);
     if (proto) {
       sessionProtocols.set(storedSessionId, proto);
@@ -298,12 +374,18 @@ export function createInteractivePromptService(
   };
 
   const reconcileSessionResume = (input: {
+    client?: HermesGatewayClient;
+    gatewayId?: string;
     storedSessionId: string;
     liveSessionId: string | null;
     profile?: string;
     resume: Record<string, unknown> | null | undefined;
     fence: number;
   }): void => {
+    if (input.gatewayId) {
+      sessionGatewayIds.set(input.storedSessionId, input.gatewayId);
+      if (input.liveSessionId) sessionGatewayIds.set(input.liveSessionId, input.gatewayId);
+    }
     const info = asRecord(input.resume?.info);
     if (info) {
       const proto: 'classic' | 'canonical' =
@@ -460,6 +542,7 @@ export function createInteractivePromptService(
   const clearSession = (storedSessionId: string, liveSessionId?: string | null): void => {
     const removedKeys = coordinator.clearForSession(storedSessionId, liveSessionId);
     for (const key of removedKeys) {
+      promptClients.delete(key);
       const waiter = rpcConfirmResolvers.get(key);
       if (waiter) {
         rpcConfirmResolvers.delete(key);
@@ -501,11 +584,13 @@ export function createInteractivePromptService(
 
       if (isIdempotentSettlementResponse(method, res)) {
         coordinator.confirmSettled(prompt.canonicalKey);
+        promptClients.delete(prompt.canonicalKey);
         notify();
         return true;
       }
 
       coordinator.confirmSettled(prompt.canonicalKey);
+      promptClients.delete(prompt.canonicalKey);
       notify();
       return true;
     } catch (err) {
@@ -525,6 +610,7 @@ export function createInteractivePromptService(
       // 非可重试终态协议错误（4000/4001/expired/already_resolved）立即收敛避免死循环重试，
       // 但若非 benign 幂等状态则显式通过顶部提示条曝光错误
       coordinator.confirmSettled(prompt.canonicalKey);
+      promptClients.delete(prompt.canonicalKey);
       notify();
       const lower = errText.toLowerCase();
       if (!lower.includes('already') && !lower.includes('expired')) {
@@ -543,7 +629,7 @@ export function createInteractivePromptService(
     }
     notify();
 
-    const client = deps.getGatewayClient();
+    const client = resolveClientForPrompt(prompt);
     const currentSocketGen = client ? client.getSocketGeneration() : null;
     const caps = client?.getNegotiatedCapabilities() ?? null;
     const route = resolveReplyRoute(prompt, payload, currentSocketGen, caps);
@@ -552,6 +638,7 @@ export function createInteractivePromptService(
       const waiter = rpcConfirmResolvers.get(prompt.canonicalKey);
       rpcConfirmResolvers.delete(prompt.canonicalKey);
       coordinator.confirmSettled(prompt.canonicalKey);
+      promptClients.delete(prompt.canonicalKey);
       notify();
       waiter?.resolve(route.outcome);
       return true;
@@ -577,6 +664,7 @@ export function createInteractivePromptService(
       );
       if (sent) {
         coordinator.confirmSettled(prompt.canonicalKey);
+        promptClients.delete(prompt.canonicalKey);
         notify();
         return true;
       }
@@ -598,7 +686,7 @@ export function createInteractivePromptService(
     questionId: string,
     answer: string,
   ): Promise<void> => {
-    const client = deps.getGatewayClient();
+    const client = resolveClientForPrompt(prompt);
     if (!client || prompt.protocol === 'canonical') return;
     const lockKey = `${prompt.canonicalKey}::${questionId}`;
     if (clarifyLockInFlight.has(lockKey)) return;
@@ -634,7 +722,7 @@ export function createInteractivePromptService(
   };
 
   const wakeConnection = async (prompt: ConnectionPrompt): Promise<void> => {
-    const client = deps.getGatewayClient();
+    const client = resolveClientForPrompt(prompt);
     if (!client) return;
     const profile =
       prompt.scope.kind === 'session' || prompt.scope.kind === 'account'

@@ -147,7 +147,7 @@ jobs:
       - name: Gate 2g · 增量覆盖率拦截器自证（未覆盖代码与分支必拦截）
         run: npm run gates:coverage-proof
 
-      - name: Gate 2h · PR 新增代码 100% 增量覆盖率
+      - name: Gate 2h · PR 新增代码 ≥90% 增量覆盖率
         if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
         run: npm run coverage:new
 

@@ -3515,21 +3515,19 @@ test('MobileBotHubScreen、MobileBotSubpage、MobileSettingsPage 分级菜单与
     );
     findAll(setView.tree, (n) => n.props?.['data-testid'] === 'mobile-settings-back')[0]?.props.onClick();
     assert.ok(log.some(([k]) => k === 'onCloseSettings'));
-    for (const rid of ['appearance', 'gateway', 'providers', 'extensions', 'about']) {
+    for (const rid of ['general', 'appearance', 'gateway', 'providers', 'extensions', 'about']) {
       findAll(setView.tree, (n) => n.props?.['data-testid'] === `mobile-settings-row-${rid}`)[0]?.props.onClick();
     }
     assert.deepEqual(
       log.filter(([k]) => k === 'onOpenSettingsSubpage').map(([, v]) => v),
-      ['appearance', 'gateway', 'providers', 'extensions', 'about'],
+      ['general', 'appearance', 'gateway', 'providers', 'extensions', 'about'],
     );
 
-    sSnapshot = {
-      ...snapshot.settingsSnapshot,
-      locale: 'en',
-      gateway: { ...snapshot.settingsSnapshot.gateway, status: 'disconnected', hasStoredPassword: false, test: undefined },
-      providerViews: { status: 'idle' },
-      appVersion: '',
-    };
+    sSnapshot = { ...snapshot.settingsSnapshot, locale: 'en', gateway: { ...snapshot.settingsSnapshot.gateway, status: 'disconnected', hasStoredPassword: false, test: undefined }, providerViews: { status: 'idle' }, appVersion: '' };
+    sPage = 'general';
+    setView.rerender();
+    findAll(setView.tree, (n) => n.props?.className === 'm-settings-chip-btn').forEach((b) => b.props.onClick());
+    assert.ok(log.some(([k, v]) => k === 'settings.onLocaleChange' && v === 'en'));
     sPage = 'appearance';
     setView.rerender();
     sSnapshot = { ...sSnapshot, locale: 'zh' };
@@ -3539,7 +3537,6 @@ test('MobileBotHubScreen、MobileBotSubpage、MobileSettingsPage 分级菜单与
     findAll(setView.tree, (n) => n.props?.['data-testid'] === 'mobile-settings-back')[0]?.props.onClick();
     assert.ok(log.some(([k, v]) => k === 'onSetAppearancePreference' && v === 'dark'));
     assert.ok(log.some(([k]) => k === 'settings.onFontPrefsChange'));
-    assert.ok(log.some(([k, v]) => k === 'settings.onLocaleChange' && v === 'en'));
     assert.ok(log.some(([k]) => k === 'settings.onActivityVariantChange'));
     assert.ok(log.some(([k, v]) => k === 'onOpenSettingsSubpage' && v === null));
 
@@ -3549,8 +3546,8 @@ test('MobileBotHubScreen、MobileBotSubpage、MobileSettingsPage 分级菜单与
       inp.props.onChange({ target: { value: idx === 3 ? '   ' : 'val' } }),
     );
     setView.rerender();
-    findAll(setView.tree, (n) => n.props?.className === 'm-secondary-btn')[0]?.props.onClick();
-    findAll(setView.tree, (n) => n.props?.className === 'm-primary-btn')[0]?.props.onClick();
+    findAll(setView.tree, (n) => n.props?.['data-testid'] === 'gateway-test-btn')[0]?.props.onClick();
+    findAll(setView.tree, (n) => n.props?.['data-testid'] === 'gateway-connect-btn')[0]?.props.onClick();
     assert.ok(log.some(([k, d]) => k === 'settings.onTestGateway' && d.profileName === 'default'));
     assert.ok(log.some(([k, d]) => k === 'settings.onConnectGateway' && d.profileName === 'default'));
 
@@ -4727,7 +4724,7 @@ test('移动端会话组织：扁平顶层分类、零内联完成钮、长按�
   const settingsMainHtml = renderToStaticMarkup(
     React.createElement(MobileSettingsPage, {
       open: true,
-      subpage: 'appearance',
+      subpage: 'general',
       appearancePref: 'dark',
       snapshot: mobileSettingsSnapshot,
       onClose: () => {},

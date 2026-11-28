@@ -24,30 +24,120 @@ import {
   type HermesGatewayClient,
   type LiveStreamRegistry,
   type LiveSessionStream,
+  type SessionHandleRegistry,
   readSessionHandles,
   extractResumeInflightState,
   planRemoteUserPromptInsert,
 } from '@hermes-flux/core';
 import type { MessageViewModel } from '@hermes-flux/ui';
-import type { AppState } from '../state/appState.js';
+import {
+  resolveScopedBotRuntimeKey,
+  resolveScopedEntityRuntimeKey,
+  type AppState,
+} from '../state/appState.js';
 import type { ActiveStreamingContext } from '../services/turnExecutionService.js';
 import { formatTimestamp } from '../services/turnExecutionService.js';
 import { parseTranscriptRows } from '../transcriptRows.js';
+
+/** 判断入站事件或重连恢复是否归属于当前激活网关。 */
+export function isSameActiveGateway(
+  state: Pick<AppState, 'activeFocus' | 'activeGatewayId' | 'gatewayCount'>,
+  gatewayId?: string,
+): boolean {
+  if (!gatewayId || (state.gatewayCount ?? 1) < 2) return true;
+  const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+  return !activeGw || activeGw === gatewayId;
+}
+
+/** 多网关下仅当会话 ID 与所属网关同源时才认定为当前聚焦会话。 */
+export function isFocusedOnEntity(
+  state: Pick<AppState, 'activeSessionId' | 'activeFocus' | 'activeGatewayId' | 'gatewayCount'>,
+  sessionId: string | null | undefined,
+  sourceGatewayId?: string,
+): boolean {
+  if (!sessionId || state.activeSessionId !== sessionId) return false;
+  if ((state.gatewayCount ?? 1) < 2 || !sourceGatewayId) return true;
+  return (state.activeFocus?.gatewayId || state.activeGatewayId) === sourceGatewayId;
+}
+
+/** 多网关下仅当 Bot 名与所属网关同源时才认定为当前聚焦 Bot。 */
+export function isFocusedOnBot(
+  state: Pick<AppState, 'activeFocus' | 'activeGatewayId' | 'gatewayCount'>,
+  botName: string | null | undefined,
+  sourceGatewayId?: string,
+): boolean {
+  if (!botName || state.activeFocus.type !== 'bot' || state.activeFocus.botName !== botName) return false;
+  if ((state.gatewayCount ?? 1) < 2 || !sourceGatewayId) return true;
+  return (state.activeFocus.gatewayId || state.activeGatewayId) === sourceGatewayId;
+}
+
+/** 按网关前缀过滤并还原原始会话 ID 列表，防止跨网关活跃流集合互相串台。 */
+export function collectGatewayScopedSessionIds(
+  sessionIds: Iterable<string>,
+  gatewayId: string | undefined,
+  gatewayCount?: number,
+): string[] {
+  const result: string[] = [];
+  if (!gatewayId || (gatewayCount ?? 1) < 2) {
+    for (const id of sessionIds) result.push(id);
+    return result;
+  }
+  const prefix = `${gatewayId}::`;
+  for (const id of sessionIds) {
+    if (id.startsWith(prefix)) result.push(id.slice(prefix.length));
+  }
+  return result;
+}
+
+/** 提取下行事件帧的类型、载荷与会话标识。 */
+export function extractGatewayFrameMeta(params: unknown): {
+  frameType: string;
+  framePayload: Record<string, unknown> | null;
+  rawFrameSessionId: string;
+} {
+  const frameRec = params && typeof params === 'object' ? (params as Record<string, unknown>) : null;
+  const frameType =
+    frameRec && typeof frameRec.type === 'string'
+      ? frameRec.type
+      : frameRec && typeof frameRec.event === 'string'
+        ? frameRec.event
+        : frameRec && typeof frameRec.kind === 'string'
+          ? frameRec.kind
+          : '';
+  const framePayload =
+    frameRec && frameRec.payload && typeof frameRec.payload === 'object' && !Array.isArray(frameRec.payload)
+      ? (frameRec.payload as Record<string, unknown>)
+      : null;
+  const rawFrameSessionId =
+    frameRec && typeof frameRec.session_id === 'string' && frameRec.session_id
+      ? frameRec.session_id
+      : framePayload && typeof framePayload.session_id === 'string' && framePayload.session_id
+        ? framePayload.session_id
+        : '';
+  return { frameType, framePayload, rawFrameSessionId };
+}
 
 export interface LiveStreamCoordinatorDeps {
   readonly getConnectionEpoch: () => number;
   readonly getState: () => AppState;
   readonly getGatewayClient: () => HermesGatewayClient | null;
+  readonly getClientForGateway?: (gatewayId?: string) => HermesGatewayClient | null;
   readonly getLiveStreamRegistry: () => LiveStreamRegistry | undefined;
-  readonly resolveBotNameForSession?: (storedSessionId: string) => string | null;
+  readonly getLiveStreamRegistryForGateway?: (gatewayId?: string) => LiveStreamRegistry | undefined;
+  readonly getSessionHandleRegistryForGateway?: (gatewayId?: string) => SessionHandleRegistry;
+  readonly resolveBotNameForSession?: (storedSessionId: string, gatewayId?: string) => string | null;
   readonly getSessionMessagesCache: () => Map<string, MessageViewModel[]>;
   readonly getActiveRunningSessionIds: () => Set<string>;
   readonly getActiveRunningBotNames: () => Set<string>;
+  readonly getActiveStreamingContext?: () => ActiveStreamingContext;
   readonly setActiveStreamingContext: (ctx: Partial<ActiveStreamingContext>) => void;
   readonly setTurnStartedSessionId: (id: string | null) => void;
   readonly toStoredSessionId: (id: string | null | undefined) => string | null;
   readonly setMessageContent: (messageId: string, content: string) => void;
   readonly dropQueuedTokens?: (messageId: string) => void;
+  readonly clearTokenCoalescer?: () => void;
+  readonly clearToolPatchQueue?: () => void;
+  readonly stopRunningToolTimers?: () => void;
   readonly armTurnWatchdog: () => void;
   readonly disarmTurnWatchdog: () => void;
   readonly clearPresenceTerminal: () => void;
@@ -73,47 +163,82 @@ export interface LiveStreamCoordinatorDeps {
 export interface LiveStreamCoordinator {
   clearActiveSessionSyncTimer(): void;
   clearHydrationState(): void;
-  resolveStoredSessionId(rawId?: string | null): string | null;
+  resolveStoredSessionId(rawId?: string | null, gatewayId?: string): string | null;
   scheduleActiveSessionIdleSync(delayMs?: number): void;
   insertRemoteUserPromptIfMissing(
     storedSessionId: string,
     assistantMessageId: string,
     userText: string,
     userRowId?: number | null,
+    gatewayId?: string,
   ): boolean;
-  syncFocusedStreamingProjection(preferredSessionId?: string): void;
+  syncFocusedStreamingProjection(preferredSessionId?: string, gatewayId?: string): void;
   attachLiveTurnFromResume(input: {
     storedSessionId: string;
     liveSessionId: string;
     resumeResult: Record<string, unknown>;
     botName?: string | null;
+    gatewayId?: string;
   }): boolean;
-  reconcileActiveTurnFromResume(storedSessionId: string, resumeResult: Record<string, unknown>): void;
+  reconcileActiveTurnFromResume(storedSessionId: string, resumeResult: Record<string, unknown>, gatewayId?: string): void;
   ensureRemoteObserverStream(
     storedSessionId: string,
     liveSessionId: string,
     startInfo?: { turnId?: string; userText?: string },
+    gatewayId?: string,
   ): LiveSessionStream | undefined;
+  resumeReconnectStreaming(
+    storedSessionId: string,
+    liveSessionId: string,
+    resumeResult?: Record<string, unknown>,
+    gatewayId?: string,
+  ): void;
+  finishReconnectStreaming(storedSessionId: string, gatewayId?: string): void;
 }
 
-/** 解析会话归属的专职 Bot（Bot Forever Chat 映射或当前 Bot 焦点）。 */
+/** 解析会话归属的专职 Bot（Bot Forever Chat 映射或当前 Bot 焦点，兼容多网关复合键）。 */
 export function resolveBotNameForSession(
   storedSessionId: string,
   botForeverChatCache: ReadonlyMap<string, string>,
-  state: Pick<AppState, 'activeFocus' | 'activeSessionId'>,
+  state: Pick<AppState, 'activeFocus' | 'activeSessionId'> & Partial<Pick<AppState, 'activeGatewayId' | 'gatewayCount'>>,
+  gatewayId?: string,
 ): string | null {
-  for (const [botName, foreverId] of botForeverChatCache.entries()) {
-    if (foreverId === storedSessionId) return botName;
+  const targetGw =
+    gatewayId ??
+    ((state.gatewayCount ?? 1) >= 2 ? (state.activeFocus.gatewayId || state.activeGatewayId) : undefined);
+  let fallbackMatch: string | null = null;
+  for (const [cacheKey, foreverId] of botForeverChatCache.entries()) {
+    if (foreverId !== storedSessionId) continue;
+    const colonIdx = cacheKey.indexOf(':');
+    if (colonIdx > 0) {
+      const keyGw = cacheKey.slice(0, colonIdx);
+      const plainBot = cacheKey.slice(colonIdx + 1);
+      if (gatewayId && keyGw !== gatewayId) continue;
+      if (!targetGw || keyGw === targetGw) return plainBot;
+      if (!fallbackMatch) fallbackMatch = plainBot;
+    } else if (!fallbackMatch) {
+      fallbackMatch = cacheKey;
+    }
   }
-  return state.activeFocus.type === 'bot' && state.activeSessionId === storedSessionId
-    ? state.activeFocus.botName
-    : null;
+  if (fallbackMatch) return fallbackMatch;
+  if (state.activeFocus.type === 'bot' && state.activeSessionId === storedSessionId) {
+    if (!gatewayId || (state.gatewayCount ?? 1) < 2 || !state.activeFocus.gatewayId || state.activeFocus.gatewayId === gatewayId) {
+      return state.activeFocus.botName;
+    }
+  }
+  return null;
 }
 
 export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): LiveStreamCoordinator {
   let remoteBubbleSeq = 0;
   const hydratingRemoteSessions = new Set<string>();
   let activeSessionSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const resolveStreamRegistry = (gatewayId?: string): LiveStreamRegistry | undefined =>
+    deps.getLiveStreamRegistryForGateway?.(gatewayId) ?? deps.getLiveStreamRegistry();
+
+  const resolveClient = (gatewayId?: string): HermesGatewayClient | null =>
+    deps.getClientForGateway ? deps.getClientForGateway(gatewayId) : deps.getGatewayClient();
 
   function clearActiveSessionSyncTimer(): void {
     if (activeSessionSyncTimer) {
@@ -126,9 +251,9 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     hydratingRemoteSessions.clear();
   }
 
-  function resolveStoredSessionId(rawId?: string | null): string | null {
+  function resolveStoredSessionId(rawId?: string | null, gatewayId?: string): string | null {
     if (!rawId) return null;
-    const streamRegistry = deps.getLiveStreamRegistry();
+    const streamRegistry = resolveStreamRegistry(gatewayId);
     if (streamRegistry) {
       if (streamRegistry.hasSession(rawId)) return rawId;
       for (const sid of streamRegistry.listSessionIds()) {
@@ -137,29 +262,35 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
         }
       }
     }
-    const mapped = deps.toStoredSessionId(rawId);
+    const mapped =
+      (gatewayId ? deps.getSessionHandleRegistryForGateway?.(gatewayId).toStoredId(rawId) : null) ??
+      deps.toStoredSessionId(rawId);
     if (mapped && streamRegistry?.hasSession(mapped)) {
       return mapped;
     }
     const state = deps.getState();
-    if (state.activeLiveSessionId && rawId === state.activeLiveSessionId && state.activeSessionId) {
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const matchesFocusGw = !gatewayId || (state.gatewayCount ?? 1) < 2 || activeGw === gatewayId;
+    if (matchesFocusGw && state.activeLiveSessionId && rawId === state.activeLiveSessionId && state.activeSessionId) {
       return state.activeSessionId;
     }
     return mapped || rawId;
   }
 
-  function readSessionMessages(storedSessionId: string): MessageViewModel[] {
+  function readSessionMessages(storedSessionId: string, gatewayId?: string): MessageViewModel[] {
     const state = deps.getState();
-    if (storedSessionId === state.activeSessionId) {
+    if (isFocusedOnEntity(state, storedSessionId, gatewayId)) {
       return state.messages;
     }
-    return deps.getSessionMessagesCache().get(storedSessionId) || [];
+    const cacheKey = resolveScopedEntityRuntimeKey(storedSessionId, gatewayId, state.gatewayCount);
+    return deps.getSessionMessagesCache().get(cacheKey) || [];
   }
 
-  function commitSessionMessages(storedSessionId: string, nextMessages: MessageViewModel[]): void {
+  function commitSessionMessages(storedSessionId: string, nextMessages: MessageViewModel[], gatewayId?: string): void {
     const state = deps.getState();
-    deps.getSessionMessagesCache().set(storedSessionId, nextMessages);
-    if (storedSessionId === state.activeSessionId) {
+    const cacheKey = resolveScopedEntityRuntimeKey(storedSessionId, gatewayId, state.gatewayCount);
+    deps.getSessionMessagesCache().set(cacheKey, nextMessages);
+    if (isFocusedOnEntity(state, storedSessionId, gatewayId)) {
       state.messages = nextMessages;
     }
   }
@@ -167,7 +298,8 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
   function scheduleActiveSessionIdleSync(delayMs = 150): void {
     if (!deps.refreshActiveSession) return;
     const state = deps.getState();
-    const streamRegistry = deps.getLiveStreamRegistry();
+    const activeGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const streamRegistry = resolveStreamRegistry(activeGw);
     if (!state.gatewayConnected || !state.activeSessionId || state.activeFocus.type === 'group') return;
     if (state.isStreaming || streamRegistry?.hasSession(state.activeSessionId)) return;
     const targetEpoch = deps.getConnectionEpoch();
@@ -176,8 +308,9 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
       activeSessionSyncTimer = null;
       if (targetEpoch !== deps.getConnectionEpoch()) return;
       const curState = deps.getState();
+      const curGw = curState.activeFocus?.gatewayId || curState.activeGatewayId;
       if (!curState.gatewayConnected || !curState.activeSessionId || curState.activeFocus.type === 'group') return;
-      if (curState.isStreaming || deps.getLiveStreamRegistry()?.hasSession(curState.activeSessionId)) return;
+      if (curState.isStreaming || resolveStreamRegistry(curGw)?.hasSession(curState.activeSessionId)) return;
       void deps.refreshActiveSession?.({ checkLiveTurn: true });
     }, delayMs);
     activeSessionSyncTimer.unref?.();
@@ -188,8 +321,9 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     messageId: string,
     initialContent: string,
     startedAtMs: number,
+    gatewayId?: string,
   ): boolean {
-    const current = readSessionMessages(storedSessionId);
+    const current = readSessionMessages(storedSessionId, gatewayId);
     if (current.some((m) => m.id === messageId)) return false;
     commitSessionMessages(storedSessionId, [
       ...current,
@@ -199,7 +333,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
         content: initialContent,
         timestamp: formatTimestamp(startedAtMs),
       },
-    ]);
+    ], gatewayId);
     return true;
   }
 
@@ -208,19 +342,20 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     assistantMessageId: string,
     userText: string,
     userRowId?: number | null,
+    gatewayId?: string,
   ): boolean {
-    const list = [...readSessionMessages(storedSessionId)];
+    const list = [...readSessionMessages(storedSessionId, gatewayId)];
     const plan = planRemoteUserPromptInsert(list, {
       assistantMessageId,
       userText,
       userRowId,
     });
     if (!plan) return false;
-    const streamRegistry = deps.getLiveStreamRegistry();
+    const streamRegistry = resolveStreamRegistry(gatewayId);
     if (plan.kind === 'already-present') {
       if (plan.bindRowId !== undefined && list[plan.existingIndex]) {
         list[plan.existingIndex] = { ...list[plan.existingIndex], rowId: plan.bindRowId };
-        commitSessionMessages(storedSessionId, list);
+        commitSessionMessages(storedSessionId, list, gatewayId);
         streamRegistry?.markUserSynced(storedSessionId);
         return true;
       }
@@ -236,7 +371,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
       ...(validRowId !== undefined ? { rowId: validRowId } : {}),
       timestamp: formatTimestamp(Date.now()),
     });
-    commitSessionMessages(storedSessionId, list);
+    commitSessionMessages(storedSessionId, list, gatewayId);
     streamRegistry?.markUserSynced(storedSessionId);
     return true;
   }
@@ -245,28 +380,32 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     streamRegistry: LiveStreamRegistry,
     stream: LiveSessionStream,
     inflightAssistant: string,
+    gatewayId?: string,
   ): boolean {
     const rec = streamRegistry.reconcileInflightText(stream.storedSessionId, inflightAssistant);
     if (rec.mode === 'noop') return false;
     const nextText = stream.accumulatedText;
     deps.dropQueuedTokens?.(stream.messageId);
-    if (stream.storedSessionId === deps.getState().activeSessionId) {
+    const state = deps.getState();
+    if (isFocusedOnEntity(state, stream.storedSessionId, gatewayId)) {
       deps.setMessageContent(stream.messageId, nextText);
     }
-    const cached = deps.getSessionMessagesCache().get(stream.storedSessionId);
+    const cacheKey = resolveScopedEntityRuntimeKey(stream.storedSessionId, gatewayId, state.gatewayCount);
+    const cached = deps.getSessionMessagesCache().get(cacheKey);
     const cachedMsg = cached?.find((m) => m.id === stream.messageId);
     if (cachedMsg) cachedMsg.content = nextText;
     return true;
   }
 
-  function syncFocusedStreamingProjection(preferredSessionId?: string): void {
-    const streamRegistry = deps.getLiveStreamRegistry();
-    if (!streamRegistry) return;
+  function syncFocusedStreamingProjection(preferredSessionId?: string, gatewayId?: string): void {
     const state = deps.getState();
+    const targetGw = gatewayId ?? (state.activeFocus?.gatewayId || state.activeGatewayId);
+    const streamRegistry = resolveStreamRegistry(targetGw);
+    if (!streamRegistry) return;
     const targetSid = preferredSessionId ?? state.activeSessionId;
     const stream = targetSid ? streamRegistry.getBySession(targetSid) : undefined;
-    if (targetSid && stream && targetSid === state.activeSessionId) {
-      ensureAssistantMessagePresent(targetSid, stream.messageId, stream.accumulatedText, stream.startedAt);
+    if (targetSid && stream && isFocusedOnEntity(state, targetSid, targetGw)) {
+      ensureAssistantMessagePresent(targetSid, stream.messageId, stream.accumulatedText, stream.startedAt, targetGw);
       state.isStreaming = true;
       if (stream.liveSessionId) state.activeLiveSessionId = stream.liveSessionId;
       state.turnStartedAt = stream.startedAt;
@@ -281,7 +420,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
       deps.armTurnWatchdog();
       return;
     }
-    if (!stream && (!targetSid || targetSid === state.activeSessionId)) {
+    if (!stream && (!targetSid || isFocusedOnEntity(state, targetSid, targetGw))) {
       state.isStreaming = false;
       state.turnStartedAt = undefined;
       deps.setTurnStartedSessionId(null);
@@ -328,18 +467,24 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     storedSessionId: string,
     assistantMessageId: string,
     botName: string | null,
+    gatewayId?: string,
   ): Promise<void> {
-    if (hydratingRemoteSessions.has(storedSessionId)) return;
-    const client = deps.getGatewayClient();
-    const streamRegistry = deps.getLiveStreamRegistry();
+    const initialState = deps.getState();
+    const hydratingKey = resolveScopedEntityRuntimeKey(storedSessionId, gatewayId, initialState.gatewayCount);
+    if (hydratingRemoteSessions.has(hydratingKey)) return;
+    const client = resolveClient(gatewayId);
+    const streamRegistry = resolveStreamRegistry(gatewayId);
     if (!client || !streamRegistry) return;
 
-    hydratingRemoteSessions.add(storedSessionId);
+    hydratingRemoteSessions.add(hydratingKey);
     const targetEpoch = deps.getConnectionEpoch();
     try {
       const state = deps.getState();
-      const resolvedProfile =
-        botName || state.sessions.find((s) => s.id === storedSessionId)?.botName || state.profileName || 'default';
+      const matchedSession =
+        state.sessions.find(
+          (s) => s.id === storedSessionId && (!gatewayId || !s.gatewayId || s.gatewayId === gatewayId),
+        ) ?? state.sessions.find((s) => s.id === storedSessionId);
+      const resolvedProfile = botName || matchedSession?.botName || state.profileName || 'default';
       const interactiveFence = deps.onCaptureInteractiveFence?.() ?? 0;
       const resumeRes = await callSessionResumeQuick(client, storedSessionId, resolvedProfile);
       if (resumeRes) {
@@ -353,7 +498,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
           fence: interactiveFence,
         });
       }
-      if (targetEpoch !== deps.getConnectionEpoch() || deps.getGatewayClient() !== client) return;
+      if (targetEpoch !== deps.getConnectionEpoch() || resolveClient(gatewayId) !== client) return;
 
       const curStream = streamRegistry.getBySession(storedSessionId);
       if (!curStream || curStream.messageId !== assistantMessageId) return;
@@ -361,14 +506,20 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
       const resumeState = extractResumeInflightState(resumeRes);
       let mutated = false;
       if (resumeState.inflightUser && !curStream.userMessageSynced) {
-        mutated = insertRemoteUserPromptIfMissing(storedSessionId, assistantMessageId, resumeState.inflightUser);
+        mutated = insertRemoteUserPromptIfMissing(
+          storedSessionId,
+          assistantMessageId,
+          resumeState.inflightUser,
+          undefined,
+          gatewayId,
+        );
       } else if (!curStream.userMessageSynced && typeof client.fetchSessionMessages === 'function') {
         const outcome = await client.fetchSessionMessages(storedSessionId, {
           limit: 10,
           order: 'latest',
           profile: resolvedProfile,
         });
-        if (targetEpoch !== deps.getConnectionEpoch() || deps.getGatewayClient() !== client) return;
+        if (targetEpoch !== deps.getConnectionEpoch() || resolveClient(gatewayId) !== client) return;
         const stillStream = streamRegistry.getBySession(storedSessionId);
         if (!stillStream || stillStream.messageId !== assistantMessageId) return;
         if (outcome.status === 'success' && outcome.messages.length > 0) {
@@ -383,6 +534,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
                 assistantMessageId,
                 parsed[i].content,
                 parsed[i].rowId,
+                gatewayId,
               );
               break;
             }
@@ -392,11 +544,11 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
 
       if (resumeState.inflightAssistant) {
         mutated =
-          applyReconciledAssistantText(streamRegistry, curStream, resumeState.inflightAssistant) || mutated;
+          applyReconciledAssistantText(streamRegistry, curStream, resumeState.inflightAssistant, gatewayId) || mutated;
       }
 
-      if (mutated && storedSessionId === deps.getState().activeSessionId) {
-        deps.ensureMessageWindow?.(readSessionMessages(storedSessionId).length);
+      if (mutated && isFocusedOnEntity(deps.getState(), storedSessionId, gatewayId)) {
+        deps.ensureMessageWindow?.(readSessionMessages(storedSessionId, gatewayId).length);
         deps.onForceSyncMessageList?.(true);
         deps.render();
         deps.syncAgentPresence();
@@ -404,7 +556,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     } catch (err) {
       console.debug('[live-stream] non-blocking remote hydration deferred', err);
     } finally {
-      hydratingRemoteSessions.delete(storedSessionId);
+      hydratingRemoteSessions.delete(hydratingKey);
     }
   }
 
@@ -413,29 +565,43 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     liveSessionId: string;
     resumeResult: Record<string, unknown>;
     botName?: string | null;
+    gatewayId?: string;
   }): boolean {
-    const streamRegistry = deps.getLiveStreamRegistry();
+    const state = deps.getState();
+    const targetGw = input.gatewayId ?? (state.activeFocus?.gatewayId || state.activeGatewayId);
+    const streamRegistry = resolveStreamRegistry(targetGw);
     if (!streamRegistry) return false;
     const resumeState = extractResumeInflightState(input.resumeResult);
     if (!resumeState.isRunning) return false;
 
-    const state = deps.getState();
-    const resolvedBotName = input.botName ?? deps.resolveBotNameForSession?.(input.storedSessionId) ?? null;
+    const scopedSessionKey = resolveScopedEntityRuntimeKey(input.storedSessionId, targetGw, state.gatewayCount);
+    const resolvedBotName =
+      input.botName ?? deps.resolveBotNameForSession?.(input.storedSessionId, targetGw) ?? null;
+    const scopedBotKey = resolvedBotName
+      ? resolveScopedBotRuntimeKey(resolvedBotName, targetGw, state.gatewayCount)
+      : '';
     const existing = streamRegistry.getBySession(input.storedSessionId);
-    const isFocused = input.storedSessionId === state.activeSessionId;
+    const isFocused = isFocusedOnEntity(state, input.storedSessionId, targetGw);
 
     if (existing) {
       if (input.liveSessionId) streamRegistry.updateLiveId(input.storedSessionId, input.liveSessionId);
       if (!existing.botName && resolvedBotName) existing.botName = resolvedBotName;
       let changed = false;
       if (!existing.userMessageSynced && resumeState.inflightUser) {
-        changed = insertRemoteUserPromptIfMissing(input.storedSessionId, existing.messageId, resumeState.inflightUser);
+        changed = insertRemoteUserPromptIfMissing(
+          input.storedSessionId,
+          existing.messageId,
+          resumeState.inflightUser,
+          undefined,
+          targetGw,
+        );
       }
       if (ensureAssistantMessagePresent(
         input.storedSessionId,
         existing.messageId,
         existing.accumulatedText,
         existing.startedAt,
+        targetGw,
       )) {
         changed = true;
       }
@@ -443,15 +609,19 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
         streamRegistry,
         existing,
         resumeState.inflightAssistant,
+        targetGw,
       )) {
         changed = true;
       }
-      deps.getActiveRunningSessionIds().add(input.storedSessionId);
-      if (existing.botName) deps.getActiveRunningBotNames().add(existing.botName);
+      deps.getActiveRunningSessionIds().add(scopedSessionKey);
+      const existingBotKey = existing.botName
+        ? resolveScopedBotRuntimeKey(existing.botName, targetGw, state.gatewayCount)
+        : '';
+      if (existingBotKey) deps.getActiveRunningBotNames().add(existingBotKey);
       if (isFocused) {
-        syncFocusedStreamingProjection(input.storedSessionId);
+        syncFocusedStreamingProjection(input.storedSessionId, targetGw);
         if (changed) {
-          deps.ensureMessageWindow?.(readSessionMessages(input.storedSessionId).length);
+          deps.ensureMessageWindow?.(readSessionMessages(input.storedSessionId, targetGw).length);
           deps.onForceSyncMessageList?.(true);
           deps.render();
         }
@@ -460,7 +630,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
       return true;
     }
 
-    const list = [...readSessionMessages(input.storedSessionId)];
+    const list = [...readSessionMessages(input.storedSessionId, targetGw)];
     const startedAtMs = resumeState.turnStartedAtMs ?? Date.now();
     const tail = list.length > 0 ? list[list.length - 1] : undefined;
     const canReuseTail = Boolean(
@@ -489,11 +659,17 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     } else {
       list.push(assistantMsg);
     }
-    commitSessionMessages(input.storedSessionId, list);
+    commitSessionMessages(input.storedSessionId, list, targetGw);
 
     let insertedUser = false;
     if (resumeState.inflightUser) {
-      insertedUser = insertRemoteUserPromptIfMissing(input.storedSessionId, assistantMsg.id, resumeState.inflightUser);
+      insertedUser = insertRemoteUserPromptIfMissing(
+        input.storedSessionId,
+        assistantMsg.id,
+        resumeState.inflightUser,
+        undefined,
+        targetGw,
+      );
     }
 
     streamRegistry.registerStream({
@@ -507,14 +683,14 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
       userMessageSynced: Boolean(resumeState.inflightUser) || insertedUser,
     });
 
-    deps.getActiveRunningSessionIds().add(input.storedSessionId);
-    if (resolvedBotName) {
-      deps.getActiveRunningBotNames().add(resolvedBotName);
+    deps.getActiveRunningSessionIds().add(scopedSessionKey);
+    if (scopedBotKey) {
+      deps.getActiveRunningBotNames().add(scopedBotKey);
     }
 
     if (isFocused) {
-      const finalList = readSessionMessages(input.storedSessionId);
-      syncFocusedStreamingProjection(input.storedSessionId);
+      const finalList = readSessionMessages(input.storedSessionId, targetGw);
+      syncFocusedStreamingProjection(input.storedSessionId, targetGw);
       deps.setMessageWindowUserExpanded?.(false);
       deps.ensureMessageWindow?.(finalList.length);
       if (deps.isStreamNearBottom?.() ?? true) {
@@ -527,8 +703,14 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     return true;
   }
 
-  function reconcileActiveTurnFromResume(storedSessionId: string, resumeResult: Record<string, unknown>): void {
-    const streamRegistry = deps.getLiveStreamRegistry();
+  function reconcileActiveTurnFromResume(
+    storedSessionId: string,
+    resumeResult: Record<string, unknown>,
+    gatewayId?: string,
+  ): void {
+    const state = deps.getState();
+    const targetGw = gatewayId ?? (state.activeFocus?.gatewayId || state.activeGatewayId);
+    const streamRegistry = resolveStreamRegistry(targetGw);
     const handles = readSessionHandles(resumeResult, storedSessionId);
     const liveSessionId = handles?.liveId || storedSessionId;
     if (!streamRegistry?.hasSession(storedSessionId)) {
@@ -536,7 +718,8 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
         storedSessionId,
         liveSessionId,
         resumeResult,
-        botName: deps.resolveBotNameForSession?.(storedSessionId) ?? null,
+        botName: deps.resolveBotNameForSession?.(storedSessionId, targetGw) ?? null,
+        gatewayId: targetGw,
       });
       return;
     }
@@ -551,18 +734,24 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     if (explicitLiveId) streamRegistry.updateLiveId(storedSessionId, explicitLiveId);
     const resumeState = extractResumeInflightState(resumeResult);
     const stream = streamRegistry.getBySession(storedSessionId);
+    const focused = isFocusedOnEntity(deps.getState(), storedSessionId, targetGw);
     if (stream && resumeState.isRunning) {
       streamRegistry.touchActivity(storedSessionId);
       if (resumeState.inflightAssistant) {
-        const changed = applyReconciledAssistantText(streamRegistry, stream, resumeState.inflightAssistant);
-        if (changed && storedSessionId === deps.getState().activeSessionId) {
+        const changed = applyReconciledAssistantText(
+          streamRegistry,
+          stream,
+          resumeState.inflightAssistant,
+          targetGw,
+        );
+        if (changed && focused) {
           deps.onForceSyncMessageList?.(true);
           deps.render();
         }
       }
     }
-    if (storedSessionId === deps.getState().activeSessionId) {
-      syncFocusedStreamingProjection(storedSessionId);
+    if (focused) {
+      syncFocusedStreamingProjection(storedSessionId, targetGw);
       deps.syncAgentPresence();
     }
   }
@@ -571,17 +760,27 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     storedSessionId: string,
     liveSessionId: string,
     startInfo?: { turnId?: string; userText?: string },
+    gatewayId?: string,
   ): LiveSessionStream | undefined {
-    const streamRegistry = deps.getLiveStreamRegistry();
+    const state = deps.getState();
+    const targetGw = gatewayId;
+    const streamRegistry = resolveStreamRegistry(targetGw);
     if (!streamRegistry) return undefined;
+    const scopedSessionKey = resolveScopedEntityRuntimeKey(storedSessionId, targetGw, state.gatewayCount);
     const existing = streamRegistry.getBySession(storedSessionId);
     if (existing) {
       if (liveSessionId) streamRegistry.updateLiveId(storedSessionId, liveSessionId);
       if (startInfo?.turnId && !existing.turnId) existing.turnId = startInfo.turnId;
       if (startInfo?.userText && !existing.userMessageSynced) {
-        const inserted = insertRemoteUserPromptIfMissing(storedSessionId, existing.messageId, startInfo.userText);
-        if (inserted && storedSessionId === deps.getState().activeSessionId) {
-          deps.ensureMessageWindow?.(readSessionMessages(storedSessionId).length);
+        const inserted = insertRemoteUserPromptIfMissing(
+          storedSessionId,
+          existing.messageId,
+          startInfo.userText,
+          undefined,
+          targetGw,
+        );
+        if (inserted && isFocusedOnEntity(deps.getState(), storedSessionId, targetGw)) {
+          deps.ensureMessageWindow?.(readSessionMessages(storedSessionId, targetGw).length);
           deps.onForceSyncMessageList?.(true);
           deps.render();
         }
@@ -590,7 +789,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     }
 
     const nowMs = Date.now();
-    const list = [...readSessionMessages(storedSessionId)];
+    const list = [...readSessionMessages(storedSessionId, targetGw)];
     const assistantMsg: MessageViewModel = {
       id: `msg-live-${storedSessionId}-${nowMs}-${++remoteBubbleSeq}`,
       role: 'assistant',
@@ -598,14 +797,20 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
       timestamp: formatTimestamp(nowMs),
     };
     list.push(assistantMsg);
-    commitSessionMessages(storedSessionId, list);
+    commitSessionMessages(storedSessionId, list, targetGw);
 
     let userSynced = false;
     if (startInfo?.userText) {
-      userSynced = insertRemoteUserPromptIfMissing(storedSessionId, assistantMsg.id, startInfo.userText);
+      userSynced = insertRemoteUserPromptIfMissing(
+        storedSessionId,
+        assistantMsg.id,
+        startInfo.userText,
+        undefined,
+        targetGw,
+      );
     }
 
-    const botName = deps.resolveBotNameForSession?.(storedSessionId) ?? null;
+    const botName = deps.resolveBotNameForSession?.(storedSessionId, targetGw) ?? null;
     const stream = streamRegistry.registerStream({
       storedSessionId,
       liveSessionId: liveSessionId || storedSessionId,
@@ -619,14 +824,15 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
       nowMs,
     });
 
-    deps.getActiveRunningSessionIds().add(storedSessionId);
-    if (botName) deps.getActiveRunningBotNames().add(botName);
+    deps.getActiveRunningSessionIds().add(scopedSessionKey);
+    if (botName) {
+      deps.getActiveRunningBotNames().add(resolveScopedBotRuntimeKey(botName, targetGw, state.gatewayCount));
+    }
 
-    const state = deps.getState();
-    if (storedSessionId === state.activeSessionId) {
-      syncFocusedStreamingProjection(storedSessionId);
+    if (isFocusedOnEntity(deps.getState(), storedSessionId, targetGw)) {
+      syncFocusedStreamingProjection(storedSessionId, targetGw);
       deps.setMessageWindowUserExpanded?.(false);
-      deps.ensureMessageWindow?.(readSessionMessages(storedSessionId).length);
+      deps.ensureMessageWindow?.(readSessionMessages(storedSessionId, targetGw).length);
       if (deps.isStreamNearBottom?.() ?? true) {
         deps.setPendingScrollToBottom?.(true);
       }
@@ -636,9 +842,79 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     }
 
     if (!userSynced) {
-      void hydrateRemoteTurnUserMessage(storedSessionId, assistantMsg.id, botName);
+      void hydrateRemoteTurnUserMessage(storedSessionId, assistantMsg.id, botName, targetGw);
     }
     return stream;
+  }
+
+  function resumeReconnectStreaming(
+    storedSessionId: string,
+    liveSessionId: string,
+    resumeResult?: Record<string, unknown>,
+    gatewayId?: string,
+  ): void {
+    const streamRegistry = resolveStreamRegistry(gatewayId);
+    if (streamRegistry) {
+      if (resumeResult) {
+        attachLiveTurnFromResume({
+          storedSessionId,
+          liveSessionId,
+          resumeResult,
+          botName: deps.resolveBotNameForSession?.(storedSessionId, gatewayId) ?? null,
+          gatewayId,
+        });
+      } else if (streamRegistry.hasSession(storedSessionId)) {
+        streamRegistry.updateLiveId(storedSessionId, liveSessionId);
+        syncFocusedStreamingProjection(storedSessionId, gatewayId);
+      }
+      return;
+    }
+    const state = deps.getState();
+    const sameGw = isSameActiveGateway(state, gatewayId);
+    if (sameGw && deps.getActiveStreamingContext?.().activeStreamingStoredSessionId === storedSessionId) {
+      deps.setActiveStreamingContext({ activeStreamingLiveId: liveSessionId });
+      deps.armTurnWatchdog();
+    }
+  }
+
+  function finishReconnectStreaming(storedSessionId: string, gatewayId?: string): void {
+    const state = deps.getState();
+    const streamRegistry = resolveStreamRegistry(gatewayId);
+    const removedStream = streamRegistry?.removeSession(storedSessionId);
+    if (removedStream) {
+      deps.dropQueuedTokens?.(removedStream.messageId);
+    }
+    if (!streamRegistry || streamRegistry.size() === 0) {
+      deps.clearTokenCoalescer?.();
+    }
+    deps.clearToolPatchQueue?.();
+    deps.stopRunningToolTimers?.();
+    if (removedStream?.botName) {
+      deps.getActiveRunningBotNames().delete(
+        resolveScopedBotRuntimeKey(removedStream.botName, gatewayId, state.gatewayCount),
+      );
+    }
+    const sameGw = isSameActiveGateway(state, gatewayId);
+    const focused = isFocusedOnEntity(state, storedSessionId, gatewayId);
+    if (sameGw && deps.getActiveStreamingContext?.().activeStreamingStoredSessionId === storedSessionId) {
+      deps.setActiveStreamingContext({
+        activeStreamingMessageId: null,
+        activeStreamingStoredSessionId: null,
+        activeStreamingLiveId: null,
+        activeStreamingBotName: null,
+      });
+    }
+    if (focused || !streamRegistry || streamRegistry.size() === 0) {
+      state.isStreaming = false;
+      state.turnStartedAt = undefined;
+      deps.setTurnStartedSessionId(null);
+    }
+    if (!streamRegistry || streamRegistry.size() === 0) {
+      deps.disarmTurnWatchdog();
+    }
+    deps.getActiveRunningSessionIds().delete(
+      resolveScopedEntityRuntimeKey(storedSessionId, gatewayId, state.gatewayCount),
+    );
   }
 
   return {
@@ -651,5 +927,7 @@ export function createLiveStreamCoordinator(deps: LiveStreamCoordinatorDeps): Li
     attachLiveTurnFromResume,
     reconcileActiveTurnFromResume,
     ensureRemoteObserverStream,
+    resumeReconnectStreaming,
+    finishReconnectStreaming,
   };
 }

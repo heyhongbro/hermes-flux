@@ -22,7 +22,7 @@ import { ChevronRight, MessageSquare, Plus, Search, Settings } from 'lucide-reac
 import { t } from '../../i18n/index.js';
 import { renderBotAvatar, renderGroupCollageAvatar } from '../../utils/botAvatar.js';
 import { ActivityIndicator } from '../primitives/ActivityIndicator.js';
-import type { LeftRailProfile } from '../leftRailModel.js';
+import { buildEntityGatewayBadge, type LeftRailProfile } from '../leftRailModel.js';
 import type { SettingsActions, SettingsSnapshot } from '../settings/settingsModel.js';
 import type {
   MobileBotSubpage,
@@ -59,9 +59,9 @@ export interface MobileHomeScreenProps {
   onToggleContainer?: (containerId: string) => void;
   onToggleDoneSection?: () => void;
   onRetryDoneSection?: () => void;
-  onSelectBot: (botName: string) => void;
-  onSelectGroup: (roomId: string) => void;
-  onSelectSession: (sessionId: string, botName?: string) => void;
+  onSelectBot: (botName: string, gatewayId?: string) => void;
+  onSelectGroup: (roomId: string, gatewayId?: string) => void;
+  onSelectSession: (sessionId: string, botName?: string, gatewayId?: string) => void;
   onOpenActionSheet: (sheet: MobileActionSheetState) => void;
   onHapticSelection?: () => void;
   settingsActions: SettingsActions;
@@ -219,24 +219,32 @@ export function MobileHomeScreen({
     if (row.kind === 'group') {
       return (
         <MobileEntityRow
-          key={`${keyPrefix}-group-${row.id}`}
+          key={`${keyPrefix}-group-${row.gatewayId || 'default'}-${row.id}`}
           kind="group"
           entityId={row.id}
           title={row.title}
           subtitle={row.subtitle || t('mobile.home.groupMembersCount', { count: row.members.length })}
           timeText={row.timeText}
-          avatarHtml={renderGroupCollageAvatar(row.members, groupAvatars, 40)}
+          avatarHtml={renderGroupCollageAvatar(row.members, groupAvatars, 40, row.gatewayId)}
           isActive={false}
+          gatewayBadge={buildEntityGatewayBadge(
+            model.isMultiGateway,
+            row.gatewayLabel,
+            row.gatewayOffline,
+            row.crossGateway,
+          )}
+          gatewayOffline={row.gatewayOffline}
           activityState={row.activityState}
           waitingReason={row.waitingReason}
           activityTransition={row.activityTransition}
           activityTransitionToken={row.activityTransitionToken}
-          onSelect={() => onSelectGroup(row.id)}
+          onSelect={() => onSelectGroup(row.id, row.gatewayId)}
           onLongPress={() =>
             onOpenActionSheet({
               kind: 'group',
               id: row.id,
               title: row.title,
+              gatewayId: row.gatewayId,
               isDone: row.isDone,
               currentContainerId: row.containerId ?? null,
             })
@@ -246,7 +254,7 @@ export function MobileHomeScreen({
     }
     return (
       <MobileEntityRow
-        key={`${keyPrefix}-session-${row.ownerBotName || 'default'}-${row.id}`}
+        key={`${keyPrefix}-session-${row.gatewayId || 'default'}-${row.ownerBotName || 'default'}-${row.id}`}
         kind="session"
         entityId={row.id}
         title={row.title}
@@ -261,17 +269,20 @@ export function MobileHomeScreen({
         )}
         isActive={false}
         isPinned={row.isPinned}
+        gatewayBadge={buildEntityGatewayBadge(model.isMultiGateway, row.gatewayLabel, row.gatewayOffline)}
+        gatewayOffline={row.gatewayOffline}
         activityState={row.activityState}
         waitingReason={row.waitingReason}
         activityTransition={row.activityTransition}
         activityTransitionToken={row.activityTransitionToken}
-        onSelect={() => onSelectSession(row.id, row.ownerBotName)}
+        onSelect={() => onSelectSession(row.id, row.ownerBotName, row.gatewayId)}
         onLongPress={() =>
           onOpenActionSheet({
             kind: 'session',
             id: row.id,
             title: row.title,
             botName: row.ownerBotName,
+            gatewayId: row.gatewayId,
             isDone: row.isDone,
             currentContainerId: row.containerId ?? null,
             hasCwdProjectMatch: row.hasCwdProjectMatch,
@@ -464,7 +475,7 @@ export function MobileHomeScreen({
               ) : (
                 botsSection.items.map((row) => (
                   <MobileEntityRow
-                    key={`bot-${row.id}`}
+                    key={`bot-${row.gatewayId || 'default'}-${row.id}`}
                     kind="bot"
                     entityId={row.id}
                     title={row.title}
@@ -472,13 +483,15 @@ export function MobileHomeScreen({
                     timeText={row.timeText}
                     avatarHtml={renderBotAvatar(row.profile.name, row.profile.displayName, row.avatarUrl, 40, 'circle')}
                     isActive={false}
+                    gatewayBadge={buildEntityGatewayBadge(model.isMultiGateway, row.gatewayLabel, row.gatewayOffline)}
+                    gatewayOffline={row.gatewayOffline}
                     activityState={row.activityState}
                     waitingReason={row.waitingReason}
                     activityTransition={row.activityTransition}
                     activityTransitionToken={row.activityTransitionToken}
-                    onSelect={() => onSelectBot(row.id)}
+                    onSelect={() => onSelectBot(row.id, row.gatewayId)}
                     onLongPress={() =>
-                      onOpenActionSheet({ kind: 'bot', id: row.id, title: row.title, isProtected: true })
+                      onOpenActionSheet({ kind: 'bot', id: row.id, title: row.title, gatewayId: row.gatewayId, isProtected: true })
                     }
                   />
                 ))

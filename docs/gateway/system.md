@@ -6,10 +6,10 @@
 | Method | Params (Contract) | Result (Contract) | Call Sites | Live Probe |
 | --- | --- | --- | --- | --- |
 | `commands.catalog` | `session_id` `profile` | `pairs` `sub` `canon` `commands` `categories` `skills` `skill_count` `warning` `plugin_discovery_error` `plugin_commands` | `packages/core/src/session/interactiveService.ts:212` | Skipped: Dynamic command catalog is generated per profile by an online gateway at runtime; explicitly skipped in offline probes and guarded by the contract table. |
-| `config.get` | `profile` `key` `cwd` `session_id` | `value` `display` `tool_progress` `model` `provider` `providers` `home` `cwd` `branch` `config` `prompt` `mtime` `mcp_rev` | `packages/core/src/rpc/client.ts:1363` | Skipped: config.get was not recorded against a live gateway in the offline baseline; guarded by the contract allowlist and status-bar threshold unit tests; run probe:gateway against a live gateway to record. |
-| `model.options` | `profile` `session_id` `explicit_only` `include_unconfigured` `refresh` | `providers` `model` `provider` | `packages/core/src/rpc/client.ts:1251`<br>`packages/desktop/src/renderer/providerCatalog.ts:95` | ✅ 0.22.5 |
-| `ping` | — | — | `packages/core/src/rpc/client.ts:499`<br>`packages/core/src/rpc/client.ts:586`<br>`packages/core/src/rpc/client.ts:723` | ✅ 0.22.5 |
-| `shell.exec` | `command` `profile` `session_id` | `stdout` `stderr` `code` | `packages/desktop/src/renderer/services/projectDirectoryActions.ts:48` | ✅ 0.22.5 |
+| `config.get` | `profile` `key` `cwd` `session_id` | `value` `display` `tool_progress` `model` `provider` `providers` `home` `cwd` `branch` `config` `prompt` `mtime` `mcp_rev` | `packages/core/src/rpc/clientChannelHelpers.ts:357` | Skipped: config.get was not recorded against a live gateway in the offline baseline; guarded by the contract allowlist and status-bar threshold unit tests; run probe:gateway against a live gateway to record. |
+| `model.options` | `profile` `session_id` `explicit_only` `include_unconfigured` `refresh` | `providers` `model` `provider` | `packages/core/src/rpc/clientChannelHelpers.ts:249`<br>`packages/desktop/src/renderer/providerCatalog.ts:95` | ✅ 0.22.5 |
+| `ping` | — | — | `packages/core/src/rpc/client.ts:528`<br>`packages/core/src/rpc/client.ts:615`<br>`packages/core/src/rpc/client.ts:758` | ✅ 0.22.5 |
+| `shell.exec` | `command` `profile` `session_id` | `stdout` `stderr` `code` | `packages/desktop/src/renderer/services/projectDirectoryActions.ts:56` | ✅ 0.22.5 |
 
 ## Details
 
@@ -27,7 +27,7 @@
 - Result type: `ConfigGetResult`
 - Live probe: Skipped — config.get was not recorded against a live gateway in the offline baseline; guarded by the contract allowlist and status-bar threshold unit tests; run probe:gateway against a live gateway to record.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1363`
+  - `packages/core/src/rpc/clientChannelHelpers.ts:357`
 
 ### `model.options`
 
@@ -35,7 +35,7 @@
 - Result type: `ModelOptionsResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1251`
+  - `packages/core/src/rpc/clientChannelHelpers.ts:249`
   - `packages/desktop/src/renderer/providerCatalog.ts:95`
 
 ### `ping`
@@ -44,9 +44,9 @@
 - Result type: `(not in generated contract)`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/core/src/rpc/client.ts:499`
-  - `packages/core/src/rpc/client.ts:586`
-  - `packages/core/src/rpc/client.ts:723`
+  - `packages/core/src/rpc/client.ts:528`
+  - `packages/core/src/rpc/client.ts:615`
+  - `packages/core/src/rpc/client.ts:758`
 
 ### `shell.exec`
 
@@ -54,5 +54,5 @@
 - Result type: `ShellExecResult`
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Call sites:
-  - `packages/desktop/src/renderer/services/projectDirectoryActions.ts:48`
+  - `packages/desktop/src/renderer/services/projectDirectoryActions.ts:56`
 

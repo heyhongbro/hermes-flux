@@ -14,6 +14,8 @@
 import * as React from 'react';
 import { ActivityIndicator, type ActivityEntityKind } from '../primitives/ActivityIndicator.js';
 import type { ActivityState, ActivityTransition, WaitingPromptReason } from '../leftRailModel.js';
+import { EntityGatewayBadgePill } from '../RailEntityRow.js';
+import type { RailEntityGatewayBadge } from '../../components/LeftRail/types.js';
 
 export interface MobileEntityRowProps {
   kind: ActivityEntityKind;
@@ -28,6 +30,8 @@ export interface MobileEntityRowProps {
   waitingReason?: WaitingPromptReason;
   activityTransition: ActivityTransition;
   activityTransitionToken?: number;
+  gatewayBadge?: RailEntityGatewayBadge;
+  gatewayOffline?: boolean;
   onSelect: () => void;
   onLongPress?: () => void;
 }
@@ -48,9 +52,13 @@ export const MobileEntityRow = React.memo(function MobileEntityRow({
   waitingReason,
   activityTransition,
   activityTransitionToken,
+  gatewayBadge,
+  gatewayOffline,
   onSelect,
   onLongPress,
 }: MobileEntityRowProps): React.ReactElement {
+  const isOffline = Boolean(gatewayOffline || gatewayBadge?.offline);
+  const badgePill = gatewayBadge ? <EntityGatewayBadgePill badge={gatewayBadge} /> : null;
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const startPosRef = React.useRef<{ x: number; y: number } | null>(null);
   const longPressedRef = React.useRef(false);
@@ -104,11 +112,12 @@ export const MobileEntityRow = React.memo(function MobileEntityRow({
   return (
     <button
       type="button"
-      className="m-entity-row"
+      className={isOffline ? 'm-entity-row opacity-60' : 'm-entity-row'}
       data-kind={kind}
       data-entity-id={entityId}
       data-active={isActive ? 'true' : 'false'}
       data-pinned={isPinned ? 'true' : 'false'}
+      data-gateway-offline={isOffline ? 'true' : undefined}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={clearTimer}
@@ -138,7 +147,12 @@ export const MobileEntityRow = React.memo(function MobileEntityRow({
             {timeText ? <time className="m-entity-row__time">{timeText}</time> : null}
           </span>
         </span>
-        {subtitle ? <span className="m-entity-row__subtitle">{subtitle}</span> : null}
+        {(badgePill || subtitle) ? (
+          <span className="flex min-w-0 items-center gap-1">
+            {badgePill}
+            {subtitle ? <span className="m-entity-row__subtitle min-w-0 flex-1">{subtitle}</span> : null}
+          </span>
+        ) : null}
       </span>
     </button>
   );

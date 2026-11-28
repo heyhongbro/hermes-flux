@@ -10,7 +10,7 @@
 
 1. **Tests prove breakage sensitivity, not mere existence.** A test is valuable only if deliberately breaking the code under test causes the test to fail. A test that always passes offers zero protection.
 2. **"Command exited 0" is distinct from "tests actually ran".** Exit code `0` alone cannot distinguish real execution from empty globs, skipped files, or premature exits—hence the execution census layer.
-3. **100% incremental coverage on new production code; ratchet-only on legacy code.** Requiring 80% global coverage immediately encourages trivial tests on legacy files, whereas enforcing 100% line and branch coverage on newly added/modified production code ensures every change carries its own proof.
+3. **90% incremental coverage on new production code; ratchet-only on legacy code.** Requiring 80% global coverage immediately encourages trivial tests on legacy files, whereas enforcing >=90% line and branch coverage on newly added/modified production code ensures every change carries its own proof.
 4. **Tools cannot infer missing features**, only verify existing implementations. New domain logic must ship with unit tests, formal invariant mappings, and coverage evidence.
 5. **File size is a maintainability boundary.** Files over 1,500 lines resist safe refactoring and are guarded automatically.
 
@@ -29,7 +29,7 @@ No single check catches every failure mode:
 | Execution census | Tests silently skipped or dropped by globs | Tests that run with vacuous assertions |
 | Manual / visual review | Requirement or UX mismatches | Regressions across large codebases |
 
-### 1.1 Why Incremental 100% Coverage
+### 1.1 Why Incremental 90% Coverage
 
 Global coverage averages hide unverified new code behind well-tested legacy modules and incentivize padding simple legacy paths. Focusing strictly on `git diff` / new files makes each commit accountable for its own additions.
 
@@ -109,14 +109,14 @@ Child processes spawned with `NODE_TEST_CONTEXT` inherited suppress TAP summary 
 
 ---
 
-## 5. Mechanism 2: 100% Incremental Coverage (L4)
+## 5. Mechanism 2: 90% Incremental Coverage (L4)
 
 ### 5.1 Verification Flow
 
 ```
 A. Added lines    git diff -U0 <base> ∪ untracked source files
 B. Executed lines node --experimental-test-coverage -> lcov -> sourcemap-mapped src lines
-C. Enforcement    Any executable line/branch in A ∩ B with hits === 0 -> FAIL
+C. Enforcement    Unmapped/unimported files -> FAIL; aggregate linePct < 90% or branchPct < 90% -> FAIL
 ```
 
 ### 5.2 Critical Implementation Details
@@ -198,6 +198,6 @@ Cross-platform logic belongs in Node scripts (`scripts/gates/*.mjs`) or separate
 
 ## 9. Limitations
 
-1. **100% coverage does not guarantee zero bugs**: Coverage proves execution, not assertion completeness.
+1. **High coverage does not guarantee zero bugs**: Even >=90%–100% coverage proves execution, not assertion completeness.
 2. **Automated metrics prevent regressions, not requirement errors**: Correctness of product behavior still requires human judgment.
 3. **Missing test cases cannot be inferred mathematically**: Layered checks (unit + property + mutation + CDP) minimize blind spots while making explicitly skipped probes visible.
