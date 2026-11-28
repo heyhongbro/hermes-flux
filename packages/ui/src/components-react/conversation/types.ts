@@ -140,6 +140,8 @@ export interface ConversationSnapshot {
   resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   /** 点击成果物文档 / 文件路径时打开预览 */
   onOpenFile?: (filePath: string, previewUrl?: string) => void;
+  /** 当前工作区物理根路径或会话执行工作目录（驱动相对路径图片与文档媒体水合） */
+  workspaceRoot?: string;
   /** 点击对话内图片时唤起共享悬浮灯箱（未提供时由消息列表自身挂载兜底灯箱） */
   onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
   /** 下载灯箱中预览的媒体图片 */

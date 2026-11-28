@@ -338,9 +338,9 @@ const parser = marked.use({
         )}"${titleAttr} />`;
       }
 
-      if (activeDocumentBasePath) {
+      if (activeDocumentBasePath || activeWorkspaceRoot) {
         const ref = resolvePreviewResourceRef(target, {
-          documentPath: activeDocumentBasePath,
+          documentPath: activeDocumentBasePath || (activeWorkspaceRoot ? `${activeWorkspaceRoot}/__session__.md` : ''),
           workspaceRoot: activeWorkspaceRoot || undefined,
         });
         if (ref.blocked) {

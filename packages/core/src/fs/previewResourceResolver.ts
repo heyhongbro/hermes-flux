@@ -553,8 +553,9 @@ function buildDataUrlSuccessResult(
   let normalizedUrl = dataUrl;
   let decodedSvgText: string | undefined;
   if (isSvg && !dataUrl.startsWith('data:') && dataUrl.includes('<svg')) {
-    decodedSvgText = dataUrl;
-    normalizedUrl = `data:image/svg+xml;base64,${encodeUtf8ToBase64(dataUrl)}`;
+    const trimmedSvg = dataUrl.trim();
+    decodedSvgText = trimmedSvg;
+    normalizedUrl = `data:image/svg+xml;base64,${encodeUtf8ToBase64(trimmedSvg)}`;
   } else if (isSvg && dataUrl.startsWith('data:')) {
     decodedSvgText = decodeDataUrlUtf8(dataUrl) ?? undefined;
   }

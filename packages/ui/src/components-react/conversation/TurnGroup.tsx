@@ -58,6 +58,7 @@ export interface TurnGroupProps {
   onOpenSubagentDetail?: (payload: { messageId: string; tools: ConversationToolVM[] }) => void;
   resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   onOpenFile?: (filePath: string, previewUrl?: string) => void;
+  workspaceRoot?: string;
   onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
 }
 
@@ -73,6 +74,7 @@ const areEqual = (prev: TurnGroupProps, next: TurnGroupProps): boolean => {
     prev.onOpenSubagentDetail !== next.onOpenSubagentDetail ||
     prev.resolveMediaUrl !== next.resolveMediaUrl ||
     prev.onOpenFile !== next.onOpenFile ||
+    prev.workspaceRoot !== next.workspaceRoot ||
     prev.onOpenMediaLightbox !== next.onOpenMediaLightbox
   ) {
     return false;
@@ -194,6 +196,7 @@ export const TurnGroup = React.memo(function TurnGroup({
   onOpenSubagentDetail,
   resolveMediaUrl,
   onOpenFile,
+  workspaceRoot,
   onOpenMediaLightbox,
 }: TurnGroupProps): React.ReactElement {
   const renderedRows = React.useMemo<ConsolidatedMobileTurnRow[]>(() => {
@@ -309,6 +312,7 @@ export const TurnGroup = React.memo(function TurnGroup({
           onOpenSubagentDetail={onOpenSubagentDetail}
           resolveMediaUrl={resolveMediaUrl}
           onOpenFile={onOpenFile}
+          workspaceRoot={workspaceRoot}
           onOpenMediaLightbox={onOpenMediaLightbox}
         />
       ))}

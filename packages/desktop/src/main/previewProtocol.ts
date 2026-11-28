@@ -489,6 +489,51 @@ export function createPreviewProtocolController(
           signal: request.signal,
         });
       }
+      if (upstreamRes.status === 404 && !isHtmlAssetPath(targetPath)) {
+        await cancelBodySafely(upstreamRes);
+        const dataUrlEndpoints = [
+          `${parsedBase.origin}/api/fs/read-data-url?${q.toString()}`,
+          `${parsedBase.origin}/api/files/read?path=${encodeURIComponent(targetPath)}`,
+        ];
+        for (const ep of dataUrlEndpoints) {
+          try {
+            const jsonRes = await fetchImpl(ep, { method: 'GET', headers, signal: request.signal });
+            if (jsonRes.ok) {
+              const bodyJson = (await jsonRes.json()) as Record<string, unknown>;
+              const rawData =
+                typeof bodyJson.dataUrl === 'string'
+                  ? bodyJson.dataUrl
+                  : typeof bodyJson.data_url === 'string'
+                    ? bodyJson.data_url
+                    : '';
+              if (rawData && rawData.startsWith('data:')) {
+                const commaIdx = rawData.indexOf(',');
+                if (commaIdx > 0) {
+                  const metaPart = rawData.slice(5, commaIdx);
+                  const isBase64 = metaPart.includes(';base64');
+                  const detectedMime = metaPart.split(';')[0] || detectPreviewAssetMime(targetPath) || 'application/octet-stream';
+                  const base64Data = rawData.slice(commaIdx + 1);
+                  const binBuffer = isBase64 ? Buffer.from(base64Data, 'base64') : Buffer.from(decodeURIComponent(base64Data), 'utf8');
+                  const respHeaders = withCorsHeaders({
+                    'Content-Type': detectedMime,
+                    'Content-Length': String(binBuffer.byteLength),
+                    'Cache-Control': 'no-store',
+                  });
+                  return new Response(method === 'HEAD' ? null : binBuffer, {
+                    status: 200,
+                    headers: respHeaders,
+                  });
+                }
+              }
+            } else {
+              await cancelBodySafely(jsonRes);
+            }
+          // gate-degrade: read-data-url 回退失败继续尝试下一个端点
+          } catch {
+            // 继续下一个备用端点
+          }
+        }
+      }
     } catch (err) {
       console.warn('[previewProtocol] gateway asset fetch failed:', err);
       return emptyResponse(502);

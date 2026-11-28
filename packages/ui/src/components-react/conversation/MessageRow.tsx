@@ -63,6 +63,7 @@ export interface MessageRowProps {
   onOpenSubagentDetail?: (payload: { messageId: string; tools: ConversationToolVM[] }) => void;
   resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   onOpenFile?: (filePath: string, previewUrl?: string) => void;
+  workspaceRoot?: string;
   onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
 }
 
@@ -85,6 +86,7 @@ export const MessageRow = React.memo(function MessageRow({
   onOpenSubagentDetail,
   resolveMediaUrl,
   onOpenFile,
+  workspaceRoot,
   onOpenMediaLightbox,
 }: MessageRowProps): React.ReactElement | null {
   const isUser = message.role === 'user';
@@ -315,6 +317,7 @@ export const MessageRow = React.memo(function MessageRow({
         turnImages={turnImages}
         resolveMediaUrl={resolveMediaUrl}
         onOpenFile={onOpenFile}
+        workspaceRoot={workspaceRoot}
         onOpenMediaLightbox={onOpenMediaLightbox}
       />
 

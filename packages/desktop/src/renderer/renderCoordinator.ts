@@ -68,7 +68,7 @@ import {
   chooseViewportAnchor,
   type DeliverableItem,
 } from '@hermes-flux/core';
-import { type AppState, resolveActiveViewportKey } from './state/appState.js';
+import { type AppState, resolveActiveViewportKey, resolveActiveWorkspaceCwd } from './state/appState.js';
 import { createDesktopMediaLightboxController } from './services/desktopMediaLightboxController.js';
 import {
   buildInspectorProps,
@@ -550,6 +550,7 @@ export function createRenderCoordinator(deps: RenderCoordinatorDeps): RenderCoor
         : undefined,
       resolveMediaUrl: deps.resolveMediaUrl,
       onOpenFile: deps.onOpenFile,
+      workspaceRoot: resolveActiveWorkspaceCwd(state) || undefined,
       onDownloadMediaItem: deps.onDownloadMediaItem,
       onOpenMediaLightbox: mobileActive
         ? (items, initialIndex) => mobileShellCoordinator?.openMediaLightbox(items, initialIndex)

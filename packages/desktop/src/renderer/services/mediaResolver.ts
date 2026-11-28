@@ -183,8 +183,8 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
         const detectedMime = detectPreviewAssetMime(cleanNoQuery);
         const workspaceCwd = resolveActiveWorkspaceCwd(state) || undefined;
         let out = '';
-        if (detectedMime && detectedMime.startsWith('audio/')) {
-          const audioRes = await resolvePreviewAsset(clean, {
+        if (detectedMime && (detectedMime.startsWith('audio/') || detectedMime.startsWith('image/'))) {
+          const previewRes = await resolvePreviewAsset(clean, {
             platformBridge: deps.getDesktopApi() ?? null,
             gatewayUrl: targetGatewayUrl,
             profile: effectiveProfile,
@@ -192,7 +192,21 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
             workspaceRoot: workspaceCwd,
             messages: state.messages,
           });
-          out = (audioRes.dataUrl || '').trim();
+          out = (previewRes.dataUrl || '').trim();
+          if (!out && workspaceCwd && isRelativeMediaPath(clean)) {
+            const joined = joinWorkspacePath(workspaceCwd, clean);
+            if (joined && joined !== clean) {
+              const joinedRes = await resolvePreviewAsset(joined, {
+                platformBridge: deps.getDesktopApi() ?? null,
+                gatewayUrl: targetGatewayUrl,
+                profile: effectiveProfile,
+                sessionId: state.activeSessionId || undefined,
+                workspaceRoot: workspaceCwd,
+                messages: state.messages,
+              });
+              out = (joinedRes.dataUrl || '').trim();
+            }
+          }
         } else {
           const resolveNonAudio = async (targetPath: string): Promise<string> => {
             const resolved = await resolveFileContent(targetPath, {
@@ -205,7 +219,7 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
               sessionId: state.activeSessionId || undefined,
               messages: state.messages,
             });
-            if (resolved.isBinary || resolved.isTooLarge || resolved.isDirectory || resolved.source === 'fallback') {
+            if (resolved.isTooLarge || resolved.isDirectory || resolved.source === 'fallback') {
               return '';
             }
             let content = resolved.content.trim();

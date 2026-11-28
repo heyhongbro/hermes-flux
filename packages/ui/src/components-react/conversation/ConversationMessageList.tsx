@@ -227,6 +227,7 @@ export function ConversationMessageList({
           onOpenSubagentDetail={snapshot.onOpenSubagentDetail}
           resolveMediaUrl={snapshot.resolveMediaUrl}
           onOpenFile={snapshot.onOpenFile}
+          workspaceRoot={snapshot.workspaceRoot}
           onOpenMediaLightbox={openLightbox}
         />
       ))}
