@@ -22,13 +22,14 @@
 
 import { GroupRoomStore } from '../group/groupService.js';
 import type { GroupLogPollerManager } from '../group/groupLogPollerManager.js';
+import { createLogger } from '../log/logger.js';
 import {
   resolveAggregateTitlebarStatus,
   resolveConnectionPhase,
   resolveTitlebarConnectionStatus,
   type GatewayConnectionPhase,
 } from '../rpc/connectionPhase.js';
-import { HermesGatewayClient, type RestFallbackOptions } from '../rpc/client.js';
+import { HermesGatewayClient, type ProbeOrWakeResult, type RestFallbackOptions } from '../rpc/client.js';
 import type { ClientCapabilitiesParams } from '../rpc/contracts/gateway-contract.generated.js';
 import { parseGatewayReadyParams, type IncomingServerRequest } from '../rpc/gatewayProtocol.js';
 import type { ServerRequestFrame } from '../rpc/serverRequestRouter.js';
@@ -144,6 +145,8 @@ export function buildSlotDefaultWsUrl(baseUrl: string, ticket?: string): string 
 function mapSlotStatus(slot: GatewayRuntimeSlot): GatewayHealthStatus {
   return resolveTitlebarConnectionStatus(slot.phase, slot.connected);
 }
+
+const poolLog = createLogger('gateway');
 
 /**
  * 多网关并发连接池：统一管理隔离 Slot 的建连、重连、事件分流与健康聚合。
@@ -303,6 +306,7 @@ export class GatewayConnectionPool {
       if (this.options.authenticateGateway) {
         slot.ticket = undefined;
         slot.phase = 'connecting';
+        poolLog.info('gateway slot connecting', { gatewayId });
         this.emitHealth();
         let auth: GatewayAuthAttemptResult;
         try {
@@ -312,6 +316,7 @@ export class GatewayConnectionPool {
           slot.connected = false;
           slot.phase = 'offline';
           slot.reason = err instanceof Error ? err.message : String(err);
+          poolLog.warn('gateway slot authenticate threw', { gatewayId, reason: slot.reason });
           this.emitHealth();
           return false;
         }
@@ -321,6 +326,11 @@ export class GatewayConnectionPool {
           slot.authError = Boolean(auth.authError);
           slot.phase = 'offline';
           slot.reason = auth.message || 'Authentication failed';
+          poolLog.warn('gateway slot auth rejected', {
+            gatewayId,
+            authError: slot.authError,
+            reason: slot.reason,
+          });
           this.emitHealth();
           return false;
         }
@@ -374,6 +384,46 @@ export class GatewayConnectionPool {
     return this.connectGateway(gatewayId);
   }
 
+  /**
+   * 唤醒或轻量探活单个网关槽位：
+   * - 已在线/握手/重连中槽位复用底层 `probeOrWake()`，禁止在途握手被粗暴重建掐断；
+   * - 仅当处于 `DISCONNECTED` 且非凭据错误时才重新发起 `connectGateway()`。
+   */
+  public async wakeSlot(
+    gatewayId: GatewayInstanceId,
+    reason = 'wake',
+  ): Promise<ProbeOrWakeResult> {
+    const record = this.slots.get(gatewayId);
+    if (!record) return 'disconnected';
+    const { slot } = record;
+    if (slot.config.enabled === false || slot.manualDisconnected) {
+      return 'disconnected';
+    }
+    const fsmState = slot.client.getState();
+    if (
+      slot.connected ||
+      fsmState === 'CONNECTED' ||
+      fsmState === 'CONNECTING' ||
+      fsmState === 'HANDSHAKING' ||
+      fsmState === 'RECONNECTING'
+    ) {
+      poolLog.debug('wakeSlot delegating to client.probeOrWake', {
+        gatewayId,
+        reason,
+        fsmState,
+        connected: slot.connected,
+      });
+      return slot.client.probeOrWake(reason);
+    }
+    if (slot.authError) {
+      poolLog.info('wakeSlot skipped due to authError', { gatewayId, reason });
+      return 'disconnected';
+    }
+    poolLog.info('wakeSlot reconnecting disconnected slot', { gatewayId, reason });
+    await this.connectGateway(gatewayId);
+    return slot.connected ? 'alive' : 'reconnecting';
+  }
+
   public disconnectAll(manual = true): void {
     for (const id of this.slots.keys()) {
       this.disconnectGateway(id, manual);
@@ -387,6 +437,7 @@ export class GatewayConnectionPool {
       shortLabel: deriveGatewayShortLabel(slot.config.name, slot.config.url, slot.config.shortAlias),
       url: slot.config.url,
       status: mapSlotStatus(slot),
+      phase: slot.phase,
       connected: slot.connected,
       latencyMs: slot.latencyMs,
       routeKind: (slot.config.routeKind || 'direct') as GatewayRouteKind,
@@ -563,6 +614,7 @@ export class GatewayConnectionPool {
     });
 
     const unsubFsm = client.getFsm().onStateChange((fsmState) => {
+      const prevPhase = slot.phase;
       const isConnected = fsmState === 'CONNECTED';
       if (isConnected) {
         slot.hasConnectedOnce = true;
@@ -579,6 +631,15 @@ export class GatewayConnectionPool {
         isColdStartRetrying: false,
         hasConnectedOnce: slot.hasConnectedOnce,
       });
+      if (prevPhase !== slot.phase) {
+        poolLog.info('gateway slot phase transitioned', {
+          gatewayId: slot.gatewayId,
+          from: prevPhase,
+          to: slot.phase,
+          fsmState,
+          connected: isConnected,
+        });
+      }
       this.emitHealth();
     });
 

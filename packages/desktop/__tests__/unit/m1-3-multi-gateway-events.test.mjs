@@ -564,6 +564,7 @@ test('M1.3 multiGatewayCoordinator per-gateway registries, refreshAllSlots, wake
       queueMicrotask(() => this.open());
     }
   };
+  let wiring;
   try {
     const state = createInitialState({ platform: 'win32' });
     state.gatewayUrl = 'http://127.0.0.1:8642/';
@@ -574,7 +575,7 @@ test('M1.3 multiGatewayCoordinator per-gateway registries, refreshAllSlots, wake
     let legacyConnected = true;
     const primaryClients = [];
 
-    const wiring = createDesktopMultiGatewayWiring({
+    wiring = createDesktopMultiGatewayWiring({
       getState: () => state,
       getDesktopApi: () => ({
         authenticateGateway: async () => ({ ok: true, message: 'ok', latency: 1, ticket: 'tk' }),
@@ -617,8 +618,18 @@ test('M1.3 multiGatewayCoordinator per-gateway registries, refreshAllSlots, wake
     assert.equal(forwarded.some((e) => e.gw === 'gw-a'), true);
 
     await wiring.coordinator.refreshAllSlots();
+    // Manual disconnect stays disconnected across wakeAllSlots; passive disconnect recovers on wakeAllSlots
     wiring.coordinator.disconnectGateway('gw-b');
-    await wiring.wakeAllSlots();
+    await wiring.wakeAllSlots('focus');
+    await flushMicrotasks();
+    assert.equal(wiring.coordinator.resolveClient('gw-b'), null);
+
+    await wiring.coordinator.reconnectGateway('gw-b');
+    await flushMicrotasks();
+    assert.ok(wiring.coordinator.resolveClient('gw-b'));
+
+    wiring.runtime.disconnectGateway('gw-b', false);
+    await wiring.wakeAllSlots('focus');
     await flushMicrotasks();
     assert.ok(wiring.coordinator.resolveClient('gw-b'));
 
@@ -637,9 +648,8 @@ test('M1.3 multiGatewayCoordinator per-gateway registries, refreshAllSlots, wake
       describeRpcError: (e) => String(e),
     });
     assert.equal(resolved, 'live-b-cached');
-
-    wiring.runtime.dispose();
   } finally {
+    wiring?.runtime.dispose();
     globalThis.WebSocket = origWs;
     if (origLsDesc) Object.defineProperty(globalThis, 'localStorage', origLsDesc);
     else delete globalThis.localStorage;

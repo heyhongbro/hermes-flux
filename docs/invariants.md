@@ -25,7 +25,7 @@ so uncovered logic can be computed systematically.
 | `source` is an existing source file path | FAIL on violation |
 | `source` + `symbol` pair is unique | FAIL on violation |
 
-## Overview (98 invariants across 21 areas)
+## Overview (99 invariants across 21 areas)
 
 ### ATTACH (5)
 
@@ -61,13 +61,14 @@ so uncovered logic can be computed systematically.
 | `INV-CACHE-10` | 多网关会话索引独立上限配额守恒（分桶裁剪互不挤出） | `packages/core/src/cache/CacheService.ts` → `CacheService.writeSessions` | `cache-fence-formal.test.mjs` | 高活跃网关的新会话按全局时间截断将低频备用网关的历史会话索引挤出缓存 |
 | `INV-CACHE-11` | 群聊 __room__ 稳定哨兵归属与 authorityEpoch 单调防倒灌 | `packages/core/src/cache/CacheService.ts` → `CacheService.applyRemoteWindow` | `cache-fence-formal.test.mjs` | 跨机群聊切主后旧消息孤儿化消失，或失联降级旧主网关重连后用陈旧快照覆写最新群聊记录 |
 
-### CONN (3)
+### CONN (4)
 
 | ID | Topic | Source Anchor | Property Test | Failure Mode |
 |---|---|---|---|---|
 | `INV-CONN-01` | Auth failure and manual disconnect strictly dominate transient reconnect states | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase#auth-dominance` | `connection-phase-formal.test.mjs` | After 401 auth failure or manual disconnect, UI loops on reconnect banners |
 | `INV-CONN-02` | Seven-state connection phase projection keeps sync precedence monotonic | `packages/core/src/rpc/connectionPhase.ts` → `resolveConnectionPhase` | `connection-phase-formal.test.mjs` | HANDSHAKING or RECONNECTING collapses to connected or offline, desyncing titlebar and dock |
 | `INV-CONN-03` | Cold-start retry backoff remains bounded and non-decreasing | `packages/core/src/rpc/connectionPhase.ts` → `computeColdStartRetryDelayMs` | `connection-phase-formal.test.mjs` | Cold-start retries stall indefinitely or tight-loop without delay |
+| `INV-CONN-04` | Aggregate multi-gateway connection phase converges when focused or any online | `packages/core/src/rpc/connectionPhase.ts` → `resolveAggregateConnectionPhase` | `connection-phase-formal.test.mjs` | Multi-gateway cold start stays stuck on connecting/reconnecting pill even after slots connect |
 
 ### DELIV (4)
 

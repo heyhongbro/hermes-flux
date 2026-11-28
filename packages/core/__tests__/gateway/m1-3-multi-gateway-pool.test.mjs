@@ -1071,3 +1071,97 @@ test('M1.3 GatewayConnectionPool auto-reconnect mints fresh ws-ticket via resolv
     pool.disconnectAll(true);
   }
 });
+
+test('M1.3 wakeSlot protects in-flight CONNECTING/HANDSHAKING sockets, skips authError, and exposes slot phase', async () => {
+  const sockets = [];
+  class ManualSocket {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      this.sent = [];
+      this.closed = false;
+      this.onopen = null;
+      this.onmessage = null;
+      this.onclose = null;
+      this.onerror = null;
+    }
+    send(raw) {
+      const frame = JSON.parse(raw);
+      this.sent.push(frame);
+      if (frame.method === 'ping' && frame.id != null) {
+        queueMicrotask(() => {
+          this.onmessage?.({ data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { pong: true } }) });
+        });
+      }
+    }
+    close() {
+      this.closed = true;
+      this.readyState = 3;
+      this.onclose?.({ code: 1000, reason: 'closed' });
+    }
+  }
+
+  let authCalls = 0;
+  let authOk = true;
+  const wakePool = new GatewayConnectionPool({
+    enableHeartbeat: false,
+    enableLifecycleWake: false,
+    socketFactory: (url) => {
+      const sock = new ManualSocket(url);
+      sockets.push(sock);
+      return sock;
+    },
+    authenticateGateway: async (cfg) => {
+      authCalls += 1;
+      return authOk ? { ok: true, ticket: `tk-${cfg.id}-${authCalls}` } : { ok: false, authError: true, message: '401' };
+    },
+  });
+
+  try {
+    wakePool.addGateway({ id: 'gw-handshaking', name: 'H', url: 'http://127.0.0.1:9931' });
+    wakePool.addGateway({ id: 'gw-auth-bad', name: 'A', url: 'http://127.0.0.1:9932' });
+    wakePool.addGateway({ id: 'gw-disc', name: 'D', url: 'http://127.0.0.1:9933' });
+
+    await wakePool.connectGateway('gw-handshaking');
+    await flushMicrotasks();
+    // Socket created in CONNECTING state (never opened yet)
+    assert.equal(wakePool.getSlot('gw-handshaking')?.client.getState(), 'CONNECTING');
+    const authBeforeWake = authCalls;
+    const sockCountBeforeWake = sockets.length;
+
+    // wakeSlot on in-flight CONNECTING must NOT re-auth or teardown socket
+    assert.equal(await wakePool.wakeSlot('gw-handshaking', 'focus'), 'reconnecting');
+    assert.equal(authCalls, authBeforeWake);
+    assert.equal(sockets.length, sockCountBeforeWake);
+    assert.equal(sockets[0].closed, false);
+
+    // Healthy slot becomes connected -> health summary exposes phase='connected' and wakeSlot probes ping -> 'alive'
+    sockets[0].readyState = 1;
+    sockets[0].onopen?.();
+    await flushMicrotasks();
+    assert.equal(wakePool.getHealthSummary().slots.find((s) => s.gatewayId === 'gw-handshaking')?.phase, 'connected');
+    assert.equal(await wakePool.wakeSlot('gw-handshaking', 'focus'), 'alive');
+
+    // authError slot -> wakeSlot skips without hammering auth
+    authOk = false;
+    await wakePool.connectGateway('gw-auth-bad');
+    const authAfterBad = authCalls;
+    assert.equal(await wakePool.wakeSlot('gw-auth-bad', 'focus'), 'disconnected');
+    assert.equal(authCalls, authAfterBad);
+
+    // DISCONNECTED clean slot (non-manual) -> wakeSlot reconnects
+    authOk = true;
+    await wakePool.connectGateway('gw-disc');
+    const discSock = sockets.at(-1);
+    discSock.readyState = 1;
+    discSock.onopen?.();
+    await flushMicrotasks();
+    wakePool.disconnectGateway('gw-disc', false);
+    const sockCountBeforeDiscWake = sockets.length;
+    const wakeDiscRes = await wakePool.wakeSlot('gw-disc', 'focus');
+    assert.equal(wakeDiscRes, 'reconnecting');
+    assert.equal(sockets.length, sockCountBeforeDiscWake + 1);
+  } finally {
+    wakePool.disconnectAll(true);
+  }
+});

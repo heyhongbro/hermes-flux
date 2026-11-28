@@ -20,15 +20,18 @@ import {
   DEFAULT_CACHE_GATEWAY_ID,
   LiveStreamRegistry,
   SessionHandleRegistry,
+  createLogger,
   modelCatalogFingerprint,
   normalizeGatewayOriginUrl,
   normalizeOrgProfileName,
   readSessionHandles,
+  resolveAggregateConnectionMeta,
   runGuarded,
   type AggregatedMultiGatewayView,
   type AgentProfile,
   type ClientCapabilitiesParams,
   type FluxLogger,
+  type GatewayConnectionPhase,
   type GatewayInstanceConfig,
   type GatewayPoolHealthSummary,
   type GroupRoomSummary,
@@ -72,7 +75,13 @@ export type MultiGatewayCoordState = Pick<
   gatewayUrl?: string;
   profilesPhase?: AppState['profilesPhase'];
   sessionsPhase?: AppState['sessionsPhase'];
+  connectionPhase?: GatewayConnectionPhase;
+  gatewayConnecting?: boolean;
+  connectionReconnectAttempt?: number;
+  connectionAuthError?: boolean;
 };
+
+const mgwLog = createLogger('gateway');
 
 export interface MultiGatewayCoordinatorDeps {
   readonly runtime: Omit<MultiGatewayRuntime, 'seedSlotSliceIfEmpty'> &
@@ -221,10 +230,48 @@ export function createMultiGatewayCoordinator(
     return seededAny;
   }
 
+  function syncConnectionPhaseToState(
+    state: MultiGatewayCoordState,
+    health: GatewayPoolHealthSummary,
+  ): void {
+    if (health.totalCount < 2 && !hadMultiGatewayState) {
+      return;
+    }
+    const prevPhase = state.connectionPhase;
+    const meta = resolveAggregateConnectionMeta({
+      slots: health.slots.map((s) => ({
+        gatewayId: s.gatewayId,
+        connected: Boolean(s.connected),
+        phase: s.phase,
+        status: s.status ?? (s.connected ? 'connected' : 'offline'),
+        authError: s.authError,
+        reconnectAttempt: s.reconnectAttempt,
+      })),
+      focusedGatewayId: resolveFocusedGatewayId(state),
+      currentPhase: prevPhase,
+    });
+    state.connectionPhase = meta.phase;
+    state.gatewayConnecting = meta.gatewayConnecting;
+    state.connectionReconnectAttempt = meta.reconnectAttempt;
+    state.connectionAuthError = meta.authError;
+    if (prevPhase !== meta.phase) {
+      mgwLog.info('multi-gateway connectionPhase changed', {
+        from: prevPhase ?? 'unset',
+        to: meta.phase,
+        focusedGw: resolveFocusedGatewayId(state) ?? '',
+        onlineCount: health.onlineCount,
+        totalCount: health.totalCount,
+      });
+    }
+  }
+
   function refreshActiveOfflineState(): boolean {
     const state = getState();
     const offline = isActiveEntityGatewayOffline(state, state.gatewayHealthSummary);
     state.activeEntityGatewayOffline = offline;
+    if (state.gatewayHealthSummary) {
+      syncConnectionPhaseToState(state, state.gatewayHealthSummary);
+    }
     return offline;
   }
 
@@ -252,6 +299,7 @@ export function createMultiGatewayCoordinator(
       state.gatewayConnected = health.onlineCount > 0;
     }
 
+    syncConnectionPhaseToState(state, health);
     state.activeEntityGatewayOffline = isActiveEntityGatewayOffline(state, state.gatewayHealthSummary);
     return view;
   }
@@ -613,6 +661,7 @@ export function createDesktopMultiGatewayWiring(deps: {
   readonly clientCapabilities?: ClientCapabilitiesParams;
   readonly isLegacyClientConnected?: () => boolean;
   readonly onPrimaryClientChange?: (client: HermesGatewayClient | null) => void;
+  readonly onMultiGatewayConnected?: (gatewayId: string, isFirstOnline: boolean) => void;
 }): {
   readonly runtime: MultiGatewayRuntime;
   readonly coordinator: MultiGatewayCoordinator;
@@ -623,7 +672,7 @@ export function createDesktopMultiGatewayWiring(deps: {
     disconnectIds?: readonly string[];
   }): Promise<void>;
   isMultiGatewayConfigured(): boolean;
-  wakeAllSlots(): Promise<ProbeOrWakeResult>;
+  wakeAllSlots(reason?: string): Promise<ProbeOrWakeResult>;
 } {
   let coordinatorRef: MultiGatewayCoordinator | null = null;
   let started = false;
@@ -683,16 +732,28 @@ export function createDesktopMultiGatewayWiring(deps: {
     clientCapabilities: deps.clientCapabilities,
     onHealthChange: (summary) => {
       if (!started) return;
+      const wasAnyOnline = Array.from(prevConnected.values()).some(Boolean);
+      const newlyConnectedIds: string[] = [];
       for (const slot of summary.slots) {
         const wasConnected = prevConnected.get(slot.gatewayId) ?? false;
         prevConnected.set(slot.gatewayId, slot.connected);
         if (!wasConnected && slot.connected) {
-          void coordinatorRef?.refreshSlotSlices(slot.gatewayId);
+          newlyConnectedIds.push(slot.gatewayId);
         }
       }
       coordinatorRef?.syncPoolToState();
       if (isMultiGatewayConfigured()) {
         deps.onPrimaryClientChange?.(runtime.getClient());
+      }
+      for (const gwId of newlyConnectedIds) {
+        void coordinatorRef?.refreshSlotSlices(gwId);
+      }
+      if (newlyConnectedIds.length > 0) {
+        const focusedGw = resolveFocusedGatewayId(deps.getState());
+        const focusedBecameOnline = Boolean(focusedGw && newlyConnectedIds.includes(focusedGw));
+        if (!wasAnyOnline || focusedBecameOnline) {
+          deps.onMultiGatewayConnected?.(newlyConnectedIds[0], !wasAnyOnline);
+        }
       }
       deps.render();
     },
@@ -776,17 +837,37 @@ export function createDesktopMultiGatewayWiring(deps: {
     deps.render();
   }
 
-  async function wakeAllSlots(): Promise<ProbeOrWakeResult> {
+  async function wakeAllSlots(reason = 'focus'): Promise<ProbeOrWakeResult> {
     const before = runtime.getHealthSummary();
-    const offlineSlots = before.slots.filter((s) => !s.connected);
+    const wakeFn = (runtime as { wakeSlot?: (id: string, wakeReason?: string) => Promise<ProbeOrWakeResult> }).wakeSlot;
     await Promise.allSettled(
-      offlineSlots.map((s) => runtime.reconnectGateway(s.gatewayId)),
+      before.slots.map((s) => {
+        const slot = runtime.getSlot?.(s.gatewayId);
+        if (
+          !s.connected &&
+          (!slot || (slot.client.getState() === 'DISCONNECTED' && !slot.manualDisconnected && !slot.authError))
+        ) {
+          return runtime.reconnectGateway(s.gatewayId);
+        }
+        return typeof wakeFn === 'function'
+          ? wakeFn(s.gatewayId, reason)
+          : s.connected
+            ? Promise.resolve('alive' as ProbeOrWakeResult)
+            : runtime.reconnectGateway(s.gatewayId);
+      }),
     );
     coordinator.syncPoolToState();
     deps.render();
     const after = runtime.getHealthSummary();
+    const hadOffline = before.slots.some((s) => !s.connected);
+    mgwLog.debug('wakeAllSlots settled', {
+      reason,
+      beforeOnline: before.onlineCount,
+      afterOnline: after.onlineCount,
+      totalCount: after.totalCount,
+    });
     if (after.onlineCount === 0) return 'disconnected';
-    if (offlineSlots.length > 0 && after.onlineCount < after.totalCount) return 'reconnecting';
+    if (hadOffline && after.onlineCount < after.totalCount) return 'reconnecting';
     return 'alive';
   }
 
@@ -1021,7 +1102,7 @@ export function createAppBootstrapGatewayHandlers(deps: {
   readonly multiGateway: {
     isMultiGatewayConfigured(): boolean;
     bootstrap(): Promise<void>;
-    wakeAllSlots(): Promise<ProbeOrWakeResult | void>;
+    wakeAllSlots(reason?: string): Promise<ProbeOrWakeResult | void>;
   };
   readonly connectLegacy: () => Promise<void> | void;
   readonly wakeLegacy: (reason: string) => Promise<ProbeOrWakeResult>;
@@ -1043,7 +1124,7 @@ export function createAppBootstrapGatewayHandlers(deps: {
     },
     async onWakeOrRetry(reason: string): Promise<ProbeOrWakeResult> {
       if (deps.multiGateway.isMultiGatewayConfigured()) {
-        const res = (await deps.multiGateway.wakeAllSlots()) ?? 'alive';
+        const res = (await deps.multiGateway.wakeAllSlots(reason)) ?? 'alive';
         if (res !== 'disconnected') {
           await deps.syncOnResumeAlive();
         }

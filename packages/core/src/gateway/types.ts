@@ -20,6 +20,8 @@
 
 import { DEFAULT_CACHE_GATEWAY_ID } from '../cache/types.js';
 
+import type { GatewayConnectionPhase } from '../rpc/connectionPhase.js';
+
 export type GatewayInstanceId = string;
 
 export type GatewayRouteKind = 'direct' | 'lan' | 'relay';
@@ -46,6 +48,7 @@ export interface GatewaySlotHealth {
   shortLabel: string;
   url: string;
   status: GatewayHealthStatus;
+  phase?: GatewayConnectionPhase;
   connected: boolean;
   latencyMs?: number;
   routeKind: GatewayRouteKind;

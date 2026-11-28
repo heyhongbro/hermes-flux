@@ -155,6 +155,120 @@ export function resolveAggregateTitlebarStatus(
 }
 
 /**
+ * 多网关聚合连接槽位输入。
+ */
+export interface AggregateConnectionSlotInput {
+  readonly gatewayId: string;
+  readonly connected: boolean;
+  readonly phase?: GatewayConnectionPhase;
+  readonly status: TitlebarConnectionStatus;
+  readonly authError?: boolean;
+  readonly reconnectAttempt?: number;
+}
+
+/**
+ * 多网关连接相位归约输入。
+ */
+export interface ResolveAggregateConnectionPhaseInput {
+  readonly slots: readonly AggregateConnectionSlotInput[];
+  readonly focusedGatewayId?: string;
+  readonly currentPhase?: GatewayConnectionPhase;
+}
+
+/**
+ * 多网关聚合连接状态元信息。
+ */
+export interface AggregateConnectionMeta {
+  readonly phase: GatewayConnectionPhase;
+  readonly gatewayConnecting: boolean;
+  readonly reconnectAttempt: number;
+  readonly authError: boolean;
+}
+
+function preserveOnlinePhase(currentPhase?: GatewayConnectionPhase): GatewayConnectionPhase {
+  return currentPhase === 'syncing' || currentPhase === 'synced' ? currentPhase : 'connected';
+}
+
+/**
+ * 根据多网关各槽位健康态与当前焦点网关，归约唯一权威的 UI 连接相位及辅助元数据。
+ */
+export function resolveAggregateConnectionMeta(
+  input: ResolveAggregateConnectionPhaseInput,
+): AggregateConnectionMeta {
+  const { slots, focusedGatewayId, currentPhase } = input;
+  if (slots.length === 0) {
+    return { phase: 'unconfigured', gatewayConnecting: false, reconnectAttempt: 0, authError: false };
+  }
+
+  const focused = focusedGatewayId
+    ? slots.find((s) => s.gatewayId === focusedGatewayId)
+    : undefined;
+  if (focused) {
+    if (focused.connected) {
+      return {
+        phase: preserveOnlinePhase(currentPhase),
+        gatewayConnecting: false,
+        reconnectAttempt: 0,
+        authError: false,
+      };
+    }
+    if (focused.authError) {
+      return {
+        phase: 'offline',
+        gatewayConnecting: false,
+        reconnectAttempt: focused.reconnectAttempt ?? 0,
+        authError: true,
+      };
+    }
+    const derivedPhase: GatewayConnectionPhase =
+      focused.phase && focused.phase !== 'connected' && focused.phase !== 'syncing' && focused.phase !== 'synced'
+        ? focused.phase
+        : focused.status === 'reconnecting'
+          ? 'reconnecting'
+          : 'offline';
+    return {
+      phase: derivedPhase,
+      gatewayConnecting: derivedPhase === 'connecting' || derivedPhase === 'reconnecting',
+      reconnectAttempt: focused.reconnectAttempt ?? 0,
+      authError: false,
+    };
+  }
+
+  if (slots.some((s) => s.connected)) {
+    return {
+      phase: preserveOnlinePhase(currentPhase),
+      gatewayConnecting: false,
+      reconnectAttempt: 0,
+      authError: false,
+    };
+  }
+
+  let phase: GatewayConnectionPhase = 'offline';
+  if (slots.some((s) => s.phase === 'reconnecting' || s.status === 'reconnecting')) {
+    phase = 'reconnecting';
+  } else if (slots.some((s) => s.phase === 'connecting')) {
+    phase = 'connecting';
+  }
+  const reconnectAttempt = slots.reduce((max, s) => Math.max(max, s.reconnectAttempt ?? 0), 0);
+  const authError = slots.every((s) => Boolean(s.authError));
+  return {
+    phase: authError ? 'offline' : phase,
+    gatewayConnecting: !authError && (phase === 'connecting' || phase === 'reconnecting'),
+    reconnectAttempt,
+    authError,
+  };
+}
+
+/**
+ * 归约多网关模式下的权威 UI 连接相位。
+ */
+export function resolveAggregateConnectionPhase(
+  input: ResolveAggregateConnectionPhaseInput,
+): GatewayConnectionPhase {
+  return resolveAggregateConnectionMeta(input).phase;
+}
+
+/**
  * 判定 JSON-RPC 异常是否来自网关明确返回的业务/协议错误码（证明传输链路仍存活）。
  */
 export function isLegacyRpcMethodError(err: unknown): boolean {

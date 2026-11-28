@@ -136,6 +136,9 @@ if (!gotTheLock) {
   if (debugPort) {
     app.commandLine.appendSwitch('remote-debugging-port', debugPort);
   }
+  if (process.platform === 'darwin') {
+    app.commandLine.appendSwitch('enable-features', 'MacWebContentsOcclusion');
+  }
 
   /**
    * 文件日志必须在创建窗口之前初始化：

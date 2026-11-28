@@ -608,6 +608,14 @@
       "failure": "Cold-start retries stall indefinitely or tight-loop without delay"
     },
     {
+      "id": "INV-CONN-04",
+      "topic": "Aggregate multi-gateway connection phase converges when focused or any online",
+      "source": "packages/core/src/rpc/connectionPhase.ts",
+      "symbol": "resolveAggregateConnectionPhase",
+      "test": "packages/core/__tests__/formal/connection-phase-formal.test.mjs",
+      "failure": "Multi-gateway cold start stays stuck on connecting/reconnecting pill even after slots connect"
+    },
+    {
       "id": "INV-DELIV-01",
       "topic": "Deliverable extraction deduplicates idempotently and excludes non-assistant turns",
       "source": "packages/core/src/session/deliverables.ts",

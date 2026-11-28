@@ -35,6 +35,7 @@ import {
   type HermesGatewayClient,
   type IncomingServerRequest,
   type NormalizedSession,
+  type ProbeOrWakeResult,
   type RpcSocketFactory,
   type ServerRequestFrame,
 } from '@hermes-flux/core';
@@ -78,6 +79,7 @@ export interface MultiGatewayRuntime {
   connectAll(): Promise<PromiseSettledResult<boolean>[]>;
   connectGateway(gatewayId: GatewayInstanceId, wsUrlOverride?: string): Promise<boolean>;
   reconnectGateway(gatewayId: GatewayInstanceId): Promise<boolean>;
+  wakeSlot(gatewayId: GatewayInstanceId, reason?: string): Promise<ProbeOrWakeResult>;
   disconnectGateway(gatewayId: GatewayInstanceId, manual?: boolean): boolean;
   disconnectAll(manual?: boolean): void;
   setSlotSlice(gatewayId: GatewayInstanceId, patch: Partial<SlotSnapshotData>): AggregatedMultiGatewayView;
@@ -285,6 +287,7 @@ export function createMultiGatewayRuntime(deps: MultiGatewayRuntimeDeps): MultiG
     connectAll: () => pool.connectAll(),
     connectGateway: (gatewayId, wsUrlOverride) => pool.connectGateway(gatewayId, wsUrlOverride),
     reconnectGateway: (gatewayId) => pool.reconnectGateway(gatewayId),
+    wakeSlot: (gatewayId, reason) => pool.wakeSlot(gatewayId, reason),
     disconnectGateway: (gatewayId, manual = true) => pool.disconnectGateway(gatewayId, manual),
     disconnectAll: (manual = true) => pool.disconnectAll(manual),
     setSlotSlice,

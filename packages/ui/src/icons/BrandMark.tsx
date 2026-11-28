@@ -182,15 +182,6 @@ export function BrandSwiftMark({
         >
           <defs>
             {vt.showCard ? renderLinearGradientDef(`${prefix}-bg`, BRAND_SPEC.background.gradient) : null}
-            <filter id={`${prefix}-shadow`} x="-25%" y="-25%" width="150%" height="150%">
-              <feDropShadow
-                dx={BRAND_SPEC.shadow.dx}
-                dy={BRAND_SPEC.shadow.dy}
-                stdDeviation={BRAND_SPEC.shadow.stdDeviation}
-                floodColor={BRAND_SPEC.shadow.color}
-                floodOpacity={BRAND_SPEC.shadow.opacity}
-              />
-            </filter>
             {BRAND_SPEC.facets.map((facet) =>
               facet.fillType === 'linear' ? renderLinearGradientDef(`${prefix}-${facet.id}`, facet.gradient) : null,
             )}
@@ -210,40 +201,38 @@ export function BrandSwiftMark({
             />
           ) : null}
 
-          <g filter={`url(#${prefix}-shadow)`}>
-            <g transform={`translate(${tx}, ${ty}) scale(${vt.scale})`}>
-              {FACET_GROUPS.map((group) => {
-                const pivot = resolvePartPivot(group.part);
-                const partStyle: React.CSSProperties | undefined = pivot
-                  ? { transformOrigin: `${pivot[0]}px ${pivot[1]}px` }
-                  : undefined;
-                return (
-                  <g
-                    key={group.part}
-                    data-part={group.part}
-                    className={`flux-brand-swift__part flux-brand-swift__${group.part}`}
-                    style={partStyle}
-                  >
-                    {group.facets.map((facet) =>
-                      facet.fillType === 'solid' ? (
-                        <polygon
-                          key={facet.id}
-                          points={formatPoints(facet.points)}
-                          fill={facet.color}
-                          fillOpacity={facet.opacity}
-                        />
-                      ) : (
-                        <polygon
-                          key={facet.id}
-                          points={formatPoints(facet.points)}
-                          fill={`url(#${prefix}-${facet.id})`}
-                        />
-                      ),
-                    )}
-                  </g>
-                );
-              })}
-            </g>
+          <g transform={`translate(${tx}, ${ty}) scale(${vt.scale})`}>
+            {FACET_GROUPS.map((group) => {
+              const pivot = resolvePartPivot(group.part);
+              const partStyle: React.CSSProperties | undefined = pivot
+                ? { transformOrigin: `${pivot[0]}px ${pivot[1]}px` }
+                : undefined;
+              return (
+                <g
+                  key={group.part}
+                  data-part={group.part}
+                  className={`flux-brand-swift__part flux-brand-swift__${group.part}`}
+                  style={partStyle}
+                >
+                  {group.facets.map((facet) =>
+                    facet.fillType === 'solid' ? (
+                      <polygon
+                        key={facet.id}
+                        points={formatPoints(facet.points)}
+                        fill={facet.color}
+                        fillOpacity={facet.opacity}
+                      />
+                    ) : (
+                      <polygon
+                        key={facet.id}
+                        points={formatPoints(facet.points)}
+                        fill={`url(#${prefix}-${facet.id})`}
+                      />
+                    ),
+                  )}
+                </g>
+              );
+            })}
           </g>
 
           {vt.showWordmark ? (
@@ -322,11 +311,10 @@ export function renderBrandSwiftHtml({
     `<svg class="flux-brand-swift__svg" viewBox="${BRAND_SPEC.viewBox}" width="100%" height="100%" aria-hidden="true" focusable="false">` +
     '<defs>' +
     bgDef +
-    `<filter id="${prefix}-shadow" x="-25%" y="-25%" width="150%" height="150%"><feDropShadow dx="${BRAND_SPEC.shadow.dx}" dy="${BRAND_SPEC.shadow.dy}" stdDeviation="${BRAND_SPEC.shadow.stdDeviation}" flood-color="${BRAND_SPEC.shadow.color}" flood-opacity="${BRAND_SPEC.shadow.opacity}" /></filter>` +
     facetDefs +
     '</defs>' +
     cardRect +
-    `<g filter="url(#${prefix}-shadow)"><g transform="translate(${tx}, ${ty}) scale(${vt.scale})">${partGroupsHtml}</g></g>` +
+    `<g transform="translate(${tx}, ${ty}) scale(${vt.scale})">${partGroupsHtml}</g>` +
     wordmarkHtml +
     '</svg>' +
     '</span>' +

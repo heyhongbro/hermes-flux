@@ -258,6 +258,7 @@ async function buildAll() {
       'slashVisibility',
       'botManagementController',
       'scrollEndController',
+      'logBridge',
     ].map((moduleName) => nodeModuleTask(`src/renderer/${moduleName}.ts`, `dist/renderer/${moduleName}.mjs`)),
 
     // 主进程单测独立产物

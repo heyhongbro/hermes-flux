@@ -94,7 +94,7 @@ import { createSettingsDataService } from './services/settingsDataService.js';
 import { createConversationOrgCoordinator } from './services/conversationOrgCoordinator.js';
 import {
   HermesGatewayClient, TokenCoalescer, readSessionHandles,
-  defaultSessionHandleRegistry, createLogger, setLogLevel, addLogSink,
+  defaultSessionHandleRegistry, createLogger, setLogLevel,
   getLogLevel, parseLogLevel, type LogLevel,
   type NormalizedSession, type AgentPresence,
   type AgentProfile, ProfileService, GroupRoomStore, GroupLogPollerManager,
@@ -117,6 +117,11 @@ import { createRenderCoordinator, type RenderMessagesSnapshot } from './renderCo
 import { createMobileShellCoordinator } from './mobile/mobileShellCoordinator.js';
 import { createDropdownKeybindController } from './dropdownKeybindController.js';
 import type { HermesDesktopBridge } from '../preload/index.js';
+import {
+  LOG_LEVEL_STORAGE_KEY,
+  registerRendererLogSinks,
+  resolveInitialLogLevel,
+} from './logBridge.js';
 import {
   applyToolOutputRiskAction,
   createDesktopInteractiveSubsystem,
@@ -184,20 +189,16 @@ const desktopApi: HermesDesktopBridge | undefined =
   typeof window !== 'undefined' ? window.hermesDesktop : undefined;
 
 const bootLog = createLogger('boot');
-const LOG_SINKS = { error: console.error, warn: console.warn, debug: console.debug, trace: console.debug, info: console.log } as const;
-addLogSink((entry) => LOG_SINKS[entry.level](`[Flux ${entry.scope}]`, entry.message, entry.data ?? ''));
-const LOG_LEVEL_STORAGE_KEY = 'hermes_flux_log_level';
-
-function resolveInitialLogLevel(): LogLevel {
-  try {
-    const raw = localStorage.getItem(LOG_LEVEL_STORAGE_KEY);
-    return (raw ? parseLogLevel(raw) : null) ?? 'info';
-  } catch { return 'info'; }
-}
-
-const initialLogLevel = resolveInitialLogLevel();
+const initialLogLevel = resolveInitialLogLevel(
+  typeof window !== 'undefined' ? window.location?.search : '',
+  typeof localStorage !== 'undefined' ? localStorage : null,
+);
 setLogLevel(initialLogLevel);
-bootLog.info('runtime log level initialized', { level: initialLogLevel });
+const rendererLogSinks = registerRendererLogSinks({
+  desktopApi,
+  fileMinLevel: initialLogLevel === 'debug' || initialLogLevel === 'trace' ? initialLogLevel : 'info',
+});
+bootLog.info('runtime log level initialized', { level: initialLogLevel, sinks: rendererLogSinks.sinkCount });
 
 if (typeof window !== 'undefined') {
   window.__fluxLog = {
@@ -211,7 +212,7 @@ if (typeof window !== 'undefined') {
       console.log('[Flux Log] level changed to', parsed);
       return parsed;
     },
-    getSinkCount() { return 1; },
+    getSinkCount() { return rendererLogSinks.sinkCount; },
   };
 }
 
@@ -473,6 +474,12 @@ const multiGateway = createDesktopMultiGatewayWiring({
   getFallbackLiveStreamRegistry: () => liveStreamRegistry,
   isLegacyClientConnected: () => Boolean(gatewayClient && gatewayClient.getFsm().getState() === 'CONNECTED'),
   onPrimaryClientChange: (c) => { gatewayClient = c; },
+  onMultiGatewayConnected: (_gwId, isFirstOnline) => {
+    void foregroundSyncCoordinator.syncOnConnected('connected');
+    if (isFirstOnline && !state.activeSessionId) {
+      void applyColdStartFocus();
+    }
+  },
   onForwardSlotEvent: (params, gwId) => gatewayEventDispatcher.handleGatewayEvent(params, gwId),
   onSlotInteractiveRequest: (gwId, frame, client) => interactiveSubsystem.handleSlotServerRequest(gwId, frame, client),
   onSlotSocketClosed: (gwId, closedGen) => interactiveSubsystem.handleSlotSocketClosed(gwId, closedGen),

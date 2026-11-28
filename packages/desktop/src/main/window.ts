@@ -30,7 +30,7 @@ export function createMainWindow(): BrowserWindow {
     frame: !isWin && !isMac ? true : false,
     titleBarStyle: isMac ? 'hiddenInset' : undefined,
     trafficLightPosition: isMac ? { x: 14, y: 14 } : undefined,
-    vibrancy: isMac ? 'under-window' : undefined,
+    // Pure opaque canvas surfaces avoid continuous macOS WindowServer live blur compositing overhead
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       nodeIntegration: false,
