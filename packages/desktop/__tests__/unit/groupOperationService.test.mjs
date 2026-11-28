@@ -92,6 +92,7 @@ function createMockGroupDeps(overrides = {}) {
     getCurrentLoadMessagesGeneration: () => generation,
     logSession: () => {},
     beginSessionEnter: overrides.beginSessionEnter,
+    ...(overrides.onActiveFocusChanged ? { onActiveFocusChanged: overrides.onActiveFocusChanged } : {}),
   };
 }
 
@@ -280,5 +281,26 @@ test('groupOperationService: createGroupRoom dispatches groups.create when conne
 
   const offlineService = createGroupOperationService(createMockGroupDeps({ gatewayClient: null }));
   assert.equal(await offlineService.createGroupRoom('离线群', ['bot-a', 'bot-b']), null);
+});
+
+test('groupOperationService: 跨网关或离开 Bot 进入群聊前必须将过期 profileName 重置为 default', async () => {
+  const seenOnFocus = [];
+  const deps = createMockGroupDeps({
+    state: {
+      gatewayCount: 2,
+      activeGatewayId: 'gw-1',
+      profileName: 'newmediaboy',
+      activeFocus: { type: 'bot', botName: 'newmediaboy', gatewayId: 'gw-1' },
+      profiles: [{ name: 'newmediaboy', gatewayId: 'gw-1' }],
+      groupRooms: [{ roomId: 'room-gw2', name: 'GW2 群', members: ['a'], gatewayId: 'gw-2' }],
+    },
+    onActiveFocusChanged: () => {
+      seenOnFocus.push(deps.getState().profileName);
+    },
+  });
+  const service = createGroupOperationService(deps);
+  await service.openGroupRoom('room-gw2', 'gw-2');
+  assert.equal(deps.getState().profileName, 'default');
+  assert.deepEqual(seenOnFocus, ['default']);
 });
 

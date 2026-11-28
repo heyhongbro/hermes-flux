@@ -142,6 +142,7 @@ export function MediaLightbox({
   const [isDragging, setIsDragging] = React.useState(false);
   const [resolvedSrcMap, setResolvedSrcMap] = React.useState<Record<string, string>>({});
   const [failedIds, setFailedIds] = React.useState<Record<string, boolean>>({});
+  const [fallbackTriedIds, setFallbackTriedIds] = React.useState<Record<string, boolean>>({});
   const [retryToken, setRetryToken] = React.useState(0);
 
   const stageRef = React.useRef<HTMLDivElement | null>(null);
@@ -165,20 +166,23 @@ export function MediaLightbox({
     setScale(1);
     setPan({ x: 0, y: 0 });
     setSwipeDrag({ dx: 0, dy: 0 });
+    setResolvedSrcMap({});
     setFailedIds({});
+    setFallbackTriedIds({});
   }, [initialIndex, items]);
 
   const currentItem = items[index];
+  const currentItemKey = currentItem ? `${currentItem.id}::${currentItem.src}::${currentItem.path || ''}` : '';
 
   // 懒解析需要走网关鉴权代理的路径型图片（失败显式呈现错误态与重试钮，禁止无限加载）
   React.useEffect(() => {
-    if (!currentItem || !resolveMediaUrl) return;
+    if (!currentItem || !currentItemKey || !resolveMediaUrl) return;
     const candidate = currentItem.src || currentItem.path || '';
     if (
       !candidate ||
       SAFE_MEDIA_SRC_RE.test(candidate) ||
-      resolvedSrcMap[currentItem.id] ||
-      failedIds[currentItem.id]
+      resolvedSrcMap[currentItemKey] ||
+      failedIds[currentItemKey]
     ) {
       return;
     }
@@ -188,19 +192,19 @@ export function MediaLightbox({
       .then((resolved) => {
         if (cancelled) return;
         if (!resolved || !SAFE_MEDIA_SRC_RE.test(resolved)) {
-          setFailedIds((prev) => ({ ...prev, [currentItem.id]: true }));
+          setFailedIds((prev) => ({ ...prev, [currentItemKey]: true }));
           return;
         }
-        setResolvedSrcMap((prev) => ({ ...prev, [currentItem.id]: resolved }));
+        setResolvedSrcMap((prev) => ({ ...prev, [currentItemKey]: resolved }));
       })
       .catch(() => {
         if (cancelled) return;
-        setFailedIds((prev) => ({ ...prev, [currentItem.id]: true }));
+        setFailedIds((prev) => ({ ...prev, [currentItemKey]: true }));
       });
     return () => {
       cancelled = true;
     };
-  }, [currentItem, resolveMediaUrl, resolvedSrcMap, failedIds, retryToken]);
+  }, [currentItem, currentItemKey, resolveMediaUrl, resolvedSrcMap, failedIds, retryToken]);
 
   const resetTransform = React.useCallback(() => {
     setScale(1);
@@ -277,9 +281,9 @@ export function MediaLightbox({
 
   if (!currentItem) return null;
 
-  const rawDisplaySrc = resolvedSrcMap[currentItem.id] || currentItem.src || '';
-  const displaySrc = SAFE_MEDIA_SRC_RE.test(rawDisplaySrc) ? rawDisplaySrc : '';
-  const isLoadFailed = Boolean(failedIds[currentItem.id] || (!resolveMediaUrl && !displaySrc));
+  const rawDisplaySrc = resolvedSrcMap[currentItemKey] || currentItem.src || '';
+  const displaySrc = !failedIds[currentItemKey] && SAFE_MEDIA_SRC_RE.test(rawDisplaySrc) ? rawDisplaySrc : '';
+  const isLoadFailed = Boolean(failedIds[currentItemKey] || (!resolveMediaUrl && !displaySrc));
   const zoomPercent = `${Math.round(scale * 100)}%`;
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
@@ -518,6 +522,40 @@ export function MediaLightbox({
             style={{
               transform: `translate3d(${Math.round(tx)}px, ${Math.round(ty)}px, 0) scale(${scale})`,
             }}
+            onError={() => {
+              const fallbackCandidate =
+                currentItem.path && currentItem.path !== displaySrc
+                  ? currentItem.path
+                  : currentItem.path || currentItem.src || '';
+              if (
+                resolveMediaUrl &&
+                fallbackCandidate &&
+                !resolvedSrcMap[currentItemKey] &&
+                !fallbackTriedIds[currentItemKey]
+              ) {
+                const targetKey = currentItemKey;
+                setFallbackTriedIds((prev) => ({ ...prev, [targetKey]: true }));
+                void resolveMediaUrl(fallbackCandidate)
+                  .then((resolved) => {
+                    if (resolved && SAFE_MEDIA_SRC_RE.test(resolved) && resolved !== displaySrc) {
+                      setResolvedSrcMap((prev) => ({ ...prev, [targetKey]: resolved }));
+                      return;
+                    }
+                    setFailedIds((prev) => ({ ...prev, [targetKey]: true }));
+                  })
+                  .catch(() => {
+                    setFailedIds((prev) => ({ ...prev, [targetKey]: true }));
+                  });
+                return;
+              }
+              setResolvedSrcMap((prev) => {
+                if (!(currentItemKey in prev)) return prev;
+                const next = { ...prev };
+                delete next[currentItemKey];
+                return next;
+              });
+              setFailedIds((prev) => ({ ...prev, [currentItemKey]: true }));
+            }}
           />
         ) : isLoadFailed ? (
           <div className="flux-lightbox__error" data-testid="lightbox-error">
@@ -529,9 +567,20 @@ export function MediaLightbox({
                 data-testid="lightbox-retry"
                 onClick={(event) => {
                   event.stopPropagation();
+                  setResolvedSrcMap((prev) => {
+                    if (!(currentItemKey in prev)) return prev;
+                    const next = { ...prev };
+                    delete next[currentItemKey];
+                    return next;
+                  });
                   setFailedIds((prev) => {
                     const next = { ...prev };
-                    delete next[currentItem.id];
+                    delete next[currentItemKey];
+                    return next;
+                  });
+                  setFallbackTriedIds((prev) => {
+                    const next = { ...prev };
+                    delete next[currentItemKey];
                     return next;
                   });
                   setRetryToken((n) => n + 1);

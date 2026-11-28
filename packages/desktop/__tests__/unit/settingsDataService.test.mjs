@@ -1247,3 +1247,117 @@ test('settingsDataService: onSwitchDefaultAndDisableProvider 严格串行先切�
   assert.equal(sameOut2.ok, true);
   assert.equal(httpCalls.filter((c) => c.path === '/api/model/set').length, 1, '同签名并发只得发出一次 /api/model/set');
 });
+
+test('settingsDataService: onSaveEndpoint makeDefault=true 同步扇出并兜底 /api/model/set，多网关同 id 头像按网关隔离', async () => {
+  const httpCalls = [];
+  let fetchProfilesCount = 0;
+  const deps = createMockSettingsDeps({
+    state: {
+      gatewayCount: 2,
+      activeGatewayId: 'gw-1',
+      settingsGatewayId: 'gw-2',
+      profiles: [
+        { name: 'default', displayName: 'GW1 Default', gatewayId: 'gw-1', avatar: 'data:image/png;base64,GW1' },
+        { name: 'default', displayName: 'GW2 Default', gatewayId: 'gw-2' },
+        { name: 'coder', displayName: 'Coder', gatewayId: 'gw-2' },
+      ],
+      sessions: [
+        { id: 's-1', title: 'S1', botName: 'default', gatewayId: 'gw-1', botAvatar: 'data:image/png;base64,GW1' },
+        { id: 's-2', title: 'S2', botName: 'default', gatewayId: 'gw-2' },
+      ],
+      settingsProfiles: {
+        status: 'ready',
+        data: [
+          { name: 'default', displayName: 'GW2 Default', isDefault: true, model: 'old/model' },
+          { name: 'coder', displayName: 'Coder', isDefault: false, model: 'old/model' },
+        ],
+      },
+      settingsScopedProfile: 'default',
+    },
+    gatewayClient: {
+      call: async (method) => (method === 'model.options' ? { providers: [], model: '' } : { profiles: [] }),
+      request: async () => null,
+    },
+  });
+  deps.fetchProfiles = async () => { fetchProfilesCount += 1; };
+  deps.getGatewayUrlForGateway = (gwId) => (gwId === 'gw-2' ? 'https://gw2.example.com' : 'https://gw1.example.com');
+  deps.profileAvatarCache.set('gw-1:default', 'data:image/png;base64,GW1');
+  let failSave = false;
+  deps.getDesktopApi = () => ({
+    httpProxy: async (opts) => {
+      httpCalls.push(opts);
+      if (opts.path === '/api/providers/custom-endpoints' && opts.method === 'POST') {
+        if (failSave) throw new Error('save rejected');
+        // 模拟网关保存成功但未立即切 is_current，需要兜底走 /api/model/set
+        return {
+          id: 'new-gw',
+          endpoints: [{ id: 'new-gw', name: 'NewGW', base_url: 'https://new.example/v1', model: 'gpt-5.4', has_api_key: true, is_current: false }],
+        };
+      }
+      if (opts.path === '/api/model/set' && opts.method === 'POST') {
+        return { provider: 'new-gw', model: 'gpt-5.4' };
+      }
+      return { endpoints: [], providers: [] };
+    },
+  });
+
+  const service = createSettingsDataService(deps);
+  const actions = service.createSettingsActions();
+
+  // 1. 多网关下 gw-2 的 default 没有头像时，绝不能复用 gw-1 的 default 头像
+  const gw2Snap = service.getBotManagementSnapshot();
+  assert.equal(gw2Snap.roster.find((b) => b.profile === 'default')?.avatar, undefined);
+
+  // 2. 更新 gw-2 的 default 头像不能覆盖 gw-1 的缓存与会话头像
+  service.getBotManagementController();
+  const res = await actions.onSaveEndpoint(
+    {
+      id: 'new-gw',
+      name: 'NewGW',
+      baseUrl: 'https://new.example/v1',
+      model: 'gpt-5.4',
+      models: ['gpt-5.4'],
+      apiKey: { kind: 'set', value: 'sk-new' },
+    },
+    { targetProfiles: ['default', 'coder'], fanOutTo: ['coder'], makeDefault: true },
+  );
+  assert.equal(res.ok, true);
+  const postSaves = httpCalls.filter((c) => c.path === '/api/providers/custom-endpoints' && c.method === 'POST');
+  assert.equal(postSaves.length, 2);
+  assert.equal(postSaves[0].body.make_default, true);
+  assert.equal(postSaves[1].body.make_default, true);
+  const modelSets = httpCalls.filter((c) => c.path === '/api/model/set' && c.method === 'POST');
+  assert.deepEqual(modelSets.map((c) => c.params.profile), ['default', 'coder']);
+  assert.equal(fetchProfilesCount, 1);
+
+  // 3. onSaveEndpoint 未传 targetProfiles 时回落 scopedProfileName，主写入失败透出错误
+  const emptyTargetsOk = await actions.onSaveEndpoint(
+    {
+      id: 'new-gw',
+      name: 'NewGW',
+      baseUrl: 'https://new.example/v1',
+      model: 'gpt-5.4',
+      models: ['gpt-5.4'],
+      apiKey: { kind: 'keep' },
+    },
+    { fanOutTo: [], makeDefault: false },
+  );
+  assert.equal(emptyTargetsOk.ok, true);
+  failSave = true;
+  const origDescErr = deps.describeRpcError;
+  deps.describeRpcError = () => '';
+  const primaryFail = await actions.onSaveEndpoint(
+    {
+      id: 'new-gw',
+      name: 'NewGW',
+      baseUrl: 'https://new.example/v1',
+      model: 'gpt-5.4',
+      models: ['gpt-5.4'],
+      apiKey: { kind: 'keep' },
+    },
+    { fanOutTo: [], makeDefault: true },
+  );
+  deps.describeRpcError = origDescErr;
+  assert.equal(primaryFail.ok, false);
+  assert.ok(primaryFail.message.includes('settings.saveFailed'));
+});

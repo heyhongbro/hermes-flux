@@ -87,6 +87,7 @@ import { createProjectDirectoryActions } from './projectDirectoryActions.js';
 import { createMcpOAuthActions } from './mcpOAuthService.js';
 import { createSettingsGatewayController } from './settingsGatewayActions.js';
 import { createSettingsExtensionsActions } from './settingsExtensionsActions.js';
+import { createSettingsProviderActions, type BindingFlightResult } from './settingsProviderActions.js';
 import type { LearningService } from './learningService.js';
 
 export interface GatewayConnectionTestResult {
@@ -198,11 +199,6 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
   let botTabRequestSeq = 0;
   let requestedBotTab: { tab: BotDetailTab; seq: number } | null = null;
 
-  type BindingFlightResult = ToggleProviderAgentResult & {
-    confirmRequired?: boolean;
-    step?: 'switch' | 'disable';
-  };
-
   let providerCatalogGen = 0;
   let providerCatalogInFlight = false;
 
@@ -290,7 +286,12 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
   }
 
   const resolveProfileAvatar = (botId: string): string | undefined =>
-    resolveProfileAvatarFromState(deps.getState(), deps.profileAvatarCache, botId);
+    resolveProfileAvatarFromState(
+      deps.getState(),
+      deps.profileAvatarCache,
+      botId,
+      resolveSelectedGatewayId() || undefined,
+    );
 
   const scopedProfileName = (): string => {
     const state = deps.getState();
@@ -579,15 +580,25 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         void reloadProviderCatalog();
       },
       onAvatarChanged: (botId, dataUrl) => {
+        const selectedGw = resolveSelectedGatewayId() || undefined;
+        const multiGw = isMultiGatewayConfigMode();
         const syncCacheKey = (rawKey?: string): void => {
           if (!rawKey) return;
           const normalized = rawKey.toLowerCase();
-          if (dataUrl) deps.profileAvatarCache.set(normalized, dataUrl);
-          else deps.profileAvatarCache.delete(normalized);
+          const scopedKey = selectedGw ? `${selectedGw}:${normalized}` : normalized;
+          if (dataUrl) {
+            deps.profileAvatarCache.set(scopedKey, dataUrl);
+            if (!multiGw && !selectedGw) deps.profileAvatarCache.set(normalized, dataUrl);
+          } else {
+            deps.profileAvatarCache.delete(scopedKey);
+            if (!multiGw && !selectedGw) deps.profileAvatarCache.delete(normalized);
+          }
         };
 
         syncCacheKey(botId);
-        const profile = state.profiles.find((item) => item.name === botId);
+        const profile = state.profiles.find(
+          (item) => (!selectedGw || !item.gatewayId || item.gatewayId === selectedGw) && item.name === botId,
+        );
         if (profile) {
           profile.avatar = dataUrl;
           profile.hasAvatar = Boolean(dataUrl);
@@ -611,7 +622,9 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
           };
         }
         for (const session of state.sessions) {
-          if (session.botName === botId) session.botAvatar = dataUrl;
+          if ((!selectedGw || !session.gatewayId || session.gatewayId === selectedGw) && session.botName === botId) {
+            session.botAvatar = dataUrl;
+          }
         }
         deps.persistAvatarCache();
         deps.persistAgentsToCache?.(state.profiles);
@@ -1012,37 +1025,17 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         void reloadProviderCatalog();
       },
       onProbeEndpoint: (draft) => getProviderAdminController().probe(draft),
-      onSaveEndpoint: async (draft, options) => {
-        const targets = options.targetProfiles?.filter(Boolean) ?? [];
-        const primary = targets[0] ?? scopedProfileName();
-        const fanOutTo = targets.length > 0 ? targets.slice(1) : options.fanOutTo;
-        const outcome = await getProviderAdminController().save(primary, draft, {
-          fanOutTo,
-          makeDefault: options.makeDefault,
-          profileDisplayNames: Object.fromEntries(botRoster().map((bot) => [bot.profile, bot.displayName])),
-        });
-        if (outcome.currentOk === false) return { ok: false, message: outcome.current.message || deps.t('settings.saveFailed') };
-        void reloadProviderCatalog();
-        return { ok: true, fanOut: [outcome.current, ...outcome.fanOut] };
-      },
-      onActivateProvider: async (providerId, model, confirmExpensive) => {
-        const controller = getProviderAdminController();
-        const profile = scopedProfileName();
-        const view = state.settingsProviderViews.status === 'ready'
-          ? state.settingsProviderViews.data.find((item) => item.id === providerId)
-          : undefined;
-        const result = await controller.useMainModel(profile, {
-          provider: providerId,
-          model,
-          baseUrl: view?.kind === 'custom' ? view.detail : undefined,
-          confirmExpensive,
-        });
-        if (result.ok) {
-          deps.showToast(deps.t('settings.providerUsed', { name: view?.name || providerId }));
-          void reloadProviderCatalog();
-        }
-        return result;
-      },
+      ...createSettingsProviderActions({
+        getState: deps.getState,
+        getProviderAdminController,
+        inFlightProviderBindings,
+        scopedProfileName,
+        botRoster,
+        reloadProviderCatalog,
+        fetchProfiles: deps.fetchProfiles,
+        showToast: deps.showToast,
+        t: deps.t,
+      }),
       onLogoutProvider: (providerId) =>
         new Promise((resolve) => {
           const controller = getProviderAdminController();
@@ -1284,103 +1277,6 @@ export function createSettingsDataService(deps: SettingsDataDeps): SettingsDataS
         }
       },
       onNotify: (message) => deps.showToast(message),
-      /**
-       * 就地先为 BOT 改选新默认提供方/模型，成功后再关闭原自定义端点（INV-SWITCH-01）。
-       *
-       * 【设计意图 (Why)】
-       *   禁止直接对“当前默认提供方”执行关闭/移除；弹窗选定替补模型后必须在同一在途锁下严格串行完成两步。
-       *
-       * 【防范的历史坑 (Pitfall)】
-       *   1. 第一步切换默认若因高价确认或网络拒绝未落盘，一旦并发或继续执行 DELETE，会让 BOT 断供且无可回滚；
-       *   2. 服务层若依赖 UI 禁用而不校验 `disableView.kind !== 'custom'`，直接调用可能对订阅项误发 DELETE。
-       *
-       * 【约束与规则 (Rules)】
-       *   1. 与 `inFlightProviderBindings` 共享互斥键，同签名并发复用、异方向返回 busy；
-       *   2. 严格先调 `controller.useMainModel`，仅当 `switchResult.ok` 且非 `confirmRequired` 才调 `controller.remove`；
-       *   3. 仅允许关闭 `kind === 'custom'` 端点；第一步成功而第二步失败时无条件刷新目录反映最新默认模型。
-       */
-      onSwitchDefaultAndDisableProvider: async ({
-        profile,
-        disableProviderId,
-        newProviderId,
-        newModel,
-        confirmExpensive,
-      }) => {
-        const controller = getProviderAdminController();
-        const disableTargetId = normalizeEndpointId(disableProviderId);
-        const newTargetId = normalizeEndpointId(newProviderId);
-        const views = state.settingsProviderViews.status === 'ready' ? state.settingsProviderViews.data : [];
-        const disableView = views.find((item) => normalizeEndpointId(item.id) === disableTargetId);
-        const newView = views.find((item) => normalizeEndpointId(item.id) === newTargetId);
-        if (!disableView || !newView) {
-          return { ok: false, step: 'switch', message: deps.t('settings.providerDeleteUnknown') };
-        }
-        if (disableView.kind !== 'custom') {
-          return { ok: false, step: 'disable', message: deps.t('settings.providerToggleFailed') };
-        }
-        const model = newModel.trim();
-        if (!model || disableTargetId === newTargetId) {
-          return { ok: false, step: 'switch', message: deps.t('settings.providerToggleFailed') };
-        }
-
-        const flightKey = `${disableTargetId}\u0000${profile}`;
-        const signature = `switch-disable:${newTargetId}:${model}:${Boolean(confirmExpensive)}`;
-        const existing = inFlightProviderBindings.get(flightKey);
-        if (existing) {
-          if (existing.signature === signature) return existing.promise;
-          return { ok: false, step: 'switch', message: deps.t('settings.providerAttachBusy') };
-        }
-
-        const promise = (async (): Promise<BindingFlightResult> => {
-          // 1. 先切换目标 BOT 的默认提供方与模型；失败或要求高价确认时立即中止，绝不提前关闭原提供商。
-          const switchResult = await controller.useMainModel(profile, {
-            provider: newView.id,
-            model,
-            baseUrl: newView.kind === 'custom' && newView.detail ? newView.detail : undefined,
-            confirmExpensive,
-          });
-          if (switchResult.confirmRequired) {
-            return {
-              ok: false,
-              confirmRequired: true,
-              step: 'switch',
-              message: switchResult.confirmMessage || switchResult.message || deps.t('settings.providerExpensiveWarning'),
-            };
-          }
-          if (!switchResult.ok) {
-            return {
-              ok: false,
-              step: 'switch',
-              message: switchResult.message || deps.t('settings.providerToggleFailed'),
-            };
-          }
-
-          // 2. 第一步落盘后再关闭原提供商，并无条件重拉目录使主模型变更即时反映到 UI 与 BOT 配置。
-          const removeResult = await controller.remove([profile], disableView.id);
-          await reloadProviderCatalog();
-          void deps.fetchProfiles();
-          if (!removeResult.ok) {
-            return {
-              ok: false,
-              step: 'disable',
-              message: deps.t('settings.providerSwitchDoneDisableFailed', {
-                detail: removeResult.message || deps.t('settings.providerToggleFailed'),
-              }),
-            };
-          }
-          return { ok: true };
-        })();
-
-        const entry = { signature, promise };
-        inFlightProviderBindings.set(flightKey, entry);
-        try {
-          return await promise;
-        } finally {
-          if (inFlightProviderBindings.get(flightKey) === entry) {
-            inFlightProviderBindings.delete(flightKey);
-          }
-        }
-      },
 
       onBotDraftChange: (botId, patch) => getBotManagementController().updateDraft(botId, patch),
       onSelectBotSettle: (botId) => getBotManagementController().selectBot(botId),

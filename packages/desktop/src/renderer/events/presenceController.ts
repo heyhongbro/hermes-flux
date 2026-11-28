@@ -31,7 +31,7 @@ import type { AppState } from '../state/appState.js';
 
 export interface PresenceControllerDeps {
   getState: () => AppState;
-  resolveAgentAvatar: (name: string) => string;
+  resolveAgentAvatar: (name: string, gatewayId?: string) => string;
   isGroupConversationActive: () => boolean;
   isStreamingActiveForCurrentSession: () => boolean;
   getTurnStartedSessionId?: () => string | null;
@@ -57,6 +57,7 @@ export class PresenceController {
     this.manager = new AgentPresenceManager({
       get activeFocus() { return deps.getState().activeFocus; },
       get activeSessionId() { return deps.getState().activeSessionId; },
+      get activeGatewayId() { return deps.getState().activeGatewayId; },
       get activeRunningGroupRoomIds() { return deps.activeRunningGroupRoomIds; },
       isStreamingActiveForCurrentSession: () => deps.isStreamingActiveForCurrentSession(),
       get messages() { return deps.getState().messages; },
@@ -70,7 +71,7 @@ export class PresenceController {
       get lang() { return deps.getState().lang; },
       get presenceLayout() { return deps.getState().presenceLayout; },
       get activeGroupSpeaker() { return deps.getState().activeGroupSpeaker; },
-      resolveAgentAvatar: (name) => deps.resolveAgentAvatar(name),
+      resolveAgentAvatar: (name, gatewayId) => deps.resolveAgentAvatar(name, gatewayId),
       isGroupConversationActive: () => deps.isGroupConversationActive(),
       getWaitingReasonForCurrentFocus: () => deps.getWaitingReasonForCurrentFocus?.() ?? null,
       onUpdateReact: () => { this.updateReactAgentPresence?.(); },

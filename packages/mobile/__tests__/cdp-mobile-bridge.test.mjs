@@ -418,7 +418,8 @@ test('Capacitor Mobile PlatformBridge - Live Headless Mobile CDP & Gateway Test'
         'getSystemInfo', 'minimize', 'maximize', 'unmaximize', 'close',
         'isMaximized', 'onWindowStateChange', 'getDefaultGatewayConfig',
         'authenticateGateway', 'httpProxy', 'openExternal', 'openFileDialog',
-        'readFile', 'saveFile', 'clipboardWrite', 'clipboardRead', 'syncStatusBarAppearance'
+        'readFile', 'saveFile', 'clipboardWrite', 'clipboardRead', 'syncStatusBarAppearance',
+        'setGatewaySecret', 'getGatewaySecret', 'deleteGatewaySecret'
       ];
       const missing = methods.filter(m => typeof window.hermesMobile[m] !== 'function');
       return { hasMob, hasDesk, isSame, missing };
@@ -429,7 +430,36 @@ test('Capacitor Mobile PlatformBridge - Live Headless Mobile CDP & Gateway Test'
   assert.ok(bridgeCheck.result.value.hasMob, 'window.hermesMobile must be present in WebView');
   assert.ok(bridgeCheck.result.value.hasDesk, 'window.hermesDesktop must be bridged for renderer compatibility');
   assert.ok(bridgeCheck.result.value.isSame, 'window.hermesMobile and window.hermesDesktop must reference the same bridge');
-  assert.equal(bridgeCheck.result.value.missing.length, 0, `All 17 bridge methods must be implemented, missing: ${bridgeCheck.result.value.missing.join(', ')}`);
+  assert.equal(bridgeCheck.result.value.missing.length, 0, `All bridge methods must be implemented, missing: ${bridgeCheck.result.value.missing.join(', ')}`);
+
+  // 8.1 真实调用 setGatewaySecret / getGatewaySecret / deleteGatewaySecret 闭环测试
+  const secSet = await send('Runtime.evaluate', {
+    expression: `window.hermesMobile.setGatewaySecret('gw-id:test-gw', 'super-secret-pwd')`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  assert.equal(secSet.result.value, true, 'setGatewaySecret must return true');
+
+  const secGet = await send('Runtime.evaluate', {
+    expression: `window.hermesMobile.getGatewaySecret('gw-id:test-gw')`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  assert.equal(secGet.result.value, 'super-secret-pwd', 'getGatewaySecret must return saved secret');
+
+  const secDel = await send('Runtime.evaluate', {
+    expression: `window.hermesMobile.deleteGatewaySecret('gw-id:test-gw')`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  assert.equal(secDel.result.value, true, 'deleteGatewaySecret must return true');
+
+  const secGetAfterDel = await send('Runtime.evaluate', {
+    expression: `window.hermesMobile.getGatewaySecret('gw-id:test-gw')`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  assert.equal(secGetAfterDel.result.value, null, 'getGatewaySecret after delete must return null');
 
   // 9. 断言 2: 检验 getSystemInfo() 返回移动端身份
   const sysInfo = await send('Runtime.evaluate', {

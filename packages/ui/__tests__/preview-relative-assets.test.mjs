@@ -1125,6 +1125,31 @@ test('Audio error i18n、MobileInspectorScreen openFiles preview/Copy、MediaLig
   assert.equal(badParentEl.classList.has('md-inline-image--error'), true);
   scopeDrv.unmount();
 
+  // 会话正文 (!documentBasePath) 下允许渲染 workspaceRoot 之外的安全交付物图片，但仍阻断敏感路径(.env)
+  const chatCalls = [];
+  const chatCacheEl = makeScopeImg('/opt/data/image_cache/chart.png');
+  const chatSecretEl = makeScopeImg('/opt/data/.env');
+  const chatHost = {
+    isConnected: true,
+    querySelectorAll: (sel) => (sel === '[data-preview-asset-path]' ? [chatCacheEl, chatSecretEl] : []),
+  };
+  const chatDrv = createLocalReactDriver(chatHost);
+  chatDrv.mount(() =>
+    React.createElement(MarkdownBlock, {
+      content: '![chart](/opt/data/image_cache/chart.png)',
+      workspaceRoot: '/opt/data/workspace/subproj',
+      resolveMediaUrl: async (p) => {
+        chatCalls.push(p);
+        return 'data:image/png;base64,Q0hBVA==';
+      },
+    }),
+  );
+  for (let i = 0; i < 15; i += 1) await Promise.resolve();
+  assert.deepEqual(chatCalls, ['/opt/data/image_cache/chart.png']);
+  assert.equal(chatCacheEl.getAttribute('src'), 'data:image/png;base64,Q0hBVA==');
+  assert.equal(chatSecretEl.classList.has('md-inline-image--error'), true);
+  chatDrv.unmount();
+
   const audioReaderHtml = renderToStaticMarkup(
     React.createElement(MobileInspectorScreen, {
       ...baseMobProps,

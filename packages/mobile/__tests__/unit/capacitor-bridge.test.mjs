@@ -1197,3 +1197,69 @@ test('openExternal: 使用 capBrowser.open 并在抛错时安全回 fallback win
     globalThis.window = prevWin;
   }
 });
+
+test('setGatewaySecret / getGatewaySecret / deleteGatewaySecret 移动端沙箱凭据管理完整生命周期', async () => {
+  const fileStore = new Map();
+  const mockFilesystem = {
+    readFile: async ({ path }) => {
+      const content = fileStore.get(path);
+      if (typeof content !== 'string') {
+        throw new Error('File not found');
+      }
+      return { data: content };
+    },
+    writeFile: async ({ path, data }) => {
+      fileStore.set(path, data);
+      return { uri: `file://${path}` };
+    },
+  };
+
+  const bridge = createCapacitorPlatformBridge({
+    platform: 'android',
+    filesystem: mockFilesystem,
+  });
+
+  // 1. 初始读取不存在的凭据返回 null
+  assert.equal(await bridge.getGatewaySecret?.('gw:http://127.0.0.1:9120'), null);
+  assert.equal(await bridge.getGatewaySecret?.(''), null);
+
+  // 2. 正常存储口令，并验证内存缓存与底层沙箱落盘
+  const saved = await bridge.setGatewaySecret?.('gw:http://127.0.0.1:9120', 'my-safe-pass');
+  assert.equal(saved, true);
+  assert.equal(await bridge.getGatewaySecret?.('gw:http://127.0.0.1:9120'), 'my-safe-pass');
+  assert.ok(fileStore.has('gateway-secrets.json'));
+  assert.match(fileStore.get('gateway-secrets.json'), /my-safe-pass/);
+
+  // 3. 空键防护
+  assert.equal(await bridge.setGatewaySecret?.('  ', 'val'), false);
+  assert.equal(await bridge.deleteGatewaySecret?.(''), false);
+
+  // 4. 重启模拟（新建 bridge 实例，验证从已持久化文件冷水合恢复凭据）
+  const bridgeReboot = createCapacitorPlatformBridge({
+    platform: 'android',
+    filesystem: mockFilesystem,
+  });
+  assert.equal(await bridgeReboot.getGatewaySecret?.('gw:http://127.0.0.1:9120'), 'my-safe-pass');
+
+  // 5. 删除凭据
+  const deleted = await bridgeReboot.deleteGatewaySecret?.('gw:http://127.0.0.1:9120');
+  assert.equal(deleted, true);
+  assert.equal(await bridgeReboot.getGatewaySecret?.('gw:http://127.0.0.1:9120'), null);
+  const parsedAfterDel = JSON.parse(fileStore.get('gateway-secrets.json'));
+  assert.equal(parsedAfterDel['gw:http://127.0.0.1:9120'], undefined);
+
+  // 6. 异常降级防御：底层 writeFile 报错时安全降级内存缓存不抛错
+  const errorFilesystem = {
+    readFile: async () => ({ data: '{}' }),
+    writeFile: async () => {
+      throw new Error('EACCES: permission denied');
+    },
+  };
+  const bridgeDegraded = createCapacitorPlatformBridge({
+    platform: 'android',
+    filesystem: errorFilesystem,
+  });
+  const fallbackSaved = await bridgeDegraded.setGatewaySecret?.('gw:fallback', 'temp-secret');
+  assert.equal(fallbackSaved, true);
+  assert.equal(await bridgeDegraded.getGatewaySecret?.('gw:fallback'), 'temp-secret');
+});

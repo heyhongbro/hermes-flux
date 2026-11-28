@@ -214,6 +214,7 @@ export function ConversationMessageList({
           messages={turn}
           mode={snapshot.mode}
           locale={snapshot.locale}
+          connection={snapshot.connection}
           isLastTurn={index === turns.length - 1}
           isStreaming={!readOnly && snapshot.isStreaming && index === turns.length - 1}
           knownFiles={knownFiles}

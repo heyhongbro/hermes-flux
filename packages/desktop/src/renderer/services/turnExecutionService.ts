@@ -165,7 +165,7 @@ export interface TurnExecutionDeps {
   readonly ensureLiveSessionId: () => Promise<string | null>;
   readonly setMessageContent: (messageId: string, content: string) => void;
   readonly syncActiveGroupSpeakerFromMessages: () => void;
-  readonly resolveAgentAvatar: (nameOrDisplayName?: string) => string;
+  readonly resolveAgentAvatar: (nameOrDisplayName?: string, gatewayId?: string) => string;
   readonly scrollStreamToBottom: (reason: string) => void;
   readonly setPendingScrollToBottom: (val: boolean) => void;
   readonly isStreamNearBottom?: () => boolean;
@@ -636,7 +636,7 @@ export function createTurnExecutionService(deps: TurnExecutionDeps): TurnExecuti
           content: parsed ? parsed.cleanText : entry.text,
           ...(parsed && parsed.attachments.length > 0 ? { attachments: parsed.attachments } : {}),
           sender: senderName,
-          senderAvatar: deps.resolveAgentAvatar(senderName),
+          senderAvatar: deps.resolveAgentAvatar(senderName, state.activeFocus?.gatewayId || state.activeGatewayId),
           timestamp: formatTimestamp(entry.timestamp || Date.now()),
         };
       });

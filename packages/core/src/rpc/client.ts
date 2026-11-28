@@ -1119,6 +1119,26 @@ export class HermesGatewayClient {
     }
   }
 
+  public async readFileText(filePath: string, profile?: string): Promise<string | null> {
+    if (!this.restFallbackHandler || !filePath) return null;
+    try {
+      const res = await this.restFallbackHandler('/api/fs/read-text', {
+        method: 'GET',
+        params: {
+          path: filePath,
+          ...(profile ? { profile } : {}),
+        },
+      });
+      if (!res || typeof res !== 'object') return null;
+      const rec = res as { binary?: unknown; text?: unknown };
+      if (rec.binary === true || typeof rec.text !== 'string') return null;
+      return rec.text;
+    // gate-degrade: 远端文本文件读取失败时回落空，交由调用方走降级转录链
+    } catch {
+      return null;
+    }
+  }
+
   public async fetchLastMessage(
     sessionId: string,
     options?: { profile?: string },

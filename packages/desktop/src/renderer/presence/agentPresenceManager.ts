@@ -38,8 +38,9 @@ export interface SideAgentCapsule {
 }
 
 export interface AgentPresenceHost {
-  activeFocus: { type: string; botName?: string; roomId?: string };
+  activeFocus: { type: string; botName?: string; roomId?: string; gatewayId?: string };
   activeSessionId: string;
+  activeGatewayId?: string;
   activeRunningGroupRoomIds: ReadonlySet<string>;
   isStreamingActiveForCurrentSession: () => boolean;
   messages: readonly MessageViewModel[];
@@ -53,7 +54,7 @@ export interface AgentPresenceHost {
   lang: string;
   presenceLayout?: 'stage' | 'dock';
   activeGroupSpeaker?: string | null;
-  resolveAgentAvatar: (name: string) => string | undefined;
+  resolveAgentAvatar: (name: string, gatewayId?: string) => string | undefined;
   isGroupConversationActive: () => boolean;
   getWaitingReasonForCurrentFocus?: () => WaitingPromptReason | null;
   onUpdateReact?: () => void;
@@ -162,16 +163,26 @@ function ensurePresenceTicker(
   return currentTimer;
 }
 
-function findMatchingProfile(profiles: readonly AgentProfile[], lowerName: string): AgentProfile | undefined {
-  return profiles.find((p) => p.name.toLowerCase() === lowerName || Boolean(p.displayName && p.displayName.toLowerCase() === lowerName));
+function findMatchingProfile(profiles: readonly AgentProfile[], lowerName: string, gatewayId?: string): AgentProfile | undefined {
+  return profiles.find(
+    (p) =>
+      (!gatewayId || !p.gatewayId || p.gatewayId === gatewayId) &&
+      (p.name.toLowerCase() === lowerName || Boolean(p.displayName && p.displayName.toLowerCase() === lowerName)),
+  );
 }
 
-function resolveSoloAvatar(host: AgentPresenceHost, name: string, profile: AgentProfile | undefined, matchingSession: NormalizedSession | undefined): string | undefined {
+function resolveSoloAvatar(
+  host: AgentPresenceHost,
+  name: string,
+  profile: AgentProfile | undefined,
+  matchingSession: NormalizedSession | undefined,
+  gatewayId?: string,
+): string | undefined {
   if (profile?.avatar) return profile.avatar;
-  const byName = host.resolveAgentAvatar(name);
+  const byName = host.resolveAgentAvatar(name, gatewayId);
   if (byName) return byName;
   if (profile?.displayName) {
-    const byDisplayName = host.resolveAgentAvatar(profile.displayName);
+    const byDisplayName = host.resolveAgentAvatar(profile.displayName, gatewayId);
     if (byDisplayName) return byDisplayName;
   }
   return matchingSession?.botAvatar || undefined;
@@ -198,7 +209,11 @@ function resolvePresenceSoloIdentity(host: AgentPresenceHost): {
   avatar?: string;
 } {
   const focus = host.activeFocus;
-  const activeSession = host.sessions.find((s) => s.id === host.activeSessionId);
+  const focusGw = focus.gatewayId || host.activeGatewayId;
+  const activeSession =
+    host.sessions.find((s) => s.id === host.activeSessionId && (!focusGw || !s.gatewayId || s.gatewayId === focusGw)) ??
+    host.sessions.find((s) => s.id === host.activeSessionId);
+  const targetGw = (focus.type === 'bot' ? focus.gatewayId : undefined) || activeSession?.gatewayId || host.activeGatewayId;
   const name =
     (focus.type === 'bot' ? focus.botName : '') ||
     activeSession?.botName ||
@@ -206,10 +221,10 @@ function resolvePresenceSoloIdentity(host: AgentPresenceHost): {
     'default';
 
   const lowerName = name.toLowerCase();
-  const profile = findMatchingProfile(host.profiles, lowerName);
+  const profile = findMatchingProfile(host.profiles, lowerName, targetGw);
   const sessionMatchesBot = typeof activeSession?.botName === 'string' && activeSession.botName.toLowerCase() === lowerName;
   const matchingSession = focus.type !== 'bot' || sessionMatchesBot ? activeSession : undefined;
-  const avatar = resolveSoloAvatar(host, name, profile, matchingSession);
+  const avatar = resolveSoloAvatar(host, name, profile, matchingSession, targetGw);
 
   return {
     name,
@@ -221,12 +236,16 @@ function resolvePresenceSoloIdentity(host: AgentPresenceHost): {
 /** 当前群聊房间的成员身份。 */
 function resolvePresenceGroupIdentity(host: AgentPresenceHost): {
   members: string[];
-  profiles: Array<{ name: string; displayName?: string; avatar?: string }>;
+  profiles: Array<{ name: string; displayName?: string; avatar?: string; gatewayId?: string }>;
 } | null {
   const focus = host.activeFocus;
   const roomId = focus.type === 'group' ? focus.roomId : host.activeSessionId;
-  const room = host.groupRooms.find((g) => g.roomId === roomId);
+  const focusGw = focus.gatewayId || host.activeGatewayId;
+  const room =
+    host.groupRooms.find((g) => g.roomId === roomId && (!focusGw || !g.gatewayId || g.gatewayId === focusGw)) ??
+    host.groupRooms.find((g) => g.roomId === roomId);
   if (!room) return null;
+  const roomGw = room.gatewayId || focusGw;
   const members = Array.isArray(room.members) ? room.members.filter((m) => typeof m === 'string' && m.length > 0) : [];
   if (members.length === 0) return null;
   return {
@@ -234,7 +253,8 @@ function resolvePresenceGroupIdentity(host: AgentPresenceHost): {
     profiles: host.profiles.map((p) => ({
       name: p.name,
       displayName: p.displayName,
-      avatar: p.avatar || host.resolveAgentAvatar(p.name) || undefined,
+      gatewayId: p.gatewayId,
+      avatar: p.avatar || host.resolveAgentAvatar(p.name, p.gatewayId || roomGw) || undefined,
     })),
   };
 }

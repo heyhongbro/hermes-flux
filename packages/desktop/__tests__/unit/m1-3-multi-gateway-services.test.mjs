@@ -15,6 +15,7 @@ import { createMultiGatewayRuntime } from '../../dist/renderer/gateway/multiGate
 import {
   createActiveLiveSessionIdResolver,
   createDesktopMultiGatewayWiring,
+  createModelCatalogFetcher,
 } from '../../dist/renderer/gateway/multiGatewayCoordinator.mjs';
 import {
   createInitialState,
@@ -808,4 +809,48 @@ test('M1.3 TurnExecutionService group poller callbacks, unfocused group send & o
     turnSvc.clearPresenceTerminal();
     t.mock.timers.reset();
   }
+});
+
+test('createModelCatalogFetcher: 群聊焦点或跨网关不存在的 profileName 自动退回 default，防止请求他网关 Profile 404', async () => {
+  const catalogCalls = [];
+  const state = {
+    gatewayCount: 2,
+    activeGatewayId: 'gw-2',
+    activeFocus: { type: 'session', sessionId: 's-2', gatewayId: 'gw-2' },
+    profileName: 'newmediaboy',
+    profiles: [{ name: 'newmediaboy', gatewayId: 'gw-1' }],
+    availableModels: [],
+    modelDetails: [],
+    modelCatalog: [],
+    modelCatalogHash: '',
+    currentProvider: '',
+    selectedModel: '',
+    dockNotice: '',
+  };
+
+  const fetcher = createModelCatalogFetcher({
+    getState: () => state,
+    resolveActiveClient: () => ({
+      async getModelCatalog(profile) {
+        catalogCalls.push(profile);
+        return {
+          ok: true,
+          models: ['gpt-5'],
+          details: [],
+          entries: [{ id: 'gpt-5', label: 'GPT-5', provider: 'openai' }],
+          currentProvider: 'openai',
+          currentModel: 'gpt-5',
+        };
+      },
+    }),
+    render: () => {},
+    t: (k) => k,
+  });
+
+  await fetcher();
+  assert.deepEqual(catalogCalls, ['default'], 'gw-1 专属 Bot Profile 在 gw-2 上必须回落 default');
+
+  state.activeFocus = { type: 'group', roomId: 'room-2', gatewayId: 'gw-2' };
+  await fetcher();
+  assert.deepEqual(catalogCalls, ['default', 'default'], '群聊焦点不得携带单聊 Bot Profile');
 });

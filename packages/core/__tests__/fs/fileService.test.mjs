@@ -499,6 +499,37 @@ test('Unified File Service (packages/core/src/fs/fileService.ts)', async (t) => 
       });
       assert.equal(remoteImgAllFail.source, 'fallback');
 
+      // 图片支持 /api/fs/download?${fsQuery} 回退（带 profile + session_id）、octet-stream MIME 修正及同源网关 URL 代理
+      const remoteImgFsDownload = await resolveFileContent('/opt/data/workspace/chart.webp', {
+        gatewayUrl: 'https://gw.example.com',
+        profile: 'coder',
+        sessionId: 'sess-img',
+        platformBridge: {
+          httpProxy: async ({ path: ep }) => {
+            if (ep === '/api/fs/download?path=%2Fopt%2Fdata%2Fworkspace%2Fchart.webp&profile=coder&session_id=sess-img') {
+              return { dataUrl: 'data:application/octet-stream;base64,V0VCUA==' };
+            }
+            throw new Error('404');
+          },
+        },
+      });
+      assert.equal(remoteImgFsDownload.source, 'gateway_api');
+      assert.equal(remoteImgFsDownload.content, 'data:image/webp;base64,V0VCUA==');
+
+      const sameOriginProxyCalls = [];
+      const sameOriginImg = await resolveFileContent('https://gw.example.com/media/chart.png?v=1', {
+        gatewayUrl: 'wss://gw.example.com/',
+        platformBridge: {
+          httpProxy: async ({ path: ep }) => {
+            sameOriginProxyCalls.push(ep);
+            return 'data:image/png;base64,SAMEORIGIN';
+          },
+        },
+      });
+      assert.deepEqual(sameOriginProxyCalls, ['/media/chart.png?v=1']);
+      assert.equal(sameOriginImg.source, 'gateway_api');
+      assert.equal(sameOriginImg.content, 'data:image/png;base64,SAMEORIGIN');
+
       const localNullBin = await resolveFileContent('/ws/elf-bin', {
         platformBridge: { readFile: async () => 'ELF\x00data' },
       });
@@ -624,6 +655,75 @@ test('Unified File Service (packages/core/src/fs/fileService.ts)', async (t) => 
       assert.equal(isDirectVideoStreamUrl(''), false);
       assert.equal(isDirectVideoStreamUrl(null), false);
       assert.equal(streamedNullFallback.isTooLarge, true, 'resolveMediaStreamUrl 返回 null 时应正确退回原有守卫');
+
+      // 同源判断遇到空串/非法 URL 时安全降级，不抛出异常
+      const blankGwImg = await resolveFileContent('https://cdn.example.com/a.png', {
+        gatewayUrl: '   ',
+      });
+      assert.equal(blankGwImg.source, 'remote_http');
+      const invalidGwImg = await resolveFileContent('https://cdn.example.com/a.png', {
+        gatewayUrl: 'http://[::invalid',
+      });
+      assert.equal(invalidGwImg.source, 'remote_http');
+      const invalidTargetImg = await resolveFileContent('https://[::invalid/a.png', {
+        gatewayUrl: 'https://gw.example.com',
+      });
+      assert.equal(invalidTargetImg.source, 'remote_http');
+
+      // blob: 响应在图片规范化函数下直通
+      const blobImg = await resolveFileContent('/ws/blob.png', {
+        gatewayUrl: 'https://gw.example.com',
+        platformBridge: {
+          httpProxy: async ({ path: ep }) => (ep.startsWith('/api/fs/download') ? 'blob:https://gw.example.com/1' : null),
+        },
+      });
+      assert.equal(blobImg.content, 'blob:https://gw.example.com/1');
+
+      // 相对 /api/files/download?path=... 与带 query 参数的同源网关媒体 URL 走直连代理且支持 url/base64 content/大小写 Data URL
+      const relPathsRequested = [];
+      const relApiImg = await resolveFileContent('/api/files/download?path=%2Ftmp%2Fpic.png', {
+        gatewayUrl: 'https://gw.example.com',
+        platformBridge: {
+          httpProxy: async ({ path: ep }) => {
+            relPathsRequested.push(ep);
+            return { url: '  DATA:IMAGE/PNG;base64,RELIMG  ' };
+          },
+        },
+      });
+      assert.deepEqual(relPathsRequested, ['/api/files/download?path=%2Ftmp%2Fpic.png']);
+      assert.equal(relApiImg.isImage, true);
+      assert.equal(relApiImg.content, 'DATA:IMAGE/PNG;base64,RELIMG');
+
+      const base64ObjImg = await resolveFileContent('https://gw.example.com/api/files/download?path=%2Ftmp%2Fb.png', {
+        gatewayUrl: 'https://gw.example.com',
+        platformBridge: {
+          httpProxy: async () => ({ encoding: 'base64', mimeType: 'image/png', content: 'QUJDRA==' }),
+        },
+      });
+      assert.equal(base64ObjImg.isImage, true);
+      assert.equal(base64ObjImg.content, 'data:image/png;base64,QUJDRA==');
+
+      // 非法/空白 gatewayUrl 在带 httpProxy 时走 isSameOriginAsGateway catch 与空串降级
+      const proxyNoGw = await resolveFileContent('https://cdn.example.com/no-gw.png', {
+        gatewayUrl: '   ',
+        platformBridge: { httpProxy: async () => null },
+      });
+      assert.equal(proxyNoGw.source, 'remote_http');
+      const proxyBadTarget = await resolveFileContent('https://[::invalid/bad.png', {
+        gatewayUrl: 'https://gw.example.com',
+        platformBridge: { httpProxy: async () => null },
+      });
+      assert.equal(proxyBadTarget.source, 'remote_http');
+
+      // 相对 /api 视频与内嵌 data: content 直接返回
+      const relVideo = await resolveFileContent('/api/files/download?path=%2Ftmp%2Fclip.mp4', {
+        gatewayUrl: 'https://gw.example.com',
+        platformBridge: {
+          httpProxy: async () => ({ content: 'data:video/mp4;base64,VVVV' }),
+        },
+      });
+      assert.equal(relVideo.isVideo, true);
+      assert.equal(relVideo.content, 'data:video/mp4;base64,VVVV');
     } finally {
       console.warn = savedWarn;
     }

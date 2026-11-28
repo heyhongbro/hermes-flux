@@ -1050,7 +1050,8 @@ export function createModelCatalogFetcher(deps: {
   readonly getState: () => Pick<
     AppState,
     'profileName' | 'availableModels' | 'modelDetails' | 'modelCatalog' | 'modelCatalogHash' | 'currentProvider' | 'selectedModel' | 'dockNotice'
-  >;
+  > &
+    Partial<Pick<AppState, 'activeFocus' | 'activeGatewayId' | 'profiles' | 'gatewayCount'>>;
   readonly resolveActiveClient: () => HermesGatewayClient | null;
   readonly render: () => void;
   readonly t: (key: I18nKey) => string;
@@ -1067,7 +1068,27 @@ export function createModelCatalogFetcher(deps: {
       deps.render();
       return;
     }
-    const catalog = await client.getModelCatalog(state.profileName || 'default');
+    let effectiveProfile = (state.profileName || '').trim() || 'default';
+    if (effectiveProfile !== 'default') {
+      if (state.activeFocus?.type === 'bot' && state.activeFocus.botName) {
+        effectiveProfile = state.activeFocus.botName;
+      } else if (state.activeFocus?.type === 'group') {
+        effectiveProfile = 'default';
+      } else if (Array.isArray(state.profiles)) {
+        const focusedGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+        const scopedProfiles =
+          focusedGw && (state.gatewayCount ?? 1) > 1
+            ? state.profiles.filter((p) => !p.gatewayId || p.gatewayId === focusedGw)
+            : state.profiles;
+        const exists = scopedProfiles.some(
+          (p) => p.name.trim().toLowerCase() === effectiveProfile.toLowerCase(),
+        );
+        if (!exists) {
+          effectiveProfile = 'default';
+        }
+      }
+    }
+    const catalog = await client.getModelCatalog(effectiveProfile);
     if (!catalog.ok) {
       state.availableModels = [];
       state.modelDetails = [];

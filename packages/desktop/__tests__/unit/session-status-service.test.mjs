@@ -127,6 +127,12 @@ function createServiceHarness(overrides = {}) {
         ],
       };
     },
+    async readFileText(filePath, profile) {
+      if (overrides.readFileText) {
+        return overrides.readFileText(filePath, profile);
+      }
+      return null;
+    },
     async fetchGatewayConfig(profile) {
       return this.call('config.get', profile ? { profile } : {});
     },
@@ -832,6 +838,86 @@ test('SessionStatusService: recordSessionCwd、onGatewayTurnAction(session-info)
       () => 'no-lists-1',
     );
     assert.equal(h.state.sessionCwds['no-lists-1'], '/opt/no-lists');
+  } finally {
+    h.service.dispose();
+  }
+});
+
+test('SessionStatusService: 历史回切从 [ASYNC DELEGATION BATCH COMPLETE] 与 readFileText 恢复终态与真实转录', async () => {
+  const logReadCalls = [];
+  const h = createServiceHarness({
+    state: {
+      activeSessionId: 'stored-hist-1',
+      sessions: [{ id: 'stored-hist-1', botName: 'default', title: 'Hist' }],
+      messages: [
+        {
+          id: 'm-1',
+          role: 'assistant',
+          content: '',
+          rawTimestamp: 1795852562,
+          toolCalls: [
+            {
+              id: 'tc-1',
+              name: 'delegate_task',
+              status: 'completed',
+              args: '检查环境',
+              rawArgs: { goal: '检查环境' },
+              output: JSON.stringify({ status: 'dispatched', delegation_id: 'deleg_hist_ui' }),
+            },
+          ],
+        },
+        {
+          id: 'm-2',
+          role: 'user',
+          rawTimestamp: 1795852573,
+          content: [
+            '[ASYNC DELEGATION BATCH COMPLETE — deleg_hist_ui]',
+            'Role: leaf   Model: group/deepseek-v4.1-flash   Total duration: 4.5s',
+            '',
+            '--- ✓ TASK 1/1: 检查环境  (status=completed, api_calls=2, 4.2s) ---',
+            '环境检查正常完成',
+            'Full live transcript (complete tool/assistant trace): /opt/data/cache/delegation/live/deleg_hist_ui/task-0.log',
+          ].join('\n'),
+        },
+      ],
+    },
+    onRpc: async (method) => {
+      if (method === 'session.transcript') {
+        const err = new Error('Method not found');
+        err.code = -32601;
+        throw err;
+      }
+      return {};
+    },
+    readFileText: async (filePath, profile) => {
+      logReadCalls.push({ filePath, profile });
+      return [
+        '=== Hermes subagent live transcript ===',
+        'started: 2026-11-28 07:56:02',
+        '========================================',
+        '07:56:02 user     | kickoff: 检查环境',
+        '07:56:03 tool     | -> terminal(uname -a)',
+        '07:56:03 result   | terminal ok 0.1s: Linux x86_64',
+        '07:56:06 assistant| 环境检查正常完成',
+      ].join('\n');
+    },
+  });
+  try {
+    h.service.onSessionMessagesLoaded('stored-hist-1');
+    const tasks = h.service.subagentStore.getTasksBySession('stored-hist-1');
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].subagentId, 'deleg:deleg_hist_ui:0');
+    assert.equal(tasks[0].lifecycleStatus, 'completed');
+    assert.equal(h.service.getRunningSubagentCount(), 0);
+
+    h.service.openSubagent('deleg:deleg_hist_ui:0');
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    const snap = h.service.getRightPodSnapshot();
+    assert.equal(snap.selectedTranscript?.status, 'ready');
+    assert.equal(snap.selectedMessages.length >= 2, true);
+    assert.deepEqual(logReadCalls, [
+      { filePath: '/opt/data/cache/delegation/live/deleg_hist_ui/task-0.log', profile: 'default' },
+    ]);
   } finally {
     h.service.dispose();
   }

@@ -318,7 +318,6 @@ export function GatewaySettingsPanel({
     const {
       onAddGateway,
       onToggleGatewayEnabled,
-      onDisconnectGatewayInstance,
       onConnectGatewayInstance,
       onUpdateGateway,
       onRemoveGateway,
@@ -377,17 +376,7 @@ export function GatewaySettingsPanel({
                         }}
                       />
                     ) : null}
-                    {item.status === 'connected' && onDisconnectGatewayInstance ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        data-testid={`gateway-disconnect-btn-${item.id}`}
-                        onClick={() => onDisconnectGatewayInstance(item.id)}
-                      >
-                        {t('settings.disconnect')}
-                      </Button>
-                    ) : item.enabled && onConnectGatewayInstance ? (
+                    {item.status !== 'connected' && item.enabled && onConnectGatewayInstance ? (
                       <Button
                         type="button"
                         variant="outline"

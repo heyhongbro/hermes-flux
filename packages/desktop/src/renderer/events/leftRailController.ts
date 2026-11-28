@@ -69,7 +69,7 @@ export interface LeftRailControllerDeps {
     groupWaitingReasons: Map<string, WaitingPromptReason>;
   };
   getBotForeverSessionMap?: () => ReadonlyMap<string, string>;
-  resolveAgentAvatar: (name?: string) => string;
+  resolveAgentAvatar: (name?: string, gatewayId?: string) => string;
   activityTransitionTracker: ActivityTransitionTracker;
   onToggleContainer?: (containerId: string) => void;
   onRetryDoneSection?: () => void;
@@ -132,7 +132,7 @@ export class LeftRailController {
           groupWaitingReasons: new Map(),
         },
       getBotForeverSessionMap: () => deps.getBotForeverSessionMap?.() ?? new Map(),
-      resolveAgentAvatar: (name) => deps.resolveAgentAvatar(name),
+      resolveAgentAvatar: (name, gatewayId) => deps.resolveAgentAvatar(name, gatewayId),
       resolveTransition: (scope, id, st, now) => deps.activityTransitionTracker.resolveTransition(scope, id, st, now),
     });
   }

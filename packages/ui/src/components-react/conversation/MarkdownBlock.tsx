@@ -96,16 +96,15 @@ export function MarkdownBlock({
     const effectiveScopeRoot = documentBasePath
       ? resolveEffectivePreviewScopeRoot(documentBasePath, workspaceRoot || '')
       : workspaceRoot || '';
-    const enforceScope = Boolean(documentBasePath || workspaceRoot);
+    const enforceScope = Boolean(documentBasePath);
     return hydrateMarkdownPreviewAssets({
       root,
       resolveAssetUrl: (assetPath) => {
         if (!resolveMediaUrl) return Promise.resolve(null);
         if (
-          enforceScope &&
           !isPreviewAssetPathAllowed(assetPath, {
-            workspaceRoot: effectiveScopeRoot || undefined,
-            enforceWorkspaceScope: true,
+            workspaceRoot: enforceScope ? effectiveScopeRoot || undefined : undefined,
+            enforceWorkspaceScope: enforceScope,
           })
         ) {
           return Promise.resolve(null);

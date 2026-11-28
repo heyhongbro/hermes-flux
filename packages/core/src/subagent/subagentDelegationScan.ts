@@ -22,6 +22,7 @@ import { normalizeEpochMs } from '../session/eventReducer.js';
 export interface DelegationScanMessageInput {
   id: string;
   role: string;
+  content?: string;
   timestamp?: number;
   toolCalls?: ReadonlyArray<{
     id: string;
@@ -340,7 +341,205 @@ export function extractDelegationsFromMessages(
     }
   }
 
+  applyAsyncDelegationCompletions(messages, extracted, sessionId);
+
   return extracted;
+}
+
+const ASYNC_BATCH_HEADER_RE = /^\[ASYNC DELEGATION BATCH COMPLETE\s*(?:—|--|-)\s*([A-Za-z0-9_:-]+)\]/m;
+const ASYNC_BATCH_MODEL_RE = /^Role:\s*\S+\s+Model:\s*(\S+)(?:\s+Total duration:\s*(\d+(?:\.\d+)?)s)?/m;
+const ASYNC_TASK_HEADER_RE =
+  /^[ \t]*---\s*([^\r\n]*?)\s*TASK\s+(\d+)\s*\/\s*(\d+):\s*([\s\S]+?)\s+\(([^)\r\n]+)\)\s*---\s*$/gm;
+const FULL_TRANSCRIPT_PATH_RE = /^[ \t]*Full live transcript\b[^:]*:\s*(\S+)\s*$/gm;
+
+function mapAsyncCompletionStatus(rawStatus: string, marker: string): SubagentStatus {
+  const s = rawStatus.trim().toLowerCase();
+  if (s === 'cancelled' || s === 'canceled') return 'interrupted';
+  if (s === 'timed_out') return 'timeout';
+  if (s === 'done' || s === 'success' || s === 'succeeded') return 'completed';
+  if (s === 'completed' || s === 'failed' || s === 'error' || s === 'timeout' || s === 'interrupted') {
+    return s;
+  }
+  return /[✗✘×]/.test(marker) ? 'failed' : 'completed';
+}
+
+interface ParsedAsyncCompletionTask {
+  delegationId: string;
+  taskIndex: number;
+  goal: string;
+  status: SubagentStatus;
+  durationSeconds?: number;
+  apiCalls?: number;
+  model?: string;
+  summary: string;
+  transcriptLogPath?: string;
+}
+
+function parseAsyncDelegationCompletionMessage(content: string): ParsedAsyncCompletionTask[] {
+  if (!content || !content.includes('[ASYNC DELEGATION BATCH COMPLETE')) return [];
+  const headerMatch = ASYNC_BATCH_HEADER_RE.exec(content);
+  if (!headerMatch?.[1]) return [];
+  const delegationId = headerMatch[1].trim();
+  const modelMatch = ASYNC_BATCH_MODEL_RE.exec(content);
+  const batchModel = modelMatch?.[1]?.trim() || undefined;
+  const batchDuration = modelMatch?.[2] ? Number(modelMatch[2]) : undefined;
+
+  const transcriptPaths: string[] = [];
+  FULL_TRANSCRIPT_PATH_RE.lastIndex = 0;
+  let pathMatch: RegExpExecArray | null;
+  while ((pathMatch = FULL_TRANSCRIPT_PATH_RE.exec(content)) !== null) {
+    if (pathMatch[1]) transcriptPaths.push(pathMatch[1].trim());
+  }
+
+  const headers: Array<{
+    start: number;
+    end: number;
+    marker: string;
+    taskIndex: number;
+    goal: string;
+    meta: string;
+  }> = [];
+  ASYNC_TASK_HEADER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ASYNC_TASK_HEADER_RE.exec(content)) !== null) {
+    const oneBased = Number(m[2]);
+    const taskIndex = Number.isFinite(oneBased) && oneBased > 0 ? oneBased - 1 : headers.length;
+    headers.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      marker: m[1] || '',
+      taskIndex,
+      goal: (m[4] || '').trim(),
+      meta: m[5] || '',
+    });
+  }
+
+  const results: ParsedAsyncCompletionTask[] = [];
+  for (let i = 0; i < headers.length; i += 1) {
+    const cur = headers[i];
+    const nextStart = i + 1 < headers.length ? headers[i + 1].start : content.length;
+    const rawBody = content.slice(cur.end, nextStart);
+    const cleanedBody = rawBody.replace(FULL_TRANSCRIPT_PATH_RE, '').trim();
+    const statusMatch = /status\s*=\s*([a-zA-Z_-]+)/i.exec(cur.meta);
+    const apiMatch = /api_calls\s*=\s*(\d+)/i.exec(cur.meta);
+    const durMatch = /(?:^|[,\s])(\d+(?:\.\d+)?)s(?:$|[,\s])/i.exec(cur.meta);
+    const status = mapAsyncCompletionStatus(statusMatch?.[1] || '', cur.marker);
+    const durationSeconds = durMatch?.[1]
+      ? Number(durMatch[1])
+      : headers.length === 1 && typeof batchDuration === 'number' && Number.isFinite(batchDuration)
+      ? batchDuration
+      : undefined;
+    const apiCalls = apiMatch?.[1] ? Number(apiMatch[1]) : undefined;
+
+    const sectionPathMatch = /^[ \t]*Full live transcript\b[^:]*:\s*(\S+)\s*$/m.exec(rawBody);
+    const matchedGlobalPath =
+      transcriptPaths.find((p) => new RegExp(`/task-${cur.taskIndex}\\.log$`).test(p)) ??
+      (headers.length === 1 ? transcriptPaths[0] : undefined);
+    const transcriptLogPath = sectionPathMatch?.[1]?.trim() || matchedGlobalPath;
+
+    results.push({
+      delegationId,
+      taskIndex: cur.taskIndex,
+      goal: cur.goal || '委派子任务',
+      status,
+      ...(typeof durationSeconds === 'number' && Number.isFinite(durationSeconds) ? { durationSeconds } : {}),
+      ...(typeof apiCalls === 'number' && Number.isFinite(apiCalls) ? { apiCalls } : {}),
+      ...(batchModel ? { model: batchModel } : {}),
+      summary: cleanedBody,
+      ...(transcriptLogPath ? { transcriptLogPath } : {}),
+    });
+  }
+  return results;
+}
+
+function applyAsyncDelegationCompletions(
+  messages: readonly DelegationScanMessageInput[],
+  extracted: SubagentTaskState[],
+  sessionId: string
+): void {
+  const byKey = new Map<string, number>();
+  extracted.forEach((rec, idx) => {
+    if (rec.delegationId) {
+      byKey.set(`${rec.delegationId}:${rec.taskIndex ?? 0}`, idx);
+    }
+  });
+
+  for (const msg of messages) {
+    if (!msg || (msg.role !== 'user' && msg.role !== 'system') || typeof msg.content !== 'string') {
+      continue;
+    }
+    const completedItems = parseAsyncDelegationCompletionMessage(msg.content);
+    if (completedItems.length === 0) continue;
+
+    const completedAtMs = msg.timestamp ? normalizeEpochMs(msg.timestamp) ?? 0 : 0;
+    for (const item of completedItems) {
+      const norm = normalizeStatusToLifecycleAndHint(item.status);
+      const isFailure = norm.lifecycle !== 'completed';
+      const durMs =
+        typeof item.durationSeconds === 'number' && Number.isFinite(item.durationSeconds)
+          ? Math.round(item.durationSeconds * 1000)
+          : 0;
+      const compositeKey = `${item.delegationId}:${item.taskIndex}`;
+      const existingIdx = byKey.get(compositeKey);
+
+      if (existingIdx !== undefined) {
+        const prev = extracted[existingIdx];
+        const doneAt =
+          completedAtMs > 0
+            ? completedAtMs
+            : prev.startedAt > 0
+            ? prev.startedAt + durMs
+            : prev.updatedAt;
+        const resolvedModel = prev.model || item.model;
+        const toolCount = Math.max(prev.toolCount, item.apiCalls ?? 0);
+        extracted[existingIdx] = {
+          ...prev,
+          lifecycleStatus: norm.lifecycle,
+          phaseHint: norm.phaseHint,
+          status: norm.compatStatus,
+          progressPercent: 100,
+          ...(resolvedModel ? { model: resolvedModel, targetProfile: resolvedModel } : {}),
+          toolCount,
+          ...(item.durationSeconds !== undefined ? { durationSeconds: item.durationSeconds } : {}),
+          ...(item.summary ? { summary: item.summary, resultSummary: item.summary } : {}),
+          ...(isFailure && item.summary ? { error: item.summary } : {}),
+          ...(item.transcriptLogPath ? { transcriptLogPath: item.transcriptLogPath } : {}),
+          updatedAt: Math.max(prev.updatedAt, doneAt),
+          completedAt: doneAt,
+          currentActionText: item.summary ? item.summary.split(/\r?\n/)[0].slice(0, 120) : prev.currentActionText,
+        };
+      } else {
+        const id = `deleg:${item.delegationId}:${item.taskIndex}`;
+        const doneAt = completedAtMs > 0 ? completedAtMs : 0;
+        const startedAt = doneAt > 0 && durMs > 0 ? Math.max(1, doneAt - durMs) : doneAt;
+        extracted.push({
+          subagentId: id,
+          parentSessionId: sessionId,
+          goal: item.goal,
+          lifecycleStatus: norm.lifecycle,
+          phaseHint: norm.phaseHint,
+          source: 'transcript_scan',
+          delegationId: item.delegationId,
+          taskIndex: item.taskIndex,
+          ...(item.model ? { model: item.model } : {}),
+          toolCount: item.apiCalls ?? 0,
+          ...(item.durationSeconds !== undefined ? { durationSeconds: item.durationSeconds } : {}),
+          ...(item.summary ? { summary: item.summary, resultSummary: item.summary } : {}),
+          ...(isFailure && item.summary ? { error: item.summary } : {}),
+          ...(item.transcriptLogPath ? { transcriptLogPath: item.transcriptLogPath } : {}),
+          startedAt,
+          updatedAt: doneAt,
+          completedAt: doneAt,
+          targetProfile: item.model || 'subagent',
+          taskTitle: item.goal,
+          status: norm.compatStatus,
+          progressPercent: 100,
+          currentActionText: item.summary ? item.summary.split(/\r?\n/)[0].slice(0, 120) : '',
+        });
+        byKey.set(compositeKey, extracted.length - 1);
+      }
+    }
+  }
 }
 
 /**

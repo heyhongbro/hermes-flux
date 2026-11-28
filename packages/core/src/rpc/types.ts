@@ -359,6 +359,7 @@ export interface SubagentTaskState {
   durationSeconds?: number;
   summary?: string;
   error?: string;
+  transcriptLogPath?: string;
   startedAt: number;
   updatedAt: number;
   completedAt?: number;

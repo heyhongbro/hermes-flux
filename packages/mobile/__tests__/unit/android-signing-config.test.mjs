@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   assertAndroidSigningReady,
   evaluateAndroidApkCertCheck,
+  findAndroidApksignerPath,
   isAndroidSigningRequired,
   parseAndroidBuildArgs,
   parseApkCertInfo,
@@ -311,4 +312,28 @@ test('Android 严格正式签名门禁与 APK 证书指纹解析', () => {
     error: null,
     warning: null,
   });
+
+  // 7. findAndroidApksignerPath 探测 SDK build-tools 中最新版 apksigner
+  assert.equal(findAndroidApksignerPath(''), null);
+  assert.equal(findAndroidApksignerPath('/missing', { existsSync: () => false }), null);
+  assert.equal(
+    findAndroidApksignerPath('/sdk', {
+      existsSync: (p) => p.endsWith('build-tools'),
+      readdirSync: () => { throw new Error('eacces'); },
+    }),
+    null,
+  );
+  const pickedWin = findAndroidApksignerPath('C:\\Android\\Sdk', {
+    platform: 'win32',
+    existsSync: (p) => p.endsWith('build-tools') || p.includes('35.0.0') && p.endsWith('apksigner.bat'),
+    readdirSync: () => ['34.0.0', '35.0.0'],
+  });
+  assert.equal(pickedWin, path.join('C:\\Android\\Sdk', 'build-tools', '35.0.0', 'apksigner.bat'));
+
+  const pickedPosixMissing = findAndroidApksignerPath('/opt/android', {
+    platform: 'linux',
+    existsSync: (p) => p.endsWith('build-tools'),
+    readdirSync: () => ['35.0.0'],
+  });
+  assert.equal(pickedPosixMissing, null);
 });

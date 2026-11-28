@@ -958,3 +958,144 @@ test('deliverableCoordinator: scheduleVerification 隔离 probedMsgCount/probedC
   assert.ok(gwRequests.some((ep) => ep.includes('profile=arch')));
   assert.equal(getStateCount, stateCountAtDispatch);
 });
+
+test('createMediaResolver: 相对路径成果物图片按会话 cwd 兜底解析，file:// URI 归一化读取', async () => {
+  const readAttempts = [];
+  const state = {
+    gatewayUrl: '',
+    profileName: 'default',
+    activeSessionId: 'sess-rel-img',
+    sessions: [{ id: 'sess-rel-img', cwd: 'D:\\work\\proj' }],
+    messages: [],
+  };
+  const resolver = createMediaResolver({
+    getState: () => state,
+    getGatewayClient: () => null,
+    getDesktopApi: () => ({
+      readFile: async (p) => {
+        readAttempts.push(p);
+        if (p === 'D:/work/proj/output/chart.png') {
+          return 'data:image/png;base64,RELOK';
+        }
+        if (p === 'D:/work/proj/local.png') {
+          return 'data:image/png;base64,FILEURLOK';
+        }
+        return null;
+      },
+    }),
+  });
+
+  const relResolved = await resolver.resolveMediaUrl('output/chart.png');
+  assert.equal(relResolved, 'data:image/png;base64,RELOK');
+  assert.deepEqual(readAttempts, ['output/chart.png', 'D:/work/proj/output/chart.png']);
+
+  const fileUriResolved = await resolver.resolveMediaUrl('file:///D:/work/proj/local.png');
+  assert.equal(fileUriResolved, 'data:image/png;base64,FILEURLOK');
+
+  // 边界路径覆盖：空字符串、协议直通、波浪线路径、POSIX file:// 与非法 URI
+  assert.equal(await resolver.resolveMediaUrl(''), null);
+  assert.equal(await resolver.resolveMediaUrl('hermes-media://gw/demo.png'), 'hermes-media://gw/demo.png');
+  assert.equal(await resolver.resolveMediaUrl('~/home-missing.png'), null);
+  assert.equal(await resolver.resolveMediaUrl('file:///tmp/posix-missing.png'), null);
+  assert.equal(await resolver.resolveMediaUrl('file://[invalid-host]/bad.png'), null);
+});
+
+test('createMediaResolver: 含 /ws 路径的网关 URL 仍正确识别同源图片并隔离跨网关过期 profileName', async () => {
+  const seenProxyCalls = [];
+  const state = {
+    gatewayUrl: 'ws://127.0.0.1:8642/ws',
+    gatewayCount: 2,
+    activeGatewayId: 'gw-2',
+    activeFocus: { type: 'session', sessionId: 'sess-gw2', gatewayId: 'gw-2' },
+    profileName: 'newmediaboy',
+    profiles: [{ name: 'newmediaboy', gatewayId: 'gw-1' }],
+    activeSessionId: 'sess-gw2',
+    sessions: [{ id: 'sess-gw2', gatewayId: 'gw-2', cwd: '/srv/work' }],
+    messages: [],
+  };
+  const resolver = createMediaResolver({
+    getState: () => state,
+    getGatewayClient: () => null,
+    getGatewayUrlForGateway: (gw) => (gw === 'gw-2' ? 'ws://127.0.0.1:8642/ws' : 'ws://127.0.0.1:8641/ws'),
+    getDesktopApi: () => ({
+      httpProxy: async ({ baseUrl, path: ep }) => {
+        seenProxyCalls.push({ baseUrl, ep });
+        if (ep.includes('out.png')) {
+          return { dataUrl: 'data:image/png;base64,WSORIGINOK' };
+        }
+        return null;
+      },
+    }),
+  });
+
+  const resolvedHttp = await resolver.resolveMediaUrl('http://127.0.0.1:8642/api/files/download?path=%2Fsrv%2Fout.png');
+  assert.equal(resolvedHttp, 'data:image/png;base64,WSORIGINOK');
+  assert.equal(seenProxyCalls.some((c) => c.ep === '/api/files/download?path=%2Fsrv%2Fout.png'), true);
+
+  const resolvedFile = await resolver.resolveMediaUrl('/srv/work/out.png');
+  assert.equal(resolvedFile, 'data:image/png;base64,WSORIGINOK');
+  assert.equal(
+    seenProxyCalls.some((c) => c.ep.includes('profile=newmediaboy')),
+    false,
+    '跨网关访问普通会话图片时严禁携带 gw-1 的 newmediaboy profile',
+  );
+
+  // Bot 焦点、Group 焦点、会话 botName、无 scheme 网关地址与非法 URL 容错分支
+  const botResolver = createMediaResolver({
+    getState: () => ({
+      gatewayUrl: '127.0.0.1:8642',
+      gatewayCount: 2,
+      activeGatewayId: 'gw-1',
+      activeFocus: { type: 'bot', botName: 'bot-alpha', gatewayId: 'gw-1' },
+      profileName: 'default',
+      profiles: [],
+      activeSessionId: 's-bot',
+      sessions: [],
+      messages: [],
+    }),
+    getGatewayClient: () => null,
+    getDesktopApi: () => ({
+      httpProxy: async ({ path: ep }) => (ep.includes('profile=bot-alpha') ? { dataUrl: 'data:image/png;base64,BOTOK' } : null),
+    }),
+  });
+  assert.equal(await botResolver.resolveMediaUrl('/srv/bot.png'), 'data:image/png;base64,BOTOK');
+  assert.equal(await botResolver.resolveMediaUrl('https://[::invalid/bad.png'), 'https://[::invalid/bad.png');
+
+  const groupResolver = createMediaResolver({
+    getState: () => ({
+      gatewayUrl: 'http://[::invalid',
+      gatewayCount: 1,
+      activeGatewayId: 'gw-1',
+      activeFocus: { type: 'group', roomId: 'room-1' },
+      profileName: 'bot-alpha',
+      profiles: [],
+      activeSessionId: '',
+      sessions: [],
+      messages: [],
+    }),
+    getGatewayClient: () => null,
+    getDesktopApi: () => ({
+      httpProxy: async ({ path: ep }) => (ep.includes('profile=') ? null : { dataUrl: 'data:image/png;base64,GRPOK' }),
+    }),
+  });
+  assert.equal(await groupResolver.resolveMediaUrl('/srv/grp.png'), 'data:image/png;base64,GRPOK');
+
+  const sessBotResolver = createMediaResolver({
+    getState: () => ({
+      gatewayUrl: 'https://gw.example.com',
+      gatewayCount: 1,
+      activeGatewayId: 'gw-1',
+      activeFocus: { type: 'session', sessionId: 's-b' },
+      profileName: 'default',
+      profiles: [],
+      activeSessionId: 's-b',
+      sessions: [{ id: 's-b', botName: 'sess-bot' }],
+      messages: [],
+    }),
+    getGatewayClient: () => null,
+    getDesktopApi: () => ({
+      httpProxy: async ({ path: ep }) => (ep.includes('profile=sess-bot') ? { dataUrl: 'data:image/png;base64,SBOT' } : null),
+    }),
+  });
+  assert.equal(await sessBotResolver.resolveMediaUrl('/srv/sbot.png'), 'data:image/png;base64,SBOT');
+});

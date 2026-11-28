@@ -285,10 +285,10 @@ export function syncActiveSessionToBot(params: {
  * 约束与规则 (Rules)：专职智能体返回其 displayName/name；群聊返回群名；会话返回会话标题；未连接返回 notConnectedTitle。
  */
 export function resolveTitlebarTitle(params: {
-  activeFocus?: { type: 'bot'; botName: string } | { type: 'session'; sessionId: string } | { type: 'group'; roomId: string };
+  activeFocus?: { type: 'bot'; botName: string; gatewayId?: string } | { type: 'session'; sessionId: string; gatewayId?: string } | { type: 'group'; roomId: string; gatewayId?: string };
   profiles: AgentProfile[];
-  groupRooms?: Array<{ roomId: string; name: string }>;
-  sessions?: Array<{ id: string; title: string }>;
+  groupRooms?: Array<{ roomId: string; name: string; gatewayId?: string }>;
+  sessions?: Array<{ id: string; title: string; gatewayId?: string }>;
   activeSessionId?: string;
   defaultTitle: string;
   notConnectedTitle: string;
@@ -310,10 +310,12 @@ export function resolveTitlebarTitle(params: {
   } = params;
 
   if (activeFocus?.type === 'bot') {
+    const targetGw = activeFocus.gatewayId;
     const focusBot = profiles.find(
       (p) =>
-        p.name.toLowerCase() === activeFocus.botName.toLowerCase() ||
-        (p.displayName && p.displayName.toLowerCase() === activeFocus.botName.toLowerCase())
+        (!targetGw || !p.gatewayId || p.gatewayId === targetGw) &&
+        (p.name.toLowerCase() === activeFocus.botName.toLowerCase() ||
+          (p.displayName && p.displayName.toLowerCase() === activeFocus.botName.toLowerCase()))
     );
     // 【规则】Profile 尚在加载或不在列表里时，绝不把内部 name 当身份展示（会露出 "default" 这类占位名）；
     // 回落应用标题，等真实 Profile 到达后再显示其身份。
@@ -322,12 +324,18 @@ export function resolveTitlebarTitle(params: {
   }
 
   if (activeFocus?.type === 'group') {
-    const focusGroup = groupRooms.find((g) => g.roomId === activeFocus.roomId);
+    const targetGw = activeFocus.gatewayId;
+    const focusGroup =
+      groupRooms.find((g) => g.roomId === activeFocus.roomId && (!targetGw || !g.gatewayId || g.gatewayId === targetGw)) ??
+      groupRooms.find((g) => g.roomId === activeFocus.roomId);
     return focusGroup?.name || defaultRoomName;
   }
 
   if (activeSessionId) {
-    const activeSession = sessions.find((s) => s.id === activeSessionId);
+    const targetGw = activeFocus?.gatewayId;
+    const activeSession =
+      sessions.find((s) => s.id === activeSessionId && (!targetGw || !s.gatewayId || s.gatewayId === targetGw)) ??
+      sessions.find((s) => s.id === activeSessionId);
     if (activeSession) {
       const rawTitle = activeSession.title;
       return rawTitle === 'Bot Chat' ? (profileName || 'default') : rawTitle;
@@ -339,7 +347,7 @@ export function resolveTitlebarTitle(params: {
 
 export type TitlebarAvatarDescriptor =
   | { kind: 'bot'; avatar?: string; name: string }
-  | { kind: 'group'; members: string[]; profiles: Array<{ name: string; avatar?: string; displayName?: string }> };
+  | { kind: 'group'; members: string[]; profiles: Array<{ name: string; avatar?: string; displayName?: string; gatewayId?: string }> };
 
 /**
  * 顶栏当前激活实体头像解析纯函数（PR-3e 收敛：支持专职 Bot 真实头像与群聊真实拼图微头像）。
@@ -349,35 +357,51 @@ export type TitlebarAvatarDescriptor =
  * 约束与规则 (Rules)：纯函数无副作用，找不到匹配实体时安全降级返回 undefined。
  */
 export function resolveTitlebarAvatar(params: {
-  activeFocus?: { type: 'bot'; botName: string } | { type: 'session'; sessionId: string } | { type: 'group'; roomId: string };
+  activeFocus?: { type: 'bot'; botName: string; gatewayId?: string } | { type: 'session'; sessionId: string; gatewayId?: string } | { type: 'group'; roomId: string; gatewayId?: string };
   profiles: AgentProfile[];
-  groupRooms?: Array<{ roomId: string; name: string; members?: string[] }>;
+  groupRooms?: Array<{ roomId: string; name: string; members?: string[]; gatewayId?: string }>;
   profileName?: string;
   activeSessionId?: string;
-  sessions?: Array<{ id: string; title: string; botName?: string }>;
+  sessions?: Array<{ id: string; title: string; botName?: string; gatewayId?: string }>;
+  gatewayId?: string;
 }): TitlebarAvatarDescriptor | undefined {
-  const { activeFocus, profiles, groupRooms = [], profileName, activeSessionId, sessions = [] } = params;
+  const { activeFocus, profiles, groupRooms = [], profileName, activeSessionId, sessions = [], gatewayId } = params;
 
   if (activeFocus?.type === 'group') {
-    const focusGroup = groupRooms.find((g) => g.roomId === activeFocus.roomId);
+    const targetGw = activeFocus.gatewayId || gatewayId;
+    const focusGroup =
+      groupRooms.find((g) => g.roomId === activeFocus.roomId && (!targetGw || !g.gatewayId || g.gatewayId === targetGw)) ??
+      groupRooms.find((g) => g.roomId === activeFocus.roomId);
     if (focusGroup) {
+      const roomGw = focusGroup.gatewayId || targetGw;
       return {
         kind: 'group',
         members: focusGroup.members || [],
-        profiles: profiles.map((p) => ({ name: p.name, avatar: p.avatar, displayName: p.displayName })),
+        profiles: profiles
+          .filter((p) => !roomGw || !p.gatewayId || p.gatewayId === roomGw)
+          .map((p) => ({
+            name: p.name,
+            avatar: p.avatar,
+            displayName: p.displayName,
+            ...(p.gatewayId ? { gatewayId: p.gatewayId } : {}),
+          })),
       };
     }
     return undefined;
   }
 
   let targetName: string | undefined;
+  let targetGw: string | undefined = activeFocus?.gatewayId || gatewayId;
 
   if (activeFocus?.type === 'bot') {
     targetName = activeFocus.botName;
   } else if (activeSessionId) {
-    const activeSession = sessions.find((s) => s.id === activeSessionId);
+    const activeSession =
+      sessions.find((s) => s.id === activeSessionId && (!targetGw || !s.gatewayId || s.gatewayId === targetGw)) ??
+      sessions.find((s) => s.id === activeSessionId);
     if (activeSession && (activeSession.title === 'Bot Chat' || activeSession.botName)) {
       targetName = activeSession.botName || profileName || 'default';
+      if (activeSession.gatewayId) targetGw = activeSession.gatewayId;
     }
   }
 
@@ -385,8 +409,9 @@ export function resolveTitlebarAvatar(params: {
 
   const found = profiles.find(
     (p) =>
-      p.name.toLowerCase() === targetName!.toLowerCase() ||
-      (p.displayName && p.displayName.toLowerCase() === targetName!.toLowerCase())
+      (!targetGw || !p.gatewayId || p.gatewayId === targetGw) &&
+      (p.name.toLowerCase() === targetName!.toLowerCase() ||
+        (p.displayName && p.displayName.toLowerCase() === targetName!.toLowerCase()))
   );
 
   // 【规则】Profile 尚未到达时不出头像，也不把内部 name 当身份：加载期顶栏保持空白，

@@ -25,11 +25,8 @@ import type {
   SubagentLifecycleStatus,
   SubagentListResult,
   SubagentLogEntry,
-  SubagentPhaseHint,
-  SubagentRecordSource,
   SubagentSnapshot,
   SubagentSpawnParams,
-  SubagentStatus,
   SubagentSteerParams,
   SubagentSteerResult,
   SubagentTailResult,
@@ -43,7 +40,6 @@ import {
   extractDelegationsFromMessages,
   isSyntheticSubagentId,
   isTerminalLifecycleStatus,
-  lifecycleRank,
   matchSubagentForToolCall,
   normalizeGoalKey,
   normalizeStatusToLifecycleAndHint,
@@ -57,6 +53,8 @@ export {
   normalizeGoalKey,
   type DelegationScanMessageInput,
 } from './subagentDelegationScan.js';
+import { mergeSubagentRecord, reconcileSubagentRecords } from './subagentReconcile.js';
+export { mergeSubagentRecord, reconcileSubagentRecords } from './subagentReconcile.js';
 import { RingBuffer } from './ringBuffer.js';
 import { createLogger } from '../log/logger.js';
 import { UnsupportedCapabilityError } from '../rpc/errors.js';
@@ -96,32 +94,6 @@ export type SubagentSteerOutcome =
   | { ok: true; status: 'queued' | 'rejected'; text: string }
   | { ok: false; error: string };
 
-const SOURCE_PRIORITY: Record<SubagentRecordSource, number> = {
-  live_event: 4,
-  subagent_list: 3,
-  spawn_tree: 2,
-  transcript_scan: 1,
-};
-
-function mergeUniqueStrings(a?: readonly string[], b?: readonly string[]): string[] | undefined {
-  if (!a?.length && !b?.length) return undefined;
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const item of a ?? []) {
-    if (item && !seen.has(item)) {
-      seen.add(item);
-      out.push(item);
-    }
-  }
-  for (const item of b ?? []) {
-    if (item && !seen.has(item)) {
-      seen.add(item);
-      out.push(item);
-    }
-  }
-  return out.length > 0 ? out : undefined;
-}
-
 function buildRowDedupKey(row: StoredTranscriptRow, index: number): string {
   if (typeof row.row_id === 'number' && Number.isFinite(row.row_id)) {
     return `id:${row.row_id}`;
@@ -138,229 +110,233 @@ function isMethodUnsupportedError(err: unknown): boolean {
   return false;
 }
 
-/**
- * 纯函数状态单调格合并（INV-SUBAGENT-02 / INV-SUBAGENT-03）：
- * - 状态按 `queued(0) < running(1) < terminal(2)` 单调跃迁，终态永不回退；
- * - 同秩时按来源优先级 `live_event > subagent_list > spawn_tree > transcript_scan` 融合，
- *   计数器取 `Math.max`，集合取去重并集，`interruptPending` 黏性保持直至进入终态。
- */
-export function mergeSubagentRecord(
-  existing: SubagentTaskState | undefined,
-  incoming: SubagentTaskState
-): SubagentTaskState {
-  if (!existing) {
-    return { ...incoming };
-  }
+interface ParsedTranscriptToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  output?: string;
+  status: 'completed' | 'failed';
+}
 
-  const existingRank = lifecycleRank(existing.lifecycleStatus);
-  const incomingRank = lifecycleRank(incoming.lifecycleStatus);
+const LOG_ENTRY_LINE_RE = /^(\d{2}:\d{2}:\d{2})\s+([a-z_]+)\s*\|\s?(.*)$/i;
+const LOG_STARTED_DATE_RE = /^started:\s*(\d{4}-\d{2}-\d{2})\b/m;
+const LOG_TOOL_CALL_RE = /^->\s*([^\s(]+)(?:\(([\s\S]*)\))?$/;
+const LOG_TOOL_RESULT_RE = /^([^\s]+)\s+(ok|err(?:or)?|failed)\b[^:]*:\s*([\s\S]*)$/i;
+const LOG_TRUNCATION_MARKER_RE = /…\(\+\d+\s+chars\)$/;
 
-  let lifecycleStatus: SubagentLifecycleStatus;
-  let status: SubagentStatus;
-  let phaseHint: SubagentPhaseHint;
-  if (incomingRank > existingRank) {
-    lifecycleStatus = incoming.lifecycleStatus;
-    status = incoming.status;
-    phaseHint = incoming.phaseHint;
-  } else if (existingRank > incomingRank) {
-    lifecycleStatus = existing.lifecycleStatus;
-    status = existing.status;
-    phaseHint = existing.phaseHint;
-  } else {
-    // 同秩：若两方均为终态且非 completed，保留更先/更高优先级终态；运行期取更高优先级或更晚时间
-    const incomingWins =
-      SOURCE_PRIORITY[incoming.source] > SOURCE_PRIORITY[existing.source] ||
-      (SOURCE_PRIORITY[incoming.source] === SOURCE_PRIORITY[existing.source] &&
-        incoming.updatedAt >= existing.updatedAt);
-    lifecycleStatus = incomingWins ? incoming.lifecycleStatus : existing.lifecycleStatus;
-    status = incomingWins ? incoming.status : existing.status;
-    phaseHint = incomingWins ? incoming.phaseHint : existing.phaseHint;
-  }
-
-  const terminal = isTerminalLifecycleStatus(lifecycleStatus);
-  const incomingHigherPriority =
-    SOURCE_PRIORITY[incoming.source] > SOURCE_PRIORITY[existing.source] ||
-    (SOURCE_PRIORITY[incoming.source] === SOURCE_PRIORITY[existing.source] &&
-      incoming.updatedAt >= existing.updatedAt);
-
-  const source =
-    SOURCE_PRIORITY[incoming.source] >= SOURCE_PRIORITY[existing.source]
-      ? incoming.source
-      : existing.source;
-
-  const goal =
-    (incoming.goal && (!existing.goal || SOURCE_PRIORITY[incoming.source] >= SOURCE_PRIORITY[existing.source])
-      ? incoming.goal
-      : existing.goal) || incoming.goal || existing.goal;
-
-  const startedAt =
-    existing.startedAt > 0 && incoming.startedAt > 0
-      ? Math.min(existing.startedAt, incoming.startedAt)
-      : existing.startedAt > 0
-      ? existing.startedAt
-      : incoming.startedAt;
-  const updatedAt = Math.max(existing.updatedAt, incoming.updatedAt);
-  const completedAt = terminal
-    ? incoming.completedAt ?? existing.completedAt ?? updatedAt
-    : undefined;
-
-  const toolCount = Math.max(existing.toolCount, incoming.toolCount);
-  const lastTool = incomingHigherPriority
-    ? incoming.lastTool ?? existing.lastTool
-    : existing.lastTool ?? incoming.lastTool;
-  const currentActionText = incomingHigherPriority
-    ? incoming.currentActionText || existing.currentActionText
-    : existing.currentActionText || incoming.currentActionText;
-  const summary = incoming.summary ?? existing.summary ?? incoming.resultSummary ?? existing.resultSummary;
-  const error =
-    lifecycleStatus === 'completed'
-      ? undefined
-      : (incomingHigherPriority ? incoming.error ?? existing.error : existing.error ?? incoming.error);
-
-  const interruptPending = terminal
-    ? false
-    : incoming.interruptPending === false
-    ? false
-    : Boolean(existing.interruptPending || incoming.interruptPending);
-
-  const progressPercent = terminal
-    ? 100
-    : Math.max(existing.progressPercent, incoming.progressPercent);
-
-  const targetProfile = incoming.model || existing.model || incoming.targetProfile || existing.targetProfile || 'default';
-
-  return {
-    subagentId: incoming.subagentId,
-    parentSessionId: incoming.parentSessionId || existing.parentSessionId,
-    goal,
-    lifecycleStatus,
-    phaseHint,
-    source,
-    ...(incoming.delegationId || existing.delegationId ? { delegationId: incoming.delegationId || existing.delegationId } : {}),
-    ...(incoming.taskIndex !== undefined || existing.taskIndex !== undefined
-      ? { taskIndex: incoming.taskIndex ?? existing.taskIndex }
-      : {}),
-    ...(incoming.childSessionId || existing.childSessionId
-      ? { childSessionId: incoming.childSessionId || existing.childSessionId }
-      : {}),
-    ...(incoming.model || existing.model ? { model: incoming.model || existing.model } : {}),
-    ...(incoming.depth !== undefined || existing.depth !== undefined
-      ? { depth: incoming.depth ?? existing.depth }
-      : {}),
-    ...(incoming.parentId || existing.parentId ? { parentId: incoming.parentId || existing.parentId } : {}),
-    toolCount,
-    ...(lastTool ? { lastTool } : {}),
-    ...(mergeUniqueStrings(existing.toolNames, incoming.toolNames)
-      ? { toolNames: mergeUniqueStrings(existing.toolNames, incoming.toolNames) }
-      : {}),
-    ...(mergeUniqueStrings(existing.filesRead, incoming.filesRead)
-      ? { filesRead: mergeUniqueStrings(existing.filesRead, incoming.filesRead) }
-      : {}),
-    ...(mergeUniqueStrings(existing.filesWritten, incoming.filesWritten)
-      ? { filesWritten: mergeUniqueStrings(existing.filesWritten, incoming.filesWritten) }
-      : {}),
-    ...(incoming.tokensInput !== undefined || existing.tokensInput !== undefined
-      ? { tokensInput: Math.max(existing.tokensInput ?? 0, incoming.tokensInput ?? 0) }
-      : {}),
-    ...(incoming.tokensOutput !== undefined || existing.tokensOutput !== undefined
-      ? { tokensOutput: Math.max(existing.tokensOutput ?? 0, incoming.tokensOutput ?? 0) }
-      : {}),
-    ...(incoming.tokensReasoning !== undefined || existing.tokensReasoning !== undefined
-      ? { tokensReasoning: Math.max(existing.tokensReasoning ?? 0, incoming.tokensReasoning ?? 0) }
-      : {}),
-    ...(typeof incoming.acceptingSteer === 'boolean' || typeof existing.acceptingSteer === 'boolean'
-      ? { acceptingSteer: incomingHigherPriority ? (incoming.acceptingSteer ?? existing.acceptingSteer) : (existing.acceptingSteer ?? incoming.acceptingSteer) }
-      : {}),
-    interruptPending,
-    ...(incoming.durationSeconds !== undefined || existing.durationSeconds !== undefined
-      ? { durationSeconds: incoming.durationSeconds ?? existing.durationSeconds }
-      : {}),
-    ...(summary !== undefined ? { summary, resultSummary: summary } : {}),
-    ...(error !== undefined ? { error } : {}),
-    startedAt,
-    updatedAt,
-    ...(completedAt !== undefined ? { completedAt } : {}),
-    targetProfile,
-    taskTitle: goal || '子任务执行',
-    status,
-    progressPercent,
-    currentActionText,
-  };
+function parseLogEntryEpochSeconds(datePrefix: string, clock: string): number | undefined {
+  if (!datePrefix || !clock) return undefined;
+  const ms = Date.parse(`${datePrefix}T${clock}Z`);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
 }
 
 /**
- * 纯输入三源确定性合并与 1:1 无歧义并入函数（INV-SUBAGENT-03）。
+ * 将网关持久化子 Agent 日志 (`/opt/data/cache/delegation/live/<delegationId>/task-N.log`)
+ * 解析为与 `session.transcript` 同构的 `StoredTranscriptRow[]`，供子 Agent 详情页复用 `parseTranscriptRows` 渲染。
  */
-export function reconcileSubagentRecords(
-  existingRecords: readonly SubagentTaskState[],
-  incomingRecords: readonly SubagentTaskState[],
-  aliasMap?: ReadonlyMap<string, string>
-): {
-  merged: SubagentTaskState[];
-  resolvedAliases: Array<{ oldId: string; newId: string }>;
-} {
-  const byId = new Map<string, SubagentTaskState>();
-  const resolvedAliases: Array<{ oldId: string; newId: string }> = [];
+export function parseLiveTranscriptLogRows(logText: string, taskSummary?: string): StoredTranscriptRow[] {
+  if (!logText || typeof logText !== 'string') return [];
+  const startedDate = LOG_STARTED_DATE_RE.exec(logText)?.[1] || '';
+  const lines = logText.split(/\r?\n/);
+  const sepIdx = lines.findIndex((line) => /^={10,}$/.test(line.trim()));
+  const bodyLines = sepIdx >= 0 ? lines.slice(sepIdx + 1) : lines;
 
-  for (const rec of existingRecords) {
-    const canonicalId = aliasMap?.get(rec.subagentId) ?? rec.subagentId;
-    const normalized = canonicalId === rec.subagentId ? rec : { ...rec, subagentId: canonicalId };
-    byId.set(canonicalId, mergeSubagentRecord(byId.get(canonicalId), normalized));
+  const rawEntries: Array<{ clock: string; kind: string; text: string }> = [];
+  for (const line of bodyLines) {
+    const match = LOG_ENTRY_LINE_RE.exec(line);
+    if (match) {
+      rawEntries.push({
+        clock: match[1],
+        kind: match[2].toLowerCase(),
+        text: match[3] ?? '',
+      });
+    } else if (rawEntries.length > 0) {
+      rawEntries[rawEntries.length - 1].text += `\n${line}`;
+    }
   }
 
-  for (const rawIncoming of incomingRecords) {
-    const mappedId = aliasMap?.get(rawIncoming.subagentId) ?? rawIncoming.subagentId;
-    const incoming = mappedId === rawIncoming.subagentId ? rawIncoming : { ...rawIncoming, subagentId: mappedId };
+  const rows: StoredTranscriptRow[] = [];
+  let rowId = 1;
+  let toolSeq = 1;
+  let pendingThought = '';
+  type AssistantAcc = {
+    row: StoredTranscriptRow;
+    tools: ParsedTranscriptToolCall[];
+    lastTextTruncated: boolean;
+  };
+  let activeAssistant: AssistantAcc | null = null;
 
-    if (byId.has(incoming.subagentId)) {
-      byId.set(incoming.subagentId, mergeSubagentRecord(byId.get(incoming.subagentId), incoming));
+  const peekAssistant = (): AssistantAcc | null => activeAssistant;
+
+  const flushAssistant = (): void => {
+    const target = activeAssistant;
+    if (!target) return;
+    if (target.tools.length > 0) {
+      target.row.tool_calls = target.tools;
+    }
+    if (
+      (typeof target.row.content === 'string' && target.row.content.trim()) ||
+      (typeof target.row.reasoning === 'string' && target.row.reasoning.trim()) ||
+      target.tools.length > 0
+    ) {
+      rows.push(target.row);
+    }
+    activeAssistant = null;
+  };
+
+  const ensureAssistant = (ts?: number): AssistantAcc => {
+    if (!activeAssistant) {
+      activeAssistant = {
+        row: {
+          row_id: rowId++,
+          role: 'assistant',
+          row_kind: 'message',
+          content: '',
+          ...(ts !== undefined ? { timestamp: ts } : {}),
+          ...(pendingThought ? { reasoning: pendingThought } : {}),
+        },
+        tools: [],
+        lastTextTruncated: false,
+      };
+      pendingThought = '';
+    } else if (pendingThought) {
+      activeAssistant.row.reasoning = activeAssistant.row.reasoning
+        ? `${activeAssistant.row.reasoning}\n${pendingThought}`
+        : pendingThought;
+      pendingThought = '';
+    }
+    return activeAssistant;
+  };
+
+  for (const entry of rawEntries) {
+    const text = entry.text.trim();
+    const ts = parseLogEntryEpochSeconds(startedDate, entry.clock);
+    if (entry.kind === 'user') {
+      flushAssistant();
+      let cleanUser = text.replace(/^kickoff:\s*/i, '');
+      const ctxSplit = cleanUser.indexOf(' | context: ');
+      if (ctxSplit > 0) {
+        cleanUser = cleanUser.slice(0, ctxSplit).trim();
+      }
+      if (cleanUser) {
+        rows.push({
+          row_id: rowId++,
+          role: 'user',
+          row_kind: 'message',
+          content: cleanUser,
+          ...(ts !== undefined ? { timestamp: ts } : {}),
+        });
+      }
       continue;
     }
-
-    // 真实 subagent_id 抵达时尝试 1:1 无歧义合并合成记录
-    let matchedSynthetic: SubagentTaskState | null = null;
-    if (!isSyntheticSubagentId(incoming.subagentId) && incoming.delegationId) {
-      const candidates: SubagentTaskState[] = [];
-      for (const candidate of byId.values()) {
-        if (
-          isSyntheticSubagentId(candidate.subagentId) &&
-          candidate.parentSessionId === incoming.parentSessionId &&
-          candidate.delegationId === incoming.delegationId
-        ) {
-          candidates.push(candidate);
-        }
+    if (entry.kind === 'start') continue;
+    if (entry.kind === 'think') {
+      if (text) {
+        pendingThought = pendingThought ? `${pendingThought}\n${text}` : text;
       }
-
-      if (incoming.taskIndex !== undefined) {
-        const byIndex = candidates.filter((c) => c.taskIndex === incoming.taskIndex);
-        if (byIndex.length === 1) matchedSynthetic = byIndex[0];
-      } else if (candidates.length === 1) {
-        // SubagentSnapshot 无 task_index：仅当同会话+同 delegation_id 下唯一存在且 goal 匹配时并入
-        const only = candidates[0];
-        if (!incoming.goal || !only.goal || normalizeGoalKey(only.goal) === normalizeGoalKey(incoming.goal)) {
-          matchedSynthetic = only;
-        }
-      }
+      continue;
     }
-
-    if (matchedSynthetic) {
-      const oldId = matchedSynthetic.subagentId;
-      byId.delete(oldId);
-      const promoted = mergeSubagentRecord(
-        { ...matchedSynthetic, subagentId: incoming.subagentId },
-        incoming
+    if (entry.kind === 'tool') {
+      const m = LOG_TOOL_CALL_RE.exec(text);
+      const name = m?.[1] || 'tool';
+      const arg = (m?.[2] || '').trim();
+      const cur = ensureAssistant(ts);
+      if (typeof cur.row.content === 'string' && cur.row.content.trim()) {
+        flushAssistant();
+      }
+      const targetAssistant = ensureAssistant(ts);
+      targetAssistant.tools.push({
+        id: `log-tc-${toolSeq++}`,
+        name,
+        args: arg ? { command: arg } : {},
+        status: 'completed',
+      });
+      continue;
+    }
+    if (entry.kind === 'result') {
+      const cur = ensureAssistant(ts);
+      const resMatch = LOG_TOOL_RESULT_RE.exec(text);
+      const resultStatus: 'completed' | 'failed' =
+        resMatch && !/^ok$/i.test(resMatch[2]) ? 'failed' : 'completed';
+      const resultBody = resMatch ? resMatch[3].trim() : text;
+      if (cur.tools.length > 0) {
+        const lastTool = cur.tools[cur.tools.length - 1];
+        lastTool.status = resultStatus;
+        lastTool.output = resultBody;
+      }
+      continue;
+    }
+    if (entry.kind === 'assistant') {
+      flushAssistant();
+      const cur = ensureAssistant(ts);
+      cur.row.content = text;
+      cur.lastTextTruncated = LOG_TRUNCATION_MARKER_RE.test(text);
+      continue;
+    }
+    if (entry.kind === 'final') {
+      const trimmedSummary = taskSummary?.trim() || '';
+      const curAcc = peekAssistant();
+      if (trimmedSummary && curAcc?.row.role === 'assistant' && curAcc.lastTextTruncated) {
+        curAcc.row.content = trimmedSummary;
+        curAcc.lastTextTruncated = false;
+      }
+      flushAssistant();
+      const hasAssistantText = rows.some(
+        (r) => r.role === 'assistant' && typeof r.content === 'string' && r.content.trim().length > 0
       );
-      byId.set(incoming.subagentId, promoted);
-      resolvedAliases.push({ oldId, newId: incoming.subagentId });
-    } else {
-      byId.set(incoming.subagentId, { ...incoming });
+      if (!hasAssistantText) {
+        const finalSummaryMatch = /\bsummary:\s*([\s\S]+)$/i.exec(text);
+        const finalBody = trimmedSummary || (finalSummaryMatch?.[1]?.trim() || '');
+        if (finalBody && !/^end status=/i.test(text)) {
+          rows.push({
+            row_id: rowId++,
+            role: 'assistant',
+            row_kind: 'message',
+            content: finalBody,
+            ...(ts !== undefined ? { timestamp: ts } : {}),
+          });
+        }
+      }
     }
   }
+  flushAssistant();
 
-  return {
-    merged: Array.from(byId.values()).sort((a, b) => b.startedAt - a.startedAt),
-    resolvedAliases,
-  };
+  const trimmedSummary = taskSummary?.trim() || '';
+  if (trimmedSummary) {
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const r = rows[i];
+      if (r.role === 'assistant' && typeof r.content === 'string' && LOG_TRUNCATION_MARKER_RE.test(r.content)) {
+        r.content = trimmedSummary;
+        break;
+      }
+    }
+  }
+  return rows;
+}
+
+function buildTerminalSummaryTranscriptRows(task: SubagentTaskState): StoredTranscriptRow[] {
+  const body = (task.summary || task.resultSummary || task.error || '').trim();
+  if (!body) return [];
+  const rows: StoredTranscriptRow[] = [];
+  if (task.goal) {
+    rows.push({
+      row_id: 1,
+      role: 'user',
+      row_kind: 'message',
+      content: task.goal,
+      ...(task.startedAt > 0 ? { timestamp: Math.floor(task.startedAt / 1000) } : {}),
+    });
+  }
+  rows.push({
+    row_id: rows.length + 1,
+    role: 'assistant',
+    row_kind: 'message',
+    content: body,
+    ...(task.completedAt && task.completedAt > 0
+      ? { timestamp: Math.floor(task.completedAt / 1000) }
+      : {}),
+  });
+  return rows;
 }
 
 export { RingBuffer };
@@ -1015,6 +991,7 @@ export class SubagentStore {
         for (const item of res.subagents) {
           const snap = item as SubagentSnapshot & {
             parent_session_id?: string;
+            task_index?: number;
             profile?: string;
             title?: string;
             progress?: number;
@@ -1025,14 +1002,19 @@ export class SubagentStore {
           const goal = snap.goal || snap.title || '子任务';
           const startedAt = normalizeEpochMs(snap.started_at) ?? now;
           const updatedAt = normalizeEpochMs(snap.updated_at) ?? now;
+          const parentSessionId =
+            !snap.parent_session_id || snap.parent_session_id === sessionId
+              ? storedSessionId
+              : snap.parent_session_id;
           batch.push({
             subagentId: snap.subagent_id,
-            parentSessionId: snap.parent_session_id || storedSessionId,
+            parentSessionId,
             goal,
             lifecycleStatus: norm.lifecycle,
             phaseHint: norm.phaseHint,
             source: 'subagent_list',
             ...(snap.delegation_id ? { delegationId: snap.delegation_id } : {}),
+            ...(typeof snap.task_index === 'number' ? { taskIndex: snap.task_index } : {}),
             ...(snap.child_session_id ? { childSessionId: snap.child_session_id } : {}),
             ...(snap.model ? { model: snap.model } : {}),
             ...(typeof snap.depth === 'number' ? { depth: snap.depth } : {}),
@@ -1104,6 +1086,7 @@ export class SubagentStore {
     bridge: ISubagentRpcBridge;
     childSessionId?: string;
     fetchChildMessages?: (childSessionId: string, profile?: string) => Promise<StoredTranscriptRow[] | null>;
+    fetchTranscriptLogText?: (logPath: string, profile?: string) => Promise<string | null>;
     maxPages?: number;
   }): Promise<SubagentTranscriptState> {
     const canonical = this.resolveSubagentId(options.subagentId);
@@ -1143,6 +1126,57 @@ export class SubagentStore {
           }
         } catch (restErr) {
           log.debug('child session REST fallback unavailable', restErr);
+        }
+      }
+
+      if (task?.transcriptLogPath && options.fetchTranscriptLogText) {
+        try {
+          const logText = await options.fetchTranscriptLogText(task.transcriptLogPath, options.profile);
+          if (isStale()) {
+            return this.getTranscriptState(canonical);
+          }
+          if (typeof logText === 'string' && logText.trim()) {
+            const parsedLogRows = parseLiveTranscriptLogRows(
+              logText,
+              task.summary || task.resultSummary || undefined
+            );
+            if (parsedLogRows.length > 0) {
+              const readyFromLog: SubagentTranscriptState = {
+                status: 'ready',
+                rows: parsedLogRows,
+                nextCursor: null,
+                running,
+                available: true,
+                ...(knownChildId ? { childSessionId: knownChildId } : {}),
+                transcriptUnsupported: true,
+                updatedAt: Date.now(),
+              };
+              this.transcriptStates.set(canonical, readyFromLog);
+              this.notify();
+              return readyFromLog;
+            }
+          }
+        } catch (logErr) {
+          log.debug('subagent live transcript log fallback unavailable', logErr);
+        }
+      }
+
+      if (!running && task && isTerminalLifecycleStatus(task.lifecycleStatus)) {
+        const summaryRows = buildTerminalSummaryTranscriptRows(task);
+        if (summaryRows.length > 0) {
+          const readyFromSummary: SubagentTranscriptState = {
+            status: 'ready',
+            rows: summaryRows,
+            nextCursor: null,
+            running: false,
+            available: true,
+            ...(knownChildId ? { childSessionId: knownChildId } : {}),
+            transcriptUnsupported: true,
+            updatedAt: Date.now(),
+          };
+          this.transcriptStates.set(canonical, readyFromSummary);
+          this.notify();
+          return readyFromSummary;
         }
       }
 

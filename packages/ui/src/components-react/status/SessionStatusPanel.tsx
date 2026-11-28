@@ -246,18 +246,6 @@ export function SessionStatusPanel({ snapshot, actions }: SessionStatusPanelProp
                 <span>{t('statusPod.subagentsHeading')}</span>
               </div>
               <div className="sp-sub-head-right">
-                {active.length > 0 ? (
-                  <span className="sp-sub-count" data-testid="status-running-count">
-                    {t('statusPod.subagentsSummaryBadge', {
-                      active: String(active.length),
-                      total: String(active.length + terminal.length),
-                    })}
-                  </span>
-                ) : terminal.length > 0 ? (
-                  <span className="sp-sub-count">
-                    {t('statusPod.subagentsTotalBadge', { total: String(terminal.length) })}
-                  </span>
-                ) : null}
                 <svg
                   className="sp-sub-chevron"
                   data-collapsed={subagentsExpanded ? undefined : 'true'}
@@ -346,33 +334,10 @@ export function SessionStatusPanel({ snapshot, actions }: SessionStatusPanelProp
         )}
       </section>
 
-      {/* 下区（仅非群聊）：紧凑单行用量 + 可直接点击展开构成的细上下文条 */}
+      {/* 下区（仅非群聊）：紧凑单行上下文条（点击展开构成明细） */}
       {!isGroupRoom ? (
         <footer className="sp-section sp-section--bottom status-zone status-zone--bottom" data-testid="status-usage-zone">
           {scope?.usageError ? <div className="status-inline-warn">{scope.usageError}</div> : null}
-
-          {usage ? (
-            <div className="sp-usage-strip" data-testid="status-usage-strip">
-              <span className="sp-usage-pair">
-                <span>{t('statusPod.inputTokens')}</span>
-                <span className="sp-usage-val">{formatTokenShort(usage.input)}</span>
-              </span>
-              <span className="sp-usage-sep" aria-hidden="true" />
-              <span className="sp-usage-pair">
-                <span>{t('statusPod.outputTokens')}</span>
-                <span className="sp-usage-val">{formatTokenShort(usage.output)}</span>
-              </span>
-              {usage.cacheHitPct !== null ? (
-                <>
-                  <span className="sp-usage-sep" aria-hidden="true" />
-                  <span className="sp-usage-pair">
-                    <span>{t('statusPod.cacheShort')}</span>
-                    <span className="sp-usage-val">{Math.round(usage.cacheHitPct)}%</span>
-                  </span>
-                </>
-              ) : null}
-            </div>
-          ) : null}
 
           {ctxUsed !== null && ctxMax !== null && ctxMax > 0 ? (
             <button
@@ -383,25 +348,16 @@ export function SessionStatusPanel({ snapshot, actions }: SessionStatusPanelProp
               title={t('statusPod.clickToToggleBreakdown')}
               onClick={handleToggleBreakdown}
             >
-              <div className="sp-ctx-top">
-                <div className="sp-ctx-label-wrap">
-                  <span>
-                    {t('statusPod.contextWindow')}
-                    {usage?.contextEstimated ? ` (${t('statusPod.contextEstimated')})` : ''}
-                  </span>
-                  {ctxPct !== null ? <span className="sp-ctx-pct">{Math.round(ctxPct)}%</span> : null}
-                </div>
-                <span className="sp-ctx-nums" data-testid="status-context-readout">
-                  {formatTokenShort(ctxUsed)} / {formatTokenShort(ctxMax)}
-                </span>
-              </div>
+              <span className="sp-ctx-label">
+                {t('statusPod.contextWindow')}
+              </span>
 
               <div className="sp-bar-wrap">
                 <div className="sp-bar-track">
                   <div
                     className="sp-bar-fill"
                     data-threshold-zone={fillZone}
-                    style={{ width: `${clampedPct}%` }}
+                    style={{ width: `${ctxUsed > 0 ? Math.max(clampedPct, 2) : 0}%` }}
                   />
                 </div>
                 {thresholdPct !== null ? (
@@ -415,21 +371,9 @@ export function SessionStatusPanel({ snapshot, actions }: SessionStatusPanelProp
                 ) : null}
               </div>
 
-              {thresholdPct !== null || (usage && usage.compressions > 0) ? (
-                <div className="sp-ctx-foot">
-                  {thresholdPct !== null ? (
-                    <span className="sp-ctx-threshold">
-                      <span className="sp-tick-swatch" aria-hidden="true" />
-                      {t('statusPod.thresholdLabel', { pct: String(Math.round(thresholdPct)) })}
-                    </span>
-                  ) : (
-                    <span />
-                  )}
-                  {usage && usage.compressions > 0 ? (
-                    <span>{t('statusPod.compressionsCount', { count: String(usage.compressions) })}</span>
-                  ) : null}
-                </div>
-              ) : null}
+              <span className="sp-ctx-nums" data-testid="status-context-readout">
+                {formatTokenShort(ctxUsed)} / {formatTokenShort(ctxMax)}
+              </span>
             </button>
           ) : (
             <div className="status-context-empty">{t('statusPod.contextUnavailable')}</div>

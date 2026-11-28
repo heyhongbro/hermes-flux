@@ -57,7 +57,7 @@ const CONSUMPTION = {
     ],
   },
   Menu: { state: 'consumed', consumers: ['components-react/settings/ModelPicker.tsx', 'components-react/settings/BotManagerView.tsx'] },
-  Switch: { state: 'consumed', consumers: ['components-react/settings/SettingsModal.tsx', 'components-react/settings/GeneralSettingsPanel.tsx', 'components-react/settings/GatewaySettingsPanel.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/BotCapabilityList.tsx', 'components-react/mobile/MobileBotSubpage.tsx'] },
+  Switch: { state: 'consumed', consumers: ['components-react/settings/SettingsModal.tsx', 'components-react/settings/GeneralSettingsPanel.tsx', 'components-react/settings/GatewaySettingsPanel.tsx', 'components-react/settings/AddProviderDialog.tsx', 'components-react/settings/BotManagerView.tsx', 'components-react/settings/BotCapabilityList.tsx', 'components-react/mobile/MobileBotSubpage.tsx'] },
   /**
    * 业务原子（Surface / ListRow / Toolbar / Stat）。
    *

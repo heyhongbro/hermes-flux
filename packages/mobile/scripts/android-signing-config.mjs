@@ -236,3 +236,37 @@ export function evaluateAndroidApkCertCheck({
     warning: null,
   };
 }
+
+/**
+ * 探测 Android SDK build-tools 中最新的 apksigner 可执行文件（v2/v3 APK 签名校验必需）。
+ */
+export function findAndroidApksignerPath(
+  androidHome,
+  {
+    existsSync = fs.existsSync,
+    readdirSync = fs.readdirSync,
+    platform = process.platform,
+  } = {},
+) {
+  const home = typeof androidHome === 'string' ? androidHome.trim() : '';
+  if (!home) return null;
+  const buildToolsDir = path.join(home, 'build-tools');
+  if (!existsSync(buildToolsDir)) return null;
+  let versions = [];
+  try {
+    versions = readdirSync(buildToolsDir).sort((a, b) =>
+      b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }),
+    );
+  // gate-degrade: SDK build-tools 目录不可读时降级回退 keytool
+  } catch {
+    return null;
+  }
+  const names = platform === 'win32' ? ['apksigner.bat', 'apksigner'] : ['apksigner'];
+  for (const ver of versions) {
+    for (const name of names) {
+      const candidate = path.join(buildToolsDir, ver, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}

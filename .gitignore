@@ -23,6 +23,11 @@ build/
 credentials.json
 *.key
 *.pem
+*.keystore
+*.jks
+*.pfx
+*.p12
+packages/mobile/android/keystore.properties
 
 # Test & Logs
 coverage/

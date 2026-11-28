@@ -100,6 +100,17 @@ test('save：当前 Bot 的 make_default 跟随用户选择，扇出一律 false
   assert.equal(saves[1][2].discover_models, true);
   assert.equal(saves[1][2].api_mode, '');
   assert.equal(saves[1][2].base_url, 'https://llm.internal/v1');
+
+  const multiDefault = makeDeps();
+  const multiOut = await multiDefault.controller.save('default', draft, {
+    fanOutTo: ['aura'],
+    makeDefault: true,
+    fanOutMakeDefault: true,
+  });
+  assert.equal(multiOut.overall, 'success');
+  const multiSaves = multiDefault.calls.filter((call) => call[0] === 'saveEndpoint');
+  assert.equal(multiSaves[0][2].make_default, true);
+  assert.equal(multiSaves[1][2].make_default, true, '显式开启 fanOutMakeDefault 时扇出目标也应设为默认');
 });
 
 test('save：makeDefault 为 false 时 payload 的 make_default 为 false，且不误刷新主模型目录', async () => {

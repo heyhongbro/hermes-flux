@@ -77,26 +77,44 @@ export function writeGatewayDraft(deps: SettingsStorageHelpersDeps, state: AppSt
   }
 }
 
-/** 从设置详情、花名册与大小写头像缓存三级来源解析指定 Bot 头像。 */
+/** 从设置详情、花名册与大小写头像缓存三级来源解析指定 Bot 头像（按 gatewayId 隔离防同名串台）。 */
 export function resolveProfileAvatarFromState(
   state: AppState,
   profileAvatarCache: Map<string, string>,
   botId: string,
+  gatewayId?: string,
 ): string | undefined {
   if (!botId) return undefined;
+  const effectiveGw = gatewayId || ((state.gatewayCount ?? 1) >= 2 ? state.activeGatewayId : undefined);
   const settingsRow =
     state.settingsProfiles.status === 'ready'
       ? state.settingsProfiles.data.find((item) => item.name === botId)
       : undefined;
   if (settingsRow?.avatar) return settingsRow.avatar;
-  const profileRow = state.profiles.find((item) => item.name === botId);
+  const profileRow = state.profiles.find(
+    (item) => (!effectiveGw || !item.gatewayId || item.gatewayId === effectiveGw) && item.name === botId,
+  );
   if (profileRow?.avatar) return profileRow.avatar;
-  const cachedById = profileAvatarCache.get(botId.toLowerCase());
-  if (cachedById) return cachedById;
+  const lowerId = botId.toLowerCase();
+  if (effectiveGw) {
+    const scopedById = profileAvatarCache.get(`${effectiveGw}:${lowerId}`);
+    if (scopedById) return scopedById;
+  }
+  if (!effectiveGw && (state.gatewayCount ?? 1) < 2) {
+    const cachedById = profileAvatarCache.get(lowerId);
+    if (cachedById) return cachedById;
+  }
   const displayName = settingsRow?.displayName || profileRow?.displayName;
   if (displayName) {
-    const cachedByName = profileAvatarCache.get(displayName.toLowerCase());
-    if (cachedByName) return cachedByName;
+    const lowerName = displayName.toLowerCase();
+    if (effectiveGw) {
+      const scopedByName = profileAvatarCache.get(`${effectiveGw}:${lowerName}`);
+      if (scopedByName) return scopedByName;
+    }
+    if (!effectiveGw && (state.gatewayCount ?? 1) < 2) {
+      const cachedByName = profileAvatarCache.get(lowerName);
+      if (cachedByName) return cachedByName;
+    }
   }
   return undefined;
 }

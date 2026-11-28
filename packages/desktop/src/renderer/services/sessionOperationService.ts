@@ -885,6 +885,25 @@ export class SessionOperationService {
     this.deps.activityTransitionTracker.clear('session', scopedSessionKey);
     state.modelMenuOpen = false;
 
+    const targetBotName = options?.botName || targetSession?.botName;
+    if (targetBotName) {
+      state.profileName = targetBotName;
+    } else if (!options?.preserveFocus) {
+      // 切回无 Bot 归属的普通会话时，离开 Bot 焦点、跨网关或当前 profile 在目标网关无效，均重置为 default，避免带入他网关 Bot Profile 触发 404
+      const targetProfiles =
+        targetGw && state.gatewayCount > 1
+          ? state.profiles.filter((p) => !p.gatewayId || p.gatewayId === targetGw)
+          : state.profiles;
+      const validOnTarget =
+        state.profileName === 'default' ||
+        targetProfiles.some(
+          (p) => normalizeOrgProfileName(p.name) === normalizeOrgProfileName(state.profileName),
+        );
+      if (switchingGateway || state.activeFocus?.type === 'bot' || !validOnTarget) {
+        state.profileName = 'default';
+      }
+    }
+
     // 严格更新互斥单焦点：仅当未要求保持焦点时，更新为普通会话焦点
     if (!options?.preserveFocus) {
       state.activeFocus = targetGw
@@ -897,11 +916,6 @@ export class SessionOperationService {
     state.isStreaming =
       Boolean(existingLiveStream) ||
       (!switchingGateway && this.deps.getActiveStreamingStoredSessionId() === id);
-
-    const targetBotName = options?.botName || targetSession?.botName;
-    if (targetBotName && targetBotName !== state.profileName) {
-      state.profileName = targetBotName;
-    }
 
     // Force reset messages snapshot to re-bind reactive DOM for streaming
     this.deps.setLastMessagesSnapshot(null);
@@ -1308,9 +1322,12 @@ export class SessionOperationService {
       if (p.name) targetProfiles.add(p.name);
     }
 
+    const gw = state.activeGatewayId;
     const profileMap = new Map<string, AgentProfile>();
     for (const p of state.profiles) {
-      profileMap.set(p.name, p);
+      if (!gw || !p.gatewayId || p.gatewayId === gw) {
+        profileMap.set(p.name, p);
+      }
     }
 
     const results = await Promise.allSettled(
@@ -1324,7 +1341,7 @@ export class SessionOperationService {
           const botName = s.botName || profName;
           const matchingProfile = profileMap.get(botName) || prof;
           const timeWithDate = (this.deps.formatSessionTime ? this.deps.formatSessionTime(s.timestamp) : '') || s.time;
-          const resolvedAvatar = matchingProfile?.avatar || (this.deps.resolveAgentAvatar ? this.deps.resolveAgentAvatar(botName) || this.deps.resolveAgentAvatar(profName) : '') || '';
+          const resolvedAvatar = matchingProfile?.avatar || (this.deps.resolveAgentAvatar ? this.deps.resolveAgentAvatar(botName, gw) || this.deps.resolveAgentAvatar(profName, gw) : '') || '';
           return {
             ...s,
             time: timeWithDate,

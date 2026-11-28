@@ -241,8 +241,8 @@ export function decodeDataUrlUtf8(dataUrl: string): string | null {
 export function normalizeHttpBaseUrl(rawUrl: string): string {
   let base = (rawUrl || '').trim();
   if (!base) return '';
-  if (base.startsWith('ws://')) base = `http://${base.slice(5)}`;
-  else if (base.startsWith('wss://')) base = `https://${base.slice(6)}`;
+  if (/^ws:\/\//i.test(base)) base = `http://${base.slice(5)}`;
+  else if (/^wss:\/\//i.test(base)) base = `https://${base.slice(6)}`;
   else if (!/^https?:\/\//i.test(base)) {
     const isLoopback = /^(127\.0\.0\.1|localhost)(:\d+)?$/i.test(base);
     base = isLoopback ? `http://${base}` : `https://${base}`;
@@ -629,6 +629,74 @@ function buildGuardedResult(
   };
 }
 
+function isSameOriginAsGateway(targetUrl: string, gatewayUrl?: string): boolean {
+  if (!gatewayUrl || !gatewayUrl.trim()) return false;
+  try {
+    const targetOrigin = new URL(targetUrl).origin.toLowerCase();
+    const gwOrigin = new URL(normalizeHttpBaseUrl(gatewayUrl)).origin.toLowerCase();
+    return Boolean(targetOrigin && gwOrigin && targetOrigin === gwOrigin);
+  // gate-degrade: URL 解析失败时按非同源处理
+  } catch {
+    return false;
+  }
+}
+
+function normalizeImageDataUrl(candidateUrl: string, targetPath: string, isImage: boolean): string {
+  const trimmed = (candidateUrl || '').trim();
+  if (!trimmed) return '';
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith('blob:')) return trimmed;
+  const expectedPrefix = isImage ? 'data:image/' : 'data:video/';
+  if (lower.startsWith(expectedPrefix)) return trimmed;
+  if (isImage && lower.startsWith('data:application/octet-stream;')) {
+    const extMime = detectPreviewBinaryMimeFromRequestPath(targetPath);
+    if (extMime && extMime.startsWith('image/')) {
+      return `data:${extMime}${trimmed.slice('data:application/octet-stream'.length)}`;
+    }
+  }
+  return '';
+}
+
+function extractMediaCandidateUrl(
+  res: unknown,
+  targetPath: string,
+  isImage: boolean,
+  isVideo: boolean,
+): string {
+  const rec = res && typeof res === 'object' ? (res as Record<string, unknown>) : null;
+  let rawCandidate = '';
+  if (rec) {
+    if (typeof rec.dataUrl === 'string' && rec.dataUrl.trim()) {
+      rawCandidate = rec.dataUrl;
+    } else if (typeof rec.data_url === 'string' && rec.data_url.trim()) {
+      rawCandidate = rec.data_url;
+    } else if (typeof rec.url === 'string' && rec.url.trim()) {
+      rawCandidate = rec.url;
+    } else if (typeof rec.content === 'string' && rec.content.trim() && !isSpaFallbackHtml(rec.content, targetPath)) {
+      const trimmed = rec.content.trim();
+      if (/^(?:data:|blob:)/i.test(trimmed)) {
+        rawCandidate = trimmed;
+      } else {
+        const recMime =
+          (typeof rec.mimeType === 'string' && rec.mimeType.trim()) ||
+          (typeof rec.mime_type === 'string' && rec.mime_type.trim()) ||
+          detectPreviewBinaryMimeFromRequestPath(targetPath) ||
+          (isImage ? 'image/png' : isVideo ? 'video/mp4' : '');
+        const isBase64Payload =
+          rec.encoding === 'base64' ||
+          (typeof rec.mimeType === 'string' && /^(?:image|video)\//i.test(rec.mimeType)) ||
+          (typeof rec.mime_type === 'string' && /^(?:image|video)\//i.test(rec.mime_type));
+        if (isBase64Payload && recMime && !trimmed.startsWith('<')) {
+          rawCandidate = `data:${recMime};base64,${trimmed.replace(/\s+/g, '')}`;
+        }
+      }
+    }
+  } else if (typeof res === 'string' && !isSpaFallbackHtml(res, targetPath)) {
+    rawCandidate = res;
+  }
+  return normalizeImageDataUrl(rawCandidate, targetPath, isImage);
+}
+
 /**
  * 统一通用文件读取公共服务
  * 应用层调用本接口即可自动完成：二进制/体积守卫 -> 历史提取 -> 本地/图片视频Base64探测 -> HTTP代理 -> 网关REST降级
@@ -639,10 +707,27 @@ export async function resolveFileContent(
 ): Promise<ResolvedFileResult> {
   const cleanTarget = (target || '').trim();
   const ext = (cleanTarget.split(/[?#]/)[0].split('.').pop() || '').toLowerCase();
-  const isImage = isImageExtension(cleanTarget);
-  const isVideo = !isImage && isVideoExtension(cleanTarget);
+  const rawIsImage = isImageExtension(cleanTarget);
+  const rawIsVideo = !rawIsImage && isVideoExtension(cleanTarget);
+  const isHttp = /^https?:\/\//i.test(cleanTarget);
+  const isGatewayApiRelPath = /^\/api\/(?:files|fs|media)\//i.test(cleanTarget);
+  let queryPathHint = '';
+  let queryMediaKind: 'image' | 'video' | null = null;
+  if (!rawIsImage && !rawIsVideo && (isHttp || isGatewayApiRelPath)) {
+    try {
+      const u = new URL(cleanTarget, 'http://localhost');
+      queryPathHint = u.searchParams.get('path') || u.searchParams.get('file') || '';
+      if (queryPathHint) {
+        if (isImageExtension(queryPathHint)) queryMediaKind = 'image';
+        else if (isVideoExtension(queryPathHint)) queryMediaKind = 'video';
+      }
+    // gate-degrade: URL 查询参数探测失败时按原扩展名继续
+    } catch {}
+  }
+  const isImage = rawIsImage || queryMediaKind === 'image';
+  const isVideo = rawIsVideo || queryMediaKind === 'video';
+  const mimeHintTarget = queryPathHint || cleanTarget;
   const isHtml = ext === 'html' || ext === 'htm';
-  const isHttp = cleanTarget.startsWith('http://') || cleanTarget.startsWith('https://');
 
   // -1. 优先尝试零缓冲流式媒体通道（桌面 Electron hermes-media:// 原生 HTTP Range 透传，免全量拉取与 Base64 膨胀）
   if (isVideo && !isHttp && options.platformBridge?.resolveMediaStreamUrl) {
@@ -705,8 +790,74 @@ export async function resolveFileContent(
     }
   }
 
-  // 针对在线图片 / 视频 URL，直接以 URL 作为 preview 内容供 <img> / <video> 使用
+  // 针对网关相对 API 路径（如 /api/files/download?path=...）直接走同源带 Cookie 代理，避免被再次拼成 ?path=%2Fapi%2F...
+  if (isGatewayApiRelPath && (isImage || isVideo) && options.platformBridge?.httpProxy && options.gatewayUrl) {
+    try {
+      const res = await options.platformBridge.httpProxy({
+        baseUrl: options.gatewayUrl,
+        path: cleanTarget,
+        method: 'GET',
+      });
+      const dataUrl = extractMediaCandidateUrl(res, mimeHintTarget, isImage, isVideo);
+      if (dataUrl) {
+        return buildGuardedResult(dataUrl, {
+          filePath: cleanTarget,
+          isImage,
+          isVideo,
+          isHtml: false,
+          fromCache: false,
+          source: 'gateway_api',
+          byteSize: options.knownSize,
+        });
+      }
+    } catch (err) {
+      console.warn('[fileService] relative gateway media proxy failed:', cleanTarget, err);
+    }
+    return {
+      content: '',
+      isImage,
+      ...(isVideo ? { isVideo: true } : {}),
+      isHtml: false,
+      fromCache: false,
+      source: 'fallback',
+    };
+  }
+
+  // 针对在线图片 / 视频 URL：第三方外链直接返回；同源网关资源优先走带鉴权 Cookie 的代理拉取
   if (isHttp && (isImage || isVideo)) {
+    if (options.platformBridge?.httpProxy && options.gatewayUrl && isSameOriginAsGateway(cleanTarget, options.gatewayUrl)) {
+      try {
+        const parsed = new URL(cleanTarget);
+        const relPath = `${parsed.pathname}${parsed.search}`;
+        const res = await options.platformBridge.httpProxy({
+          baseUrl: options.gatewayUrl,
+          path: relPath || '/',
+          method: 'GET',
+        });
+        const dataUrl = extractMediaCandidateUrl(res, mimeHintTarget, isImage, isVideo);
+        if (dataUrl) {
+          return buildGuardedResult(dataUrl, {
+            filePath: cleanTarget,
+            isImage,
+            isVideo,
+            isHtml: false,
+            fromCache: false,
+            source: 'gateway_api',
+            byteSize: options.knownSize,
+          });
+        }
+      } catch (err) {
+        console.warn('[fileService] same-origin gateway media proxy failed:', cleanTarget, err);
+      }
+      return {
+        content: '',
+        isImage,
+        ...(isVideo ? { isVideo: true } : {}),
+        isHtml: false,
+        fromCache: false,
+        source: 'fallback',
+      };
+    }
     return {
       content: cleanTarget,
       isImage,
@@ -767,11 +918,11 @@ export async function resolveFileContent(
     const encTarget = encodeURIComponent(cleanTarget);
 
     if (isImage || isVideo) {
-      const expectedDataPrefix = isImage ? 'data:image/' : 'data:video/';
       const mediaEndpoints = isImage
         ? [
             `/api/fs/read-data-url?${fsQuery}`,
             `/api/files/read?path=${encTarget}`,
+            `/api/fs/download?${fsQuery}`,
             `/api/files/download?path=${encTarget}`,
           ]
         : [
@@ -787,17 +938,17 @@ export async function resolveFileContent(
             method: 'GET',
           });
           const rec = res && typeof res === 'object' ? (res as Record<string, unknown>) : null;
-          const candidateUrl =
-            rec && typeof rec.dataUrl === 'string'
-              ? rec.dataUrl
-              : rec && typeof rec.data_url === 'string'
-                ? rec.data_url
-                : typeof res === 'string'
-                  ? res
-                  : '';
-          const dataUrl = candidateUrl.startsWith(expectedDataPrefix) || candidateUrl.startsWith('blob:')
-            ? candidateUrl
-            : '';
+          const rawSvgText =
+            typeof res === 'string'
+              ? res
+              : rec && typeof rec.content === 'string'
+                ? rec.content
+                : '';
+          const dataUrl =
+            extractMediaCandidateUrl(res, mimeHintTarget, isImage, isVideo) ||
+            (isImage && ext === 'svg' && rawSvgText.includes('<svg') && !isSpaFallbackHtml(rawSvgText, cleanTarget)
+              ? rawSvgText
+              : '');
           const rawSize = rec ? (rec.size ?? rec.byteSize) : undefined;
           const byteSize =
             typeof rawSize === 'number' && Number.isFinite(rawSize) ? rawSize : options.knownSize;

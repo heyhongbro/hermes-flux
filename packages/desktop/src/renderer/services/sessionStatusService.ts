@@ -114,6 +114,7 @@ function toScanMessages(messages: readonly MessageViewModel[]): DelegationScanMe
   return messages.map((m) => ({
     id: m.id,
     role: m.role,
+    ...(typeof m.content === 'string' && m.content ? { content: m.content } : {}),
     timestamp: m.rawTimestamp,
     toolCalls: m.toolCalls?.map((tc) => ({
       id: tc.id,
@@ -291,6 +292,7 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
       profile,
       bridge: createRpcBridge(client),
       fetchChildMessages: fetchChildMessagesFallback,
+      fetchTranscriptLogText: (logPath, prof) => client.readFileText(logPath, prof),
     });
     deps.syncRightPod();
   };
@@ -825,10 +827,12 @@ export function createSessionStatusService(deps: SessionStatusServiceDeps): Sess
     }
 
     const targetProfile = resolveActiveProfile(state, state.activeSessionId) || state.profileName || 'default';
+    const targetGw = state.activeFocus?.gatewayId || state.activeGatewayId;
+    const gwProfiles = targetGw ? profiles.filter((p) => !p.gatewayId || p.gatewayId === targetGw) : profiles;
     const lower = targetProfile.toLowerCase();
     const matchedProfile =
-      profiles.find((p) => p.name === targetProfile) ??
-      profiles.find((p) => p.name.toLowerCase() === lower);
+      gwProfiles.find((p) => p.name === targetProfile) ??
+      gwProfiles.find((p) => p.name.toLowerCase() === lower);
     return {
       kind: 'agent',
       name: matchedProfile?.displayName || targetProfile || scope?.projectName || 'Hermes',

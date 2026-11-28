@@ -217,7 +217,8 @@ test('RightPodRoot & SessionStatusPanel：v3 极简卡片、Agent 头像名、�
   assert.match(normalHtml, /data-testid="status-cwd-btn"/);
   assert.match(normalHtml, /feat\/status-bar/);
   assert.match(normalHtml, /data-testid="status-subagents-toggle"/);
-  assert.match(normalHtml, /1 进行中 · 共 7/);
+  assert.equal(normalHtml.includes('status-running-count'), false, '子 Agent 标题栏严禁显示进行中/总数统计');
+  assert.equal(/1 进行中|共 7/.test(normalHtml), false);
   assert.equal((normalHtml.match(/class="sp-agent-row /g) ?? []).length, 3, '默认仅渲染 3 行（1 进行中 + 2 已完成）');
   assert.match(normalHtml, /data-testid="status-toggle-more-terminal"/);
   assert.match(normalHtml, />显示更多</);
@@ -225,8 +226,9 @@ test('RightPodRoot & SessionStatusPanel：v3 极简卡片、Agent 头像名、�
   assert.match(normalHtml, />已完成</);
   assert.equal(normalHtml.includes('2m05s'), false, '主列表行不得显示秒数耗时');
   assert.equal(normalHtml.includes('125.4s'), false);
-  assert.match(normalHtml, /data-testid="status-usage-strip"/);
+  assert.equal(normalHtml.includes('status-usage-strip'), false, '上下文区只保留紧凑单行条');
   assert.match(normalHtml, /data-testid="status-context-trigger"/);
+  assert.match(normalHtml, /data-testid="status-context-readout"[^>]*>491k \/ 1m</);
   assert.match(normalHtml, /data-testid="status-compression-tick"[^>]*style="left:50%"/);
   assert.equal(normalHtml.includes('status-compress-btn'), false, '严禁存在任何一键压缩上下文按钮');
   assert.equal(normalHtml.includes('立即压缩'), false);
@@ -526,6 +528,11 @@ test('InspectionPod innerOnly / back-from-files 与 status-pod.css / i18n 静态
   assert.ok(statusCss.includes('min-height: 44px;'), '必须覆盖移动端 44px 触控热区');
   assert.ok(/\.sp-env-action[\s\S]*?min-height:\s*44px/m.test(statusCss), 'status-pod.css 须在触控媒体查询为 .sp-env-action 提供 44px 热区');
   assert.equal(/--context-usage-/.test(statusCss), false, '禁止引用未入 skins.ts 的幽灵 --context-usage-* 变量');
+  assert.equal(
+    /\.sp-agent-row\[data-tone="running"\][^{]*\{[^}]*background:\s*var\(--primary-subtle\)/.test(statusCss),
+    false,
+    '运行中子 Agent 行严禁高亮底色',
+  );
   assert.ok(statusCss.includes('height: auto;'), 'status 模式卡片必须按内容自适应高度，不得强行撑满全屏');
 
   // status-open-constellation-btn: 实际点击校验透传精确 subject.profileName 与缺省回落 'default'，群聊主体隐藏

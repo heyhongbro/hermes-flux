@@ -128,7 +128,7 @@ export interface LeftRailSnapshotHost {
     groupWaitingReasons: Map<string, WaitingPromptReason>;
   };
   readonly getBotForeverSessionMap?: () => ReadonlyMap<string, string>;
-  readonly resolveAgentAvatar: (name?: string) => string;
+  readonly resolveAgentAvatar: (name?: string, gatewayId?: string) => string;
   readonly resolveTransition: (
     scope: 'session' | 'bot' | 'group',
     id: string,
@@ -363,8 +363,8 @@ export class LeftRailSnapshotManager {
     const next = rawProfiles.map((p) => {
       const avatar =
         p.avatar ||
-        this.host.resolveAgentAvatar(p.name) ||
-        (p.displayName ? this.host.resolveAgentAvatar(p.displayName) : '') ||
+        this.host.resolveAgentAvatar(p.name, p.gatewayId) ||
+        (p.displayName ? this.host.resolveAgentAvatar(p.displayName, p.gatewayId) : '') ||
         '';
       const scopedProfileKey = resolveScopedBotRuntimeKey(p.name, p.gatewayId, gatewayCount);
       const waitingReason = botWaitingReasons.get(scopedProfileKey) ?? botWaitingReasons.get(p.name);

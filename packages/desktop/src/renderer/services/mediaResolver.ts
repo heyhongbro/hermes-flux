@@ -26,6 +26,7 @@ import {
   encodeUtf8ToBase64,
   extractSessionDeliverables,
   extractUnverifiedCandidatePaths,
+  joinWorkspacePath,
   normalizeDeliverableKey,
   resolveFileContent,
   resolvePreviewAsset,
@@ -57,6 +58,84 @@ const MAX_CACHE_ENTRIES = 64;
 const DIRECT_RENDERABLE_RE = /^(?:data:image\/|data:video\/|data:audio\/|blob:|hermes-(?:media|preview):\/\/)/i;
 const SAFE_RESULT_RE = /^(?:data:image\/|data:video\/|data:audio\/|https?:\/\/|blob:|hermes-(?:media|preview):\/\/)/i;
 
+function isRelativeMediaPath(rawPath: string): boolean {
+  if (!rawPath) return false;
+  if (/^(?:https?:\/\/|data:|blob:|hermes-(?:media|preview):\/\/)/i.test(rawPath)) return false;
+  if (rawPath.startsWith('/') || rawPath.startsWith('~/') || rawPath.startsWith('\\\\') || /^[A-Za-z]:[\\/]/.test(rawPath)) {
+    return false;
+  }
+  return true;
+}
+
+function normalizeMediaTarget(raw: string): string {
+  const trimmed = (raw || '').trim();
+  if (!/^file:\/\//i.test(trimmed)) return trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    const decoded = decodeURIComponent(parsed.pathname || '');
+    return /^\/[A-Za-z]:\//.test(decoded) ? decoded.slice(1) : decoded;
+  // gate-degrade: 非法 file:// URL 保持原样交由下游判定
+  } catch {
+    return trimmed;
+  }
+}
+
+function resolveGatewayHttpOrigin(rawGatewayUrl: string): string {
+  const trimmed = (rawGatewayUrl || '').trim();
+  if (!trimmed) return '';
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  const httpUrl = withScheme.replace(/^ws(s?):\/\//i, 'http$1://');
+  try {
+    return new URL(httpUrl).origin.toLowerCase();
+  // gate-degrade: URL 解析失败时回退为去尾斜杠字符串
+  } catch {
+    return httpUrl.replace(/\/+$/, '').toLowerCase();
+  }
+}
+
+function resolveHttpUrlOrigin(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).origin.toLowerCase();
+  // gate-degrade: URL 解析失败返回空串交由下游直连
+  } catch {
+    return '';
+  }
+}
+
+function resolveScopedMediaProfile(state: AppState, targetGatewayId?: string): string | undefined {
+  if (state.activeFocus?.type === 'bot' && state.activeFocus.botName) {
+    return state.activeFocus.botName;
+  }
+  if (state.activeFocus?.type === 'group') {
+    return undefined;
+  }
+  const activeSession = Array.isArray(state.sessions)
+    ? state.sessions.find(
+        (s) => s.id === state.activeSessionId && (!targetGatewayId || !s.gatewayId || s.gatewayId === targetGatewayId),
+      )
+    : undefined;
+  if (activeSession?.botName) {
+    return activeSession.botName;
+  }
+  const rawProfile = (state.profileName || '').trim();
+  if (!rawProfile || rawProfile === 'default') {
+    return rawProfile || undefined;
+  }
+  if (
+    Array.isArray(state.profiles) &&
+    state.profiles.length > 0 &&
+    targetGatewayId &&
+    (state.gatewayCount ?? 1) > 1
+  ) {
+    const scopedProfiles = state.profiles.filter((p) => !p.gatewayId || p.gatewayId === targetGatewayId);
+    const validOnTarget = scopedProfiles.some((p) => p.name.trim().toLowerCase() === rawProfile.toLowerCase());
+    if (!validOnTarget) {
+      return undefined;
+    }
+  }
+  return rawProfile;
+}
+
 /**
  * 构建带并发去重与有界 LRU 缓存的跨端媒体解析器。
  */
@@ -65,7 +144,7 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
   const inflight = new Map<string, Promise<string | null>>();
 
   async function resolveMediaUrl(pathOrUrl: string): Promise<string | null> {
-    const clean = (pathOrUrl || '').trim();
+    const clean = normalizeMediaTarget(pathOrUrl);
     if (!clean) return null;
     if (DIRECT_RENDERABLE_RE.test(clean)) return clean;
 
@@ -76,17 +155,18 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
       state.gatewayUrl ||
       ''
     ).trim();
-    const gwOrigin = targetGatewayUrl
-      .replace(/^ws/i, 'http')
-      .replace(/\/+$/, '')
-      .toLowerCase();
-    const isHttp = clean.startsWith('http://') || clean.startsWith('https://');
-    if (isHttp && (!gwOrigin || !clean.toLowerCase().startsWith(gwOrigin))) {
-      return clean;
+    const gwOrigin = resolveGatewayHttpOrigin(targetGatewayUrl);
+    const isHttp = /^https?:\/\//i.test(clean);
+    if (isHttp) {
+      const cleanOrigin = resolveHttpUrlOrigin(clean);
+      if (!gwOrigin || !cleanOrigin || cleanOrigin !== gwOrigin) {
+        return clean;
+      }
     }
 
+    const effectiveProfile = resolveScopedMediaProfile(state, targetGatewayId);
     const scopeAnchor = targetGatewayId || targetGatewayUrl || '';
-    const cacheKey = `${scopeAnchor}|${state.profileName}|${state.activeSessionId}|${clean}`;
+    const cacheKey = `${scopeAnchor}|${effectiveProfile || ''}|${state.activeSessionId}|${clean}`;
     const hit = cache.get(cacheKey);
     if (hit) {
       cache.delete(cacheKey);
@@ -101,34 +181,45 @@ export function createMediaResolver(deps: MediaResolverDeps): MediaResolver {
       try {
         const cleanNoQuery = clean.split(/[?#]/)[0].toLowerCase();
         const detectedMime = detectPreviewAssetMime(cleanNoQuery);
+        const workspaceCwd = resolveActiveWorkspaceCwd(state) || undefined;
         let out = '';
         if (detectedMime && detectedMime.startsWith('audio/')) {
           const audioRes = await resolvePreviewAsset(clean, {
             platformBridge: deps.getDesktopApi() ?? null,
             gatewayUrl: targetGatewayUrl,
-            profile: state.profileName || undefined,
+            profile: effectiveProfile,
             sessionId: state.activeSessionId || undefined,
-            workspaceRoot: resolveActiveWorkspaceCwd(state) || undefined,
+            workspaceRoot: workspaceCwd,
             messages: state.messages,
           });
           out = (audioRes.dataUrl || '').trim();
         } else {
-          const resolved = await resolveFileContent(clean, {
-            platformBridge: deps.getDesktopApi() ?? null,
-            gatewayClient: deps.getClientForGateway
-              ? deps.getClientForGateway(targetGatewayId)
-              : deps.getGatewayClient(),
-            gatewayUrl: targetGatewayUrl,
-            profile: state.profileName || undefined,
-            sessionId: state.activeSessionId || undefined,
-            messages: state.messages,
-          });
-          if (resolved.isBinary || resolved.isTooLarge || resolved.isDirectory) {
-            return null;
-          }
-          out = resolved.content.trim();
-          if (cleanNoQuery.endsWith('.svg') && out && !out.startsWith('data:') && out.includes('<svg')) {
-            out = `data:image/svg+xml;base64,${encodeUtf8ToBase64(out)}`;
+          const resolveNonAudio = async (targetPath: string): Promise<string> => {
+            const resolved = await resolveFileContent(targetPath, {
+              platformBridge: deps.getDesktopApi() ?? null,
+              gatewayClient: deps.getClientForGateway
+                ? deps.getClientForGateway(targetGatewayId)
+                : deps.getGatewayClient(),
+              gatewayUrl: targetGatewayUrl,
+              profile: effectiveProfile,
+              sessionId: state.activeSessionId || undefined,
+              messages: state.messages,
+            });
+            if (resolved.isBinary || resolved.isTooLarge || resolved.isDirectory || resolved.source === 'fallback') {
+              return '';
+            }
+            let content = resolved.content.trim();
+            if (cleanNoQuery.endsWith('.svg') && content && !content.startsWith('data:') && content.includes('<svg')) {
+              content = `data:image/svg+xml;base64,${encodeUtf8ToBase64(content)}`;
+            }
+            return content;
+          };
+          out = await resolveNonAudio(clean);
+          if (!SAFE_RESULT_RE.test(out) && workspaceCwd && isRelativeMediaPath(clean)) {
+            const joined = joinWorkspacePath(workspaceCwd, clean);
+            if (joined && joined !== clean) {
+              out = await resolveNonAudio(joined);
+            }
           }
         }
         if (!SAFE_RESULT_RE.test(out)) return null;

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   assertAndroidSigningReady,
   evaluateAndroidApkCertCheck,
+  findAndroidApksignerPath,
   isAndroidSigningRequired,
   parseAndroidBuildArgs,
   resolveAndroidSigningStatus,
@@ -101,21 +102,32 @@ if (!signingRequired && fs.existsSync(generatedDebugApk)) {
   fs.copyFileSync(generatedDebugApk, finalDebugApk);
 }
 
-// 5. Inspect APK signing certificate via keytool (and fail closed if debug cert slipped into strict release)
-const keytoolBin = env.JAVA_HOME
-  ? path.join(env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'keytool.exe' : 'keytool')
-  : 'keytool';
-const resolvedKeytool = fs.existsSync(keytoolBin) ? keytoolBin : 'keytool';
-const keytoolRes = spawnSync(resolvedKeytool, ['-printcert', '-jarfile', finalReleaseApk], {
-  encoding: 'utf8',
-  env,
-});
+// 5. Inspect APK signing certificate via apksigner (supports v2/v3 APK Signing Scheme) with keytool fallback
+const apksignerBin = findAndroidApksignerPath(env.ANDROID_HOME);
+let inspectRes = apksignerBin
+  ? spawnSync(apksignerBin, ['verify', '--print-certs', finalReleaseApk], {
+      encoding: 'utf8',
+      env,
+      shell: process.platform === 'win32',
+    })
+  : null;
+
+if (!inspectRes || inspectRes.error || inspectRes.status !== 0) {
+  const keytoolBin = env.JAVA_HOME
+    ? path.join(env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'keytool.exe' : 'keytool')
+    : 'keytool';
+  const resolvedKeytool = fs.existsSync(keytoolBin) ? keytoolBin : 'keytool';
+  inspectRes = spawnSync(resolvedKeytool, ['-printcert', '-jarfile', finalReleaseApk], {
+    encoding: 'utf8',
+    env,
+  });
+}
 
 const certCheck = evaluateAndroidApkCertCheck({
-  keytoolExitCode: keytoolRes.status,
-  keytoolError: keytoolRes.error,
-  stdout: keytoolRes.stdout,
-  stderr: keytoolRes.stderr,
+  keytoolExitCode: inspectRes.status,
+  keytoolError: inspectRes.error,
+  stdout: inspectRes.stdout,
+  stderr: inspectRes.stderr,
   signingRequired,
 });
 

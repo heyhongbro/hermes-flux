@@ -41,6 +41,8 @@ export interface TurnGroupProps {
   mode: ConversationMode;
   /** 语言标识：memo 后也必须让已挂载消息随语言切换重新渲染。 */
   locale?: string;
+  /** 网关链路状态：断线重连恢复时自动驱动交付物缩略图重试 */
+  connection?: 'connected' | 'connecting' | 'disconnected';
   isLastTurn: boolean;
   isStreaming: boolean;
   /** 会话内 Agent 真实读写过的文件（决定正文里的文件引用是否可点击） */
@@ -75,7 +77,7 @@ const areEqual = (prev: TurnGroupProps, next: TurnGroupProps): boolean => {
   ) {
     return false;
   }
-  if (prev.locale !== next.locale) return false;
+  if (prev.locale !== next.locale || prev.connection !== next.connection) return false;
   // knownFiles / verifiedDeliverablePaths / subagentWrittenPaths 在列表层按引用缓存
   if (
     prev.knownFiles !== next.knownFiles ||
@@ -179,6 +181,7 @@ export const TurnGroup = React.memo(function TurnGroup({
   messages,
   mode,
   locale,
+  connection,
   isLastTurn,
   isStreaming,
   knownFiles,
@@ -271,6 +274,7 @@ export const TurnGroup = React.memo(function TurnGroup({
         deliverables={unmentionedDeliverables}
         allTurnImages={turnImages}
         isStreaming={isStreaming}
+        connection={connection}
         resolveMediaUrl={resolveMediaUrl}
         onOpenFile={onOpenFile}
         onOpenMediaLightbox={onOpenMediaLightbox}

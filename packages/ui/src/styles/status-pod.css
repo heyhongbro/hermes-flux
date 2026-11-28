@@ -387,11 +387,6 @@
   background: var(--card-hover);
 }
 
-.sp-agent-row[data-tone="running"],
-.sp-agent-row[data-tone="queued"] {
-  background: var(--primary-subtle);
-}
-
 .sp-agent-row[data-tone="running"]:hover,
 .sp-agent-row[data-tone="queued"]:hover {
   background: var(--card-hover);
@@ -603,14 +598,15 @@
 .sp-ctx-trigger {
   width: 100%;
   min-height: 28px;
-  padding: 5px;
+  padding: 4px 8px;
   border: none;
   border-radius: var(--radius-card);
   background: transparent;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 5px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
   text-align: left;
   transition: background-color 120ms ease;
 }
@@ -619,39 +615,26 @@
   background: var(--card-hover);
 }
 
-.sp-ctx-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-}
-
-.sp-ctx-label-wrap {
-  display: flex;
-  align-items: center;
-  gap: 5px;
+.sp-ctx-label {
+  flex-shrink: 0;
   font-size: var(--fs-aux);
   line-height: 16px;
   font-weight: 500;
-  color: var(--foreground);
-}
-
-.sp-ctx-pct {
-  font-family: var(--font-mono);
-  font-size: var(--fs-caption);
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
+  color: var(--secondary-foreground);
 }
 
 .sp-ctx-nums {
+  flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: var(--fs-caption);
-  color: var(--secondary-foreground);
+  color: var(--foreground);
   font-variant-numeric: tabular-nums;
 }
 
 .sp-bar-wrap {
   position: relative;
+  flex: 1 1 0%;
+  min-width: 0;
   height: 10px;
   display: flex;
   align-items: center;

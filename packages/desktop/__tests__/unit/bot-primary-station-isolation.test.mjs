@@ -293,6 +293,73 @@ test('Bot Primary Station & Session Isolation Invariants', async (t) => {
       sessions: [{ id: 'sess-1', title: '普通调研会话' }],
     });
     assert.equal(noAvatar, undefined, '非 Bot/群聊专属会话安全降级为 undefined');
+
+    // 7. 多网关同名 default 隔离：gw-2 没有头像时不得复用 gw-1 的头像
+    const multiGwNoAvatar = resolveTitlebarAvatar({
+      activeFocus: { type: 'bot', botName: 'default', gatewayId: 'gw-2' },
+      profiles: [
+        { name: 'default', displayName: 'GW1 Default', gatewayId: 'gw-1', avatar: 'data:image/png;base64,gw1' },
+        { name: 'default', displayName: 'GW2 Default', gatewayId: 'gw-2' },
+      ],
+    });
+    assert.deepEqual(multiGwNoAvatar, { kind: 'bot', avatar: undefined, name: 'GW2 Default' });
+
+    // 多网关 group/session 与 displayName 匹配及缺失回退分支覆盖
+    const groupFallback = resolveTitlebarAvatar({
+      activeFocus: { type: 'group', roomId: 'room-missing', gatewayId: 'gw-2' },
+      profiles: [{ name: 'a', displayName: 'A', gatewayId: 'gw-2' }],
+      groupRooms: [{ roomId: 'room-1', name: 'R1' }],
+    });
+    assert.equal(groupFallback, undefined);
+    const groupCrossGwFallback = resolveTitlebarAvatar({
+      activeFocus: { type: 'group', roomId: 'room-1', gatewayId: 'gw-2' },
+      profiles: [
+        { name: 'a', displayName: 'A', gatewayId: 'gw-1', avatar: 'data:image/png;base64,1' },
+        { name: 'b', displayName: 'B' },
+      ],
+      groupRooms: [{ roomId: 'room-1', name: 'R1', gatewayId: 'gw-1' }],
+    });
+    assert.equal(groupCrossGwFallback?.kind, 'group');
+    assert.equal(groupCrossGwFallback?.profiles.length, 2);
+    const botSessionAvatar = resolveTitlebarAvatar({
+      activeSessionId: 's-bot',
+      profileName: 'aura',
+      gatewayId: 'gw-2',
+      profiles: [{ name: 'aura', displayName: 'AuraDisplay', gatewayId: 'gw-2', avatar: 'data:image/png;base64,aura' }],
+      sessions: [{ id: 's-bot', title: 'Bot Chat', botName: 'AuraDisplay', gatewayId: 'gw-2' }],
+    });
+    assert.deepEqual(botSessionAvatar, { kind: 'bot', avatar: 'data:image/png;base64,aura', name: 'AuraDisplay' });
+    const botSessionGwFallback = resolveTitlebarAvatar({
+      activeSessionId: 's-bot-cross',
+      gatewayId: 'gw-2',
+      profiles: [{ name: 'aura', displayName: 'AuraDisplay', gatewayId: 'gw-1', avatar: 'data:image/png;base64,aura1' }],
+      sessions: [{ id: 's-bot-cross', title: 'Bot Chat', botName: 'aura', gatewayId: 'gw-1' }],
+    });
+    assert.deepEqual(botSessionGwFallback, { kind: 'bot', avatar: 'data:image/png;base64,aura1', name: 'AuraDisplay' });
+    const titleGroupFallback = resolveTitlebarTitle({
+      activeFocus: { type: 'group', roomId: 'room-1', gatewayId: 'gw-2' },
+      profiles: [{ name: 'default', displayName: 'GW2 Default', gatewayId: 'gw-2' }],
+      groupRooms: [{ roomId: 'room-1', name: 'Group One', gatewayId: 'gw-1' }],
+      sessions: [],
+      isConnected: true,
+    });
+    assert.equal(titleGroupFallback, 'Group One');
+    const titleBotByDisplayName = resolveTitlebarTitle({
+      activeFocus: { type: 'bot', botName: 'GW2 Default', gatewayId: 'gw-2' },
+      profiles: [{ name: 'default', displayName: 'GW2 Default', gatewayId: 'gw-2' }],
+      sessions: [],
+      isConnected: true,
+    });
+    assert.equal(titleBotByDisplayName, 'GW2 Default');
+    const titleSessionBotChat = resolveTitlebarTitle({
+      activeFocus: { type: 'session', sessionId: 's-gw2', gatewayId: 'gw-2' },
+      activeSessionId: 's-gw2',
+      profileName: 'aura',
+      profiles: [],
+      sessions: [{ id: 's-gw2', title: 'Bot Chat', gatewayId: 'gw-1' }],
+      isConnected: true,
+    });
+    assert.equal(titleSessionBotChat, 'aura');
   });
 
   await t.test('5. 真实渲染消费端闭环验证：renderLeftRail 消费 syncBotProfiles 产物', () => {

@@ -632,9 +632,9 @@ test('GatewaySettingsPanel single-gateway and multi-gateway CRUD, test, connect,
     }),
   );
 
-  // List actions: enable toggle, disconnect, reconnect, remove confirm cancel/fail/succeed
+  // List actions: enable toggle, reconnect, remove confirm cancel/fail/succeed (no redundant disconnect button)
+  assert.equal(findAll(view.tree, (n) => n.props?.['data-testid'] === 'gateway-disconnect-btn-gw-a').length, 0);
   view.findComponents((c) => c.props?.['data-testid'] === 'gateway-enable-switch-gw-a' && typeof c.props?.onCheckedChange === 'function')[0].props.onCheckedChange(false);
-  findAll(view.tree, (n) => n.props?.['data-testid'] === 'gateway-disconnect-btn-gw-a')[0].props.onClick();
   findAll(view.tree, (n) => n.props?.['data-testid'] === 'gateway-connect-btn-gw-b')[0].props.onClick();
   findAll(view.tree, (n) => n.props?.['data-testid'] === 'gateway-remove-btn-gw-b')[0].props.onClick();
   view.rerender();

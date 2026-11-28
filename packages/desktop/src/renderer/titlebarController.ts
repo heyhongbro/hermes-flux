@@ -119,6 +119,7 @@ export function createTitlebarController(deps: TitlebarControllerDeps): Titlebar
         profileName: state.profileName,
         activeSessionId: state.activeSessionId,
         sessions: state.sessions,
+        gatewayId: state.activeFocus?.gatewayId || state.activeGatewayId,
       }),
     });
   }

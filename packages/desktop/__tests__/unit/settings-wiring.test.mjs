@@ -17,6 +17,7 @@ import path from 'node:path';
 const RENDERER = path.resolve(import.meta.dirname, '../../src/renderer/index.ts');
 const RENDER_COORD = path.resolve(import.meta.dirname, '../../src/renderer/renderCoordinator.ts');
 const SETTINGS_DATA = path.resolve(import.meta.dirname, '../../src/renderer/services/settingsDataService.ts');
+const SETTINGS_PROVIDER = path.resolve(import.meta.dirname, '../../src/renderer/services/settingsProviderActions.ts');
 const SETTINGS_EXT = path.resolve(import.meta.dirname, '../../src/renderer/services/settingsExtensionsActions.ts');
 const SETTINGS_GW = path.resolve(import.meta.dirname, '../../src/renderer/services/settingsGatewayActions.ts');
 const LEFTRAIL_DOMAIN = path.resolve(import.meta.dirname, '../../src/renderer/leftrail/leftRailSnapshotManager.ts');
@@ -28,6 +29,7 @@ const source = [
   fs.readFileSync(RENDERER, 'utf8'),
   fs.existsSync(RENDER_COORD) ? fs.readFileSync(RENDER_COORD, 'utf8') : '',
   fs.existsSync(SETTINGS_DATA) ? fs.readFileSync(SETTINGS_DATA, 'utf8') : '',
+  fs.existsSync(SETTINGS_PROVIDER) ? fs.readFileSync(SETTINGS_PROVIDER, 'utf8') : '',
   fs.existsSync(SETTINGS_EXT) ? fs.readFileSync(SETTINGS_EXT, 'utf8') : '',
   fs.existsSync(SETTINGS_GW) ? fs.readFileSync(SETTINGS_GW, 'utf8') : '',
 ].join('\n');

@@ -844,4 +844,461 @@ test('SubagentStore - 子代理生命周期与穿透日志流状态机', async (
     assert.equal(store.getTask('sub-inflight-int'), undefined, '在途 interrupt 绝不可在 clearAll 后插入孤立终态任务');
     assert.deepEqual(store.getLogs('sub-inflight-int'), [], '在途 subagent.tail 绝不可在 clearAll 后污染日志环');
   });
+
+  await t.test('真实记录先于消息扫描抵达、delegationId 不一致及 syncSessionSubagents 含 task_index 时不得产生重复子任务 (4 vs 2 回归)', async () => {
+    // 1. 反向顺序：真实记录已存在，后到的消息扫描生成 deleg: 合成记录且 delegationId 与网关不同，仍按同会话唯一 goal 合并
+    const existingReal = [
+      {
+        subagentId: 'real-a',
+        parentSessionId: 'sess-dup-guard',
+        delegationId: 'srv-deleg-1',
+        taskIndex: 0,
+        goal: '探测任务A（环境探测）：执行命令',
+        lifecycleStatus: 'completed',
+        phaseHint: 'idle',
+        source: 'subagent_list',
+        toolCount: 3,
+        startedAt: 1000,
+        updatedAt: 2000,
+        completedAt: 2000,
+        targetProfile: 'default',
+        taskTitle: '探测任务A（环境探测）：执行命令',
+        status: 'completed',
+        progressPercent: 100,
+        currentActionText: '',
+      },
+      {
+        subagentId: 'real-b',
+        parentSessionId: 'sess-dup-guard',
+        delegationId: 'srv-deleg-1',
+        taskIndex: 1,
+        goal: '探测任务B（工具探测）：搜索验证',
+        lifecycleStatus: 'completed',
+        phaseHint: 'idle',
+        source: 'subagent_list',
+        toolCount: 2,
+        startedAt: 1001,
+        updatedAt: 2001,
+        completedAt: 2001,
+        targetProfile: 'default',
+        taskTitle: '探测任务B（工具探测）：搜索验证',
+        status: 'completed',
+        progressPercent: 100,
+        currentActionText: '',
+      },
+    ];
+    const lateSynthetic = [
+      {
+        subagentId: 'deleg:tc-1:0',
+        parentSessionId: 'sess-dup-guard',
+        delegationId: 'tc-1',
+        taskIndex: 0,
+        goal: '探测任务A（环境探测）：执行命令',
+        lifecycleStatus: 'running',
+        phaseHint: 'running',
+        source: 'delegate_scan',
+        toolCount: 0,
+        startedAt: 990,
+        updatedAt: 990,
+        targetProfile: 'subagent',
+        taskTitle: '探测任务A（环境探测）：执行命令',
+        status: 'running',
+        progressPercent: 15,
+        currentActionText: '已派发，等待实时状态',
+      },
+      {
+        subagentId: 'deleg:tc-2:0',
+        parentSessionId: 'sess-dup-guard',
+        delegationId: 'tc-2',
+        taskIndex: 0,
+        goal: '探测任务B（工具探测）：搜索验证',
+        lifecycleStatus: 'running',
+        phaseHint: 'running',
+        source: 'delegate_scan',
+        toolCount: 0,
+        startedAt: 991,
+        updatedAt: 991,
+        targetProfile: 'subagent',
+        taskTitle: '探测任务B（工具探测）：搜索验证',
+        status: 'running',
+        progressPercent: 15,
+        currentActionText: '已派发，等待实时状态',
+      },
+    ];
+    const reverseRes = reconcileSubagentRecords(existingReal, lateSynthetic);
+    assert.equal(reverseRes.merged.length, 2, '不得为同一任务保留真实+合成双份卡片');
+    assert.deepEqual(
+      reverseRes.resolvedAliases.map((x) => `${x.oldId}->${x.newId}`).sort(),
+      ['deleg:tc-1:0->real-a', 'deleg:tc-2:0->real-b'],
+    );
+    assert.equal(reverseRes.merged.every((m) => !m.subagentId.startsWith('deleg:') && m.lifecycleStatus === 'completed'), true);
+
+    // 2. 同文案多实例缺少 delegationId 时仍保持反歧义，不误折叠
+    const dupGoalRes = reconcileSubagentRecords(
+      [existingReal[0]],
+      [
+        { ...lateSynthetic[0], subagentId: 'deleg:x1:0', delegationId: 'x1' },
+        { ...lateSynthetic[0], subagentId: 'deleg:x2:0', delegationId: 'x2' },
+      ],
+    );
+    assert.equal(dupGoalRes.resolvedAliases.length, 0);
+
+    // 3. syncSessionSubagents 透传 task_index 且将 parent_session_id===liveSessionId 归一至 storedSessionId
+    const store = new SubagentStore();
+    store.reconcileFromMessages('stored-dup-sess', [
+      {
+        id: 'm-1',
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          {
+            id: 'call_multi',
+            name: 'delegate_task',
+            status: 'completed',
+            rawArgs: { tasks: [{ goal: 'Task Alpha' }, { goal: 'Task Beta' }] },
+            output: JSON.stringify({ status: 'dispatched', delegation_id: 'dlg-multi' }),
+          },
+        ],
+      },
+    ]);
+    assert.equal(store.getTasksBySession('stored-dup-sess').length, 2);
+
+    await store.syncSessionSubagents(
+      'live-dup-sess',
+      {
+        async request() {
+          return {
+            subagents: [
+              {
+                subagent_id: 'sub-alpha',
+                parent_session_id: 'live-dup-sess',
+                delegation_id: 'dlg-multi',
+                task_index: 0,
+                goal: 'Task Alpha',
+                status: 'completed',
+              },
+              {
+                subagent_id: 'sub-beta',
+                parent_session_id: 'live-dup-sess',
+                delegation_id: 'dlg-multi',
+                task_index: 1,
+                goal: 'Task Beta',
+                status: 'completed',
+              },
+            ],
+          };
+        },
+      },
+      { storedSessionId: 'stored-dup-sess' },
+    );
+
+    const finalTasks = store.getTasksBySession('stored-dup-sess');
+    assert.equal(finalTasks.length, 2, 'subagent.list 同步后必须合并为 2 条真实记录');
+    assert.deepEqual(finalTasks.map((t) => t.subagentId).sort(), ['sub-alpha', 'sub-beta']);
+
+    // 4. 分支全覆盖：mergeSubagentRecord 全可选字段/零起点时间/equal-rank tiebreak 与 reconcileSubagentRecords 反向 delegationId & 无效 goal 分支
+    const { mergeSubagentRecord } = await import('../../dist/subagent/subagentStore.js');
+    const tieA = mergeSubagentRecord(
+      {
+        subagentId: 'm1',
+        parentSessionId: '',
+        goal: '',
+        lifecycleStatus: 'running',
+        phaseHint: 'running',
+        source: 'transcript_scan',
+        toolCount: 1,
+        startedAt: 0,
+        updatedAt: 200,
+        interruptPending: true,
+        targetProfile: 'default',
+        taskTitle: 't',
+        status: 'running',
+        progressPercent: 10,
+        currentActionText: '',
+        toolNames: ['', 'read'],
+        filesRead: ['a.ts', 'a.ts'],
+        filesWritten: [],
+      },
+      {
+        subagentId: 'm1',
+        parentSessionId: 'p-1',
+        goal: 'Full Merge',
+        lifecycleStatus: 'running',
+        phaseHint: 'running',
+        source: 'transcript_scan',
+        delegationId: 'd-m',
+        taskIndex: 0,
+        childSessionId: 'c-m',
+        model: 'gpt-5',
+        depth: 2,
+        parentId: 'root',
+        toolCount: 2,
+        lastTool: 'edit',
+        toolNames: ['edit', 'read'],
+        filesRead: ['b.ts'],
+        filesWritten: ['c.ts'],
+        tokensInput: 10,
+        tokensOutput: 20,
+        tokensReasoning: 5,
+        acceptingSteer: true,
+        interruptPending: false,
+        durationSeconds: 12,
+        error: 'warn',
+        startedAt: 150,
+        updatedAt: 300,
+        targetProfile: 'gpt-5',
+        taskTitle: 'Full Merge',
+        status: 'running',
+        progressPercent: 40,
+        currentActionText: 'editing',
+      },
+    );
+    assert.equal(tieA.parentSessionId, 'p-1');
+    assert.equal(tieA.startedAt, 150);
+    assert.deepEqual(tieA.toolNames, ['read', 'edit']);
+    assert.deepEqual(tieA.filesRead, ['a.ts', 'b.ts']);
+    assert.deepEqual(tieA.filesWritten, ['c.ts']);
+    assert.equal(tieA.tokensReasoning, 5);
+    assert.equal(tieA.acceptingSteer, true);
+    assert.equal(tieA.durationSeconds, 12);
+    assert.equal(tieA.interruptPending, false);
+
+    // 反向 delegation_id + taskIndex 精确匹配、delegMatches 唯一匹配、以及多目标 exact taskIndex 消歧与无匹配合成保留
+    const reverseDelegRes = reconcileSubagentRecords(
+      [
+        { ...existingReal[0], subagentId: 'r-d1', delegationId: 'dl-1', taskIndex: 0, goal: 'Same Goal' },
+        { ...existingReal[0], subagentId: 'r-d2', delegationId: 'dl-2', taskIndex: undefined, goal: 'Solo Deleg' },
+      ],
+      [
+        { ...lateSynthetic[0], subagentId: 'deleg:dl-1:0', delegationId: 'dl-1', taskIndex: 0, goal: 'Same Goal' },
+        { ...lateSynthetic[0], subagentId: 'deleg:dl-2:0', delegationId: 'dl-2', taskIndex: undefined, goal: 'Solo Deleg' },
+        { ...lateSynthetic[0], subagentId: 'deleg:unmatched:0', delegationId: 'dl-none', taskIndex: undefined, goal: '' },
+      ],
+    );
+    assert.equal(reverseDelegRes.merged.length, 3);
+    assert.equal(reverseDelegRes.resolvedAliases.length, 2);
+
+    // 真实记录带 custom parent_session_id 时保留原值
+    await store.syncSessionSubagents(
+      'live-custom',
+      {
+        async request() {
+          return {
+            subagents: [{ subagent_id: 'sub-custom-parent', parent_session_id: 'other-parent', goal: 'Custom Parent', status: 'running' }],
+          };
+        },
+      },
+      { storedSessionId: 'stored-dup-sess' },
+    );
+    assert.equal(store.getTask('sub-custom-parent')?.parentSessionId, 'other-parent');
+  });
+
+  await t.test('14. 历史回切：从 [ASYNC DELEGATION BATCH COMPLETE] 与 live task-N.log 恢复终态与完整执行流', async () => {
+    const { parseLiveTranscriptLogRows } = await import('../../dist/index.js');
+    const completionMsgs = [
+      {
+        id: 'm-dispatch',
+        role: 'assistant',
+        timestamp: 1795852562,
+        toolCalls: [
+          {
+            id: 'tc-dispatched',
+            name: 'delegate_task',
+            status: 'completed',
+            durationMs: 25,
+            rawArgs: { goal: '收集真实环境信息' },
+            output: JSON.stringify({
+              status: 'dispatched',
+              mode: 'background',
+              count: 1,
+              delegation_id: 'deleg_hist_1',
+            }),
+          },
+        ],
+      },
+      {
+        id: 'm-complete',
+        role: 'user',
+        timestamp: 1795852573,
+        content: [
+          '[ASYNC DELEGATION BATCH COMPLETE — deleg_hist_1]',
+          'Role: leaf   Model: group/deepseek-v4.1-flash   Total duration: 10.99s',
+          '',
+          '--- ✓ TASK 1/1: 收集真实环境信息  (status=completed, api_calls=4, 10.75s) ---',
+          '完整结论报告第一行',
+          '第二行详情',
+          'Full live transcript (complete tool/assistant trace): /opt/data/cache/delegation/live/deleg_hist_1/task-0.log',
+        ].join('\n'),
+      },
+      {
+        id: 'm-complete-multi-orphan',
+        role: 'user',
+        timestamp: 1795852600,
+        content: [
+          '[ASYNC DELEGATION BATCH COMPLETE -- deleg_hist_2]',
+          'Role: leaf   Model: group/deepseek-v4.1-flash   Total duration: 8.5s',
+          '',
+          '--- ✓ TASK 1/2: 正常子任务  (status=done, api_calls=2, 3.2s) ---',
+          'Task A done',
+          '--- ✗ TASK 2/2: 超时子任务  (status=timed_out, api_calls=1, 5.1s) ---',
+          'Timed out waiting for peer',
+          'Full live transcript (complete tool/assistant trace): /opt/data/cache/delegation/live/deleg_hist_2/task-1.log',
+        ].join('\n'),
+      },
+    ];
+
+    const scanned = extractDelegationsFromMessages(completionMsgs, 'sess-hist-replay');
+    assert.equal(scanned.length, 3);
+    assert.equal(scanned[0].subagentId, 'deleg:deleg_hist_1:0');
+    assert.equal(scanned[0].lifecycleStatus, 'completed');
+    assert.equal(scanned[0].durationSeconds, 10.75);
+    assert.equal(scanned[0].toolCount, 4);
+    assert.equal(scanned[0].model, 'group/deepseek-v4.1-flash');
+    assert.equal(
+      scanned[0].transcriptLogPath,
+      '/opt/data/cache/delegation/live/deleg_hist_1/task-0.log',
+    );
+    assert.match(scanned[0].summary || '', /完整结论报告第一行/);
+    assert.equal(scanned[1].lifecycleStatus, 'completed');
+    assert.equal(scanned[2].lifecycleStatus, 'timeout');
+    assert.equal(
+      scanned[2].transcriptLogPath,
+      '/opt/data/cache/delegation/live/deleg_hist_2/task-1.log',
+    );
+
+    const store = new SubagentStore(100);
+    store.reconcileFromMessages('sess-hist-replay', completionMsgs);
+    const liveLogSample = [
+      '=== Hermes subagent live transcript ===',
+      'goal: 收集真实环境信息',
+      'started: 2026-11-28 07:56:02',
+      '========================================',
+      '07:56:02 user     | kickoff: 收集真实环境信息 | context: cwd is /opt/data',
+      '07:56:02 start    | 收集真实环境信息',
+      '07:56:04 think    | 先执行命令探测',
+      '07:56:04 assistant| 我来执行命令。',
+      '07:56:05 tool     | -> terminal(date -u)',
+      '07:56:05 result   | terminal ok 0.2s: {"output":"Sat Nov 28"}',
+      '07:56:06 tool     | -> read_file(/missing)',
+      '07:56:06 result   | read_file error 0.1s: not found',
+      '07:56:12 think    | 汇总最终结论',
+      '07:56:12 assistant| 完整结论报告第一行 …(+100 chars)',
+      '07:56:13 final    | status=completed duration=10.75s summary: 完整结论报告第一行',
+      '07:56:13 final    | end status=completed exit_reason=completed',
+    ].join('\n');
+
+    const parsedLogRows = parseLiveTranscriptLogRows(liveLogSample, scanned[0].summary);
+    assert.equal(parsedLogRows.length, 4);
+    assert.equal(parsedLogRows[0].role, 'user');
+    assert.equal(parsedLogRows[0].content, '收集真实环境信息');
+    assert.equal(parsedLogRows[2].tool_calls?.[0]?.name, 'terminal');
+    assert.equal(parsedLogRows[2].tool_calls?.[1]?.status, 'failed');
+    assert.equal(parsedLogRows[3].content, '完整结论报告第一行\n第二行详情');
+
+    const tsReadyFromLog = await store.loadSubagentTranscript({
+      subagentId: 'deleg:deleg_hist_1:0',
+      storedSessionId: 'sess-hist-replay',
+      bridge: { async request() { throw { code: -32601, message: 'Method not found' }; } },
+      fetchTranscriptLogText: async () => liveLogSample,
+    });
+    assert.equal(tsReadyFromLog.status, 'ready');
+    assert.equal(tsReadyFromLog.available, true);
+    assert.equal(tsReadyFromLog.rows.length, 4);
+
+    // 日志文件缺失但存在终态 summary 时也应渲染为 ready 而非 degraded_tail 横幅
+    const tsFallbackSummary = await store.loadSubagentTranscript({
+      subagentId: 'deleg:deleg_hist_2:0',
+      storedSessionId: 'sess-hist-replay',
+      bridge: { async request() { throw { code: -32601, message: 'Method not found' }; } },
+      fetchTranscriptLogText: async () => null,
+    });
+    assert.equal(tsFallbackSummary.status, 'ready');
+    assert.equal(tsFallbackSummary.rows.length, 2);
+    assert.equal(tsFallbackSummary.rows[1].content, 'Task A done');
+
+    // 补充覆盖状态映射/缺失字段/日志多分支边界与错误兜底
+    const edgeMsgs = [
+      { id: 'u-bad-1', role: 'system', content: '[ASYNC DELEGATION BATCH COMPLETE malformed]' },
+      { id: 'u-bad-2', role: 'user', content: '[ASYNC DELEGATION BATCH COMPLETE — deleg_empty]\nno task headers' },
+      {
+        id: 'a-pre',
+        role: 'assistant',
+        timestamp: 1795852700,
+        toolCalls: [
+          {
+            id: 'tc-pre-fail',
+            name: 'delegate_task',
+            status: 'completed',
+            rawArgs: { goal: '预先指定模型', model: 'preset-model' },
+            output: JSON.stringify({ status: 'dispatched', delegation_id: 'deleg_edge' }),
+          },
+        ],
+      },
+      {
+        id: 'u-edge-c',
+        role: 'user',
+        content: [
+          '[ASYNC DELEGATION BATCH COMPLETE — deleg_edge]',
+          'Role: leaf   Model: fallback-model   Total duration: 6.4s',
+          '--- ✗ TASK 1/1: 预先指定模型  (status=cancelled, api_calls=3) ---',
+          'Full live transcript: /opt/data/cache/delegation/live/deleg_edge/task-0.log',
+        ].join('\n'),
+      },
+      {
+        id: 'u-edge-orphan',
+        role: 'user',
+        content: [
+          '[ASYNC DELEGATION BATCH COMPLETE — deleg_edge2]',
+          '--- ✗ TASK 1/3: 孤立失败任务  (status=mystery) ---',
+          '',
+          '--- ✓ TASK 2/3: 无标记任务  (status=mystery) ---',
+          'Ok body',
+          '--- ✓ TASK 3/3: 显式错误  (status=error, api_calls=1, 2.0s) ---',
+          'Err body',
+        ].join('\n'),
+      },
+    ];
+    const edgeExtracted = extractDelegationsFromMessages(edgeMsgs, 'sess-edge');
+    assert.equal(edgeExtracted.length, 4);
+    assert.equal(edgeExtracted[0].lifecycleStatus, 'interrupted');
+    assert.equal(edgeExtracted[0].model, 'preset-model');
+    assert.equal(edgeExtracted[0].durationSeconds, 6.4);
+    assert.equal(edgeExtracted[1].lifecycleStatus, 'failed');
+    assert.equal(edgeExtracted[2].lifecycleStatus, 'completed');
+    assert.equal(edgeExtracted[3].lifecycleStatus, 'error');
+
+    assert.deepEqual(parseLiveTranscriptLogRows(''), []);
+    const minimalLogRows = parseLiveTranscriptLogRows([
+      '07:56:01 user     | kickoff:   ',
+      '07:56:02 think    | ',
+      '07:56:02 think    | step1',
+      '07:56:03 think    | step2',
+      '07:56:04 result   | dangling result without tool',
+      '07:56:05 tool     | -> bare_tool',
+      '07:56:05 result   | raw failure text',
+      '07:56:06 assistant| line1',
+      'continuation line2',
+      '07:56:07 tool     | -> after_assistant(arg)',
+      '07:56:08 final    | end status=completed',
+    ].join('\n'));
+    assert.equal(minimalLogRows.length >= 2, true);
+    assert.match(minimalLogRows[0].reasoning || '', /step1\nstep2/);
+
+    const finalSummaryLog = parseLiveTranscriptLogRows([
+      'started: bad-date',
+      '00:00:01 tool     | -> ls()',
+      '00:00:02 final    | status=completed summary: 由 final 兜底输出',
+    ].join('\n'));
+    assert.equal(finalSummaryLog[finalSummaryLog.length - 1].content, '由 final 兜底输出');
+
+    // fetchTranscriptLogText 抛错且无 summary 应优雅回落 degraded_tail
+    store.upsertTask({ subagentId: 'deleg:no_sum:0', parentSessionId: 'sess-hist-replay', status: 'failed', goal: '' });
+    const tsErrLog = await store.loadSubagentTranscript({
+      subagentId: 'deleg:no_sum:0',
+      storedSessionId: 'sess-hist-replay',
+      bridge: { async request() { throw { code: -32601 }; } },
+      fetchTranscriptLogText: async () => { throw new Error('disk read failed'); },
+    });
+    assert.equal(tsErrLog.status, 'degraded_tail');
+  });
 });

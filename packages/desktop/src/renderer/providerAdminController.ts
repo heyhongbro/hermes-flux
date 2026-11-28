@@ -43,14 +43,17 @@ export interface FanOutResult {
   profile: string;
   displayName: string;
   ok: boolean;
+  isCurrent?: boolean;
   message?: string;
 }
 
 export interface SaveEndpointOptions {
   /** 目标 Bot 的 profile 名（不含当前 Bot）。 */
   fanOutTo: readonly string[];
-  /** 只在当前 Bot 设为默认主模型；扇出目标恒为 false。 */
+  /** 只在当前 Bot 设为默认主模型；未显式开启 `fanOutMakeDefault` 时扇出目标恒为 false。 */
   makeDefault: boolean;
+  /** 显式勾选多 BOT 同时设为默认模型时，对扇出目标也同步 `make_default`。 */
+  fanOutMakeDefault?: boolean;
   /** 已知名称，用于结果回显；缺省回落到 profile 名。 */
   profileDisplayNames?: Readonly<Record<string, string>>;
 }
@@ -257,17 +260,26 @@ export function createProviderAdminController(deps: ProviderAdminControllerDeps)
         };
       }
 
-      // 扇出体：沿用刚保存的结构，但不改任何目标 Bot 的主模型。
+      // 扇出体：沿用刚保存的结构；默认不改目标 Bot 主模型，仅在显式开启 fanOutMakeDefault 时同步设为默认。
+      const fanOutMakeDefault = Boolean(options.fanOutMakeDefault);
       const fanOutPayload: CustomEndpointPayload = toEndpointPayload(
         { ...draft, id: savedId },
-        { id: savedId, makeDefault: false },
+        { id: savedId, makeDefault: fanOutMakeDefault },
       );
       const results: FanOutResult[] = [];
       for (const target of options.fanOutTo) {
         if (target === profile) continue;
         try {
-          await deps.rest.saveEndpoint(target, fanOutPayload);
-          results.push({ profile: target, displayName: display(target), ok: true });
+          const targetSaved = await deps.rest.saveEndpoint(target, fanOutPayload);
+          const targetRow = targetSaved.endpoints.find(
+            (row) => normalizeEndpointId(row.id) === normalizeEndpointId(savedId),
+          );
+          results.push({
+            profile: target,
+            displayName: display(target),
+            ok: true,
+            ...(targetRow ? { isCurrent: targetRow.isCurrent } : {}),
+          });
         } catch (error) {
           results.push({ profile: target, displayName: display(target), ok: false, message: deps.describeError(error) });
           // 逐个执行、失败即停：继续写只会扩大不一致面，用户需要先看清原因。
@@ -276,7 +288,9 @@ export function createProviderAdminController(deps: ProviderAdminControllerDeps)
       }
 
       await loadEndpoints(profile);
-      if (options.makeDefault || savedRow?.isCurrent) deps.onCatalogChanged();
+      if (options.makeDefault || fanOutMakeDefault || savedRow?.isCurrent || results.some((item) => item.isCurrent)) {
+        deps.onCatalogChanged();
+      }
 
       const failed = results.find((item) => !item.ok);
       if (failed) deps.warn('providerAdmin.fanOut.stopped', { profile: failed.profile, message: failed.message });

@@ -5,13 +5,13 @@
 
 | Method | Params (Contract) | Result (Contract) | Call Sites | Live Probe |
 | --- | --- | --- | --- | --- |
-| `session.transcript` | `profile` `session_id` `subagent_id` `cursor` `limit` `order` `inline_images` | `session_id` `rows` `next_cursor` `reset` `subagent_id` `available` `running` `child_session_id` | `packages/core/src/rpc/client.ts:1180`<br>`packages/core/src/subagent/subagentStore.ts:1202` | Skipped: Tested gateway 0.23.2 returns -32601; client falls back to REST fetchSessionMessages and subagent.tail; explicitly skipped in offline probes and guarded by fallback invariant unit tests. |
-| `spawn_tree.list` | `profile` `session_id` `cross_session` `limit` | `entries` | `packages/core/src/rpc/client.ts:1192` | Skipped: Historical spawn-tree index relies on persisted disk records; explicitly skipped in offline probes and guarded by inactive-session 4001 isolation unit tests and invariant proofs. |
-| `spawn_tree.load` | `profile` `path` | `session_id` `started_at` `finished_at` `label` `subagents` | `packages/core/src/rpc/client.ts:1200` | Skipped: Loading historical spawn trees by path relies on disk tree files; explicitly skipped in offline probes and guarded by normalized merge unit tests and formal invariants. |
-| `subagent.interrupt` | `session_id` `profile` `subagent_id` | `found` `subagent_id` | `packages/core/src/subagent/subagentStore.ts:922` | ✅ 0.22.5 |
-| `subagent.list` | `session_id` `profile` | `subagents` `delegations` | `packages/core/src/subagent/subagentStore.ts:1003` | ✅ 0.22.5 |
-| `subagent.steer` | `session_id` `profile` `subagent_id` `text` | `status` `subagent_id` `text` | `packages/core/src/subagent/subagentStore.ts:850` | ✅ 0.22.5 |
-| `subagent.tail` | `session_id` `profile` `subagent_id` | `subagent_id` `available` `text` `truncated` | `packages/core/src/subagent/subagentStore.ts:1323` | ✅ 0.22.5 |
+| `session.transcript` | `profile` `session_id` `subagent_id` `cursor` `limit` `order` `inline_images` | `session_id` `rows` `next_cursor` `reset` `subagent_id` `available` `running` `child_session_id` | `packages/core/src/rpc/client.ts:1200`<br>`packages/core/src/subagent/subagentStore.ts:1236` | Skipped: Tested gateway 0.23.2 returns -32601; client falls back to REST fetchSessionMessages and subagent.tail; explicitly skipped in offline probes and guarded by fallback invariant unit tests. |
+| `spawn_tree.list` | `profile` `session_id` `cross_session` `limit` | `entries` | `packages/core/src/rpc/client.ts:1212` | Skipped: Historical spawn-tree index relies on persisted disk records; explicitly skipped in offline probes and guarded by inactive-session 4001 isolation unit tests and invariant proofs. |
+| `spawn_tree.load` | `profile` `path` | `session_id` `started_at` `finished_at` `label` `subagents` | `packages/core/src/rpc/client.ts:1220` | Skipped: Loading historical spawn trees by path relies on disk tree files; explicitly skipped in offline probes and guarded by normalized merge unit tests and formal invariants. |
+| `subagent.interrupt` | `session_id` `profile` `subagent_id` | `found` `subagent_id` | `packages/core/src/subagent/subagentStore.ts:898` | ✅ 0.22.5 |
+| `subagent.list` | `session_id` `profile` | `subagents` `delegations` | `packages/core/src/subagent/subagentStore.ts:979` | ✅ 0.22.5 |
+| `subagent.steer` | `session_id` `profile` `subagent_id` `text` | `status` `subagent_id` `text` | `packages/core/src/subagent/subagentStore.ts:826` | ✅ 0.22.5 |
+| `subagent.tail` | `session_id` `profile` `subagent_id` | `subagent_id` `available` `text` `truncated` | `packages/core/src/subagent/subagentStore.ts:1357` | ✅ 0.22.5 |
 
 ## Details
 
@@ -21,8 +21,8 @@
 - Result type: `StoredTranscriptResult`
 - Live probe: Skipped — Tested gateway 0.23.2 returns -32601; client falls back to REST fetchSessionMessages and subagent.tail; explicitly skipped in offline probes and guarded by fallback invariant unit tests.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1180`
-  - `packages/core/src/subagent/subagentStore.ts:1202`
+  - `packages/core/src/rpc/client.ts:1200`
+  - `packages/core/src/subagent/subagentStore.ts:1236`
 
 ### `spawn_tree.list`
 
@@ -30,7 +30,7 @@
 - Result type: `SpawnTreeListResult`
 - Live probe: Skipped — Historical spawn-tree index relies on persisted disk records; explicitly skipped in offline probes and guarded by inactive-session 4001 isolation unit tests and invariant proofs.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1192`
+  - `packages/core/src/rpc/client.ts:1212`
 
 ### `spawn_tree.load`
 
@@ -38,7 +38,7 @@
 - Result type: `SpawnTreeLoadResult`
 - Live probe: Skipped — Loading historical spawn trees by path relies on disk tree files; explicitly skipped in offline probes and guarded by normalized merge unit tests and formal invariants.
 - Call sites:
-  - `packages/core/src/rpc/client.ts:1200`
+  - `packages/core/src/rpc/client.ts:1220`
 
 ### `subagent.interrupt`
 
@@ -47,7 +47,7 @@
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Expected guard branch exercised: error code `4001` (expected behavior, not a failure)
 - Call sites:
-  - `packages/core/src/subagent/subagentStore.ts:922`
+  - `packages/core/src/subagent/subagentStore.ts:898`
 
 ### `subagent.list`
 
@@ -56,7 +56,7 @@
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Expected guard branch exercised: error code `4001` (expected behavior, not a failure)
 - Call sites:
-  - `packages/core/src/subagent/subagentStore.ts:1003`
+  - `packages/core/src/subagent/subagentStore.ts:979`
 
 ### `subagent.steer`
 
@@ -65,7 +65,7 @@
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Expected guard branch exercised: error code `4001` (expected behavior, not a failure)
 - Call sites:
-  - `packages/core/src/subagent/subagentStore.ts:850`
+  - `packages/core/src/subagent/subagentStore.ts:826`
 
 ### `subagent.tail`
 
@@ -74,5 +74,5 @@
 - Live probe: Passed (Gateway 0.22.5, recorded at 2026-11-01T01:59:35.303Z)
 - Expected guard branch exercised: error code `4001` (expected behavior, not a failure)
 - Call sites:
-  - `packages/core/src/subagent/subagentStore.ts:1323`
+  - `packages/core/src/subagent/subagentStore.ts:1357`
 

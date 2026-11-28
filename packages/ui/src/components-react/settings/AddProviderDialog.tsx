@@ -27,6 +27,7 @@ import {
 } from './providerDialogLogic.js';
 import { SegmentedControl } from './SegmentedControl.js';
 import { SettingField, SettingTwoColumn } from './SettingRow.js';
+import { Switch } from '../primitives/Switch.js';
 import type { SettingsActions, SettingsBotRow, SettingsSnapshot } from './settingsModel.js';
 
 export type AddProviderTab = 'subscription' | 'custom';
@@ -236,7 +237,7 @@ export function AddProviderDialog({
       return;
     }
     dispatch({ type: 'saveStart' });
-    const saveOptions = buildSaveEndpointOptions(isEditing, form.selectedProfiles, editingProfiles);
+    const saveOptions = buildSaveEndpointOptions(isEditing, form.selectedProfiles, editingProfiles, form.makeDefault);
     try {
       const outcome = await actionsRef.current.onSaveEndpoint(draft, saveOptions);
       if (runEpoch !== opEpochRef.current) return;
@@ -552,6 +553,24 @@ export function AddProviderDialog({
                       {t('settings.customEndpointApplyToEmpty')}
                     </p>
                   ) : null}
+                </div>
+              ) : null}
+
+              {!isEditing ? (
+                <div className="flex items-center justify-between gap-3 rounded-panel surface-raised px-3 py-2.5">
+                  <label
+                    htmlFor="custom-endpoint-make-default"
+                    className="cursor-pointer text-body text-foreground"
+                  >
+                    {t('settings.customEndpointSetDefaultForBots')}
+                  </label>
+                  <Switch
+                    id="custom-endpoint-make-default"
+                    data-testid="custom-endpoint-make-default-switch"
+                    checked={form.makeDefault}
+                    disabled={disabled}
+                    onCheckedChange={(checked) => dispatch({ type: 'setMakeDefault', makeDefault: checked })}
+                  />
                 </div>
               ) : null}
             </div>

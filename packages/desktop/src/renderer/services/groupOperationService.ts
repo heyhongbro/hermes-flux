@@ -67,7 +67,7 @@ export interface GroupOperationDeps {
     stopAll(): void;
   };
   readonly persistGroupsToCache: (rooms: LeftRailGroupRoom[]) => void;
-  readonly resolveAgentAvatar: (name: string) => string;
+  readonly resolveAgentAvatar: (name: string, gatewayId?: string) => string;
   readonly formatTimestamp: (ts: number | string) => string;
   readonly nextLoadMessagesGeneration: () => number;
   readonly getCurrentLoadMessagesGeneration: () => number;
@@ -229,7 +229,20 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
       deps.sessionMessagesCache.set(outCacheKey, [...state.messages]);
     }
 
-    // 2. 率先同步写入群聊焦点与所属网关，并重置单聊 Session ID（彻底隔断跨域逃逸）
+    // 2. 先校验/重置跨网关或 Bot 遗留 Profile，再同步写入群聊焦点与所属网关（彻底隔断跨域 404）
+    const switchingGateway = Boolean(targetGw && outgoingGw && targetGw !== outgoingGw);
+    const targetProfiles =
+      targetGw && state.gatewayCount > 1
+        ? state.profiles.filter((p) => !p.gatewayId || p.gatewayId === targetGw)
+        : state.profiles;
+    const currentProfile = (state.profileName || '').trim();
+    const validOnTarget =
+      !currentProfile ||
+      currentProfile === 'default' ||
+      targetProfiles.some((p) => (p.name || '').trim().toLowerCase() === currentProfile.toLowerCase());
+    if (currentProfile && (switchingGateway || state.activeFocus?.type === 'bot' || !validOnTarget)) {
+      state.profileName = 'default';
+    }
     state.activeGatewayId = targetGw;
     state.activeFocus = targetGw ? { type: 'group', roomId, gatewayId: targetGw } : { type: 'group', roomId };
     deps.onActiveFocusChanged?.();
@@ -286,7 +299,7 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
               role: entry.actorKind === 'user' || entry.senderProfile === 'user' ? 'user' : 'assistant',
               content: entry.text,
               sender: senderName,
-              senderAvatar: deps.resolveAgentAvatar(senderName),
+              senderAvatar: deps.resolveAgentAvatar(senderName, targetGw),
               timestamp: deps.formatTimestamp(entry.timestamp || Date.now()),
             };
           });
@@ -326,7 +339,7 @@ export function createGroupOperationService(deps: GroupOperationDeps): GroupOper
             role: entry.actorKind === 'user' || entry.senderProfile === 'user' ? 'user' : 'assistant',
             content: entry.text,
             sender: senderName,
-            senderAvatar: deps.resolveAgentAvatar(senderName),
+            senderAvatar: deps.resolveAgentAvatar(senderName, targetGw),
             timestamp: deps.formatTimestamp(entry.timestamp || Date.now()),
           };
         });

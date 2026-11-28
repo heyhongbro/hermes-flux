@@ -1201,4 +1201,248 @@ test('TurnDeliverables 全数量/失败重试/视频/文档图标 + MarkdownBloc
   assert.ok(dedupHtml.includes('data-deliverable-card="true"'), '唯一纯文件名引用应在正文就地成卡');
   assert.equal(dedupHtml.includes('data-testid="turn-deliverables"'), false, '已被正文纯文件名卡片覆盖的成果物禁止底部重复输出');
   assert.equal(dedupHtml.includes('sub.md'), false, '无 delegation 工具的普通回合严禁混入 subagentWrittenPaths');
+
+  // MediaLightbox <img> onError 自动经 resolveMediaUrl 兜底（同源网关直链失败场景）及失败态切换
+  const errDriver = createReactHookDriver();
+  let errResolveCalls = 0;
+  const errItems = [{ id: 'img-err', src: 'https://gw.example.com/media/a.png', path: '/ws/a.png', name: 'a.png' }];
+  const errView = errDriver.mount(() =>
+    React.createElement(MediaLightbox, {
+      items: errItems,
+      initialIndex: 0,
+      onClose() {},
+      resolveMediaUrl: async () => {
+        errResolveCalls += 1;
+        return null;
+      },
+    }),
+  );
+  const imgNode = findAll(errView.tree, (n) => n.type === 'img' && n.props?.className === 'flux-lightbox__image')[0];
+  assert.equal(typeof imgNode?.props?.onError, 'function');
+  imgNode.props.onError();
+  await new Promise((r) => setTimeout(r, 10));
+  errView.rerender();
+  assert.equal(errResolveCalls, 1);
+  assert.equal(findAll(errView.tree, (n) => n.props?.['data-testid'] === 'lightbox-error').length, 1);
+  const retryErrBtn = findAll(errView.tree, (n) => n.props?.['data-testid'] === 'lightbox-retry')[0];
+  retryErrBtn.props.onClick({ stopPropagation() {} });
+  errView.rerender();
+  errView.unmount();
+
+  // MediaLightbox <img> onError 经 resolveMediaUrl 恢复后再失败及 reject 分支
+  const recoverDriver = createReactHookDriver();
+  const recoverItems = [{ id: 'img-rec', src: 'https://gw.example.com/media/b.png', path: '/ws/b.png', name: 'b.png' }];
+  let recStep = 0;
+  const recView = recoverDriver.mount(() =>
+    React.createElement(MediaLightbox, {
+      items: recoverItems,
+      initialIndex: 0,
+      onClose() {},
+      resolveMediaUrl: async () => {
+        recStep += 1;
+        if (recStep === 1) return 'data:image/png;base64,RECOVERED';
+        throw new Error('retry failed');
+      },
+    }),
+  );
+  findAll(recView.tree, (n) => n.type === 'img' && n.props?.className === 'flux-lightbox__image')[0].props.onError();
+  await new Promise((r) => setTimeout(r, 10));
+  recView.rerender();
+  const recoveredImg = findAll(recView.tree, (n) => n.type === 'img' && n.props?.className === 'flux-lightbox__image')[0];
+  assert.equal(recoveredImg.props.src, 'data:image/png;base64,RECOVERED');
+  recoveredImg.props.onError();
+  recView.rerender();
+  assert.equal(findAll(recView.tree, (n) => n.props?.['data-testid'] === 'lightbox-error').length, 1);
+  recView.unmount();
+
+  // resolveMediaUrl 缺失时，<img> onError 也安全进入失败态（不崩溃）
+  const noResolverDriver = createReactHookDriver();
+  const noResolverItems = [{ id: 'img-no-res', src: 'https://cdn.example.com/missing.png', name: 'missing.png' }];
+  const noResolverView = noResolverDriver.mount(() =>
+    React.createElement(MediaLightbox, {
+      items: noResolverItems,
+      initialIndex: 0,
+      onClose() {},
+    }),
+  );
+  findAll(noResolverView.tree, (n) => n.type === 'img' && n.props?.className === 'flux-lightbox__image')[0].props.onError();
+  noResolverView.rerender();
+  assert.equal(findAll(noResolverView.tree, (n) => n.props?.['data-testid'] === 'lightbox-error').length, 1);
+  noResolverView.unmount();
+
+  // resolveMediaUrl 抛出异常时 onError 也进入失败态
+  const rejectDriver = createReactHookDriver();
+  const rejectItems = [{ id: 'img-rej', src: 'https://gw.example.com/media/c.png', path: '/ws/c.png', name: 'c.png' }];
+  const rejectView = rejectDriver.mount(() =>
+    React.createElement(MediaLightbox, {
+      items: rejectItems,
+      initialIndex: 0,
+      onClose() {},
+      resolveMediaUrl: async () => {
+        throw new Error('network error');
+      },
+    }),
+  );
+  findAll(rejectView.tree, (n) => n.type === 'img' && n.props?.className === 'flux-lightbox__image')[0].props.onError();
+  await new Promise((r) => setTimeout(r, 10));
+  rejectView.rerender();
+  assert.equal(findAll(rejectView.tree, (n) => n.props?.['data-testid'] === 'lightbox-error').length, 1);
+  rejectView.unmount();
+
+  // TurnDeliverables 图片缩略图 onError（包含已解析 URL 与直接预览 URL 两种状态）
+  const tdErrDriver = createReactHookDriver();
+  const tdErrDeliverables = [{ id: 'td-img', kind: 'image', path: '/ws/thumb.png', name: 'thumb.png', previewUrl: 'https://gw.example.com/thumb.png', messageId: 'm1', source: 'tool_image' }];
+  const tdErrMessages = [];
+  const tdErrView = tdErrDriver.mount(() =>
+    React.createElement(TurnDeliverables, {
+      isStreaming: false,
+      deliverables: tdErrDeliverables,
+      resolveMediaUrl: async () => null,
+      messages: tdErrMessages,
+    }),
+  );
+  const thumbImg = findAll(tdErrView.tree, (n) => n.type === 'img' && n.props?.className === 'conv-deliverable-image__img')[0];
+  assert.equal(typeof thumbImg?.props?.onError, 'function');
+  thumbImg.props.onError();
+  await Promise.resolve();
+  await Promise.resolve();
+  tdErrView.rerender();
+  assert.equal(findAll(tdErrView.tree, (n) => n.props?.className === 'conv-deliverable-retry-btn').length >= 1, true);
+  tdErrView.unmount();
+
+  const tdDirectDriver = createReactHookDriver();
+  const tdDirectDeliverables = [{ id: 'td-img-2', kind: 'image', path: '/ws/thumb2.png', name: 'thumb2.png', messageId: 'm1', source: 'tool_image' }];
+  const tdDirectMessages = [];
+  const tdDirectView = tdDirectDriver.mount(() =>
+    React.createElement(TurnDeliverables, {
+      isStreaming: false,
+      deliverables: tdDirectDeliverables,
+      resolveMediaUrl: async () => 'data:image/png;base64,THUMB',
+      messages: tdDirectMessages,
+    }),
+  );
+  await new Promise((r) => setTimeout(r, 10));
+  tdDirectView.rerender();
+  const thumbImg2 = findAll(tdDirectView.tree, (n) => n.type === 'img' && n.props?.className === 'conv-deliverable-image__img')[0];
+  thumbImg2.props.onError();
+  tdDirectView.rerender();
+  assert.equal(findAll(tdDirectView.tree, (n) => n.props?.className === 'conv-deliverable-retry-btn').length >= 1, true);
+  tdDirectView.unmount();
+
+  // TurnDeliverables: 直接预览 URL 加载失败后先走 resolveMediaUrl(img.path) 挽救再定成败；MediaLightbox: items 变更清缓存 & same-src URL 失败后回退 resolver
+  const flushMicro = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+  const rescueDriver = createReactHookDriver();
+  const rescueView = rescueDriver.mount(() =>
+    React.createElement(TurnDeliverables, {
+      isStreaming: false,
+      deliverables: [{ id: 'td-rescue', kind: 'image', path: '/ws/rescue.png', name: 'rescue.png', previewUrl: 'http://127.0.0.1:8642/api/files/download?path=/ws/rescue.png', messageId: 'm1', source: 'tool_image' }],
+      resolveMediaUrl: async (target) => (target === '/ws/rescue.png' ? 'data:image/png;base64,RESCUED' : null),
+      messages: [],
+    }),
+  );
+  const rescueImg = findAll(rescueView.tree, (n) => n.type === 'img' && n.props?.className === 'conv-deliverable-image__img')[0];
+  rescueImg.props.onError();
+  await flushMicro();
+  rescueView.rerender();
+  const updatedRescueImg = findAll(rescueView.tree, (n) => n.type === 'img' && n.props?.className === 'conv-deliverable-image__img')[0];
+  assert.equal(updatedRescueImg?.props?.src, 'data:image/png;base64,RESCUED');
+  rescueView.unmount();
+
+  const lbResetDriver = createReactHookDriver();
+  let lbItems = [{ id: 'img-same', src: '/ws/first.png', path: '/ws/first.png', name: 'first.png' }];
+  const lbResetView = lbResetDriver.mount(() =>
+    React.createElement(MediaLightbox, {
+      items: lbItems,
+      initialIndex: 0,
+      onClose() {},
+      resolveMediaUrl: async (target) => (target.includes('first') ? 'data:image/png;base64,FIRST' : 'data:image/png;base64,SECOND'),
+    }),
+  );
+  await flushMicro();
+  lbResetView.rerender();
+  assert.equal(findAll(lbResetView.tree, (n) => n.type === 'img' && n.props?.className === 'flux-lightbox__image')[0]?.props?.src, 'data:image/png;base64,FIRST');
+  lbItems = [{ id: 'img-same', src: '/ws/second.png', path: '/ws/second.png', name: 'second.png' }];
+  lbResetView.rerender();
+  await flushMicro();
+  lbResetView.rerender();
+  assert.equal(findAll(lbResetView.tree, (n) => n.type === 'img' && n.props?.className === 'flux-lightbox__image')[0]?.props?.src, 'data:image/png;base64,SECOND');
+  // 已解析条目触发 onError 后进入错误态并可点击重试清缓存
+  findAll(lbResetView.tree, (n) => n.type === 'img' && n.props?.className === 'flux-lightbox__image')[0].props.onError();
+  lbResetView.rerender();
+  const retryBtn = findAll(lbResetView.tree, (n) => n.props?.['data-testid'] === 'lightbox-retry')[0];
+  assert.ok(retryBtn);
+  retryBtn.props.onClick({ stopPropagation() {} });
+  lbResetView.rerender();
+  await flushMicro();
+  lbResetView.rerender();
+  assert.equal(findAll(lbResetView.tree, (n) => n.type === 'img' && n.props?.className === 'flux-lightbox__image')[0]?.props?.src, 'data:image/png;base64,SECOND');
+  lbResetView.unmount();
+
+  // TurnDeliverables: previewUrl onError 回退 resolveMediaUrl reject 分支
+  const tdRejView = rescueDriver.mount(() =>
+    React.createElement(TurnDeliverables, {
+      isStreaming: false,
+      deliverables: [{ id: 'td-rej', kind: 'image', path: '/ws/rej.png', name: 'rej.png', previewUrl: 'https://gw.example.com/rej.png', messageId: 'm1', source: 'tool_image' }],
+      resolveMediaUrl: async () => { throw new Error('boom'); },
+      messages: [],
+    }),
+  );
+  findAll(tdRejView.tree, (n) => n.type === 'img' && n.props?.className === 'conv-deliverable-image__img')[0].props.onError();
+  await flushMicro();
+  tdRejView.rerender();
+  assert.equal(findAll(tdRejView.tree, (n) => n.props?.className === 'conv-deliverable-retry-btn').length >= 1, true);
+  tdRejView.unmount();
+
+  // TurnDeliverables: 启动期 connection='connecting' 遇 401 失败后，当 connection 转为 'connected' 时自动清除失败态并重试成功
+  let bootAuthed = false;
+  let bootConn = 'connecting';
+  const reconnectView = rescueDriver.mount(() =>
+    React.createElement(TurnDeliverables, {
+      isStreaming: false,
+      connection: bootConn,
+      deliverables: [{ id: 'td-boot', kind: 'image', path: '/opt/data/cache/boot.png', name: 'boot.png', messageId: 'm-boot', source: 'tool_image' }],
+      resolveMediaUrl: async () => (bootAuthed ? 'data:image/png;base64,AFTERAUTH' : null),
+      messages: [],
+    }),
+  );
+  await flushMicro();
+  reconnectView.rerender();
+  assert.equal(findAll(reconnectView.tree, (n) => n.props?.className === 'conv-deliverable-retry-btn').length >= 1, true);
+  bootAuthed = true;
+  bootConn = 'connected';
+  reconnectView.rerender();
+  reconnectView.rerender();
+  await flushMicro();
+  reconnectView.rerender();
+  const healedImg = findAll(reconnectView.tree, (n) => n.type === 'img' && n.props?.className === 'conv-deliverable-image__img')[0];
+  assert.equal(healedImg?.props?.src, 'data:image/png;base64,AFTERAUTH');
+  reconnectView.unmount();
+
+  // TurnGroup: connection prop 变化触发 memo 重算并透传到 TurnDeliverables
+  const tgDriver = createReactHookDriver();
+  let tgConn = 'connecting';
+  const tgView = tgDriver.mount(() =>
+    React.createElement(TurnGroup, {
+      messages: [
+        {
+          id: 'tg-msg-1',
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'tc-1', name: 'image_gen', status: 'completed', args: '', imagePath: '/opt/data/tg.png' }],
+        },
+      ],
+      mode: 'scratchpad',
+      connection: tgConn,
+      isLastTurn: true,
+      isStreaming: false,
+      resolveMediaUrl: async () => 'data:image/png;base64,VEc=',
+    }),
+  );
+  tgConn = 'connected';
+  tgView.rerender();
+  assert.ok(tgView.tree);
+  tgView.unmount();
 });

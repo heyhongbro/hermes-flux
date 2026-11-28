@@ -1165,3 +1165,43 @@ test('SessionOperationService 多网关场景：deleteSession 按网关隔离流
   assert.deepEqual(state.activeFocus, { type: 'session', sessionId: 's-gw-b', gatewayId: 'gw-b' });
   assert.equal(state.activeGatewayId, 'gw-b');
 });
+
+test('SessionOperationService 跨网关/离 Bot 切换普通会话时必须在 onActiveFocusChanged 前重置陈旧 profileName 为 default', async () => {
+  const focusChangedProfiles = [];
+  const loadedCalls = [];
+  const { deps, state } = createMockDeps({
+    state: {
+      gatewayCount: 2,
+      activeGatewayId: 'gw-1',
+      activeSessionId: 'bot-sess-1',
+      profileName: 'newmediaboy',
+      activeFocus: { type: 'bot', botName: 'newmediaboy', gatewayId: 'gw-1' },
+      profiles: [{ name: 'newmediaboy', gatewayId: 'gw-1' }],
+      sessions: [
+        { id: 'bot-sess-1', title: 'Bot 1', botName: 'newmediaboy', gatewayId: 'gw-1', isArchived: false },
+        { id: 'plain-gw2', title: 'Plain GW2', gatewayId: 'gw-2', isArchived: false },
+        { id: 'plain-gw1', title: 'Plain GW1', gatewayId: 'gw-1', isArchived: false },
+      ],
+    },
+    onActiveFocusChanged: () => {
+      focusChangedProfiles.push({ gw: state.activeFocus?.gatewayId, profile: state.profileName });
+    },
+    loadMessages: async (id, botName, gatewayId) => {
+      loadedCalls.push({ id, botName, gatewayId, stateProfile: state.profileName });
+    },
+  });
+  const svc = createSessionOperationService(deps);
+
+  // 1. 从 gw-1 的 newmediaboy Bot 切换到 gw-2 普通会话（无 botName）
+  await svc.selectSession('plain-gw2', { gatewayId: 'gw-2' });
+  assert.equal(state.profileName, 'default');
+  assert.deepEqual(focusChangedProfiles[0], { gw: 'gw-2', profile: 'default' });
+  assert.deepEqual(loadedCalls[0], { id: 'plain-gw2', botName: undefined, gatewayId: 'gw-2', stateProfile: 'default' });
+
+  // 2. 切回 gw-1 Bot 后，再同网关切换到 gw-1 普通会话（无 botName）同样重置为 default
+  await svc.selectSession('bot-sess-1', { gatewayId: 'gw-1', botName: 'newmediaboy' });
+  state.activeFocus = { type: 'bot', botName: 'newmediaboy', gatewayId: 'gw-1' };
+  assert.equal(state.profileName, 'newmediaboy');
+  await svc.selectSession('plain-gw1', { gatewayId: 'gw-1' });
+  assert.equal(state.profileName, 'default');
+});

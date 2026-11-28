@@ -368,4 +368,28 @@ test('HermesGatewayClient Resilience - Dual-Channel Fallback', async (t) => {
     assert.equal(res.status, 'error');
     if (res.status === 'error') assert.ok(res.error.includes('401'));
   });
+
+  await t.test('readFileText should fetch /api/fs/read-text and guard binary or failed responses', async () => {
+    const bareClient = new HermesGatewayClient({ url: 'ws://127.0.0.1:99999', autoConnect: false });
+    assert.equal(await bareClient.readFileText('/opt/data/task-0.log'), null);
+
+    const client = new HermesGatewayClient({ url: 'ws://127.0.0.1:99999', autoConnect: false });
+    client.setRestFallbackHandler(async (ep, opts) => {
+      if (opts?.params?.path === '/opt/data/task-0.log') {
+        return { binary: false, text: 'log body' };
+      }
+      if (opts?.params?.path === '/opt/data/bin.png') {
+        return { binary: true, text: '' };
+      }
+      if (opts?.params?.path === '/opt/data/prim.txt') {
+        return 'primitive';
+      }
+      throw new Error('404');
+    });
+
+    assert.equal(await client.readFileText('/opt/data/task-0.log', 'default'), 'log body');
+    assert.equal(await client.readFileText('/opt/data/bin.png'), null);
+    assert.equal(await client.readFileText('/opt/data/prim.txt'), null);
+    assert.equal(await client.readFileText('/opt/data/missing.log'), null);
+  });
 });

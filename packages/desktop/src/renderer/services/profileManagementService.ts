@@ -509,7 +509,7 @@ export function createProfileManagementService(deps: ProfileManagementDeps): Pro
  * 构建按网关与 Bot 身份隔离的头像解析器（零 DOM，供渲染入口与各服务共享）。
  */
 export function createAgentAvatarResolver(deps: {
-  state: Pick<AppState, 'gatewayCount' | 'profiles'>;
+  state: Pick<AppState, 'gatewayCount' | 'profiles'> & { activeGatewayId?: string };
   avatarCache: Map<string, string>;
   persistAvatarCache: () => void;
 }): (nameOrDisplayName?: string, gatewayId?: string) => string {
@@ -517,23 +517,24 @@ export function createAgentAvatarResolver(deps: {
   return function resolveAgentAvatar(nameOrDisplayName?: string, gatewayId?: string): string {
     if (!nameOrDisplayName) return '';
     const key = nameOrDisplayName.trim().toLowerCase();
-    if (gatewayId) {
-      const scoped = avatarCache.get(`${gatewayId}:${key}`);
+    const effectiveGw = gatewayId || (state.gatewayCount >= 2 ? state.activeGatewayId : undefined);
+    if (effectiveGw) {
+      const scoped = avatarCache.get(`${effectiveGw}:${key}`);
       if (scoped) return scoped;
     }
-    const cached = !gatewayId || state.gatewayCount < 2 ? avatarCache.get(key) : undefined;
+    const cached = state.gatewayCount < 2 ? avatarCache.get(key) : undefined;
     if (cached) return cached;
     const match =
       state.profiles.find(
         (p) =>
-          (!gatewayId || !p.gatewayId || p.gatewayId === gatewayId) &&
+          (!effectiveGw || !p.gatewayId || p.gatewayId === effectiveGw) &&
           (p.name.toLowerCase() === key || p.displayName?.toLowerCase() === key),
       ) ||
-      (!gatewayId || state.gatewayCount < 2
+      (state.gatewayCount < 2
         ? state.profiles.find((p) => p.name.toLowerCase() === key || p.displayName?.toLowerCase() === key)
         : undefined);
     if (match?.avatar) {
-      const prefix = gatewayId || match.gatewayId ? `${gatewayId || match.gatewayId}:` : '';
+      const prefix = effectiveGw || match.gatewayId ? `${effectiveGw || match.gatewayId}:` : '';
       avatarCache.set(`${prefix}${key}`, match.avatar);
       avatarCache.set(`${prefix}${match.name.toLowerCase()}`, match.avatar);
       if (match.displayName) {

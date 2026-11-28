@@ -39,6 +39,7 @@ const EMPTY_FORM: CustomEndpointDraft = emptyEndpointDraft();
 export interface ProviderFormState {
   draft: CustomEndpointDraft;
   selectedProfiles: string[];
+  makeDefault: boolean;
   probe?: EndpointProbe;
   probePending: boolean;
   savePending: boolean;
@@ -52,6 +53,7 @@ export type ProviderFormAction =
   | { type: 'edit'; row: CustomEndpointRow; enabledProfiles: string[] }
   | { type: 'field'; patch: Partial<CustomEndpointDraft> }
   | { type: 'toggleProfile'; profile: string }
+  | { type: 'setMakeDefault'; makeDefault: boolean }
   | { type: 'probeStart' }
   | { type: 'probeResult'; probe: EndpointProbe }
   | { type: 'saveStart' }
@@ -60,6 +62,7 @@ export type ProviderFormAction =
 export const FORM_INITIAL: ProviderFormState = {
   draft: EMPTY_FORM,
   selectedProfiles: [],
+  makeDefault: false,
   probePending: false,
   savePending: false,
   error: '',
@@ -89,23 +92,26 @@ export function initialFormState(
       ...FORM_INITIAL,
       draft: draftFromEndpoint(editing),
       selectedProfiles: [...(editingProfiles ?? [])],
+      makeDefault: false,
     };
   }
   return {
     ...FORM_INITIAL,
     selectedProfiles: defaultSelectedProfiles(bots, defaultProfile),
+    makeDefault: true,
   };
 }
 
 export function formReducer(state: ProviderFormState, action: ProviderFormAction): ProviderFormState {
   switch (action.type) {
     case 'initAdd':
-      return { ...FORM_INITIAL, selectedProfiles: action.initialProfiles };
+      return { ...FORM_INITIAL, selectedProfiles: action.initialProfiles, makeDefault: true };
     case 'edit':
       return {
         ...FORM_INITIAL,
         draft: draftFromEndpoint(action.row),
         selectedProfiles: action.enabledProfiles,
+        makeDefault: false,
       };
     case 'field':
       return { ...state, draft: { ...state.draft, ...action.patch }, error: '', warning: '', notice: '' };
@@ -115,6 +121,8 @@ export function formReducer(state: ProviderFormState, action: ProviderFormAction
         : [...state.selectedProfiles, action.profile];
       return { ...state, selectedProfiles: next, error: '', warning: '', notice: '' };
     }
+    case 'setMakeDefault':
+      return { ...state, makeDefault: action.makeDefault, error: '', warning: '', notice: '' };
     case 'probeStart':
       return { ...state, probePending: true, error: '', warning: '', notice: '', probe: undefined };
     case 'probeResult':
@@ -156,18 +164,19 @@ export function resolveEditProfiles(
   return [...new Set([...configured, ...visible].filter(Boolean))];
 }
 
-/** 构造 `onSaveEndpoint` 写入参数：新建与编辑均强制 `makeDefault: false`。 */
+/** 构造 `onSaveEndpoint` 写入参数：编辑默认保持 `makeDefault: false`，新增允许按用户勾选设为所选 BOT 默认模型。 */
 export function buildSaveEndpointOptions(
   isEditing: boolean,
   selectedProfiles: readonly string[],
   editingProfiles: readonly string[] | undefined,
-): { fanOutTo: readonly string[]; targetProfiles?: readonly string[]; makeDefault: false } {
+  makeDefault = false,
+): { fanOutTo: readonly string[]; targetProfiles?: readonly string[]; makeDefault: boolean } {
   const raw = isEditing ? (editingProfiles ?? []) : selectedProfiles;
   const targets = [...new Set(raw.filter(Boolean))];
   return {
     ...(targets.length > 0 ? { targetProfiles: targets } : {}),
     fanOutTo: targets.slice(1),
-    makeDefault: false,
+    makeDefault: !isEditing && Boolean(makeDefault),
   };
 }
 

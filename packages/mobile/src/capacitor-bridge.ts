@@ -179,6 +179,9 @@ export interface HermesMobileBridge {
   syncStatusBarAppearance?(appearance: 'dark' | 'light'): Promise<void>;
   hapticSelection?(): Promise<void>;
   getNetworkStatus?(): Promise<{ connected: boolean; connectionType: string }>;
+  setGatewaySecret?(key: string, value: string): Promise<boolean>;
+  getGatewaySecret?(key: string): Promise<string | null>;
+  deleteGatewaySecret?(key: string): Promise<boolean>;
 }
 
 export interface CapacitorBridgePluginOverrides {
@@ -312,6 +315,40 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
     } finally {
       clearTimeout(timer);
     }
+  };
+
+  const SECRET_STORE_PATH = 'gateway-secrets.json';
+  const secretMemoryCache = new Map<string, string>();
+
+  const readSecretStoreFile = async (): Promise<Record<string, string>> => {
+    try {
+      const res = await filesystemApi.readFile({
+        path: SECRET_STORE_PATH,
+        directory: Directory.Data,
+        encoding: Encoding.UTF8,
+      });
+      if (typeof res.data !== 'string' || !res.data.trim()) return {};
+      const parsed: unknown = JSON.parse(res.data);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === 'string') out[k] = v;
+      }
+      return out;
+    // gate-degrade: 首次运行或文件不存在时直接返回空映射
+    } catch {
+      return {};
+    }
+  };
+
+  const writeSecretStoreFile = async (data: Record<string, string>): Promise<void> => {
+    await filesystemApi.writeFile({
+      path: SECRET_STORE_PATH,
+      data: JSON.stringify(data, null, 2),
+      directory: Directory.Data,
+      encoding: Encoding.UTF8,
+      recursive: true,
+    });
   };
 
   const bridge: HermesMobileBridge = {
@@ -899,6 +936,62 @@ export function createCapacitorPlatformBridge(overrides?: CapacitorBridgePluginO
         console.warn('[Mobile PAL] Network.getStatus failed:', describeError(err, 'unknown'));
         const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
         return { connected: online, connectionType: online ? 'unknown' : 'none' };
+      }
+    },
+
+    // 14. 移动端安全密钥库 (App 沙箱隔离持久化存储，与桌面端 secretStore 100% 同构)
+    async setGatewaySecret(key: string, value: string): Promise<boolean> {
+      const normalizedKey = (key || '').trim();
+      if (!normalizedKey) return false;
+      secretMemoryCache.set(normalizedKey, value);
+      try {
+        const existing = await readSecretStoreFile();
+        existing[normalizedKey] = value;
+        await writeSecretStoreFile(existing);
+        return true;
+      // gate-degrade: 移动端沙箱写入失败时保留在内存缓存中，防止阻断当前会话
+      } catch (err) {
+        console.warn('[Mobile PAL] setGatewaySecret 持久化失败，降级纯内存缓存:', describeError(err, 'unknown'));
+        return true;
+      }
+    },
+
+    async getGatewaySecret(key: string): Promise<string | null> {
+      const normalizedKey = (key || '').trim();
+      if (!normalizedKey) return null;
+      const memVal = secretMemoryCache.get(normalizedKey);
+      if (typeof memVal === 'string') return memVal;
+      try {
+        const stored = await readSecretStoreFile();
+        const diskVal = stored[normalizedKey];
+        if (typeof diskVal === 'string') {
+          secretMemoryCache.set(normalizedKey, diskVal);
+          return diskVal;
+        }
+        return null;
+      // gate-degrade: 移动端沙箱文件读取异常视为未保存，不阻断初始化
+      } catch (err) {
+        console.warn('[Mobile PAL] getGatewaySecret 读取失败:', describeError(err, 'unknown'));
+        return null;
+      }
+    },
+
+    async deleteGatewaySecret(key: string): Promise<boolean> {
+      const normalizedKey = (key || '').trim();
+      if (!normalizedKey) return false;
+      const memRemoved = secretMemoryCache.delete(normalizedKey);
+      try {
+        const existing = await readSecretStoreFile();
+        if (!(normalizedKey in existing)) {
+          return memRemoved;
+        }
+        delete existing[normalizedKey];
+        await writeSecretStoreFile(existing);
+        return true;
+      // gate-degrade: 移动端沙箱文件删除失败仅保留内存删除
+      } catch (err) {
+        console.warn('[Mobile PAL] deleteGatewaySecret 删除失败:', describeError(err, 'unknown'));
+        return memRemoved;
       }
     },
   };

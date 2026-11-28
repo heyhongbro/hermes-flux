@@ -36,12 +36,14 @@ export interface TurnDeliverablesProps {
   /** 回合完整图片列表，供点开紧凑图片卡片时传给 MediaLightbox 支持左右翻页 */
   allTurnImages?: readonly MediaLightboxItem[];
   isStreaming: boolean;
+  /** 网关链路状态：从断连/重连恢复到 connected 时自动清理启动期 401 等瞬态失败并重新拉取缩略图 */
+  connection?: 'connected' | 'connecting' | 'disconnected';
   resolveMediaUrl?: (pathOrUrl: string) => Promise<string | null>;
   onOpenFile?: (filePath: string, previewUrl?: string) => void;
   onOpenMediaLightbox?: (items: readonly MediaLightboxItem[], initialIndex: number) => void;
 }
 
-const DIRECT_URL_RE = /^(?:data:image\/|data:video\/|https?:\/\/|blob:|hermes-media:\/\/)/i;
+const DIRECT_URL_RE = /^(?:data:image\/|data:video\/|https?:\/\/|blob:|hermes-(?:media|preview):\/\/)/i;
 
 function isDirectMediaUrl(val?: string): boolean {
   return Boolean(val && DIRECT_URL_RE.test(val.trim()));
@@ -61,6 +63,7 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
   deliverables: precomputed,
   allTurnImages,
   isStreaming,
+  connection,
   resolveMediaUrl,
   onOpenFile,
   onOpenMediaLightbox,
@@ -100,10 +103,22 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
 
   const [mediaUrls, setMediaUrls] = React.useState<Record<string, string>>({});
   const [failedMedia, setFailedMedia] = React.useState<Record<string, boolean>>({});
+  const [fallbackTriedMedia, setFallbackTriedMedia] = React.useState<Record<string, boolean>>({});
   const [loadingVideos, setLoadingVideos] = React.useState<Record<string, boolean>>({});
   const loadingVideosRef = React.useRef<Record<string, boolean>>({});
   const [expandedVideos, setExpandedVideos] = React.useState<Record<string, boolean>>({});
   const [retryToken, setRetryToken] = React.useState(0);
+  const prevConnectionRef = React.useRef(connection);
+
+  React.useEffect(() => {
+    const prev = prevConnectionRef.current;
+    prevConnectionRef.current = connection;
+    if (connection === 'connected' && prev !== undefined && prev !== 'connected') {
+      setFailedMedia({});
+      setFallbackTriedMedia({});
+      setRetryToken((n) => n + 1);
+    }
+  }, [connection]);
 
   // Why: 仅在挂载后自动预加载图片缩略图；视频文件可能较大，延后到用户点击展开时按需请求，防止首屏阻塞与重复流量浪费。
   React.useEffect(() => {
@@ -187,6 +202,11 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
 
   const handleRetryMedia = (targetPath: string): void => {
     setFailedMedia((prev) => {
+      const next = { ...prev };
+      delete next[targetPath];
+      return next;
+    });
+    setFallbackTriedMedia((prev) => {
       const next = { ...prev };
       delete next[targetPath];
       return next;
@@ -284,6 +304,36 @@ export const TurnDeliverables = React.memo(function TurnDeliverables({
                         src={url}
                         alt={displayName}
                         loading="lazy"
+                        onError={() => {
+                          const targetKey = img.path;
+                          const canFallback =
+                            Boolean(resolveMediaUrl) &&
+                            !fallbackTriedMedia[targetKey] &&
+                            !mediaUrls[targetKey];
+                          if (resolveMediaUrl && canFallback) {
+                            setFallbackTriedMedia((prev) => ({ ...prev, [targetKey]: true }));
+                            const targetCandidate = img.path || img.previewUrl || '';
+                            void resolveMediaUrl(targetCandidate)
+                              .then((resolved) => {
+                                if (resolved && isDirectMediaUrl(resolved) && resolved !== url) {
+                                  setMediaUrls((prev) => ({ ...prev, [targetKey]: resolved }));
+                                  return;
+                                }
+                                setFailedMedia((prev) => ({ ...prev, [targetKey]: true }));
+                              })
+                              .catch(() => {
+                                setFailedMedia((prev) => ({ ...prev, [targetKey]: true }));
+                              });
+                            return;
+                          }
+                          setMediaUrls((prev) => {
+                            if (!(targetKey in prev)) return prev;
+                            const next = { ...prev };
+                            delete next[targetKey];
+                            return next;
+                          });
+                          setFailedMedia((prev) => ({ ...prev, [targetKey]: true }));
+                        }}
                       />
                     ) : (
                       <ImageIcon size={14} className="conv-deliverable-file__icon" aria-hidden="true" />
